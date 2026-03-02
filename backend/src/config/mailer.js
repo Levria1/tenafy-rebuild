@@ -1,0 +1,75 @@
+const nodemailer = require('nodemailer');
+
+/**
+ * Creates a Nodemailer transporter from env variables.
+ * Supports SMTP (any provider) or falls back to Ethereal (test) if no credentials set.
+ *
+ * Required env vars for production:
+ *   EMAIL_HOST      - SMTP host (e.g. smtp.mailgun.org, smtp.sendgrid.net, smtp.gmail.com)
+ *   EMAIL_PORT      - SMTP port (587 for TLS, 465 for SSL)
+ *   EMAIL_SECURE    - 'true' for port 465, 'false' for 587
+ *   EMAIL_USER      - SMTP username / API key
+ *   EMAIL_PASS      - SMTP password / API secret
+ *   EMAIL_FROM      - Sender address (e.g. "Tenafy <no-reply@tenafy.com>")
+ */
+
+let transporter = null;
+
+async function getTransporter() {
+  if (transporter) return transporter;
+
+  if (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+    // Production SMTP
+    transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST,
+      port: parseInt(process.env.EMAIL_PORT || '587'),
+      secure: process.env.EMAIL_SECURE === 'true',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+  } else {
+    // Development: use Ethereal test account (prints preview URL to console)
+    const testAccount = await nodemailer.createTestAccount();
+    transporter = nodemailer.createTransport({
+      host: 'smtp.ethereal.email',
+      port: 587,
+      secure: false,
+      auth: {
+        user: testAccount.user,
+        pass: testAccount.pass,
+      },
+    });
+    console.log('[Mailer] Using Ethereal test account:', testAccount.user);
+  }
+
+  return transporter;
+}
+
+/**
+ * Send an email.
+ * @param {object} options - { to, subject, html, text, from }
+ */
+async function sendMail({ to, subject, html, text, from }) {
+  const transport = await getTransporter();
+  const fromAddress = from || process.env.EMAIL_FROM || 'Tenafy <no-reply@tenafy.com>';
+
+  const info = await transport.sendMail({
+    from: fromAddress,
+    to: Array.isArray(to) ? to.join(', ') : to,
+    subject,
+    html: html || text,
+    text: text || '',
+  });
+
+  // Log preview URL for Ethereal test emails
+  const previewUrl = nodemailer.getTestMessageUrl(info);
+  if (previewUrl) {
+    console.log('[Mailer] Preview URL:', previewUrl);
+  }
+
+  return { messageId: info.messageId, previewUrl };
+}
+
+module.exports = { sendMail };
