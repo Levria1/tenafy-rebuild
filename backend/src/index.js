@@ -37,6 +37,7 @@ app.use('/api/role', require('./routes/role'));
 app.use('/api/file', require('./routes/file'));
 app.use('/api/amenity', require('./routes/amenity'));
 app.use('/api/email-template', require('./routes/emailTemplate'));
+app.use('/api/notification', require('./routes/notification'));
 app.use('/api/tenant-portal', require('./routes/tenantPortal'));
 app.use('/api/pdf', require('./routes/pdf'));
 app.use('/api/storage', require('./routes/storage'));

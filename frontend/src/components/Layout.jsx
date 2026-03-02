@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, createContext, useContext, useEffect } from 'react';
+import { useState, createContext, useContext, useEffect, useCallback } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { Layout, Menu, Avatar, Dropdown, Badge, Button } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Badge, Button, List, Typography, Empty, Popover, Spin, Tag } from 'antd';
 import {
   DashboardOutlined,
   HomeOutlined,
@@ -19,10 +19,17 @@ import {
   MenuUnfoldOutlined,
   BellOutlined,
   MailOutlined,
+  CheckOutlined,
+  WarningOutlined,
+  InfoCircleOutlined,
+  CloseCircleOutlined,
+  CheckCircleOutlined,
 } from '@ant-design/icons';
 import Cookies from 'js-cookie';
+import { notification as notificationApi } from '../lib/api';
 
 const { Header, Sider, Content } = Layout;
+const { Text } = Typography;
 
 export const AuthContext = createContext(null);
 
@@ -133,6 +140,195 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
+// ---------------------------------------------------------------------------
+// Notification type helpers
+// ---------------------------------------------------------------------------
+const typeConfig = {
+  error:   { color: '#ff4d4f', icon: <CloseCircleOutlined style={{ color: '#ff4d4f' }} /> },
+  warning: { color: '#faad14', icon: <WarningOutlined style={{ color: '#faad14' }} /> },
+  success: { color: '#52c41a', icon: <CheckCircleOutlined style={{ color: '#52c41a' }} /> },
+  info:    { color: '#1677ff', icon: <InfoCircleOutlined style={{ color: '#1677ff' }} /> },
+};
+
+function getTypeConfig(type) {
+  return typeConfig[type] || typeConfig.info;
+}
+
+function timeAgo(dateStr) {
+  const now = new Date();
+  const date = new Date(dateStr);
+  const diffMs = now - date;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'Just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 7) return `${diffDay}d ago`;
+  return date.toLocaleDateString();
+}
+
+// ---------------------------------------------------------------------------
+// Notification bell + dropdown component
+// ---------------------------------------------------------------------------
+function NotificationBell() {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const loadRecent = useCallback(async () => {
+    try {
+      setLoading(true);
+      const res = await notificationApi.getRecent();
+      if (res.data.code === 200) {
+        setNotifications(res.data.data.notifications || []);
+        setUnreadCount(res.data.data.unreadCount || 0);
+      }
+    } catch (err) {
+      console.error('Failed to load notifications:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Load on mount, then poll every 60 seconds
+  useEffect(() => {
+    loadRecent();
+    const interval = setInterval(loadRecent, 60000);
+    return () => clearInterval(interval);
+  }, [loadRecent]);
+
+  // Reload when dropdown opens
+  useEffect(() => {
+    if (open) loadRecent();
+  }, [open, loadRecent]);
+
+  const handleMarkRead = async (id, e) => {
+    e.stopPropagation();
+    try {
+      await notificationApi.markRead(id);
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: 1 } : n));
+      setUnreadCount(prev => Math.max(0, prev - 1));
+    } catch (err) {
+      console.error('Failed to mark read:', err);
+    }
+  };
+
+  const handleMarkAllRead = async () => {
+    try {
+      await notificationApi.markAllRead();
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: 1 })));
+      setUnreadCount(0);
+    } catch (err) {
+      console.error('Failed to mark all read:', err);
+    }
+  };
+
+  const handleClick = (item) => {
+    if (item.link) {
+      router.push(item.link);
+      setOpen(false);
+    }
+    if (!item.is_read) {
+      notificationApi.markRead(item.id).then(() => {
+        setNotifications(prev => prev.map(n => n.id === item.id ? { ...n, is_read: 1 } : n));
+        setUnreadCount(prev => Math.max(0, prev - 1));
+      });
+    }
+  };
+
+  const content = (
+    <div style={{ width: 360 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: '1px solid #f0f0f0' }}>
+        <Text strong style={{ fontSize: 15 }}>Notifications</Text>
+        {unreadCount > 0 && (
+          <Button type="link" size="small" onClick={handleMarkAllRead} icon={<CheckOutlined />}>
+            Mark all read
+          </Button>
+        )}
+      </div>
+
+      {/* List */}
+      {loading && notifications.length === 0 ? (
+        <div style={{ padding: 24, textAlign: 'center' }}><Spin /></div>
+      ) : notifications.length === 0 ? (
+        <Empty description="No notifications" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: '24px 0' }} />
+      ) : (
+        <List
+          dataSource={notifications}
+          style={{ maxHeight: 350, overflow: 'auto' }}
+          renderItem={(item) => {
+            const cfg = getTypeConfig(item.type);
+            return (
+              <List.Item
+                onClick={() => handleClick(item)}
+                style={{
+                  padding: '10px 12px',
+                  cursor: item.link ? 'pointer' : 'default',
+                  background: item.is_read ? '#fff' : '#f6f8ff',
+                  borderLeft: item.is_read ? '3px solid transparent' : `3px solid ${cfg.color}`,
+                }}
+                actions={!item.is_read ? [
+                  <Button
+                    key="read"
+                    type="text"
+                    size="small"
+                    icon={<CheckOutlined />}
+                    onClick={(e) => handleMarkRead(item.id, e)}
+                    title="Mark as read"
+                  />
+                ] : undefined}
+              >
+                <List.Item.Meta
+                  avatar={cfg.icon}
+                  title={<Text style={{ fontSize: 13, fontWeight: item.is_read ? 400 : 600 }}>{item.title}</Text>}
+                  description={
+                    <div>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{item.message}</Text>
+                      <br />
+                      <Text type="secondary" style={{ fontSize: 11 }}>{timeAgo(item.created_at)}</Text>
+                    </div>
+                  }
+                />
+              </List.Item>
+            );
+          }}
+        />
+      )}
+
+      {/* Footer */}
+      <div style={{ borderTop: '1px solid #f0f0f0', padding: '8px 12px', textAlign: 'center' }}>
+        <Button type="link" onClick={() => { setOpen(false); router.push('/notifications'); }}>
+          View All Notifications
+        </Button>
+      </div>
+    </div>
+  );
+
+  return (
+    <Popover
+      content={content}
+      trigger="click"
+      open={open}
+      onOpenChange={setOpen}
+      placement="bottomRight"
+      arrow={false}
+      overlayStyle={{ padding: 0 }}
+      overlayInnerStyle={{ padding: 0 }}
+    >
+      <Badge count={unreadCount} size="small" offset={[-2, 2]}>
+        <BellOutlined style={{ fontSize: 20, cursor: 'pointer' }} />
+      </Badge>
+    </Popover>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Layout
+// ---------------------------------------------------------------------------
 export default function MainLayout({ children }) {
   const [collapsed, setCollapsed] = useState(false);
   const [openKeys, setOpenKeys] = useState([]);
@@ -175,8 +371,6 @@ export default function MainLayout({ children }) {
       return Array.from(merged);
     });
   }, [pathname, tab]);
-
-  // Navigation is handled by <Link> inside menu items, no onClick needed
 
   const userMenuItems = [
     {
@@ -263,9 +457,7 @@ export default function MainLayout({ children }) {
             style={{ fontSize: 16 }}
           />
           <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-            <Badge count={3}>
-              <BellOutlined style={{ fontSize: 20, cursor: 'pointer' }} />
-            </Badge>
+            <NotificationBell />
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
               <div style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 8 }}>
                 <Avatar icon={<UserOutlined />} />

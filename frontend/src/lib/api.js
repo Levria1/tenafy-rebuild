@@ -297,6 +297,15 @@ export const accountingApi = {
   getLines: (data, params) => api.post('/api/accounting/account/lines', data, { params }),
 };
 
+export const notification = {
+  list: (params) => api.get('/api/notification/list', { params }),
+  getRecent: () => api.get('/api/notification/recent'),
+  getUnreadCount: () => api.get('/api/notification/unread-count'),
+  markRead: (id) => api.put(`/api/notification/${id}/read`),
+  markAllRead: () => api.put('/api/notification/read-all'),
+  delete: (id) => api.delete(`/api/notification/${id}`),
+};
+
 export const storageMonitoring = {
   getUsage: () => api.get('/api/storage/usage'),
   getEmailUsage: () => api.get('/api/storage/email/usage'),
