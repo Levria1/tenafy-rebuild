@@ -52,7 +52,7 @@ router.post('/list', authenticate, async (req, res) => {
       start_date: 'l.start_date',
       end_date: 'l.end_date',
       status: 'l.status',
-      price: 'l.price',
+      price: 'l.amount',
       phone: 't.phone',
     };
     let orderBy = 't.first_name ASC, t.last_name ASC';
@@ -281,7 +281,7 @@ router.put('/:id', authenticate, async (req, res) => {
     const { start_date, end_date, rent_amount, deposit_amount, invoice_schedule, status } = req.body;
     
     await pool.execute(
-      'UPDATE leasing SET start_date = ?, end_date = ?, price = ?, deposit = ?, invoicing = ?, status = ?, updated_at = NOW() WHERE id = ?',
+      'UPDATE leasing SET start_date = ?, end_date = ?, amount = ?, deposit = ?, invoicing = ?, status = ?, updated_at = NOW() WHERE id = ?',
       [start_date, end_date, rent_amount, deposit_amount, invoice_schedule, status, id]
     );
     res.json({ code: 200, message: 'Lease updated' });

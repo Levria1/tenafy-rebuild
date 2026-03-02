@@ -138,7 +138,7 @@ async function generateRecurringInvoices() {
        l.id,
        l.tenant_id,
        l.unit_id,
-       l.price,
+       l.amount AS price,
        l.invoicing,
        l.currency_id,
        p.org_id   AS org_id,
@@ -150,7 +150,9 @@ async function generateRecurringInvoices() {
      WHERE l.status = 1
        AND l.deleted_at IS NULL
        AND l.invoicing IS NOT NULL
-       AND l.invoicing != ''`
+       AND l.invoicing != ''
+       AND l.amount IS NOT NULL
+       AND l.amount > 0`
   );
 
   if (leases.length === 0) {

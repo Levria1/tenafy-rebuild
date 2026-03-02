@@ -8,7 +8,7 @@ router.get('/user/setting/category/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [categories] = await pool.execute(
-      'SELECT * FROM category_setting WHERE org_id = ? AND enabled = 1 ORDER BY name',
+      'SELECT id, name, org_id, CAST(enabled AS UNSIGNED) as enabled, updated_at FROM category_setting WHERE org_id = ? AND enabled = 1 ORDER BY name',
       [orgId]
     );
     res.json({ code: 200, data: categories });
@@ -24,7 +24,7 @@ router.post('/user/setting/category/add', authenticate, async (req, res) => {
     const { name } = req.body;
     const orgId = req.user.orgId;
     const [result] = await pool.execute(
-      'INSERT INTO category_setting (org_id, name, enabled, created_at) VALUES (?, ?, 1, NOW())',
+      'INSERT INTO category_setting (org_id, name, enabled, updated_at) VALUES (?, ?, 1, NOW())',
       [orgId, name]
     );
     res.json({ code: 200, message: 'Category created', data: { id: result.insertId } });
@@ -72,7 +72,7 @@ router.get('/user/setting/payment/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [payments] = await pool.execute(
-      'SELECT * FROM payment_method_setting WHERE org_id = ? AND enabled = 1 ORDER BY name',
+      'SELECT id, payment_method as name, org_id, enabled, updated_at FROM payment_method_setting WHERE org_id = ? AND enabled = 1 ORDER BY payment_method',
       [orgId]
     );
     res.json({ code: 200, data: payments });
@@ -88,7 +88,7 @@ router.post('/user/setting/payment/add', authenticate, async (req, res) => {
     const { name } = req.body;
     const orgId = req.user.orgId;
     const [result] = await pool.execute(
-      'INSERT INTO payment_method_setting (org_id, name, enabled, created_at) VALUES (?, ?, 1, NOW())',
+      'INSERT INTO payment_method_setting (org_id, payment_method, enabled, updated_at) VALUES (?, ?, 1, NOW())',
       [orgId, name]
     );
     res.json({ code: 200, message: 'Payment method created', data: { id: result.insertId } });
@@ -105,7 +105,7 @@ router.put('/user/setting/payment/update/:id', authenticate, async (req, res) =>
     const { name } = req.body;
     const orgId = req.user.orgId;
     await pool.execute(
-      'UPDATE payment_method_setting SET name = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
+      'UPDATE payment_method_setting SET payment_method = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
       [name, id, orgId]
     );
     res.json({ code: 200, message: 'Payment method updated' });
