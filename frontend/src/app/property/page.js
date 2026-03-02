@@ -1,159 +1,372 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Table, Button, Space, Tag, Card, Input, Modal, message } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined } from '@ant-design/icons';
+import { useEffect, useState, useCallback } from 'react';
+import { Button, Input, Tag, Badge, Spin, Empty, Popover, Radio, Space } from 'antd';
+import {
+  PlusOutlined,
+  SearchOutlined,
+  FilterOutlined,
+  TeamOutlined,
+  DollarOutlined,
+  FileTextOutlined,
+  DownOutlined,
+  UpOutlined,
+  UserOutlined,
+  RightOutlined,
+  HomeOutlined,
+} from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import MainLayout from '../../components/Layout';
 import { property } from '../../lib/api';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
+// ---------------------------------------------------------------------------
+// Property Card component
+// ---------------------------------------------------------------------------
+function PropertyCard({ prop, router }) {
+  const [expanded, setExpanded] = useState(false);
+  const [units, setUnits] = useState([]);
+  const [unitsLoading, setUnitsLoading] = useState(false);
+  const [unitsLoaded, setUnitsLoaded] = useState(false);
+
+  const totalUnits = prop.total_units || 0;
+  const occupiedUnits = prop.occupied_units || 0;
+  const vacantUnits = totalUnits - occupiedUnits;
+
+  const toggleExpand = async () => {
+    if (!expanded && !unitsLoaded) {
+      setUnitsLoading(true);
+      try {
+        const res = await property.getUnits(prop.id);
+        if (res.data.code === 200) {
+          setUnits(res.data.data || []);
+        }
+      } catch (err) {
+        console.error('Failed to load units:', err);
+      } finally {
+        setUnitsLoading(false);
+        setUnitsLoaded(true);
+      }
+    }
+    setExpanded(!expanded);
+  };
+
+  // Build full address
+  const addressParts = [prop.street_address, prop.city, prop.state, prop.country].filter(Boolean);
+  const fullAddress = addressParts.join(', ');
+
+  return (
+    <div style={{ border: '1px solid #e8e8e8', borderRadius: 8, marginBottom: 16, background: '#fff' }}>
+      {/* Property header row */}
+      <div style={{ display: 'flex', alignItems: 'center', padding: '16px 20px', gap: 20 }}>
+        {/* Property image */}
+        <div style={{
+          width: 80, height: 60, borderRadius: 6, overflow: 'hidden', flexShrink: 0,
+          background: '#f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          {prop.photo ? (
+            <img src={`${API_URL}/api/file/preview/${prop.photo}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          ) : (
+            <HomeOutlined style={{ fontSize: 28, color: '#bbb' }} />
+          )}
+        </div>
+
+        {/* Property name + address */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 15 }}>{prop.display_name}</div>
+          <div style={{ color: '#888', fontSize: 13, marginTop: 2 }}>{fullAddress || 'No address'}</div>
+        </div>
+
+        {/* Unit counts */}
+        <div style={{ textAlign: 'left', minWidth: 180 }}>
+          <div style={{ fontWeight: 500, marginBottom: 4 }}>Units: {totalUnits}</div>
+          <div style={{ display: 'flex', gap: 24 }}>
+            <span style={{ color: '#1890ff', fontWeight: 500 }}>{occupiedUnits} OCCUPIED</span>
+            <span style={{ color: '#d4760a', fontWeight: 500 }}>{vacantUnits} VACANT</span>
+          </div>
+        </div>
+
+        {/* Action icons */}
+        <div style={{ display: 'flex', gap: 28 }}>
+          <div
+            onClick={() => router.push(`/property/${prop.id}?tab=tenants`)}
+            style={{ textAlign: 'center', cursor: 'pointer', color: '#555' }}
+          >
+            <TeamOutlined style={{ fontSize: 22, display: 'block', marginBottom: 2 }} />
+            <span style={{ fontSize: 11, fontWeight: 500 }}>TENANTS</span>
+          </div>
+          <div
+            onClick={() => router.push(`/property/${prop.id}?tab=accounting`)}
+            style={{ textAlign: 'center', cursor: 'pointer', color: '#555' }}
+          >
+            <DollarOutlined style={{ fontSize: 22, display: 'block', marginBottom: 2 }} />
+            <span style={{ fontSize: 11, fontWeight: 500 }}>ACCOUNTING</span>
+          </div>
+          <div
+            onClick={() => router.push(`/property/${prop.id}/detail`)}
+            style={{ textAlign: 'center', cursor: 'pointer', color: '#555' }}
+          >
+            <FileTextOutlined style={{ fontSize: 22, display: 'block', marginBottom: 2 }} />
+            <span style={{ fontSize: 11, fontWeight: 500 }}>DETAIL</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Show Detail toggle */}
+      <div
+        onClick={toggleExpand}
+        style={{
+          textAlign: 'center', padding: '8px 0', cursor: 'pointer', borderTop: '1px solid #f0f0f0',
+          color: '#888', fontSize: 13, userSelect: 'none', display: 'flex', alignItems: 'center',
+          justifyContent: 'center', gap: 6,
+        }}
+      >
+        {expanded ? 'Hide Detail' : 'Show Detail'}
+        {expanded ? <UpOutlined style={{ fontSize: 10 }} /> : <DownOutlined style={{ fontSize: 10 }} />}
+      </div>
+
+      {/* Expanded unit list */}
+      {expanded && (
+        <div style={{ borderTop: '1px solid #e8e8e8' }}>
+          {unitsLoading ? (
+            <div style={{ padding: 32, textAlign: 'center' }}><Spin /></div>
+          ) : units.length === 0 ? (
+            <div style={{ padding: 24, textAlign: 'center', color: '#999' }}>No units found</div>
+          ) : (
+            units.map((unit, idx) => (
+              <UnitRow key={unit.id} unit={unit} propId={prop.id} router={router} isLast={idx === units.length - 1} />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Unit row inside expanded property
+// ---------------------------------------------------------------------------
+function UnitRow({ unit, propId, router, isLast }) {
+  const isOccupied = unit.status === 1;
+  const tenantName = (unit.tenant_first_name || unit.tenant_last_name)
+    ? `${unit.tenant_first_name || ''} ${unit.tenant_last_name || ''}`.trim()
+    : null;
+
+  const sizeText = unit.size ? `${unit.size} ${unit.size_unit || 'sqft'}` : '-';
+  const rentMin = unit.rent_price_min ? Number(unit.rent_price_min).toLocaleString() : null;
+  const rentMax = unit.rent_price_max ? Number(unit.rent_price_max).toLocaleString() : null;
+  const rentRange = rentMin && rentMax ? `${rentMin} - ${rentMax}` : rentMin || rentMax || '-';
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', padding: '14px 20px 14px 40px', gap: 16,
+      borderBottom: isLast ? 'none' : '1px solid #f0f0f0',
+    }}>
+      {/* Unit image placeholder */}
+      <div style={{
+        width: 60, height: 50, borderRadius: 6, overflow: 'hidden', flexShrink: 0,
+        background: '#f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        {unit.photo ? (
+          <img src={`${API_URL}/api/file/preview/${unit.photo}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        ) : (
+          <HomeOutlined style={{ fontSize: 22, color: '#ccc' }} />
+        )}
+      </div>
+
+      {/* Unit info */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{unit.name}</span>
+          <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 11, lineHeight: '18px' }}>
+            {isOccupied ? 'Occupied' : 'Vacant'}
+          </Tag>
+        </div>
+        <div style={{ color: '#888', fontSize: 12, marginBottom: 2 }}>
+          {unit.type ? unit.type.charAt(0).toUpperCase() + unit.type.slice(1) : 'Unit'}
+        </div>
+        <div style={{ color: '#666', fontSize: 12, display: 'flex', gap: 16 }}>
+          <span>Room Size: <strong>{sizeText}</strong></span>
+          <span>Bedrooms <strong>{unit.beds ?? '-'}</strong></span>
+          <span>Bathrooms <strong>{unit.baths ?? '-'}</strong></span>
+        </div>
+        <div style={{ fontSize: 12, marginTop: 4 }}>
+          <span style={{ fontWeight: 600 }}>RENT RANGE</span>{' '}
+          <span style={{ color: '#666' }}>{rentRange}</span>
+        </div>
+      </div>
+
+      {/* Tenant section */}
+      <div style={{ textAlign: 'center', minWidth: 120 }}>
+        <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>Tenant</div>
+        {tenantName ? (
+          <>
+            <div style={{
+              width: 36, height: 36, borderRadius: '50%', background: '#fff1f0', border: '2px solid #ff4d4f',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 4px',
+            }}>
+              <UserOutlined style={{ fontSize: 16, color: '#ff4d4f' }} />
+            </div>
+            <div style={{ fontSize: 12, color: '#333' }}>{tenantName}</div>
+          </>
+        ) : (
+          <div style={{ color: '#ccc', fontSize: 12 }}>—</div>
+        )}
+      </div>
+
+      {/* Action buttons */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+        <Button size="small" style={{ fontSize: 12 }}>Add Listing</Button>
+        <Button size="small" style={{ fontSize: 12 }} onClick={() => router.push(`/leasing/create?unit=${unit.id}&property=${propId}`)}>
+          Create Lease
+        </Button>
+        <Button
+          size="small"
+          type="primary"
+          ghost
+          style={{ fontSize: 12 }}
+          onClick={() => router.push(`/property/${propId}/unit/${unit.id}`)}
+        >
+          View Unit <RightOutlined style={{ fontSize: 10 }} />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Properties page
+// ---------------------------------------------------------------------------
 export default function PropertyPage() {
   const [properties, setProperties] = useState([]);
   const [loading, setLoading] = useState(true);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20, total: 0 });
   const [searchText, setSearchText] = useState('');
+  const [filterVisible, setFilterVisible] = useState(false);
+  const [filterCount, setFilterCount] = useState(0);
+  const [statusFilter, setStatusFilter] = useState(null);
   const router = useRouter();
 
-  useEffect(() => {
-    loadProperties();
-  }, [pagination.current, pagination.pageSize]);
-
-  const loadProperties = async () => {
+  const loadProperties = useCallback(async (page = 1) => {
     try {
       setLoading(true);
-      const response = await property.list(
-        searchText ? { search: searchText } : {}, 
-        { page: pagination.current, limit: pagination.pageSize }
-      );
+      const body = {};
+      if (searchText) body.search = searchText;
+      if (statusFilter !== null) body.status = statusFilter;
+      const response = await property.list(body, { page, limit: pagination.pageSize });
       if (response.data.code === 200) {
         setProperties(response.data.data.content || []);
-        setPagination({
-          ...pagination,
+        setPagination(prev => ({
+          ...prev,
+          current: page,
           total: response.data.data.totalElements || 0,
-        });
+        }));
       }
     } catch (error) {
       console.error('Failed to load properties:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchText, statusFilter, pagination.pageSize]);
+
+  useEffect(() => { loadProperties(1); }, [statusFilter]);
 
   const handleSearch = (value) => {
     setSearchText(value);
-    setPagination({ ...pagination, current: 1 });
-    loadProperties();
+    setTimeout(() => loadProperties(1), 0);
   };
 
-  const handleTableChange = (pag) => {
-    setPagination({ ...pagination, current: pag.current, pageSize: pag.pageSize });
-  };
-
-  const handleDelete = (record) => {
-    Modal.confirm({
-      title: 'Delete Property',
-      content: `Are you sure you want to delete "${record.display_name}"?`,
-      okText: 'Delete',
-      okType: 'danger',
-      onOk: async () => {
-        try {
-          await property.delete(record.id);
-          message.success('Property deleted successfully');
-          loadProperties();
-        } catch (error) {
-          message.error(error.response?.data?.message || 'Failed to delete property');
-        }
-      }
-    });
-  };
-
-  const columns = [
-    {
-      title: 'Property Name',
-      dataIndex: 'display_name',
-      key: 'display_name',
-    },
-    {
-      title: 'Address',
-      dataIndex: 'address',
-      key: 'address',
-    },
-    {
-      title: 'Units',
-      dataIndex: 'unit_count',
-      key: 'unit_count',
-    },
-    {
-      title: 'Occupied',
-      dataIndex: 'occupied_count',
-      key: 'occupied_count',
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      render: (status) => (
-        <Tag color={status === 1 ? 'green' : 'red'}>
-          {status === 1 ? 'Active' : 'Inactive'}
-        </Tag>
-      ),
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      render: (_, record) => (
-        <Space>
-          <Button
-            type="link"
-            icon={<EyeOutlined />}
-            onClick={() => router.push(`/property/${record.id}/detail`)}
-          >
-            View
-          </Button>
-          <Button
-            type="link"
-            icon={<EditOutlined />}
-            onClick={() => router.push(`/property/${record.id}/edit`)}
-          >
-            Edit
-          </Button>
-          <Button
-            type="link"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => handleDelete(record)}
-          >
-            Delete
-          </Button>
-        </Space>
-      ),
-    },
-  ];
+  // Filter popover content
+  const filterContent = (
+    <div style={{ width: 250, padding: 8 }}>
+      <div style={{ fontWeight: 600, marginBottom: 12 }}>Filter Properties</div>
+      <div style={{ marginBottom: 8, fontWeight: 500, fontSize: 13 }}>Status</div>
+      <Radio.Group
+        value={statusFilter}
+        onChange={(e) => {
+          setStatusFilter(e.target.value);
+          setFilterCount(e.target.value !== null ? 1 : 0);
+        }}
+        style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+      >
+        <Radio value={null}>All</Radio>
+        <Radio value={1}>Active</Radio>
+        <Radio value={0}>Inactive</Radio>
+      </Radio.Group>
+      <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+        <Button size="small" onClick={() => { setStatusFilter(null); setFilterCount(0); }}>Reset</Button>
+        <Button size="small" type="primary" onClick={() => setFilterVisible(false)}>Close</Button>
+      </div>
+    </div>
+  );
 
   return (
     <MainLayout>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h1>Properties</h1>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/property/create')}>
-          Add Property
-        </Button>
+      <h1 style={{ marginBottom: 16 }}>Properties</h1>
+
+      {/* Top bar: total, search, filter, add button */}
+      <div style={{
+        background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: '12px 20px',
+        marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      }}>
+        <div style={{ fontWeight: 500, fontSize: 15 }}>
+          <span style={{ color: '#1890ff', fontSize: 18, fontWeight: 700, marginRight: 6 }}>{pagination.total}</span>
+          Total
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Input
+            placeholder="Type here to search"
+            prefix={<SearchOutlined style={{ color: '#bbb' }} />}
+            style={{ width: 220 }}
+            allowClear
+            onPressEnter={(e) => handleSearch(e.target.value)}
+            onChange={(e) => { if (!e.target.value) handleSearch(''); }}
+          />
+          <Popover content={filterContent} trigger="click" open={filterVisible} onOpenChange={setFilterVisible} placement="bottomRight">
+            <Badge count={filterCount} size="small" offset={[-4, 0]}>
+              <Button icon={<FilterOutlined />}>Filter</Button>
+            </Badge>
+          </Popover>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/property/create')}>
+            Add Property
+          </Button>
+        </div>
       </div>
-      <Card>
-        <Input.Search
-          placeholder="Search properties..."
-          style={{ width: 300, marginBottom: 16 }}
-          onSearch={handleSearch}
-          allowClear
-        />
-        <Table
-          columns={columns}
-          dataSource={properties}
-          rowKey="id"
-          loading={loading}
-          pagination={pagination}
-          onChange={handleTableChange}
-        />
-      </Card>
+
+      {/* Property cards */}
+      {loading ? (
+        <div style={{ padding: 48, textAlign: 'center' }}><Spin size="large" /></div>
+      ) : properties.length === 0 ? (
+        <Empty description="No properties found" />
+      ) : (
+        <>
+          {properties.map(prop => (
+            <PropertyCard key={prop.id} prop={prop} router={router} />
+          ))}
+
+          {/* Simple pagination */}
+          {pagination.total > pagination.pageSize && (
+            <div style={{ textAlign: 'center', marginTop: 16, display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <Button
+                disabled={pagination.current <= 1}
+                onClick={() => loadProperties(pagination.current - 1)}
+              >
+                Previous
+              </Button>
+              <span style={{ lineHeight: '32px', color: '#666' }}>
+                Page {pagination.current} of {Math.ceil(pagination.total / pagination.pageSize)}
+              </span>
+              <Button
+                disabled={pagination.current >= Math.ceil(pagination.total / pagination.pageSize)}
+                onClick={() => loadProperties(pagination.current + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          )}
+        </>
+      )}
     </MainLayout>
   );
 }

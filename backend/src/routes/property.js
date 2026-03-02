@@ -458,13 +458,22 @@ router.delete('/:id', authenticate, async (req, res) => {
   }
 });
 
-// GET /api/property/:property_id/unit - List units for property
+// GET /api/property/:property_id/unit - List units for property (with current tenant)
 router.get('/:property_id/unit', authenticate, async (req, res) => {
   try {
     const { property_id } = req.params;
     const orgId = req.user.orgId;
     const [units] = await pool.execute(
-      'SELECT u.* FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.property_id = ? AND p.org_id = ? AND u.active_status = 1 ORDER BY u.name',
+      `SELECT u.*,
+              t.id AS tenant_id,
+              t.first_name AS tenant_first_name,
+              t.last_name AS tenant_last_name
+       FROM unit u
+       LEFT JOIN property p ON u.property_id = p.id
+       LEFT JOIN leasing l ON l.unit_id = u.id AND l.status = 1 AND l.deleted_at IS NULL
+       LEFT JOIN tenant t ON l.tenant_id = t.id
+       WHERE u.property_id = ? AND p.org_id = ? AND u.active_status = 1
+       ORDER BY u.name`,
       [property_id, orgId]
     );
     res.json({ code: 200, data: units });
