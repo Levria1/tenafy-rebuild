@@ -102,6 +102,7 @@ router.post('/contacts/service-vendor', authenticate, async (req, res) => {
 // ─── PAYEE ROUTES ────────────────────────────────────────────────────────────
 
 // POST /api/contact/contacts/payee - List payees with paging
+// Payees are stored in the tenant table with category = 2
 router.post('/contacts/payee', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
@@ -110,20 +111,31 @@ router.post('/contacts/payee', authenticate, async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    let whereClause = 'org_id = ? AND status != 0';
+    let whereClause = 't.org_id = ? AND t.category = 2';
     const params = [orgId];
 
     if (search) {
-      whereClause += ' AND (name LIKE ? OR email LIKE ?)';
-      params.push('%' + search + '%', '%' + search + '%');
+      whereClause += ' AND (t.first_name LIKE ? OR t.last_name LIKE ? OR t.company_name LIKE ? OR t.email LIKE ? OR t.phone LIKE ?)';
+      const s = '%' + search + '%';
+      params.push(s, s, s, s, s);
     }
 
     const [payees] = await pool.execute(
-      'SELECT * FROM payee WHERE ' + whereClause + ' ORDER BY name LIMIT ' + limit + ' OFFSET ' + offset + '',
-      [...params]
+      `SELECT t.*,
+              COALESCE(inv.outstanding, 0) AS outstanding_amount
+       FROM tenant t
+       LEFT JOIN (
+         SELECT tenant_id, SUM(amount) AS outstanding
+         FROM invoice WHERE org_id = ? AND status = 0
+         GROUP BY tenant_id
+       ) inv ON inv.tenant_id = t.id
+       WHERE ${whereClause}
+       ORDER BY t.first_name, t.last_name
+       LIMIT ${limit} OFFSET ${offset}`,
+      [orgId, ...params]
     );
     const [[{ total }]] = await pool.execute(
-      'SELECT COUNT(*) as total FROM payee WHERE ' + whereClause,
+      `SELECT COUNT(*) as total FROM tenant t WHERE ${whereClause}`,
       params
     );
 

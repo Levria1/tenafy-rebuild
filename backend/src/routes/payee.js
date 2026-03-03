@@ -3,6 +3,8 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
 
+// Payees are stored in the tenant table with category = 2
+
 // GET /api/payee/:id - Get payee
 router.get('/:id', authenticate, async (req, res) => {
   try {
@@ -10,7 +12,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     const [payees] = await pool.execute(
-      'SELECT * FROM payee WHERE id = ? AND org_id = ?',
+      'SELECT * FROM tenant WHERE id = ? AND org_id = ? AND category = 2',
       [id, orgId]
     );
 
@@ -28,15 +30,16 @@ router.get('/:id', authenticate, async (req, res) => {
 // POST /api/payee - Create payee
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { name, email, phone, type, address, notes } = req.body;
+    const { first_name, last_name, email, phone, company_name, notes } = req.body;
     const orgId = req.user.orgId;
+    const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
-    const [result] = await pool.execute(
-      'INSERT INTO payee (org_id, name, email, phone, type, address, notes, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW())',
-      [orgId, name, email, phone, type, address, notes]
+    await pool.execute(
+      'INSERT INTO tenant (id, org_id, first_name, last_name, email, phone, company_name, notes, category, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, 1, NOW())',
+      [id.toString(), orgId, first_name, last_name, email, phone, company_name || null, notes || null]
     );
 
-    res.json({ code: 200, message: 'Payee created', data: { id: result.insertId } });
+    res.json({ code: 200, message: 'Payee created', data: { id: id.toString() } });
   } catch (error) {
     console.error('Create payee error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create payee' });
@@ -47,12 +50,12 @@ router.post('/', authenticate, async (req, res) => {
 router.put('/:id/update', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, phone, type, address, notes, status } = req.body;
+    const { first_name, last_name, email, phone, company_name, notes, status } = req.body;
     const orgId = req.user.orgId;
 
     await pool.execute(
-      'UPDATE payee SET name = ?, email = ?, phone = ?, type = ?, address = ?, notes = ?, status = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
-      [name, email, phone, type, address, notes, status, id, orgId]
+      'UPDATE tenant SET first_name = ?, last_name = ?, email = ?, phone = ?, company_name = ?, notes = ?, status = ?, updated_at = NOW() WHERE id = ? AND org_id = ? AND category = 2',
+      [first_name, last_name, email, phone, company_name, notes, status ?? 1, id, orgId]
     );
 
     res.json({ code: 200, message: 'Payee updated' });
@@ -62,12 +65,12 @@ router.put('/:id/update', authenticate, async (req, res) => {
   }
 });
 
-// DELETE /api/payee/:id - Delete payee
+// DELETE /api/payee/:id - Delete payee (soft delete)
 router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('UPDATE payee SET status = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
+    await pool.execute('UPDATE tenant SET status = 0, updated_at = NOW() WHERE id = ? AND org_id = ? AND category = 2', [id, orgId]);
     res.json({ code: 200, message: 'Payee deleted' });
   } catch (error) {
     console.error('Delete payee error:', error);
