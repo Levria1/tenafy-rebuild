@@ -655,4 +655,270 @@ router.post('/unit/:id/inventory/history', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/property/unit/:unit_id/amenities - Get unit amenities with details
+router.get('/unit/:unit_id/amenities', authenticate, async (req, res) => {
+  try {
+    const unitId = req.params.unit_id;
+    // Get all amenities for the org, mark which ones this unit has
+    const orgId = req.user.orgId;
+    const [amenities] = await pool.execute(
+      `SELECT a.id, a.display_name, a.category, a.type,
+              CASE WHEN ua.unit_id IS NOT NULL THEN 1 ELSE 0 END AS selected
+       FROM amenity a
+       LEFT JOIN unit_amenity ua ON ua.amenity_id = a.id AND ua.unit_id = ?
+       WHERE a.org_id = ? AND a.enabled = 1
+       ORDER BY a.category, a.order_id, a.display_name`,
+      [unitId, orgId]
+    );
+    res.json({ code: 200, data: amenities });
+  } catch (error) {
+    console.error('Get unit amenities error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get unit amenities' });
+  }
+});
+
+// PUT /api/property/unit/:unit_id/amenities - Update unit amenities
+router.put('/unit/:unit_id/amenities', authenticate, async (req, res) => {
+  try {
+    const unitId = req.params.unit_id;
+    const { amenityIds } = req.body; // array of amenity IDs
+    // Clear existing
+    await pool.execute('DELETE FROM unit_amenity WHERE unit_id = ?', [unitId]);
+    // Insert new
+    if (amenityIds && amenityIds.length > 0) {
+      const values = amenityIds.map(aid => `(${pool.escape(unitId)}, ${pool.escape(aid)})`).join(',');
+      await pool.execute(`INSERT INTO unit_amenity (unit_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
+        amenityIds.flatMap(aid => [unitId, aid])
+      );
+    }
+    res.json({ code: 200, message: 'Amenities updated' });
+  } catch (error) {
+    console.error('Update unit amenities error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to update amenities' });
+  }
+});
+
+// GET /api/property/unit/:unit_id/furnishing - List unit furnishings
+router.get('/unit/:unit_id/furnishing', authenticate, async (req, res) => {
+  try {
+    const unitId = req.params.unit_id;
+    const search = req.query.search;
+    let whereClause = 'unit_id = ? AND deleted_at IS NULL';
+    const params = [unitId];
+    if (search) {
+      whereClause += ' AND item_name LIKE ?';
+      params.push('%' + search + '%');
+    }
+    const [items] = await pool.execute(
+      `SELECT * FROM unit_furnishing WHERE ${whereClause} ORDER BY item_name`,
+      params
+    );
+    // Sum
+    const [[{ total_sum }]] = await pool.execute(
+      'SELECT COALESCE(SUM(item_price * quantity), 0) as total_sum FROM unit_furnishing WHERE unit_id = ? AND deleted_at IS NULL',
+      [unitId]
+    );
+    res.json({ code: 200, data: { items, totalSum: total_sum } });
+  } catch (error) {
+    console.error('List furnishing error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to list furnishings' });
+  }
+});
+
+// POST /api/property/unit/:unit_id/furnishing - Create furnishing item
+router.post('/unit/:unit_id/furnishing', authenticate, async (req, res) => {
+  try {
+    const unitId = req.params.unit_id;
+    const { item_name, quantity, item_price, note, currency_id } = req.body;
+    const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+    await pool.execute(
+      'INSERT INTO unit_furnishing (id, unit_id, item_name, quantity, item_price, note, currency_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())',
+      [id.toString(), unitId, item_name, quantity || 1, item_price || 0, note || null, currency_id || null]
+    );
+    res.json({ code: 200, message: 'Furnishing added', data: { id: id.toString() } });
+  } catch (error) {
+    console.error('Create furnishing error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to create furnishing' });
+  }
+});
+
+// PUT /api/property/unit/furnishing/:id - Update furnishing item
+router.put('/unit/furnishing/:id', authenticate, async (req, res) => {
+  try {
+    const { item_name, quantity, item_price, note } = req.body;
+    await pool.execute(
+      'UPDATE unit_furnishing SET item_name = ?, quantity = ?, item_price = ?, note = ?, updated_at = NOW() WHERE id = ?',
+      [item_name, quantity || 1, item_price || 0, note || null, req.params.id]
+    );
+    res.json({ code: 200, message: 'Furnishing updated' });
+  } catch (error) {
+    console.error('Update furnishing error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to update furnishing' });
+  }
+});
+
+// DELETE /api/property/unit/furnishing/:id - Soft-delete furnishing item
+router.delete('/unit/furnishing/:id', authenticate, async (req, res) => {
+  try {
+    await pool.execute('UPDATE unit_furnishing SET deleted_at = NOW() WHERE id = ?', [req.params.id]);
+    res.json({ code: 200, message: 'Furnishing deleted' });
+  } catch (error) {
+    console.error('Delete furnishing error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to delete furnishing' });
+  }
+});
+
+// GET /api/property/unit/:unit_id/current-lease - Get current active lease for unit
+router.get('/unit/:unit_id/current-lease', authenticate, async (req, res) => {
+  try {
+    const unitId = req.params.unit_id;
+    const [leases] = await pool.execute(
+      `SELECT l.*, t.first_name, t.last_name, t.email, t.phone,
+              c.symbol AS currency_symbol, c.code AS currency_code
+       FROM leasing l
+       LEFT JOIN tenant t ON l.tenant_id = t.id
+       LEFT JOIN currency c ON l.currency_id = c.id
+       WHERE l.unit_id = ? AND l.status = 1 AND l.deleted_at IS NULL
+       ORDER BY l.start_date DESC LIMIT 1`,
+      [unitId]
+    );
+    // Also get next lease (future start_date, status = 1)
+    const [nextLeases] = await pool.execute(
+      `SELECT l.*, t.first_name, t.last_name
+       FROM leasing l
+       LEFT JOIN tenant t ON l.tenant_id = t.id
+       WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.start_date > CURDATE() AND l.status = 0
+       ORDER BY l.start_date ASC LIMIT 1`,
+      [unitId]
+    );
+    res.json({ code: 200, data: { current: leases[0] || null, next: nextLeases[0] || null } });
+  } catch (error) {
+    console.error('Get current lease error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get lease' });
+  }
+});
+
+// GET /api/property/unit/:unit_id/services - List service requests for unit
+router.get('/unit/:unit_id/services', authenticate, async (req, res) => {
+  try {
+    const unitId = req.params.unit_id;
+    const status = req.query.status; // 0=pending, 1=in-progress, 2=completed
+    let whereClause = 's.unit_id = ? AND s.deleted_at IS NULL';
+    const params = [unitId];
+    if (status !== undefined && status !== '') {
+      whereClause += ' AND s.status = ?';
+      params.push(status);
+    }
+    const [services] = await pool.execute(
+      `SELECT s.*, t.first_name AS tenant_first, t.last_name AS tenant_last, t.phone AS tenant_phone
+       FROM service s
+       LEFT JOIN leasing l ON l.unit_id = s.unit_id AND l.status = 1 AND l.deleted_at IS NULL
+       LEFT JOIN tenant t ON l.tenant_id = t.id
+       WHERE ${whereClause}
+       ORDER BY s.created_at DESC`,
+      params
+    );
+    res.json({ code: 200, data: services });
+  } catch (error) {
+    console.error('Get unit services error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get service history' });
+  }
+});
+
+// POST /api/property/unit/:unit_id/service-costs - Get accounting entries for unit
+router.post('/unit/:unit_id/service-costs', authenticate, async (req, res) => {
+  try {
+    const unitId = req.params.unit_id;
+    const orgId = req.user.orgId;
+    const { search, startDate, endDate, period } = req.body || {};
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
+
+    let whereClause = 'al.unit_id = ? AND a.org_id = ? AND a.deleted_at IS NULL';
+    const params = [unitId, orgId];
+
+    if (search) {
+      whereClause += ' AND (a.note LIKE ? OR al.description LIKE ?)';
+      params.push('%' + search + '%', '%' + search + '%');
+    }
+    if (startDate) {
+      whereClause += ' AND a.payment_date >= ?';
+      params.push(startDate);
+    }
+    if (endDate) {
+      whereClause += ' AND a.payment_date <= ?';
+      params.push(endDate);
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT a.id, a.payment_date, a.note, a.type,
+              al.description, al.amount AS line_amount, al.type AS line_type,
+              t.first_name AS tenant_first, t.last_name AS tenant_last,
+              p.display_name AS property_name, u.name AS unit_name,
+              acc.name AS account_name, cat.name AS category_name
+       FROM accounting_line al
+       JOIN accounting a ON a.id = al.accounting_id
+       LEFT JOIN tenant t ON a.tenant_id = t.id
+       LEFT JOIN unit u ON al.unit_id = u.id
+       LEFT JOIN property p ON al.property_id = p.id
+       LEFT JOIN account_setting acc ON a.account_id = acc.id
+       LEFT JOIN category_setting cat ON al.category_id = cat.id
+       WHERE ${whereClause}
+       ORDER BY a.payment_date DESC
+       LIMIT ${limit} OFFSET ${offset}`,
+      params
+    );
+
+    const [[{ total }]] = await pool.execute(
+      `SELECT COUNT(*) as total FROM accounting_line al JOIN accounting a ON a.id = al.accounting_id WHERE ${whereClause}`,
+      params
+    );
+
+    // Inflow/outflow summary
+    const [[summary]] = await pool.execute(
+      `SELECT
+        COALESCE(SUM(CASE WHEN al.type = 1 THEN al.amount ELSE 0 END), 0) AS inflow,
+        COALESCE(SUM(CASE WHEN al.type = 0 THEN al.amount ELSE 0 END), 0) AS outflow
+       FROM accounting_line al
+       JOIN accounting a ON a.id = al.accounting_id
+       WHERE al.unit_id = ? AND a.org_id = ? AND a.deleted_at IS NULL`,
+      [unitId, orgId]
+    );
+
+    res.json({
+      code: 200,
+      data: {
+        content: rows,
+        totalElements: total,
+        inflow: summary.inflow,
+        outflow: summary.outflow,
+        balance: summary.inflow - summary.outflow,
+      },
+    });
+  } catch (error) {
+    console.error('Get service costs error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get service costs' });
+  }
+});
+
+// GET /api/property/unit/:unit_id/property-info - Get parent property info for unit
+router.get('/unit/:unit_id/property-info', authenticate, async (req, res) => {
+  try {
+    const unitId = req.params.unit_id;
+    const [[propInfo]] = await pool.execute(
+      `SELECT p.id, p.display_name, p.street_address, p.city, p.state, p.zip, p.country,
+              p.year_built, p.code AS property_code
+       FROM property p
+       JOIN unit u ON u.property_id = p.id
+       WHERE u.id = ?`,
+      [unitId]
+    );
+    res.json({ code: 200, data: propInfo || null });
+  } catch (error) {
+    console.error('Get property info error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get property info' });
+  }
+});
+
 module.exports = router;

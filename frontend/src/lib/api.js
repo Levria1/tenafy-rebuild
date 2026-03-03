@@ -91,6 +91,19 @@ export const property = {
   getMaintenance: (id) => api.get(`/api/property/unit/maintenance/${id}/detail`),
   updateMaintenance: (id, data) => api.put(`/api/property/unit/maintenance/${id}`, data),
   deleteMaintenance: (id) => api.delete(`/api/property/unit/maintenance/${id}`),
+  // Amenity methods
+  getUnitAmenities: (unitId) => api.get(`/api/property/unit/${unitId}/amenities`),
+  updateUnitAmenities: (unitId, data) => api.put(`/api/property/unit/${unitId}/amenities`, data),
+  // Furnishing methods
+  getFurnishing: (unitId, params) => api.get(`/api/property/unit/${unitId}/furnishing`, { params }),
+  createFurnishing: (unitId, data) => api.post(`/api/property/unit/${unitId}/furnishing`, data),
+  updateFurnishing: (id, data) => api.put(`/api/property/unit/furnishing/${id}`, data),
+  deleteFurnishing: (id) => api.delete(`/api/property/unit/furnishing/${id}`),
+  // Lease + Services for unit
+  getUnitCurrentLease: (unitId) => api.get(`/api/property/unit/${unitId}/current-lease`),
+  getUnitServices: (unitId, params) => api.get(`/api/property/unit/${unitId}/services`, { params }),
+  getUnitServiceCosts: (unitId, data, params) => api.post(`/api/property/unit/${unitId}/service-costs`, data, { params }),
+  getUnitPropertyInfo: (unitId) => api.get(`/api/property/unit/${unitId}/property-info`),
 };
 
 export const tenant = {
