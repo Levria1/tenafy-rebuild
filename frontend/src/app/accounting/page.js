@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Table, Button, Space, Tag, Card, Input, Select, DatePicker, Row, Col, Tabs, message, Drawer, Descriptions, Divider, Popover, Radio, Checkbox, Spin } from 'antd';
 import { PlusOutlined, FilterOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, CloseOutlined } from '@ant-design/icons';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import dayjs from 'dayjs';
 import MainLayout from '../../components/Layout';
 import { accounting, accountingApi } from '../../lib/api';
@@ -27,6 +27,8 @@ export default function AccountingPage() {
   const [dateRange, setDateRange] = useState(null);
   const [selectedAccount, setSelectedAccount] = useState(null);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const propertyIdParam = searchParams.get('propertyId');
 
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -73,8 +75,9 @@ export default function AccountingPage() {
     if (dateRange && dateRange[0]) f.startDate = dateRange[0].format('YYYY-MM-DD');
     if (dateRange && dateRange[1]) f.endDate = dateRange[1].format('YYYY-MM-DD');
     if (selectedAccount) f.account_setting_id = selectedAccount;
+    if (propertyIdParam) f.property_id = propertyIdParam;
     return f;
-  }, [filters, search, dateRange, selectedAccount]);
+  }, [filters, search, dateRange, selectedAccount, propertyIdParam]);
 
   const loadTransactions = async () => {
     setLoading(true);

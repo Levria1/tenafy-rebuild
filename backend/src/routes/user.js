@@ -85,62 +85,82 @@ router.get('/dashboard', authenticate, async (req, res) => {
       [orgId]
     );
 
-    // --- Overdue Rental Invoices (tenant invoices past due) ---
+    // --- Overdue Rental Amount (rent invoices that are overdue, status=2) ---
+    // Find rent category IDs (categories with 'rental' in the name)
+    const [rentCategories] = await pool.execute(
+      "SELECT id FROM category_setting WHERE org_id = ? AND LOWER(name) LIKE '%rental%'",
+      [orgId]
+    );
+    const rentCatIds = rentCategories.map(c => c.id.toString());
+    // Rent invoice condition (with alias for JOINed queries, without alias for simple queries)
+    const rentCondition = rentCatIds.length > 0
+      ? `AND i.category IN (${rentCatIds.map(() => '?').join(',')})`
+      : 'AND 1=0';
+    const rentConditionSimple = rentCatIds.length > 0
+      ? `AND category IN (${rentCatIds.map(() => '?').join(',')})`
+      : 'AND 1=0';
+    const nonRentCondition = rentCatIds.length > 0
+      ? `AND i.category NOT IN (${rentCatIds.map(() => '?').join(',')})`
+      : '';
+    const nonRentConditionSimple = rentCatIds.length > 0
+      ? `AND category NOT IN (${rentCatIds.map(() => '?').join(',')})`
+      : '';
+
     const [overdueRentals] = await pool.execute(
       `SELECT i.id, p.display_name AS property, u.name AS unit_name,
               i.due_on, i.amount AS outstanding,
-              DATEDIFF(CURDATE(), i.due_on) AS days_late,
+              GREATEST(DATEDIFF(CURDATE(), i.due_on), 0) AS days_late,
               t.first_name, t.last_name
        FROM invoice i
        LEFT JOIN tenant t ON i.tenant_id = t.id
        LEFT JOIN unit u ON i.unit_id = u.id
        LEFT JOIN property p ON i.property_id = p.id
-       WHERE i.org_id = ? AND i.status = 2
+       WHERE i.org_id = ? AND i.status = 2 AND i.deleted_at IS NULL ${rentCondition}
        ORDER BY days_late DESC
        LIMIT 20`,
-      [orgId]
+      [orgId, ...rentCatIds]
     );
     const [[{ overdueRentalTotal }]] = await pool.execute(
-      'SELECT COALESCE(SUM(amount), 0) AS overdueRentalTotal FROM invoice WHERE org_id = ? AND status = 2',
-      [orgId]
+      `SELECT COALESCE(SUM(amount), 0) AS overdueRentalTotal FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL ${rentConditionSimple}`,
+      [orgId, ...rentCatIds]
     );
     const [[{ overdueRentalCount }]] = await pool.execute(
-      'SELECT COUNT(*) AS overdueRentalCount FROM invoice WHERE org_id = ? AND status = 2',
-      [orgId]
+      `SELECT COUNT(*) AS overdueRentalCount FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL ${rentConditionSimple}`,
+      [orgId, ...rentCatIds]
     );
 
-    // --- Overdue Payments (owner payments - accounting outflows overdue) ---
-    // type is on `accounting` table (0=outflow, 1=inflow), not on accounting_line
+    // --- Overdue Payments (non-rent overdue invoices, status=2, EXCLUDING rent category) ---
     const [overduePayments] = await pool.execute(
-      `SELECT a.id, p.display_name AS property, a.payment_date AS due_date,
-              al.amount AS outstanding,
-              DATEDIFF(CURDATE(), a.payment_date) AS days_late
-       FROM accounting a
-       JOIN accounting_line al ON al.accounting_id = a.id
-       LEFT JOIN property p ON al.property_id = p.id
-       WHERE a.org_id = ? AND a.deleted_at IS NULL AND a.type = 0
-         AND a.payment_date < CURDATE()
+      `SELECT i.id, p.display_name AS property, u.name AS unit_name,
+              i.due_on AS due_date, i.amount AS outstanding,
+              GREATEST(DATEDIFF(CURDATE(), i.due_on), 0) AS days_late,
+              t.first_name, t.last_name
+       FROM invoice i
+       LEFT JOIN tenant t ON i.tenant_id = t.id
+       LEFT JOIN unit u ON i.unit_id = u.id
+       LEFT JOIN property p ON i.property_id = p.id
+       WHERE i.org_id = ? AND i.status = 2 AND i.deleted_at IS NULL ${nonRentCondition}
        ORDER BY days_late DESC
        LIMIT 20`,
-      [orgId]
+      [orgId, ...rentCatIds]
     );
     const [[{ overduePaymentTotal }]] = await pool.execute(
-      `SELECT COALESCE(SUM(al.amount), 0) AS overduePaymentTotal
-       FROM accounting a
-       JOIN accounting_line al ON al.accounting_id = a.id
-       WHERE a.org_id = ? AND a.deleted_at IS NULL AND a.type = 0
-         AND a.payment_date < CURDATE()`,
-      [orgId]
+      `SELECT COALESCE(SUM(amount), 0) AS overduePaymentTotal FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL ${nonRentConditionSimple}`,
+      [orgId, ...rentCatIds]
+    );
+    const [[{ overduePaymentCount }]] = await pool.execute(
+      `SELECT COUNT(*) AS overduePaymentCount FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL ${nonRentConditionSimple}`,
+      [orgId, ...rentCatIds]
     );
 
-    // --- Outstanding Balance (per tenant) ---
+    // --- Outstanding Balance (per tenant - ALL overdue invoices status=2, all categories) ---
     const [outstandingBalance] = await pool.execute(
       `SELECT t.id AS tenant_id, t.first_name, t.last_name,
               SUM(i.amount) AS outstanding,
-              MAX(DATEDIFF(CURDATE(), i.due_on)) AS days_late
+              GREATEST(DATEDIFF(CURDATE(), MIN(i.due_on)), 0) AS days_late
        FROM invoice i
        JOIN tenant t ON i.tenant_id = t.id
-       WHERE i.org_id = ? AND i.status IN (0, 2)
+       WHERE i.org_id = ? AND i.status = 2 AND i.deleted_at IS NULL
        GROUP BY t.id, t.first_name, t.last_name
        HAVING outstanding > 0
        ORDER BY outstanding DESC
@@ -148,7 +168,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
       [orgId]
     );
     const [[{ outstandingTotal }]] = await pool.execute(
-      'SELECT COALESCE(SUM(amount), 0) AS outstandingTotal FROM invoice WHERE org_id = ? AND status IN (0, 2)',
+      'SELECT COALESCE(SUM(amount), 0) AS outstandingTotal FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL',
       [orgId]
     );
 
@@ -232,7 +252,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
         occupancy: { totalUnits, occupiedUnits, vacantCount, occupancyRate },
         vacantUnits,
         overdueRentals: { items: overdueRentals, total: overdueRentalTotal, count: overdueRentalCount },
-        overduePayments: { items: overduePayments, total: overduePaymentTotal, count: overduePayments.length },
+        overduePayments: { items: overduePayments, total: overduePaymentTotal, count: overduePaymentCount },
         outstandingBalance: { items: outstandingBalance, total: outstandingTotal },
         expiringLeases: { items: expiringLeases, count: expiringCount },
         upcomingVacant: { items: upcomingVacant, count: upcomingVacantCount },

@@ -179,7 +179,10 @@ export default function DashboardPage() {
               pagination={false}
               scroll={{ y: 160 }}
               columns={[
-                { title: 'Property', dataIndex: 'property', key: 'property', render: (v) => <a style={linkStyle}>{v || '-'}</a> },
+                {
+                  title: 'Property', key: 'property', width: 140,
+                  render: (_, r) => <a style={linkStyle}>{r.property} {r.unit_name || ''}</a>,
+                },
                 { title: 'Due Date', dataIndex: 'due_date', key: 'due', width: 100, render: fmtDate },
                 { title: 'Outstanding', dataIndex: 'outstanding', key: 'out', width: 110, render: fmtMoney },
                 {

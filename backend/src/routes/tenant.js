@@ -6,10 +6,11 @@ const pool = require('../config/database');
 // POST /api/tenant/contacts - List tenants with paging
 // Only returns tenants who have had at least one lease
 // Includes has_active_lease flag and current unit/property info
+// Filters: tenantStatus (active/inactive), leaseFilter (active/inactive), leaseType (fixed/month-to-month), propertyId, unitId
 router.post('/contacts', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, leaseFilter } = req.body || {};
+    const { search, tenantStatus, leaseFilter, leaseType, propertyId, unitId } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
@@ -23,11 +24,42 @@ router.post('/contacts', authenticate, async (req, res) => {
       params.push(searchParam, searchParam, searchParam, searchParam);
     }
 
-    // Filter: 'active' = has active lease, 'inactive' = no active lease, undefined = all with any lease history
+    // Tenant Status: active = status 1, inactive = status 0
+    if (tenantStatus === 'active') {
+      whereClause += ' AND t.status = 1';
+    } else if (tenantStatus === 'inactive') {
+      whereClause += ' AND t.status = 0';
+    }
+
+    // Lease Status: 'active' = has active lease, 'inactive' = no active lease
     if (leaseFilter === 'active') {
       whereClause += ' AND al.id IS NOT NULL';
     } else if (leaseFilter === 'inactive') {
       whereClause += ' AND al.id IS NULL';
+    }
+
+    // Lease Type: 'fixed' = type 0, 'month-to-month' = type 1
+    if (leaseType === 'fixed') {
+      whereClause += ' AND al.type = 0';
+    } else if (leaseType === 'month-to-month') {
+      whereClause += ' AND al.type = 1';
+    }
+
+    // Build lease_history subquery — optionally filtered by property/unit
+    let leaseHistorySubquery = 'SELECT DISTINCT l_h.tenant_id FROM leasing l_h';
+    const leaseHistoryParams = [];
+    if (propertyId || unitId) {
+      leaseHistorySubquery += ' JOIN unit u_h ON l_h.unit_id = u_h.id WHERE l_h.deleted_at IS NULL';
+      if (propertyId) {
+        leaseHistorySubquery += ' AND u_h.property_id = ?';
+        leaseHistoryParams.push(propertyId);
+      }
+      if (unitId) {
+        leaseHistorySubquery += ' AND l_h.unit_id = ?';
+        leaseHistoryParams.push(unitId);
+      }
+    } else {
+      leaseHistorySubquery += ' WHERE l_h.deleted_at IS NULL';
     }
 
     const query = `
@@ -37,11 +69,14 @@ router.post('/contacts', authenticate, async (req, res) => {
              al.amount AS rent_amount,
              al.start_date AS lease_start,
              al.end_date AS lease_end,
+             al.type AS lease_type,
              u.name AS unit_name,
+             u.id AS unit_id,
              p.display_name AS property_name,
+             p.id AS property_id,
              COALESCE(inv.outstanding, 0) AS outstanding_amount
       FROM tenant t
-      INNER JOIN (SELECT DISTINCT tenant_id FROM leasing WHERE deleted_at IS NULL) lease_history ON lease_history.tenant_id = t.id
+      INNER JOIN (${leaseHistorySubquery}) lease_history ON lease_history.tenant_id = t.id
       LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL
       LEFT JOIN unit u ON al.unit_id = u.id
       LEFT JOIN property p ON u.property_id = p.id
@@ -58,13 +93,13 @@ router.post('/contacts', authenticate, async (req, res) => {
     const countQuery = `
       SELECT COUNT(*) as total
       FROM tenant t
-      INNER JOIN (SELECT DISTINCT tenant_id FROM leasing WHERE deleted_at IS NULL) lease_history ON lease_history.tenant_id = t.id
+      INNER JOIN (${leaseHistorySubquery}) lease_history ON lease_history.tenant_id = t.id
       LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL
       WHERE ${whereClause}
     `;
 
-    const [tenants] = await pool.execute(query, [orgId, ...params]);
-    const [[{ total }]] = await pool.execute(countQuery, params);
+    const [tenants] = await pool.execute(query, [...leaseHistoryParams, orgId, ...params]);
+    const [[{ total }]] = await pool.execute(countQuery, [...leaseHistoryParams, ...params]);
 
     res.json({ code: 200, data: { content: tenants, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page } });
   } catch (error) {

@@ -1,22 +1,25 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  Card, Input, Button, Space, Tag, Avatar, Empty, Spin, Pagination,
-  Typography, Tooltip, Select, Modal, message,
+  Input, Button, Space, Avatar, Empty, Spin, Pagination, Badge,
+  Typography, Tooltip, Popover, Radio, Select, message,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, UserOutlined, MailOutlined,
-  FileTextOutlined, DollarOutlined, ProfileOutlined,
-  SendOutlined, CheckCircleFilled, CloseCircleFilled,
+  FileTextOutlined, DollarOutlined, ProfileOutlined, FilterOutlined,
+  SendOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
-import { tenant } from '../../../lib/api';
+import { tenant, property } from '../../../lib/api';
 
 const { Text, Title } = Typography;
 
-function TenantCard({ data, onEmail, onInvoice, onRent, onLease, onProfile }) {
+// ---------------------------------------------------------------------------
+// Tenant row component matching the original Tenafy layout
+// ---------------------------------------------------------------------------
+function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
   const hasLease = data.has_active_lease === 1 || data.has_active_lease === true;
 
   return (
@@ -31,99 +34,127 @@ function TenantCard({ data, onEmail, onInvoice, onRent, onLease, onProfile }) {
     onMouseEnter={(e) => e.currentTarget.style.background = '#fafafa'}
     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
     >
-      {/* Status indicator + Avatar */}
-      <div style={{ position: 'relative' }}>
-        <Avatar size={44} icon={<UserOutlined />} style={{ backgroundColor: '#e6f4ff' }} />
-        <Tooltip title={hasLease ? 'Active Lease' : 'No Active Lease'}>
-          {hasLease ? (
-            <CheckCircleFilled style={{
-              position: 'absolute', bottom: -2, right: -2,
-              fontSize: 16, color: '#52c41a',
-              background: '#fff', borderRadius: '50%',
-            }} />
-          ) : (
-            <CloseCircleFilled style={{
-              position: 'absolute', bottom: -2, right: -2,
-              fontSize: 16, color: '#ff4d4f',
-              background: '#fff', borderRadius: '50%',
-            }} />
-          )}
-        </Tooltip>
-      </div>
+      {/* Avatar */}
+      <Avatar size={44} icon={<UserOutlined />} style={{ backgroundColor: '#e6f4ff', flexShrink: 0 }} />
 
-      {/* Name + Details */}
+      {/* Name + email */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
-          <Text strong style={{ fontSize: 14, cursor: 'pointer' }} onClick={onProfile}>
-            {data.first_name} {data.last_name}
-          </Text>
-          {hasLease && (
-            <Tag color="green" style={{ fontSize: 11, lineHeight: '18px', margin: 0 }}>Active Lease</Tag>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+        <Text strong style={{ fontSize: 14, cursor: 'pointer' }} onClick={onProfile}>
+          {data.first_name} {data.last_name}
+        </Text>
+        <div>
           {data.email && <Text type="secondary" style={{ fontSize: 12 }}>{data.email}</Text>}
-          {data.phone && <Text type="secondary" style={{ fontSize: 12 }}>{data.phone}</Text>}
-          {data.property_name && (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {data.property_name}{data.unit_name ? ` — ${data.unit_name}` : ''}
-            </Text>
-          )}
         </div>
       </div>
 
-      {/* Outstanding amount */}
-      {data.outstanding_amount > 0 && (
-        <div style={{ textAlign: 'right', marginRight: 8 }}>
-          <Text type="danger" style={{ fontSize: 13, fontWeight: 600 }}>
-            ${Number(data.outstanding_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-          </Text>
-          <br />
-          <Text type="secondary" style={{ fontSize: 11 }}>Outstanding</Text>
+      {/* Lease status icon - red person icon */}
+      <div style={{ textAlign: 'center', cursor: 'pointer' }} onClick={onProfile}>
+        <div style={{
+          width: 36, height: 36, borderRadius: '50%',
+          background: hasLease ? '#fff1f0' : '#f5f5f5',
+          border: `2px solid ${hasLease ? '#ff4d4f' : '#d9d9d9'}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          margin: '0 auto 2px',
+        }}>
+          <UserOutlined style={{ fontSize: 16, color: hasLease ? '#ff4d4f' : '#bbb' }} />
         </div>
-      )}
+        <span style={{ fontSize: 10, fontWeight: 600, color: '#888' }}>RENT</span>
+      </div>
 
-      {/* Action buttons */}
-      <Space size={4}>
-        <Tooltip title="Email">
-          <Button type="text" size="small" icon={<MailOutlined />} onClick={onEmail}
-            style={{ color: '#1677ff' }} />
-        </Tooltip>
-        <Tooltip title="Add Invoice">
-          <Button type="text" size="small" icon={<FileTextOutlined />} onClick={onInvoice}
-            style={{ color: '#722ed1' }} />
-        </Tooltip>
-        <Tooltip title="Rent Payments">
-          <Button type="text" size="small" icon={<DollarOutlined />} onClick={onRent}
-            style={{ color: '#52c41a' }} />
-        </Tooltip>
-        <Tooltip title="Lease">
-          <Button type="text" size="small" icon={<ProfileOutlined />} onClick={onLease}
-            style={{ color: '#fa8c16' }} />
-        </Tooltip>
-        <Tooltip title="Profile">
-          <Button type="text" size="small" icon={<UserOutlined />} onClick={onProfile}
-            style={{ color: '#595959' }} />
-        </Tooltip>
+      {/* Rent icon */}
+      <div style={{ textAlign: 'center', cursor: 'pointer' }} onClick={() => onProfile()}>
+        <div style={{
+          width: 36, height: 36, borderRadius: '50%',
+          background: '#f6ffed', border: '2px solid #52c41a',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          margin: '0 auto 2px',
+        }}>
+          <DollarOutlined style={{ fontSize: 16, color: '#52c41a' }} />
+        </div>
+        <span style={{ fontSize: 10, fontWeight: 600, color: '#888' }}>RENT</span>
+      </div>
+
+      {/* Lease icon */}
+      <div style={{ textAlign: 'center', cursor: 'pointer' }} onClick={() => onProfile()}>
+        <div style={{
+          width: 36, height: 36, borderRadius: '50%',
+          background: '#f0f5ff', border: '2px solid #597ef7',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          margin: '0 auto 2px',
+        }}>
+          <FileTextOutlined style={{ fontSize: 16, color: '#597ef7' }} />
+        </div>
+        <span style={{ fontSize: 10, fontWeight: 600, color: '#888' }}>LEASE</span>
+      </div>
+
+      {/* Action buttons for some rows */}
+      <Space size={6} style={{ flexShrink: 0 }}>
+        <Button size="small" onClick={onEmail}>Email</Button>
+        <Button size="small" onClick={onInvoice}>+ Invoice</Button>
+        <Button size="small" onClick={onInvite}>Invite</Button>
       </Space>
+
+      {/* Profile arrow */}
+      <div style={{ cursor: 'pointer', color: '#888', flexShrink: 0 }} onClick={onProfile}>
+        <span style={{ fontSize: 13 }}>Profile</span>
+        <span style={{ marginLeft: 4 }}>›</span>
+      </div>
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Main Tenants page
+// ---------------------------------------------------------------------------
 export default function TenantsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const propertyIdParam = searchParams.get('propertyId');
+
   const [tenants, setTenants] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [leaseFilter, setLeaseFilter] = useState(undefined);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20, total: 0 });
+
+  // Filters
+  const [filterVisible, setFilterVisible] = useState(false);
+  const [tenantStatus, setTenantStatus] = useState(null);     // null=all, 'active', 'inactive'
+  const [leaseStatus, setLeaseStatus] = useState(null);        // null=all, 'active', 'inactive'
+  const [leaseType, setLeaseType] = useState(null);            // null=all, 'fixed', 'month-to-month'
+  const [propertyFilter, setPropertyFilter] = useState(propertyIdParam || null);
+  const [unitFilter, setUnitFilter] = useState(null);
+
+  // Property + unit dropdowns
+  const [propertiesWithUnits, setPropertiesWithUnits] = useState([]);
+
+  // Count active filters
+  const filterCount = [tenantStatus, leaseStatus, leaseType, propertyFilter].filter(Boolean).length;
+
+  useEffect(() => {
+    loadPropertiesWithUnits();
+  }, []);
+
+  const loadPropertiesWithUnits = async () => {
+    try {
+      const res = await property.getAllWithUnits();
+      if (res.data.code === 200) {
+        setPropertiesWithUnits(res.data.data || []);
+      }
+    } catch (err) {
+      console.error('Failed to load properties:', err);
+    }
+  };
 
   const loadData = useCallback(async (page = 1) => {
     try {
       setLoading(true);
       const body = {};
       if (search) body.search = search;
-      if (leaseFilter) body.leaseFilter = leaseFilter;
+      if (tenantStatus) body.tenantStatus = tenantStatus;
+      if (leaseStatus) body.leaseFilter = leaseStatus;
+      if (leaseType) body.leaseType = leaseType;
+      if (propertyFilter) body.propertyId = propertyFilter;
+      if (unitFilter) body.unitId = unitFilter;
 
       const res = await tenant.list(body, { page, limit: 20 });
       if (res.data.code === 200) {
@@ -139,72 +170,144 @@ export default function TenantsPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, leaseFilter]);
+  }, [search, tenantStatus, leaseStatus, leaseType, propertyFilter, unitFilter]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleEmail = (t) => {
-    router.push(`/contacts/email/send?to=${encodeURIComponent(t.email)}&name=${encodeURIComponent(t.first_name + ' ' + t.last_name)}`);
+    router.push(`/contacts/email/send?to=${encodeURIComponent(t.email || '')}&name=${encodeURIComponent(t.first_name + ' ' + t.last_name)}`);
   };
 
   const handleInvoice = (t) => {
     router.push(`/invoices/create?tenantId=${t.id}&tenantName=${encodeURIComponent(t.first_name + ' ' + t.last_name)}`);
   };
 
-  const handleRent = (t) => {
-    router.push(`/contacts/tenant/${t.id}/detail?tab=accounting&status=1`);
-  };
-
-  const handleLease = (t) => {
-    router.push(`/contacts/tenant/${t.id}/detail?tab=leases`);
+  const handleInvite = (t) => {
+    message.info('Invite feature coming soon');
   };
 
   const handleProfile = (t) => {
     router.push(`/contacts/tenant/${t.id}/detail`);
   };
 
-  return (
-    <MainLayout>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <Title level={4} style={{ margin: 0 }}>Tenants</Title>
-          <Text type="secondary">{pagination.total} tenant{pagination.total !== 1 ? 's' : ''} with lease history</Text>
-        </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/contacts/tenant/create')}>
-          Add Tenant
+  const handleEmailAll = () => {
+    message.info('Email All feature coming soon');
+  };
+
+  const resetFilters = () => {
+    setTenantStatus(null);
+    setLeaseStatus(null);
+    setLeaseType(null);
+    setPropertyFilter(null);
+    setUnitFilter(null);
+  };
+
+  // Get units for selected property
+  const selectedProp = propertiesWithUnits.find(p => p.id?.toString() === propertyFilter?.toString());
+  const unitOptions = selectedProp?.units || [];
+
+  // Filter popover content matching the original layout
+  const filterContent = (
+    <div style={{ width: 280, padding: 8 }}>
+      {/* Tenant Status */}
+      <div style={{ fontWeight: 600, marginBottom: 8 }}>Tenant Status</div>
+      <Radio.Group
+        value={tenantStatus}
+        onChange={(e) => setTenantStatus(e.target.value)}
+        style={{ marginBottom: 16 }}
+      >
+        <Radio value={null}>All</Radio>
+        <Radio value="active">Active</Radio>
+        <Radio value="inactive">Inactive</Radio>
+      </Radio.Group>
+
+      {/* Lease Status */}
+      <div style={{ fontWeight: 600, marginBottom: 8 }}>Lease Status</div>
+      <Radio.Group
+        value={leaseStatus}
+        onChange={(e) => setLeaseStatus(e.target.value)}
+        style={{ marginBottom: 16 }}
+      >
+        <Radio value={null}>All</Radio>
+        <Radio value="active">Active</Radio>
+        <Radio value="inactive">Inactive</Radio>
+      </Radio.Group>
+
+      {/* Lease Type */}
+      <div style={{ fontWeight: 600, marginBottom: 8 }}>Lease Type</div>
+      <Radio.Group
+        value={leaseType}
+        onChange={(e) => setLeaseType(e.target.value)}
+        style={{ marginBottom: 16 }}
+      >
+        <Radio value={null}>All</Radio>
+        <Radio value="fixed">Fixed</Radio>
+        <Radio value="month-to-month">Month-to-Month</Radio>
+      </Radio.Group>
+
+      {/* Property & Units */}
+      <div style={{ fontWeight: 600, marginBottom: 8 }}>Property & Units</div>
+      <Select
+        placeholder="All Property"
+        value={propertyFilter}
+        onChange={(v) => { setPropertyFilter(v); setUnitFilter(null); }}
+        allowClear
+        style={{ width: '100%', marginBottom: 16 }}
+        options={propertiesWithUnits.map(p => ({ value: p.id?.toString(), label: p.display_name }))}
+      />
+
+      {/* Buttons */}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button type="primary" size="small" danger onClick={() => { resetFilters(); }}>
+          Reset
+        </Button>
+        <Button size="small" onClick={() => setFilterVisible(false)}>
+          Close
         </Button>
       </div>
+    </div>
+  );
 
-      {/* Filters */}
-      <Card bodyStyle={{ padding: '12px 16px' }} style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+  return (
+    <MainLayout>
+      {/* Page title */}
+      <h1 style={{ marginBottom: 16 }}>Tenants</h1>
+
+      {/* Top bar: total, search, filter, email all, add tenant */}
+      <div style={{
+        background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: '12px 20px',
+        marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      }}>
+        <div style={{ fontWeight: 500, fontSize: 15 }}>
+          <span style={{ color: '#1890ff', fontSize: 18, fontWeight: 700, marginRight: 6 }}>{pagination.total}</span>
+          Total
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <Input
-            placeholder="Search by name, email, phone..."
-            prefix={<SearchOutlined />}
+            placeholder="Type here to search"
+            prefix={<SearchOutlined style={{ color: '#bbb' }} />}
+            style={{ width: 220 }}
+            allowClear
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onPressEnter={() => loadData(1)}
-            style={{ width: 300 }}
-            allowClear
           />
-          <Select
-            placeholder="Lease Status"
-            value={leaseFilter}
-            onChange={(v) => setLeaseFilter(v)}
-            allowClear
-            style={{ width: 160 }}
-            options={[
-              { value: 'active', label: 'Active Lease' },
-              { value: 'inactive', label: 'No Active Lease' },
-            ]}
-          />
-          <Button onClick={() => loadData(1)}>Search</Button>
+          <Popover content={filterContent} trigger="click" open={filterVisible} onOpenChange={setFilterVisible} placement="bottomRight">
+            <Badge count={filterCount} size="small" offset={[-4, 0]}>
+              <Button icon={<FilterOutlined />}>Filter</Button>
+            </Badge>
+          </Popover>
+          <Button icon={<MailOutlined />} onClick={handleEmailAll}>
+            Email All
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/contacts/tenant/create')}>
+            + Add Tenant
+          </Button>
         </div>
-      </Card>
+      </div>
 
       {/* Tenant list */}
-      <Card bodyStyle={{ padding: 0 }}>
+      <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8 }}>
         {loading ? (
           <div style={{ padding: 48, textAlign: 'center' }}><Spin size="large" /></div>
         ) : tenants.length === 0 ? (
@@ -212,13 +315,12 @@ export default function TenantsPage() {
         ) : (
           <>
             {tenants.map((t) => (
-              <TenantCard
+              <TenantRow
                 key={t.id}
                 data={t}
                 onEmail={() => handleEmail(t)}
                 onInvoice={() => handleInvoice(t)}
-                onRent={() => handleRent(t)}
-                onLease={() => handleLease(t)}
+                onInvite={() => handleInvite(t)}
                 onProfile={() => handleProfile(t)}
               />
             ))}
@@ -236,7 +338,7 @@ export default function TenantsPage() {
             )}
           </>
         )}
-      </Card>
+      </div>
     </MainLayout>
   );
 }

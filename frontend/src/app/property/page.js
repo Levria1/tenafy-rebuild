@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Button, Input, Tag, Badge, Spin, Empty, Popover, Radio, Space } from 'antd';
+import { Button, Input, Tag, Badge, Spin, Empty, Popover, Radio, Space, Pagination } from 'antd';
 import {
   PlusOutlined,
   SearchOutlined,
@@ -90,14 +90,14 @@ function PropertyCard({ prop, router }) {
         {/* Action icons */}
         <div style={{ display: 'flex', gap: 28 }}>
           <div
-            onClick={() => router.push(`/property/${prop.id}?tab=tenants`)}
+            onClick={() => router.push(`/contacts/tenants?propertyId=${prop.id}`)}
             style={{ textAlign: 'center', cursor: 'pointer', color: '#555' }}
           >
             <TeamOutlined style={{ fontSize: 22, display: 'block', marginBottom: 2 }} />
             <span style={{ fontSize: 11, fontWeight: 500 }}>TENANTS</span>
           </div>
           <div
-            onClick={() => router.push(`/property/${prop.id}?tab=accounting`)}
+            onClick={() => router.push(`/accounting?propertyId=${prop.id}`)}
             style={{ textAlign: 'center', cursor: 'pointer', color: '#555' }}
           >
             <DollarOutlined style={{ fontSize: 22, display: 'block', marginBottom: 2 }} />
@@ -244,8 +244,14 @@ export default function PropertyPage() {
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20, total: 0 });
   const [searchText, setSearchText] = useState('');
   const [filterVisible, setFilterVisible] = useState(false);
-  const [filterCount, setFilterCount] = useState(0);
-  const [statusFilter, setStatusFilter] = useState(null);
+
+  // Filters — property type: 1=residential, 2=commercial (matches original Java source)
+  const [propertyType, setPropertyType] = useState(null);     // null=all, 1=residential, 2=commercial
+  const [propertyStatus, setPropertyStatus] = useState(null);  // null=all (shows active by default on backend), 1=active, 0=inactive
+  const [unitStatus, setUnitStatus] = useState(null);          // null=all, 'vacant', 'occupied'
+
+  const filterCount = [propertyType, propertyStatus, unitStatus].filter(v => v !== null).length;
+
   const router = useRouter();
 
   const loadProperties = useCallback(async (page = 1) => {
@@ -253,7 +259,9 @@ export default function PropertyPage() {
       setLoading(true);
       const body = {};
       if (searchText) body.search = searchText;
-      if (statusFilter !== null) body.status = statusFilter;
+      if (propertyType !== null) body.propertyType = propertyType;
+      if (propertyStatus !== null) body.propertyStatus = propertyStatus;
+      if (unitStatus !== null) body.unitStatus = unitStatus;
       const response = await property.list(body, { page, limit: pagination.pageSize });
       if (response.data.code === 200) {
         setProperties(response.data.data.content || []);
@@ -268,35 +276,68 @@ export default function PropertyPage() {
     } finally {
       setLoading(false);
     }
-  }, [searchText, statusFilter, pagination.pageSize]);
+  }, [searchText, propertyType, propertyStatus, unitStatus, pagination.pageSize]);
 
-  useEffect(() => { loadProperties(1); }, [statusFilter]);
+  useEffect(() => { loadProperties(1); }, [propertyType, propertyStatus, unitStatus]);
 
   const handleSearch = (value) => {
     setSearchText(value);
     setTimeout(() => loadProperties(1), 0);
   };
 
-  // Filter popover content
+  const resetFilters = () => {
+    setPropertyType(null);
+    setPropertyStatus(null);
+    setUnitStatus(null);
+  };
+
+  // Filter popover content matching the original Tenafy layout
   const filterContent = (
-    <div style={{ width: 250, padding: 8 }}>
-      <div style={{ fontWeight: 600, marginBottom: 12 }}>Filter Properties</div>
-      <div style={{ marginBottom: 8, fontWeight: 500, fontSize: 13 }}>Status</div>
+    <div style={{ width: 280, padding: 8 }}>
+      {/* Property Type */}
+      <div style={{ fontWeight: 600, marginBottom: 8 }}>Property Type</div>
       <Radio.Group
-        value={statusFilter}
-        onChange={(e) => {
-          setStatusFilter(e.target.value);
-          setFilterCount(e.target.value !== null ? 1 : 0);
-        }}
-        style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+        value={propertyType}
+        onChange={(e) => setPropertyType(e.target.value)}
+        style={{ marginBottom: 16 }}
+      >
+        <Radio value={null}>All</Radio>
+        <Radio value={1}>Residential</Radio>
+        <Radio value={2}>Commercial</Radio>
+      </Radio.Group>
+
+      {/* Property Status */}
+      <div style={{ fontWeight: 600, marginBottom: 8 }}>Property Status</div>
+      <Radio.Group
+        value={propertyStatus}
+        onChange={(e) => setPropertyStatus(e.target.value)}
+        style={{ marginBottom: 16 }}
       >
         <Radio value={null}>All</Radio>
         <Radio value={1}>Active</Radio>
         <Radio value={0}>Inactive</Radio>
       </Radio.Group>
-      <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-        <Button size="small" onClick={() => { setStatusFilter(null); setFilterCount(0); }}>Reset</Button>
-        <Button size="small" type="primary" onClick={() => setFilterVisible(false)}>Close</Button>
+
+      {/* Unit Status */}
+      <div style={{ fontWeight: 600, marginBottom: 8 }}>Unit Status</div>
+      <Radio.Group
+        value={unitStatus}
+        onChange={(e) => setUnitStatus(e.target.value)}
+        style={{ marginBottom: 16 }}
+      >
+        <Radio value={null}>All</Radio>
+        <Radio value="vacant">Vacant</Radio>
+        <Radio value="occupied">Occupied</Radio>
+      </Radio.Group>
+
+      {/* Buttons */}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button type="primary" size="small" danger onClick={resetFilters}>
+          Reset
+        </Button>
+        <Button size="small" onClick={() => setFilterVisible(false)}>
+          Close
+        </Button>
       </div>
     </div>
   );
@@ -329,7 +370,7 @@ export default function PropertyPage() {
             </Badge>
           </Popover>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/property/create')}>
-            Add Property
+            + Add Property
           </Button>
         </div>
       </div>
@@ -345,24 +386,17 @@ export default function PropertyPage() {
             <PropertyCard key={prop.id} prop={prop} router={router} />
           ))}
 
-          {/* Simple pagination */}
+          {/* Pagination */}
           {pagination.total > pagination.pageSize && (
-            <div style={{ textAlign: 'center', marginTop: 16, display: 'flex', gap: 8, justifyContent: 'center' }}>
-              <Button
-                disabled={pagination.current <= 1}
-                onClick={() => loadProperties(pagination.current - 1)}
-              >
-                Previous
-              </Button>
-              <span style={{ lineHeight: '32px', color: '#666' }}>
-                Page {pagination.current} of {Math.ceil(pagination.total / pagination.pageSize)}
-              </span>
-              <Button
-                disabled={pagination.current >= Math.ceil(pagination.total / pagination.pageSize)}
-                onClick={() => loadProperties(pagination.current + 1)}
-              >
-                Next
-              </Button>
+            <div style={{ textAlign: 'center', marginTop: 16 }}>
+              <Pagination
+                current={pagination.current}
+                total={pagination.total}
+                pageSize={pagination.pageSize}
+                onChange={(page) => loadProperties(page)}
+                showTotal={(total) => `Total ${total} properties`}
+                showSizeChanger={false}
+              />
             </div>
           )}
         </>

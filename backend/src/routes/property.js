@@ -4,35 +4,71 @@ const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
 
 // POST /api/property/list - List properties with paging
+// Filters: search, propertyType (residential=0/commercial=1), propertyStatus (active=1/inactive=0), unitStatus (vacant/occupied)
 router.post('/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status } = req.body || {};
+    const { search, propertyType, propertyStatus, unitStatus } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    let whereClause = 'org_id = ? AND status = 1';
+    let whereClause = 'p.org_id = ? AND p.deleted_at IS NULL';
     const params = [orgId];
 
+    // Property Status filter (default show active only if not specified)
+    if (propertyStatus !== undefined && propertyStatus !== null) {
+      whereClause += ' AND p.status = ?';
+      params.push(propertyStatus);
+    } else {
+      whereClause += ' AND p.status = 1';
+    }
+
     if (search) {
-      whereClause += ' AND (display_name LIKE ? OR street_address LIKE ?)';
+      whereClause += ' AND (p.display_name LIKE ? OR p.street_address LIKE ?)';
       params.push('%' + search + '%', '%' + search + '%');
     }
-    if (status !== undefined && status !== null) {
-      whereClause += ' AND status = ?';
-      params.push(status);
+
+    // Property Type: 0 = residential, 1 = commercial
+    if (propertyType !== undefined && propertyType !== null) {
+      whereClause += ' AND p.type = ?';
+      params.push(propertyType);
+    }
+
+    // Unit Status filter: filter properties that have at least one vacant/occupied unit
+    let havingClause = '';
+    if (unitStatus === 'vacant') {
+      havingClause = ' HAVING (total_units - occupied_units) > 0';
+    } else if (unitStatus === 'occupied') {
+      havingClause = ' HAVING occupied_units > 0';
     }
 
     const [properties] = await pool.execute(
-      'SELECT p.*, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units FROM property p WHERE ' + whereClause + ' ORDER BY p.display_name LIMIT ' + limit + ' OFFSET ' + offset,
+      `SELECT p.*,
+              (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units,
+              (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units
+       FROM property p
+       WHERE ${whereClause}
+       ${havingClause}
+       ORDER BY p.display_name
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
-    const [[{ total }]] = await pool.execute(
-      'SELECT COUNT(*) as total FROM property WHERE ' + whereClause,
-      params
-    );
+    // For count, we need a subquery approach if using HAVING
+    let countQuery;
+    if (havingClause) {
+      countQuery = `SELECT COUNT(*) as total FROM (
+        SELECT p.id,
+               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units,
+               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units
+        FROM property p WHERE ${whereClause} ${havingClause}
+      ) sub`;
+    } else {
+      countQuery = `SELECT COUNT(*) as total FROM property p WHERE ${whereClause}`;
+    }
+
+    const [[{ total }]] = await pool.execute(countQuery, params);
 
     res.json({ code: 200, data: { content: properties, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page } });
   } catch (error) {
@@ -394,7 +430,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const [properties] = await pool.execute(
-      'SELECT p.*, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units FROM property p WHERE p.id = ? AND p.org_id = ? AND p.status = 1',
+      'SELECT p.*, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units FROM property p WHERE p.id = ? AND p.org_id = ?',
       [id, orgId]
     );
     if (properties.length === 0) {
