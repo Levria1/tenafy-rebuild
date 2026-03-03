@@ -853,7 +853,8 @@ router.post('/unit/:unit_id/service-costs', authenticate, async (req, res) => {
 
     const [rows] = await pool.execute(
       `SELECT a.id, a.payment_date, a.note, a.type,
-              al.description, al.amount AS line_amount, al.type AS line_type,
+              al.amount AS line_amount, a.type AS line_type,
+              al.invoice_code,
               t.first_name AS tenant_first, t.last_name AS tenant_last,
               p.display_name AS property_name, u.name AS unit_name,
               acc.name AS account_name, cat.name AS category_name
@@ -862,8 +863,8 @@ router.post('/unit/:unit_id/service-costs', authenticate, async (req, res) => {
        LEFT JOIN tenant t ON a.tenant_id = t.id
        LEFT JOIN unit u ON al.unit_id = u.id
        LEFT JOIN property p ON al.property_id = p.id
-       LEFT JOIN account_setting acc ON a.account_id = acc.id
-       LEFT JOIN category_setting cat ON al.category_id = cat.id
+       LEFT JOIN account_setting acc ON a.account_setting_id = acc.id
+       LEFT JOIN category_setting cat ON al.category = cat.id
        WHERE ${whereClause}
        ORDER BY a.payment_date DESC
        LIMIT ${limit} OFFSET ${offset}`,
@@ -875,11 +876,11 @@ router.post('/unit/:unit_id/service-costs', authenticate, async (req, res) => {
       params
     );
 
-    // Inflow/outflow summary
+    // Inflow/outflow summary — type is on accounting table (0=outflow, 1=inflow)
     const [[summary]] = await pool.execute(
       `SELECT
-        COALESCE(SUM(CASE WHEN al.type = 1 THEN al.amount ELSE 0 END), 0) AS inflow,
-        COALESCE(SUM(CASE WHEN al.type = 0 THEN al.amount ELSE 0 END), 0) AS outflow
+        COALESCE(SUM(CASE WHEN a.type = 1 THEN al.amount ELSE 0 END), 0) AS inflow,
+        COALESCE(SUM(CASE WHEN a.type = 0 THEN al.amount ELSE 0 END), 0) AS outflow
        FROM accounting_line al
        JOIN accounting a ON a.id = al.accounting_id
        WHERE al.unit_id = ? AND a.org_id = ? AND a.deleted_at IS NULL`,

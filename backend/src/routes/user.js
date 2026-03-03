@@ -110,6 +110,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     );
 
     // --- Overdue Payments (owner payments - accounting outflows overdue) ---
+    // type is on `accounting` table (0=outflow, 1=inflow), not on accounting_line
     const [overduePayments] = await pool.execute(
       `SELECT a.id, p.display_name AS property, a.payment_date AS due_date,
               al.amount AS outstanding,
@@ -117,7 +118,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        FROM accounting a
        JOIN accounting_line al ON al.accounting_id = a.id
        LEFT JOIN property p ON al.property_id = p.id
-       WHERE a.org_id = ? AND a.deleted_at IS NULL AND al.type = 0
+       WHERE a.org_id = ? AND a.deleted_at IS NULL AND a.type = 0
          AND a.payment_date < CURDATE()
        ORDER BY days_late DESC
        LIMIT 20`,
@@ -127,7 +128,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
       `SELECT COALESCE(SUM(al.amount), 0) AS overduePaymentTotal
        FROM accounting a
        JOIN accounting_line al ON al.accounting_id = a.id
-       WHERE a.org_id = ? AND a.deleted_at IS NULL AND al.type = 0
+       WHERE a.org_id = ? AND a.deleted_at IS NULL AND a.type = 0
          AND a.payment_date < CURDATE()`,
       [orgId]
     );
