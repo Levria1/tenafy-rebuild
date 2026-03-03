@@ -47,7 +47,13 @@ const menuItems = [
   {
     key: '/contacts',
     icon: <TeamOutlined />,
-    label: <Link href="/contacts">Contacts</Link>,
+    label: 'Contacts',
+    children: [
+      { key: '/contacts/tenants', label: <Link href="/contacts/tenants">Tenants</Link> },
+      { key: '/contacts/groups', label: <Link href="/contacts/groups">Groups</Link> },
+      { key: '/contacts/payees', label: <Link href="/contacts/payees">Payees</Link> },
+      { key: '/contacts/service-vendors', label: <Link href="/contacts/service-vendors">Service Vendors</Link> },
+    ],
   },
   {
     key: '/leasing',
@@ -347,6 +353,13 @@ export default function MainLayout({ children }) {
     }
     if (pathname.startsWith('/settings') && tab) {
       return [`/settings?tab=${tab}`];
+    }
+    // Contacts sub-routes
+    if (pathname.startsWith('/contacts')) {
+      if (pathname.includes('/service-vendor')) return ['/contacts/service-vendors'];
+      if (pathname.includes('/payee')) return ['/contacts/payees'];
+      if (pathname.includes('/group') || pathname.includes('/email')) return ['/contacts/groups'];
+      return ['/contacts/tenants']; // tenant detail pages, create, etc.
     }
     return [pathname];
   };

@@ -4,36 +4,67 @@ const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
 
 // POST /api/tenant/contacts - List tenants with paging
+// Only returns tenants who have had at least one lease
+// Includes has_active_lease flag and current unit/property info
 router.post('/contacts', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status } = req.body || {};
+    const { search, leaseFilter } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    let whereClause = 'org_id = ?';
+    let whereClause = 't.org_id = ?';
     const params = [orgId];
 
     if (search) {
-      whereClause += ' AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ?)';
+      whereClause += ' AND (t.first_name LIKE ? OR t.last_name LIKE ? OR t.email LIKE ? OR t.phone LIKE ?)';
       const searchParam = '%' + search + '%';
       params.push(searchParam, searchParam, searchParam, searchParam);
     }
-    if (status !== undefined && status !== null) {
-      whereClause += ' AND status = ?';
-      params.push(status);
+
+    // Filter: 'active' = has active lease, 'inactive' = no active lease, undefined = all with any lease history
+    if (leaseFilter === 'active') {
+      whereClause += ' AND al.id IS NOT NULL';
+    } else if (leaseFilter === 'inactive') {
+      whereClause += ' AND al.id IS NULL';
     }
 
-    const [tenants] = await pool.execute(
-      'SELECT * FROM tenant WHERE ' + whereClause + ' ORDER BY first_name, last_name LIMIT ' + limit + ' OFFSET ' + offset,
-      params
-    );
+    const query = `
+      SELECT t.*,
+             CASE WHEN al.id IS NOT NULL THEN 1 ELSE 0 END AS has_active_lease,
+             al.id AS active_lease_id,
+             al.amount AS rent_amount,
+             al.start_date AS lease_start,
+             al.end_date AS lease_end,
+             u.name AS unit_name,
+             p.display_name AS property_name,
+             COALESCE(inv.outstanding, 0) AS outstanding_amount
+      FROM tenant t
+      INNER JOIN (SELECT DISTINCT tenant_id FROM leasing WHERE deleted_at IS NULL) lease_history ON lease_history.tenant_id = t.id
+      LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL
+      LEFT JOIN unit u ON al.unit_id = u.id
+      LEFT JOIN property p ON u.property_id = p.id
+      LEFT JOIN (
+        SELECT tenant_id, SUM(amount) AS outstanding
+        FROM invoice WHERE org_id = ? AND status = 0
+        GROUP BY tenant_id
+      ) inv ON inv.tenant_id = t.id
+      WHERE ${whereClause}
+      ORDER BY t.first_name, t.last_name
+      LIMIT ${limit} OFFSET ${offset}
+    `;
 
-    const [[{ total }]] = await pool.execute(
-      'SELECT COUNT(*) as total FROM tenant WHERE ' + whereClause,
-      params
-    );
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM tenant t
+      INNER JOIN (SELECT DISTINCT tenant_id FROM leasing WHERE deleted_at IS NULL) lease_history ON lease_history.tenant_id = t.id
+      LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL
+      WHERE ${whereClause}
+    `;
+
+    const [tenants] = await pool.execute(query, [orgId, ...params]);
+    const [[{ total }]] = await pool.execute(countQuery, params);
 
     res.json({ code: 200, data: { content: tenants, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page } });
   } catch (error) {
