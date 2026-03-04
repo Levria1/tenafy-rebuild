@@ -50,6 +50,7 @@ export default function LeasingEditPage() {
           end_date: data.end_date ? { _d: new Date(data.end_date) } : null,
           move_in_date: data.move_in_date ? { _d: new Date(data.move_in_date) } : null,
           move_out_date: data.move_out_date ? { _d: new Date(data.move_out_date) } : null,
+          additionalTenantIds: (data.additional_tenants || []).map(t => t.id),
         });
         if (data.property_id) {
           const prop = properties.find(p => p.id === data.property_id);
@@ -83,6 +84,7 @@ export default function LeasingEditPage() {
         end_date: values.end_date?.format('YYYY-MM-DD'),
         move_in_date: values.move_in_date?.format('YYYY-MM-DD'),
         move_out_date: values.move_out_date?.format('YYYY-MM-DD'),
+        additionalTenantIds: values.additionalTenantIds || [],
       };
       await leasing.update(leaseId, data);
       message.success('Lease updated successfully');
@@ -112,9 +114,19 @@ export default function LeasingEditPage() {
             />
           </Form.Item>
           <Form.Item name="tenant_id" label="Tenant" rules={[{ required: true }]}>
-            <Select 
+            <Select
               placeholder="Select Tenant"
               options={tenants.map(t => ({ label: `${t.first_name} ${t.last_name}`, value: t.id }))}
+            />
+          </Form.Item>
+          <Form.Item name="additionalTenantIds" label="Additional Tenants">
+            <Select
+              mode="multiple"
+              placeholder="Select additional tenants (optional)"
+              showSearch
+              optionFilterProp="label"
+              allowClear
+              options={tenants.map(t => ({ label: [t.first_name, t.last_name].filter(Boolean).join(' '), value: t.id }))}
             />
           </Form.Item>
           <Form.Item name="start_date" label="Start Date" rules={[{ required: true }]}>

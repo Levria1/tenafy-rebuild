@@ -99,7 +99,20 @@ router.get('/:id', authenticate, async (req, res) => {
     if (leases.length === 0) {
       return res.status(404).json({ code: 404, message: 'Lease not found' });
     }
-    res.json({ code: 200, data: leases[0] });
+    const lease = leases[0];
+
+    // Fetch additional tenants
+    const [additionalTenants] = await pool.execute(
+      `SELECT t.id, t.first_name, t.last_name, t.company_name, t.type,
+        CASE t.type WHEN 1 THEN t.company_name ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) END as display_name
+       FROM leasing_additional_tenant lat
+       LEFT JOIN tenant t ON t.id = lat.tenant_id
+       WHERE lat.leasing_id = ?`,
+      [id]
+    );
+    lease.additional_tenants = additionalTenants;
+
+    res.json({ code: 200, data: lease });
   } catch (error) {
     console.error('Get lease error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get lease' });
@@ -155,6 +168,7 @@ router.post('/', authenticate, async (req, res) => {
       price, deposit, due_date, invoicing, amount, first_invoice_date,
       contract_type, unit_information, note, credits,
       contact_phone, lease_no,
+      additionalTenantIds,
       // notification flags
       tenant_posted, landlord_posted, landlord_due, tenant_due,
       landlord_overdue, tenant_overdue, landlord_expired, landlord_expired_days,
@@ -309,6 +323,16 @@ router.post('/', authenticate, async (req, res) => {
       );
     }
 
+    // Insert additional tenants
+    if (Array.isArray(additionalTenantIds) && additionalTenantIds.length > 0) {
+      for (const atId of additionalTenantIds) {
+        await pool.execute(
+          'INSERT IGNORE INTO leasing_additional_tenant (leasing_id, tenant_id) VALUES (?, ?)',
+          [leaseId.toString(), atId]
+        );
+      }
+    }
+
     res.json({ code: 200, message: 'Lease created', data: { id: leaseId.toString(), lease_no: leaseNo } });
   } catch (error) {
     console.error('Create lease error:', error);
@@ -320,12 +344,24 @@ router.post('/', authenticate, async (req, res) => {
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { start_date, end_date, rent_amount, deposit_amount, invoice_schedule, status } = req.body;
-    
+    const { start_date, end_date, rent_amount, deposit_amount, invoice_schedule, status, additionalTenantIds } = req.body;
+
     await pool.execute(
       'UPDATE leasing SET start_date = ?, end_date = ?, amount = ?, deposit = ?, invoicing = ?, status = ?, updated_at = NOW() WHERE id = ?',
       [start_date, end_date, rent_amount, deposit_amount, invoice_schedule, status, id]
     );
+
+    // Replace additional tenants
+    if (Array.isArray(additionalTenantIds)) {
+      await pool.execute('DELETE FROM leasing_additional_tenant WHERE leasing_id = ?', [id]);
+      for (const atId of additionalTenantIds) {
+        await pool.execute(
+          'INSERT IGNORE INTO leasing_additional_tenant (leasing_id, tenant_id) VALUES (?, ?)',
+          [id, atId]
+        );
+      }
+    }
+
     res.json({ code: 200, message: 'Lease updated' });
   } catch (error) {
     console.error('Update lease error:', error);
@@ -341,6 +377,7 @@ router.delete('/:id', authenticate, async (req, res) => {
     if (leases.length > 0) {
       await pool.execute('UPDATE unit SET status = 0 WHERE id = ?', [leases[0].unit_id]);
     }
+    await pool.execute('DELETE FROM leasing_additional_tenant WHERE leasing_id = ?', [id]);
     await pool.execute('UPDATE leasing SET deleted_at = NOW() WHERE id = ?', [id]);
     res.json({ code: 200, message: 'Lease deleted' });
   } catch (error) {

@@ -335,10 +335,9 @@ router.get('/:id/leases', authenticate, async (req, res) => {
       [id]
     );
 
-    // For each active lease, calculate next_invoice_date
+    // For each lease, calculate next_invoice_date and fetch additional tenants
     for (const lease of leases) {
       if (lease.status === 1 && lease.invoicing) {
-        // Find the most recent invoice for this lease
         const [[lastInv]] = await pool.execute(
           'SELECT due_on FROM invoice WHERE leasing_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
           [lease.id]
@@ -347,6 +346,16 @@ router.get('/:id/leases', authenticate, async (req, res) => {
       } else {
         lease.next_invoice_date = null;
       }
+
+      const [additionalTenants] = await pool.execute(
+        `SELECT t.id, t.first_name, t.last_name, t.company_name, t.type,
+          CASE t.type WHEN 1 THEN t.company_name ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) END as display_name
+         FROM leasing_additional_tenant lat
+         LEFT JOIN tenant t ON t.id = lat.tenant_id
+         WHERE lat.leasing_id = ?`,
+        [lease.id]
+      );
+      lease.additional_tenants = additionalTenants;
     }
 
     res.json({ code: 200, data: leases });

@@ -52,7 +52,12 @@ export default function LeasingDetailPage() {
           <Descriptions.Item label="Lease ID">{lease?.id}</Descriptions.Item>
           <Descriptions.Item label="Property">{lease?.property_name}</Descriptions.Item>
           <Descriptions.Item label="Unit">{lease?.unit_number}</Descriptions.Item>
-          <Descriptions.Item label="Tenant">{lease?.tenant_name}</Descriptions.Item>
+          <Descriptions.Item label="Primary Tenant">{[lease?.tenant_first_name, lease?.tenant_last_name].filter(Boolean).join(' ')}</Descriptions.Item>
+          <Descriptions.Item label="Additional Tenants">
+            {lease?.additional_tenants?.length > 0
+              ? lease.additional_tenants.map(t => t.display_name?.trim()).join(', ')
+              : '—'}
+          </Descriptions.Item>
           <Descriptions.Item label="Start Date">{lease?.start_date}</Descriptions.Item>
           <Descriptions.Item label="End Date">{lease?.end_date}</Descriptions.Item>
           <Descriptions.Item label="Monthly Rent">${lease?.monthly_rent?.toLocaleString()}</Descriptions.Item>

@@ -209,6 +209,7 @@ export default function LeaseCreatePage() {
     return {
       unit_id: values.unit_id,
       tenant_id: values.tenant_id,
+      additionalTenantIds: values.additionalTenantIds || [],
       start_date: values.start_date?.format('YYYY-MM-DD'),
       end_date: values.end_date?.format('YYYY-MM-DD') || null,
       type: values.type ?? 0,
@@ -411,6 +412,26 @@ export default function LeaseCreatePage() {
           <Col span={12}>
             <Form.Item name="contact_phone" label="Contact Phone">
               <Input placeholder="Phone number" />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={16}>
+          <Col span={24}>
+            <Form.Item name="additionalTenantIds" label="Additional Tenants">
+              <Select
+                mode="multiple"
+                placeholder="Select additional tenants (optional)"
+                showSearch
+                optionFilterProp="children"
+                loading={loadingData}
+                allowClear
+              >
+                {tenants.map(t => (
+                  <Select.Option key={t.id} value={t.id}>
+                    {[t.first_name, t.last_name].filter(Boolean).join(' ')} {t.email ? `(${t.email})` : ''}
+                  </Select.Option>
+                ))}
+              </Select>
             </Form.Item>
           </Col>
         </Row>

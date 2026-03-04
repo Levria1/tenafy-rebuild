@@ -263,7 +263,14 @@ export default function TenantDetailPage() {
               <FieldValue label="Rent" value={lease.amount ? fmt(lease.amount) : '—'} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0 24px' }}>
-              <FieldValue label="Additional Tenant" value="—" />
+              <FieldValue
+                label="Additional Tenants"
+                value={
+                  lease.additional_tenants?.length > 0
+                    ? lease.additional_tenants.map(t => t.display_name?.trim()).join(', ')
+                    : '—'
+                }
+              />
             </div>
           </div>
         ))}
