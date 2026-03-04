@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Card, Form, Input, Button, Select, DatePicker, InputNumber, message,
+  Card, Form, Input, Button, Select, DatePicker, InputNumber, message, Modal,
   Row, Col, Steps, Switch, Upload, Divider, Alert, Spin, Checkbox, Space
 } from 'antd';
 import {
@@ -204,50 +204,51 @@ export default function LeaseCreatePage() {
     setCurrentStep(prev => prev - 1);
   };
 
-  const onSubmit = async () => {
+  const buildPayload = () => {
+    const values = form.getFieldsValue(true);
+    return {
+      unit_id: values.unit_id,
+      tenant_id: values.tenant_id,
+      start_date: values.start_date?.format('YYYY-MM-DD'),
+      end_date: values.end_date?.format('YYYY-MM-DD') || null,
+      type: values.type ?? 0,
+      price: values.price || 0,
+      deposit: values.deposit || 0,
+      due_date: values.due_date || null,
+      invoicing: values.invoicing || null,
+      amount: values.amount || values.price || 0,
+      first_invoice_date: values.first_invoice_date?.format('YYYY-MM-DD') || null,
+      contract_type: values.contract_type ?? 0,
+      unit_information: values.unit_information || null,
+      note: values.note || null,
+      credits: values.credits || null,
+      contact_phone: values.contact_phone || null,
+      // notifications
+      tenant_posted: values.tenant_posted || false,
+      landlord_posted: values.landlord_posted || false,
+      landlord_due: values.landlord_due || false,
+      tenant_due: values.tenant_due || false,
+      landlord_overdue: values.landlord_overdue || false,
+      tenant_overdue: values.tenant_overdue || false,
+      landlord_expired: values.landlord_expired || false,
+      landlord_expired_days: values.landlord_expired_days || 0,
+      tenant_checkin: values.tenant_checkin || false,
+      tenant_checkout: values.tenant_checkout || false,
+      tenant_renewal: values.tenant_renewal || false,
+      tenant_renewal_days: values.tenant_renewal_days || 0,
+      tenant_deposit_posted: values.tenant_deposit_posted || false,
+      // email
+      email_template_id: values.email_template_id || null,
+      access_setting: values.access_setting || null,
+      share_lease: values.share_lease || false,
+      all_past: values.all_past || false,
+      mark_past_paid: values.mark_past_paid || false,
+    };
+  };
+
+  const submitLease = async (payload) => {
     try {
       setLoading(true);
-      const values = form.getFieldsValue(true);
-
-      const payload = {
-        unit_id: values.unit_id,
-        tenant_id: values.tenant_id,
-        start_date: values.start_date?.format('YYYY-MM-DD'),
-        end_date: values.end_date?.format('YYYY-MM-DD') || null,
-        type: values.type ?? 0,
-        price: values.price || 0,
-        deposit: values.deposit || 0,
-        due_date: values.due_date || null,
-        invoicing: values.invoicing || null,
-        amount: values.amount || values.price || 0,
-        first_invoice_date: values.first_invoice_date?.format('YYYY-MM-DD') || null,
-        contract_type: values.contract_type ?? 0,
-        unit_information: values.unit_information || null,
-        note: values.note || null,
-        credits: values.credits || null,
-        contact_phone: values.contact_phone || null,
-        // notifications
-        tenant_posted: values.tenant_posted || false,
-        landlord_posted: values.landlord_posted || false,
-        landlord_due: values.landlord_due || false,
-        tenant_due: values.tenant_due || false,
-        landlord_overdue: values.landlord_overdue || false,
-        tenant_overdue: values.tenant_overdue || false,
-        landlord_expired: values.landlord_expired || false,
-        landlord_expired_days: values.landlord_expired_days || 0,
-        tenant_checkin: values.tenant_checkin || false,
-        tenant_checkout: values.tenant_checkout || false,
-        tenant_renewal: values.tenant_renewal || false,
-        tenant_renewal_days: values.tenant_renewal_days || 0,
-        tenant_deposit_posted: values.tenant_deposit_posted || false,
-        // email
-        email_template_id: values.email_template_id || null,
-        access_setting: values.access_setting || null,
-        share_lease: values.share_lease || false,
-        all_past: values.all_past || false,
-        mark_past_paid: values.mark_past_paid || false,
-      };
-
       const response = await leasing.create(payload);
       if (response.data.code === 200) {
         message.success('Lease created successfully');
@@ -259,6 +260,23 @@ export default function LeaseCreatePage() {
       message.error(error.response?.data?.message || 'Failed to create lease');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const onSubmit = async () => {
+    const payload = buildPayload();
+
+    // If no security deposit, confirm with user before proceeding
+    if (!payload.deposit || parseFloat(payload.deposit) <= 0) {
+      Modal.confirm({
+        title: 'No Security Deposit',
+        content: 'Are you sure you want to proceed with creating this lease? There is no security deposit.',
+        okText: 'Yes, Create Lease',
+        cancelText: 'Cancel',
+        onOk: () => submitLease(payload),
+      });
+    } else {
+      await submitLease(payload);
     }
   };
 

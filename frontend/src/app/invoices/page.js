@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Table, Button, Space, Tag, Input, Select, DatePicker, Drawer, Descriptions, Divider, Spin, Popover, Radio, message } from 'antd';
 import { PlusOutlined, FilterOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
@@ -14,9 +14,10 @@ const { RangePicker } = DatePicker;
 export default function InvoicesPage() {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
   const [search, setSearch] = useState('');
-  const [dateRange, setDateRange] = useState(null);
+  const [dateRange, setDateRange] = useState(() => [dayjs().subtract(3, 'month'), dayjs()]);
+  const [activeDateFilter, setActiveDateFilter] = useState('3M');
   const [summary, setSummary] = useState({ outstanding_outflow: 0, outstanding_inflow: 0, paid: 0 });
   const router = useRouter();
 
@@ -85,17 +86,14 @@ export default function InvoicesPage() {
 
   // Quick date filters
   const handleQuickDateFilter = (period) => {
+    setActiveDateFilter(period);
+    setPagination(p => ({ ...p, current: 1 }));
     const now = dayjs();
     switch (period) {
       case 'ALL': setDateRange(null); break;
       case '1M': setDateRange([now.subtract(1, 'month'), now]); break;
       case 'LAST_M': setDateRange([now.subtract(1, 'month').startOf('month'), now.subtract(1, 'month').endOf('month')]); break;
       case '3M': setDateRange([now.subtract(3, 'month'), now]); break;
-      case 'LAST_Q': {
-        const q = now.subtract(1, 'quarter');
-        setDateRange([q.startOf('quarter'), q.endOf('quarter')]);
-        break;
-      }
       case '1Y': setDateRange([now.subtract(1, 'year'), now]); break;
       case 'LAST_Y': setDateRange([now.subtract(1, 'year').startOf('year'), now.subtract(1, 'year').endOf('year')]); break;
     }
@@ -103,7 +101,7 @@ export default function InvoicesPage() {
 
   const quickDateButtons = [
     { label: 'ALL', key: 'ALL' }, { label: '1M', key: '1M' }, { label: 'LAST M', key: 'LAST_M' },
-    { label: '3M', key: '3M' }, { label: 'LAST Q', key: 'LAST_Q' }, { label: '1Y', key: '1Y' }, { label: 'LAST Y', key: 'LAST_Y' },
+    { label: '3M', key: '3M' }, { label: '1Y', key: '1Y' }, { label: 'LAST Y', key: 'LAST_Y' },
   ];
 
   // Filter
@@ -206,8 +204,8 @@ export default function InvoicesPage() {
 
       <Divider style={{ margin: '12px 0' }} />
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <Button size="small" type="primary" onClick={resetFilters}>Reset</Button>
-        <Button size="small" onClick={() => setFilterOpen(false)}>Close</Button>
+        <Button size="small" onClick={resetFilters}>Clear All</Button>
+        <Button size="small" type="primary" onClick={applyFilters}>Apply Filters</Button>
       </div>
     </div>
   );
@@ -344,7 +342,7 @@ export default function InvoicesPage() {
           />
           <RangePicker
             value={dateRange}
-            onChange={setDateRange}
+            onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
             placeholder={['Start date', 'End date']}
           />
           <Popover content={filterContent} title="Filters" trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
@@ -359,7 +357,11 @@ export default function InvoicesPage() {
       {/* Quick date filters */}
       <div style={{ marginBottom: 16, display: 'flex', gap: 12 }}>
         {quickDateButtons.map(b => (
-          <a key={b.key} onClick={() => handleQuickDateFilter(b.key)} style={{ cursor: 'pointer', fontSize: 12, color: '#1890ff' }}>
+          <a key={b.key} onClick={() => handleQuickDateFilter(b.key)} style={{
+            cursor: 'pointer', fontSize: 12, color: '#1890ff',
+            fontWeight: activeDateFilter === b.key ? 'bold' : 'normal',
+            textDecoration: activeDateFilter === b.key ? 'underline' : 'none',
+          }}>
             {b.label}
           </a>
         ))}
@@ -388,11 +390,12 @@ export default function InvoicesPage() {
         rowKey="id"
         loading={loading}
         scroll={{ x: 1400 }}
+        onChange={(pag) => setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }))}
         pagination={{
           ...pagination,
           showSizeChanger: true,
+          pageSizeOptions: ['20', '50', '100'],
           showTotal: (total) => `${total} items`,
-          onChange: (page, pageSize) => setPagination(p => ({ ...p, current: page, pageSize })),
         }}
       />
 

@@ -244,14 +244,111 @@ router.delete('/:id', authenticate, async (req, res) => {
   }
 });
 
+// Helper: calculate next invoice date from last due date + invoicing schedule
+function calcNextInvoiceDate(lastDueOn, lease) {
+  if (!lease.invoicing || !lease.amount || lease.status !== 1) return null;
+
+  const inv = String(lease.invoicing).toLowerCase();
+  const base = lastDueOn ? new Date(lastDueOn)
+    : lease.first_invoice_date ? new Date(lease.first_invoice_date)
+    : null;
+  if (!base) return null;
+
+  let next = new Date(base);
+
+  // Map numeric or string schedule to month/day increments
+  if (inv === '1' || inv === 'daily') {
+    next.setDate(next.getDate() + 1);
+  } else if (inv === '7' || inv === 'weekly') {
+    next.setDate(next.getDate() + 7);
+  } else if (inv === '14' || inv === 'bi-weekly') {
+    next.setDate(next.getDate() + 14);
+  } else if (inv === '28') {
+    next.setDate(next.getDate() + 28);
+  } else if (inv === '30' || inv === 'monthly') {
+    next.setMonth(next.getMonth() + 1);
+    // Adjust to the lease's due_date (day of month) if set
+    if (lease.due_date) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(lease.due_date), maxDay));
+    }
+  } else if (inv === '60' || inv === 'bi-monthly') {
+    next.setMonth(next.getMonth() + 2);
+    if (lease.due_date) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(lease.due_date), maxDay));
+    }
+  } else if (inv === '90' || inv === 'quarterly') {
+    next.setMonth(next.getMonth() + 3);
+    if (lease.due_date) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(lease.due_date), maxDay));
+    }
+  } else if (inv === '180' || inv === 'bi-annually') {
+    next.setMonth(next.getMonth() + 6);
+  } else if (inv === '365' || inv === 'annually') {
+    next.setFullYear(next.getFullYear() + 1);
+  } else {
+    // Default: treat as monthly
+    next.setMonth(next.getMonth() + 1);
+  }
+
+  // If calculated date is still in the past, keep advancing
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  let safety = 0;
+  while (next < now && safety < 500) {
+    const prev = new Date(next);
+    // Re-apply the same increment
+    if (inv === '1' || inv === 'daily') { next.setDate(next.getDate() + 1); }
+    else if (inv === '7' || inv === 'weekly') { next.setDate(next.getDate() + 7); }
+    else if (inv === '14' || inv === 'bi-weekly') { next.setDate(next.getDate() + 14); }
+    else if (inv === '28') { next.setDate(next.getDate() + 28); }
+    else if (inv === '30' || inv === 'monthly') {
+      next.setMonth(next.getMonth() + 1);
+      if (lease.due_date) {
+        const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+        next.setDate(Math.min(Number(lease.due_date), maxDay));
+      }
+    }
+    else if (inv === '60' || inv === 'bi-monthly') { next.setMonth(next.getMonth() + 2); }
+    else if (inv === '90' || inv === 'quarterly') { next.setMonth(next.getMonth() + 3); }
+    else if (inv === '180' || inv === 'bi-annually') { next.setMonth(next.getMonth() + 6); }
+    else if (inv === '365' || inv === 'annually') { next.setFullYear(next.getFullYear() + 1); }
+    else { next.setMonth(next.getMonth() + 1); }
+    safety++;
+    if (next.getTime() === prev.getTime()) break; // prevent infinite loop
+  }
+
+  // Don't return a date past the lease end
+  if (lease.end_date && next > new Date(lease.end_date)) return null;
+
+  return next.toISOString().split('T')[0];
+}
+
 // GET /api/tenant/:id/leases - Get tenant leases
 router.get('/:id/leases', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const [leases] = await pool.execute(
-      'SELECT l.*, u.name as unit_name, p.display_name as property_name FROM leasing l LEFT JOIN unit u ON l.unit_id = u.id LEFT JOIN property p ON u.property_id = p.id WHERE l.tenant_id = ? AND l.deleted_at IS NULL ORDER BY l.start_date DESC',
+      'SELECT l.*, u.name as unit_name, u.type as unit_type, p.id as property_id, p.display_name as property_name, p.street_address as property_address FROM leasing l LEFT JOIN unit u ON l.unit_id = u.id LEFT JOIN property p ON u.property_id = p.id WHERE l.tenant_id = ? AND l.deleted_at IS NULL ORDER BY l.start_date DESC',
       [id]
     );
+
+    // For each active lease, calculate next_invoice_date
+    for (const lease of leases) {
+      if (lease.status === 1 && lease.invoicing) {
+        // Find the most recent invoice for this lease
+        const [[lastInv]] = await pool.execute(
+          'SELECT due_on FROM invoice WHERE leasing_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
+          [lease.id]
+        );
+        lease.next_invoice_date = calcNextInvoiceDate(lastInv?.due_on, lease);
+      } else {
+        lease.next_invoice_date = null;
+      }
+    }
+
     res.json({ code: 200, data: leases });
   } catch (error) {
     console.error('Get tenant leases error:', error);
@@ -287,7 +384,7 @@ router.get('/:id/profile/sum', authenticate, async (req, res) => {
       `SELECT
          COALESCE(SUM(CASE WHEN status = 0 THEN amount ELSE 0 END), 0) as outstanding,
          COALESCE(SUM(CASE WHEN status = 1 THEN amount ELSE 0 END), 0) as paid
-       FROM invoice WHERE org_id = ? AND tenant_id = ?`,
+       FROM invoice WHERE org_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
       [orgId, id]
     );
 
@@ -296,7 +393,29 @@ router.get('/:id/profile/sum', authenticate, async (req, res) => {
       [id]
     );
 
-    res.json({ code: 200, data: { ...invoiceSums, activeLeases: leaseCount.total } });
+    // Deposit total: sum of invoices with a deposit category
+    const [[depositSum]] = await pool.execute(
+      `SELECT COALESCE(SUM(i.amount), 0) as deposits
+       FROM invoice i
+       JOIN category_setting cs ON i.category = cs.id
+       WHERE i.org_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL
+         AND cs.name LIKE '%Deposit%' AND cs.name NOT LIKE '%Expense%' AND cs.name NOT LIKE '%Don%'`,
+      [orgId, id]
+    );
+
+    // Credits: sum from leasing credits field
+    const [[creditSum]] = await pool.execute(
+      `SELECT COALESCE(SUM(CAST(credits AS DECIMAL(10,2))), 0) as credits
+       FROM leasing WHERE tenant_id = ? AND deleted_at IS NULL AND credits IS NOT NULL AND credits != ''`,
+      [id]
+    );
+
+    res.json({ code: 200, data: {
+      ...invoiceSums,
+      activeLeases: leaseCount.total,
+      deposits: depositSum.deposits,
+      credits: creditSum.credits,
+    } });
   } catch (error) {
     console.error('Get tenant profile sum error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get profile sum' });

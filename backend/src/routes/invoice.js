@@ -12,7 +12,7 @@ router.post('/invoices', authenticate, async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    let whereClause = 'i.org_id = ?';
+    let whereClause = 'i.org_id = ? AND i.deleted_at IS NULL';
     const params = [orgId];
 
     if (search) {
@@ -114,6 +114,39 @@ router.post('/', authenticate, async (req, res) => {
     const { tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_date, status, category, currency_id, type, tag_id } = req.body;
     const orgId = req.user.orgId;
 
+    // Generate Snowflake ID
+    const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+
+    // Auto-generate invoice_code from sequence if not provided
+    let code = invoice_code;
+    if (!code) {
+      const [[seq]] = await pool.execute(
+        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
+        [orgId, 'invoice_code']
+      );
+      if (seq) {
+        code = seq.pattern
+          .replace(/\{d,(\w+)\}/g, () => {
+            const now = new Date();
+            return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
+          })
+          .replace(/\{#,(\d+)\}/, (_, pad) => String(seq.seq_next).padStart(parseInt(pad), '0'));
+        await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
+      } else {
+        code = 'INV-' + Date.now();
+      }
+    }
+
+    // Look up default category if not provided (use first enabled category)
+    let catId = category;
+    if (!catId) {
+      const [[defCat]] = await pool.execute(
+        "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+        [orgId]
+      );
+      catId = defCat ? defCat.id : 0;
+    }
+
     // Get default currency_id if not provided
     let currId = currency_id;
     if (!currId) {
@@ -121,11 +154,11 @@ router.post('/', authenticate, async (req, res) => {
       currId = cur ? cur.id : null;
     }
 
-    const [result] = await pool.execute(
-      'INSERT INTO invoice (org_id, tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_on, status, category, currency_id, type, tag_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())',
-      [orgId, tenant_id, unit_id, leasing_id || null, property_id || null, invoice_code, amount, note, due_date, status || 0, category || null, currId, type || 0, tag_id || null]
+    await pool.execute(
+      'INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_on, status, category, currency_id, type, tag_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())',
+      [invoiceId, orgId, tenant_id, unit_id || null, leasing_id || null, property_id || null, code, amount, note || null, due_date, status || 0, catId, currId, type || 0, tag_id || null]
     );
-    res.json({ code: 200, message: 'Invoice created', data: { id: result.insertId } });
+    res.json({ code: 200, message: 'Invoice created', data: { id: invoiceId, invoice_code: code } });
   } catch (error) {
     console.error('Create invoice error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create invoice' });

@@ -7,9 +7,9 @@ const pool = require('../config/database');
 router.post('/accounts', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, category, type, startDate, endDate, propertyId, unitId, account_setting_id, payment_setting_id } = req.body || {};
+    const { search, category, type, startDate, endDate, propertyId, unitId, account_setting_id, account_setting_ids, payment_setting_id, sortField, sortOrder } = req.body || {};
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
 
     let whereClause = 'a.org_id = ? AND a.deleted_at IS NULL';
@@ -36,9 +36,11 @@ router.post('/accounts', authenticate, async (req, res) => {
       whereClause += ' AND a.unit_id = ?';
       params.push(unitId);
     }
-    if (account_setting_id) {
-      whereClause += ' AND a.account_setting_id = ?';
-      params.push(account_setting_id);
+    // Support both single account_setting_id and array account_setting_ids
+    const acctIds = account_setting_ids || (account_setting_id ? [account_setting_id] : null);
+    if (acctIds && acctIds.length > 0) {
+      whereClause += ` AND a.account_setting_id IN (${acctIds.map(() => '?').join(',')})`;
+      params.push(...acctIds);
     }
     if (payment_setting_id) {
       whereClause += ' AND a.payment_setting_id = ?';
@@ -52,6 +54,17 @@ router.post('/accounts', authenticate, async (req, res) => {
       whereClause += ' AND a.payment_date <= ?';
       params.push(endDate);
     }
+
+    // Server-side sorting
+    const sortFieldMap = {
+      'payment_date': 'a.payment_date', 'contact': 't.first_name', 'property': 'p.display_name',
+      'account_name': 'ast.name', 'payment_method': 'pms.payment_method', 'category_name': 'cs.name',
+      'outflow': 'CASE WHEN a.type = 1 THEN a.amount ELSE 0 END',
+      'inflow': 'CASE WHEN a.type = 0 THEN a.amount ELSE 0 END',
+      'note': 'a.note',
+    };
+    const sortCol = sortFieldMap[sortField] || 'a.payment_date';
+    const sortDir = sortOrder === 'ascend' ? 'ASC' : 'DESC';
 
     const [accounts] = await pool.execute(
       `SELECT a.*,
@@ -69,7 +82,7 @@ router.post('/accounts', authenticate, async (req, res) => {
        LEFT JOIN property p ON a.property_id = p.id
        LEFT JOIN tenant t ON a.tenant_id = t.id
        WHERE ${whereClause}
-       ORDER BY a.payment_date DESC LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY ${sortCol} ${sortDir} LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
@@ -246,14 +259,27 @@ router.delete('/account/:id', authenticate, async (req, res) => {
 router.post('/account/inflow-outflow', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { startDate, endDate, propertyId } = req.body || {};
+    const { startDate, endDate, propertyId, account_setting_ids, account_setting_id, type, category, payment_setting_id, search } = req.body || {};
 
     let whereClause = 'org_id = ? AND deleted_at IS NULL';
     const params = [orgId];
 
+    if (search) {
+      whereClause += ' AND (note LIKE ? OR transaction_code LIKE ? OR invoice_code LIKE ?)';
+      const s = '%' + search + '%';
+      params.push(s, s, s);
+    }
+    if (type !== undefined && type !== null) { whereClause += ' AND type = ?'; params.push(type); }
+    if (category !== undefined && category !== null) { whereClause += ' AND category = ?'; params.push(category); }
+    if (payment_setting_id) { whereClause += ' AND payment_setting_id = ?'; params.push(payment_setting_id); }
     if (startDate) { whereClause += ' AND payment_date >= ?'; params.push(startDate); }
     if (endDate)   { whereClause += ' AND payment_date <= ?'; params.push(endDate); }
     if (propertyId){ whereClause += ' AND property_id = ?';  params.push(propertyId); }
+    const sumAcctIds = account_setting_ids || (account_setting_id ? [account_setting_id] : null);
+    if (sumAcctIds && sumAcctIds.length > 0) {
+      whereClause += ` AND account_setting_id IN (${sumAcctIds.map(() => '?').join(',')})`;
+      params.push(...sumAcctIds);
+    }
 
     const [[sums]] = await pool.execute(
       `SELECT
@@ -274,9 +300,9 @@ router.post('/account/inflow-outflow', authenticate, async (req, res) => {
 router.post('/account/lines', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { startDate, endDate, category, propertyId, search, type, account_setting_id, payment_setting_id } = req.body || {};
+    const { startDate, endDate, category, propertyId, search, type, account_setting_id, account_setting_ids, payment_setting_id, sortField, sortOrder } = req.body || {};
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
 
     let whereClause = 'a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL';
@@ -289,11 +315,26 @@ router.post('/account/lines', authenticate, async (req, res) => {
     }
     if (category)   { whereClause += ' AND al.category = ?';    params.push(category); }
     if (type !== undefined && type !== null) { whereClause += ' AND a.type = ?'; params.push(type); }
-    if (account_setting_id) { whereClause += ' AND a.account_setting_id = ?'; params.push(account_setting_id); }
+    const lineAcctIds = account_setting_ids || (account_setting_id ? [account_setting_id] : null);
+    if (lineAcctIds && lineAcctIds.length > 0) {
+      whereClause += ` AND a.account_setting_id IN (${lineAcctIds.map(() => '?').join(',')})`;
+      params.push(...lineAcctIds);
+    }
     if (payment_setting_id) { whereClause += ' AND a.payment_setting_id = ?'; params.push(payment_setting_id); }
     if (propertyId) { whereClause += ' AND al.property_id = ?'; params.push(propertyId); }
     if (startDate)  { whereClause += ' AND a.payment_date >= ?'; params.push(startDate); }
     if (endDate)    { whereClause += ' AND a.payment_date <= ?'; params.push(endDate); }
+
+    // Server-side sorting
+    const lineSortMap = {
+      'payment_date': 'a.payment_date', 'contact': 't.first_name', 'property': 'p.display_name',
+      'account_name': 'ast.name', 'payment_method': 'pms.payment_method', 'category_name': 'cs.name',
+      'outflow': 'CASE WHEN a.type = 1 THEN al.amount ELSE 0 END',
+      'inflow': 'CASE WHEN a.type = 0 THEN al.amount ELSE 0 END',
+      'note': 'a.note',
+    };
+    const lineSortCol = lineSortMap[sortField] || 'a.payment_date';
+    const lineSortDir = sortOrder === 'ascend' ? 'ASC' : 'DESC';
 
     const [lines] = await pool.execute(
       `SELECT al.*, a.payment_date, a.transaction_code, a.type, a.note as transaction_note,
@@ -311,7 +352,7 @@ router.post('/account/lines', authenticate, async (req, res) => {
        LEFT JOIN unit u ON al.unit_id = u.id
        LEFT JOIN tenant t ON a.tenant_id = t.id
        WHERE ${whereClause}
-       ORDER BY a.payment_date DESC LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY ${lineSortCol} ${lineSortDir} LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 

@@ -17,15 +17,17 @@ export default function AccountingPage() {
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState({ inflow: 0, outflow: 0, net: 0 });
   const [lineSummary, setLineSummary] = useState({ inflow: 0, outflow: 0, net: 0 });
-  const [pagination, setPagination] = useState({ current: 1, pageSize: 20, total: 0 });
-  const [linePagination, setLinePagination] = useState({ current: 1, pageSize: 20, total: 0 });
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
+  const [linePagination, setLinePagination] = useState({ current: 1, pageSize: 50, total: 0 });
   const [accounts, setAccounts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [filters, setFilters] = useState({});
   const [search, setSearch] = useState('');
-  const [dateRange, setDateRange] = useState(null);
-  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [dateRange, setDateRange] = useState(() => [dayjs().subtract(3, 'month'), dayjs()]);
+  const [selectedAccounts, setSelectedAccounts] = useState([]);
+  const [activeDateFilter, setActiveDateFilter] = useState('3M');
+  const [sortInfo, setSortInfo] = useState({ field: null, order: null });
   const router = useRouter();
   const searchParams = useSearchParams();
   const propertyIdParam = searchParams.get('propertyId');
@@ -52,7 +54,7 @@ export default function AccountingPage() {
     } else {
       loadLines();
     }
-  }, [activeTab, pagination.current, linePagination.current, filters, search, dateRange, selectedAccount]);
+  }, [activeTab, pagination.current, pagination.pageSize, linePagination.current, linePagination.pageSize, filters, search, dateRange, selectedAccounts, sortInfo]);
 
   const loadSettings = async () => {
     try {
@@ -74,10 +76,11 @@ export default function AccountingPage() {
     if (search) f.search = search;
     if (dateRange && dateRange[0]) f.startDate = dateRange[0].format('YYYY-MM-DD');
     if (dateRange && dateRange[1]) f.endDate = dateRange[1].format('YYYY-MM-DD');
-    if (selectedAccount) f.account_setting_id = selectedAccount;
+    if (selectedAccounts.length > 0) f.account_setting_ids = selectedAccounts;
     if (propertyIdParam) f.property_id = propertyIdParam;
+    if (sortInfo.field) { f.sortField = sortInfo.field; f.sortOrder = sortInfo.order; }
     return f;
-  }, [filters, search, dateRange, selectedAccount, propertyIdParam]);
+  }, [filters, search, dateRange, selectedAccounts, propertyIdParam, sortInfo]);
 
   const loadTransactions = async () => {
     setLoading(true);
@@ -132,17 +135,15 @@ export default function AccountingPage() {
   };
 
   const handleQuickDateFilter = (period) => {
+    setActiveDateFilter(period);
+    setPagination(p => ({ ...p, current: 1 }));
+    setLinePagination(p => ({ ...p, current: 1 }));
     const now = dayjs();
     switch (period) {
       case 'ALL': setDateRange(null); break;
       case '1M': setDateRange([now.subtract(1, 'month'), now]); break;
       case 'LAST_M': setDateRange([now.subtract(1, 'month').startOf('month'), now.subtract(1, 'month').endOf('month')]); break;
       case '3M': setDateRange([now.subtract(3, 'month'), now]); break;
-      case 'LAST_Q': {
-        const q = now.subtract(1, 'quarter');
-        setDateRange([q.startOf('quarter'), q.endOf('quarter')]);
-        break;
-      }
       case '1Y': setDateRange([now.subtract(1, 'year'), now]); break;
       case 'LAST_Y': setDateRange([now.subtract(1, 'year').startOf('year'), now.subtract(1, 'year').endOf('year')]); break;
     }
@@ -264,11 +265,11 @@ export default function AccountingPage() {
       render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',
     },
     {
-      title: 'Contact', key: 'contact', width: 140,
+      title: 'Contact', key: 'contact', width: 140, sorter: true,
       render: (_, r) => [r.tenant_first_name, r.tenant_last_name].filter(Boolean).join(' ') || r.note?.substring(0, 20) || '-',
     },
     {
-      title: 'Property (Unit)', key: 'property', width: 180,
+      title: 'Property (Unit)', key: 'property', width: 180, sorter: true,
       render: (_, r) => {
         let text = r.property_name || '';
         if (r.unit_name) text += ` (${r.unit_name})`;
@@ -276,27 +277,27 @@ export default function AccountingPage() {
       },
     },
     {
-      title: 'Payment Account', dataIndex: 'account_name', key: 'account_name', width: 160,
+      title: 'Payment Account', dataIndex: 'account_name', key: 'account_name', width: 160, sorter: true,
       render: (v) => v || '-',
     },
     {
-      title: 'Payment Method', dataIndex: 'payment_method_name', key: 'payment_method', width: 130,
+      title: 'Payment Method', dataIndex: 'payment_method_name', key: 'payment_method', width: 130, sorter: true,
       render: (v) => v || '-',
     },
     {
-      title: 'Category', dataIndex: 'category_name', key: 'category_name', width: 110,
+      title: 'Category', dataIndex: 'category_name', key: 'category_name', width: 110, sorter: true,
       render: (v) => v || '-',
     },
     {
-      title: 'Outflow', key: 'outflow', width: 110, align: 'right',
+      title: 'Outflow', key: 'outflow', width: 110, align: 'right', sorter: true,
       render: (_, r) => r.type === 1 ? <span style={{ color: '#cf1322' }}>{formatCurrency(r.amount)}</span> : '—',
     },
     {
-      title: 'Inflow', key: 'inflow', width: 110, align: 'right',
+      title: 'Inflow', key: 'inflow', width: 110, align: 'right', sorter: true,
       render: (_, r) => r.type === 0 ? <span style={{ color: '#389e0d' }}>{formatCurrency(r.amount)}</span> : '—',
     },
     {
-      title: 'Notes', dataIndex: 'note', key: 'note', ellipsis: true,
+      title: 'Notes', dataIndex: 'note', key: 'note', ellipsis: true, sorter: true,
       render: (v) => v || '-',
     },
     {
@@ -316,11 +317,11 @@ export default function AccountingPage() {
       render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',
     },
     {
-      title: 'Contact', key: 'contact', width: 140,
+      title: 'Contact', key: 'contact', width: 140, sorter: true,
       render: (_, r) => [r.tenant_first_name, r.tenant_last_name].filter(Boolean).join(' ') || '-',
     },
     {
-      title: 'Property (Unit)', key: 'property', width: 180,
+      title: 'Property (Unit)', key: 'property', width: 180, sorter: true,
       render: (_, r) => {
         let text = r.property_name || '';
         if (r.unit_name) text += ` (${r.unit_name})`;
@@ -328,27 +329,27 @@ export default function AccountingPage() {
       },
     },
     {
-      title: 'Payment Account', dataIndex: 'account_name', key: 'account_name', width: 160,
+      title: 'Payment Account', dataIndex: 'account_name', key: 'account_name', width: 160, sorter: true,
       render: (v) => v || '-',
     },
     {
-      title: 'Payment Method', dataIndex: 'payment_method_name', key: 'payment_method', width: 130,
+      title: 'Payment Method', dataIndex: 'payment_method_name', key: 'payment_method', width: 130, sorter: true,
       render: (v) => v || '-',
     },
     {
-      title: 'Category', dataIndex: 'category_name', key: 'category_name', width: 110,
+      title: 'Category', dataIndex: 'category_name', key: 'category_name', width: 110, sorter: true,
       render: (v) => v || '-',
     },
     {
-      title: 'Outflow', key: 'outflow', width: 110, align: 'right',
+      title: 'Outflow', key: 'outflow', width: 110, align: 'right', sorter: true,
       render: (_, r) => r.type === 1 ? <span style={{ color: '#cf1322' }}>{formatCurrency(r.amount)}</span> : '—',
     },
     {
-      title: 'Inflow', key: 'inflow', width: 110, align: 'right',
+      title: 'Inflow', key: 'inflow', width: 110, align: 'right', sorter: true,
       render: (_, r) => r.type === 0 ? <span style={{ color: '#389e0d' }}>{formatCurrency(r.amount)}</span> : '—',
     },
     {
-      title: 'Notes', key: 'note', ellipsis: true,
+      title: 'Notes', key: 'note', ellipsis: true, sorter: true,
       render: (_, r) => r.transaction_note || '-',
     },
   ];
@@ -378,7 +379,6 @@ export default function AccountingPage() {
     { label: '1M', key: '1M' },
     { label: 'LAST M', key: 'LAST_M' },
     { label: '3M', key: '3M' },
-    { label: 'LAST Q', key: 'LAST_Q' },
     { label: '1Y', key: '1Y' },
     { label: 'LAST Y', key: 'LAST_Y' },
   ];
@@ -405,10 +405,13 @@ export default function AccountingPage() {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <Select
                 placeholder="All Accounts"
+                mode="multiple"
                 allowClear
-                style={{ width: 160 }}
-                value={selectedAccount}
-                onChange={setSelectedAccount}
+                maxTagCount={1}
+                maxTagTextLength={12}
+                style={{ minWidth: 160, maxWidth: 300 }}
+                value={selectedAccounts}
+                onChange={(v) => { setSelectedAccounts(v); setPagination(p => ({ ...p, current: 1 })); }}
                 options={accounts.map(a => ({ label: a.name, value: a.id }))}
               />
               <Input.Search
@@ -431,7 +434,7 @@ export default function AccountingPage() {
               </Popover>
               <RangePicker
                 value={dateRange}
-                onChange={setDateRange}
+                onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
                 placeholder={['Start date', 'End date']}
               />
               <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')}>
@@ -443,7 +446,11 @@ export default function AccountingPage() {
           {/* Quick date filters */}
           <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
             {quickDateButtons.map(b => (
-              <a key={b.key} onClick={() => handleQuickDateFilter(b.key)} style={{ cursor: 'pointer', fontSize: 12, color: '#1890ff' }}>
+              <a key={b.key} onClick={() => handleQuickDateFilter(b.key)} style={{
+                cursor: 'pointer', fontSize: 12, color: '#1890ff',
+                fontWeight: activeDateFilter === b.key ? 'bold' : 'normal',
+                textDecoration: activeDateFilter === b.key ? 'underline' : 'none',
+              }}>
                 {b.label}
               </a>
             ))}
@@ -478,11 +485,15 @@ export default function AccountingPage() {
             rowKey="id"
             loading={loading}
             scroll={{ x: 1200 }}
+            onChange={(pag, _filters, sorter) => {
+              setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
+              setSortInfo(sorter.order ? { field: sorter.columnKey || sorter.field, order: sorter.order } : { field: null, order: null });
+            }}
             pagination={{
               ...pagination,
               showSizeChanger: true,
+              pageSizeOptions: ['20', '50', '100'],
               showTotal: (total) => `${total} items`,
-              onChange: (page, pageSize) => setPagination(p => ({ ...p, current: page, pageSize })),
             }}
           />
         </>
@@ -496,10 +507,13 @@ export default function AccountingPage() {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <Select
                 placeholder="All Accounts"
+                mode="multiple"
                 allowClear
-                style={{ width: 160 }}
-                value={selectedAccount}
-                onChange={setSelectedAccount}
+                maxTagCount={1}
+                maxTagTextLength={12}
+                style={{ minWidth: 160, maxWidth: 300 }}
+                value={selectedAccounts}
+                onChange={(v) => { setSelectedAccounts(v); setLinePagination(p => ({ ...p, current: 1 })); }}
                 options={accounts.map(a => ({ label: a.name, value: a.id }))}
               />
               <Input.Search
@@ -522,7 +536,7 @@ export default function AccountingPage() {
               </Popover>
               <RangePicker
                 value={dateRange}
-                onChange={setDateRange}
+                onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
                 placeholder={['Start date', 'End date']}
               />
               <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')}>
@@ -534,7 +548,11 @@ export default function AccountingPage() {
           {/* Quick date filters */}
           <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
             {quickDateButtons.map(b => (
-              <a key={b.key} onClick={() => handleQuickDateFilter(b.key)} style={{ cursor: 'pointer', fontSize: 12, color: '#1890ff' }}>
+              <a key={b.key} onClick={() => handleQuickDateFilter(b.key)} style={{
+                cursor: 'pointer', fontSize: 12, color: '#1890ff',
+                fontWeight: activeDateFilter === b.key ? 'bold' : 'normal',
+                textDecoration: activeDateFilter === b.key ? 'underline' : 'none',
+              }}>
                 {b.label}
               </a>
             ))}
@@ -569,11 +587,15 @@ export default function AccountingPage() {
             rowKey="id"
             loading={loading}
             scroll={{ x: 1200 }}
+            onChange={(pag, _filters, sorter) => {
+              setLinePagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
+              setSortInfo(sorter.order ? { field: sorter.columnKey || sorter.field, order: sorter.order } : { field: null, order: null });
+            }}
             pagination={{
               ...linePagination,
               showSizeChanger: true,
+              pageSizeOptions: ['20', '50', '100'],
               showTotal: (total) => `${total} items`,
-              onChange: (page, pageSize) => setLinePagination(p => ({ ...p, current: page, pageSize })),
             }}
           />
         </>

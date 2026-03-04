@@ -47,18 +47,18 @@ function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
         </div>
       </div>
 
-      {/* Lease status icon - red person icon */}
+      {/* Tenant status icon - green if active lease, grey if not */}
       <div style={{ textAlign: 'center', cursor: 'pointer' }} onClick={onProfile}>
         <div style={{
           width: 36, height: 36, borderRadius: '50%',
-          background: hasLease ? '#fff1f0' : '#f5f5f5',
-          border: `2px solid ${hasLease ? '#ff4d4f' : '#d9d9d9'}`,
+          background: hasLease ? '#f6ffed' : '#f5f5f5',
+          border: `2px solid ${hasLease ? '#52c41a' : '#d9d9d9'}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           margin: '0 auto 2px',
         }}>
-          <UserOutlined style={{ fontSize: 16, color: hasLease ? '#ff4d4f' : '#bbb' }} />
+          <UserOutlined style={{ fontSize: 16, color: hasLease ? '#52c41a' : '#bbb' }} />
         </div>
-        <span style={{ fontSize: 10, fontWeight: 600, color: '#888' }}>RENT</span>
+        <span style={{ fontSize: 10, fontWeight: 600, color: '#888' }}>TENANT</span>
       </div>
 
       {/* Rent icon */}

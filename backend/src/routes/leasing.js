@@ -258,6 +258,48 @@ router.post('/', authenticate, async (req, res) => {
       );
     }
 
+    // Create security deposit invoice if deposit amount > 0
+    if (deposit && parseFloat(deposit) > 0) {
+      // Generate deposit invoice code
+      const [[depSeq]] = await pool.execute(
+        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
+        [orgId, 'invoice_code']
+      );
+      let depInvoiceCode = 'INV-DEP-' + Date.now();
+      if (depSeq) {
+        depInvoiceCode = depSeq.pattern
+          .replace(/\{d,(\w+)\}/g, () => {
+            const now = new Date();
+            return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
+          })
+          .replace(/\{#,(\d+)\}/, (_, pad) => String(depSeq.seq_next).padStart(parseInt(pad), '0'));
+        await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [depSeq.id]);
+      }
+
+      // Get property_id from unit (may already have it from rent invoice block)
+      let depPropertyId = null;
+      const [[depUnitRow]] = await pool.execute('SELECT property_id FROM unit WHERE id = ?', [unit_id]);
+      if (depUnitRow) depPropertyId = depUnitRow.property_id;
+
+      // Look up deposit category
+      const [[depCat]] = await pool.execute(
+        "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 AND name LIKE '%Deposit%' AND name NOT LIKE '%Expense%' AND name NOT LIKE '%Don%' ORDER BY id LIMIT 1",
+        [orgId]
+      );
+      const depositCategoryId = depCat ? depCat.id : null;
+
+      const depInvoiceId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+      const today = new Date().toISOString().split('T')[0];
+
+      await pool.execute(
+        `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
+          invoice_code, amount, due_on, status, category, currency_id, type, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, NOW())`,
+        [depInvoiceId.toString(), orgId, tenant_id, unit_id, leaseId.toString(), depPropertyId,
+         depInvoiceCode, deposit, today, depositCategoryId, currencyId]
+      );
+    }
+
     // Mark past invoices as paid if requested
     if (mark_past_paid && start_date) {
       await pool.execute(

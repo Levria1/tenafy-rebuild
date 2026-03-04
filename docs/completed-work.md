@@ -1,0 +1,152 @@
+# Tenafy Rebuild — Completed Work Log
+
+Track all changes made per session. Update at the end of each session.
+
+---
+
+## Session: Initial Commit
+**Commit**: `5a2cc40` — Initial commit - Tenafy Rebuild current working state
+
+Core project setup: Express backend with JWT auth, Next.js 14 frontend, MySQL database connection, basic CRUD for all entities.
+
+---
+
+## Session: Payment Methods, Categories, Scheduler Fixes
+**Commit**: `59f73a9` — Fix payment methods, categories, and scheduler column bugs
+
+- Fixed SQL column name mismatches in scheduler
+- Fixed payment method and category settings
+
+---
+
+## Session: Notification System
+**Commit**: `78040aa` — Add in-app notification system with bell icon and email alerts
+
+- In-app notification bell with dropdown
+- Email notification sending via Nodemailer
+- Notification list page
+
+---
+
+## Session: Properties Page Rebuild
+**Commit**: `5361bb0` — Rebuild Properties page with card layout + expandable units
+
+- Property card layout matching original Tenafy
+- Expandable unit list per property
+
+---
+
+## Session: Contacts Section Rebuild
+**Commit**: `4ec8c97` — Rebuild Contacts section with expandable sidebar and tenant cards
+
+- Contacts hub page with sidebar navigation
+- Tenant list with search and filters
+
+---
+
+## Session: Unit Detail Rebuild
+**Commit**: `f201649` — Rebuild Unit Detail page with 4-tab layout matching original Tenafy
+
+- General, Furnishing, Service Cost, Service History tabs
+- Quick access buttons to sub-pages
+
+---
+
+## Session: Dashboard Rebuild
+**Commit**: `42621e3` — Rebuild Dashboard with 9-widget layout matching original Tenafy
+
+- 9-widget grid layout
+- Property overview, occupancy, financial widgets
+
+---
+
+## Session: Dashboard SQL Fixes
+**Commit**: `2122450` — Fix dashboard and service cost SQL column name mismatches
+
+- Fixed column name references in SQL queries
+
+---
+
+## Session: Dashboard Widgets & Filters
+**Commit**: `2e2b179` — Fix dashboard widgets, add filters to Tenants/Properties, fix Property Detail
+
+- Dashboard widget data accuracy
+- Tenant/property list filtering
+- Property detail page fixes
+
+---
+
+## Session: Property Detail & Payees
+**Commit**: `fd1ac25` — Rebuild Property Detail, fix Payees, add file preview endpoint
+
+- Property detail page rebuild
+- Payee route fixes (double-prefix bug)
+- File preview endpoint
+
+---
+
+## Session: 2026-03-04 (Uncommitted)
+**Changes made:**
+
+### Accounting Page (`accounting/page.js`)
+- All columns now server-side sortable
+- Default 50 items per page (was 20)
+- Default 3-month date filter with bold+underline indicator
+- Multi-select account dropdown filter
+- Removed LAST Q quick date button
+
+### Invoices Page (`invoices/page.js`)
+- Added "Apply Filters" button (was missing)
+- Default 50 items per page
+- Default 3-month date filter with bold+underline indicator
+- Removed LAST Q quick date button
+- Backend: Added `AND i.deleted_at IS NULL` to queries, default limit 50
+
+### Lease Creation (`leasing/create/page.js`)
+- Deposit check: if deposit <= 0, shows Modal.confirm before creating
+- Deposit invoice only created when deposit > 0
+
+### Backend Lease Deposit (`leasing.js`)
+- Auto-creates deposit invoice at lease creation (when deposit > 0)
+- Generates invoice code from sequence table
+- Looks up deposit category from category_setting
+
+### Tenant List (`contacts/tenants/page.js`)
+- Person icon label "RENT" → "TENANT"
+- Active lease = green icon, no active lease = grey icon
+
+### Tenant Detail Page (`contacts/tenant/[id]/detail/page.js`)
+- Complete rewrite: two-column layout (380px sidebar + content area)
+- Profile tab: General Info, Additional Info, Notes, Attachments in field/value grid
+- Leases tab: Unit Info, Lease Details, Lease Transactions per active lease
+- Sidebar: avatar, name, status, financial summary (varies per tab)
+- "Create Deposit Refund" button wired to navigate to invoice create with pre-filled params
+- Next Invoice Publish Date displayed from backend calculation
+
+### Backend Tenant Routes (`tenant.js`)
+- Lease query now includes `u.type as unit_type`, `p.id as property_id`, `p.street_address as property_address`
+- Profile sum returns deposits (from deposit-category invoices) and credits (from leasing.credits)
+- Added `calcNextInvoiceDate()` helper for all schedule types
+
+### Invoice Creation Page (`invoices/create/page.js`)
+- Reads URL params for pre-fill (tenantId, category, propertyId, unitId, leasingId)
+- Loads real categories from DB via `settings.getCategories()`
+- Fixed Type dropdown: Inflow (CR) / Outflow (DR)
+- Deposit-refund mode: pre-fills category, type, due date; locks type selector
+- Navigates back to tenant detail on success when coming from there
+
+### Backend Invoice Routes (`invoice.js`)
+- POST `/` now auto-generates Snowflake ID and invoice_code from sequence table
+- Default category lookup when category not provided
+
+### Backend Accounting Routes (`accounting.js`)
+- Server-side sorting with `sortFieldMap` whitelist
+- Multi-account filter with IN clause
+- Default limit 50
+- Filters on inflow-outflow summary
+
+### Project Memory System
+- Created `CLAUDE.md` at project root
+- Created `docs/migration-plan.md`
+- Created `docs/completed-work.md` (this file)
+- Created `docs/style-guide.md`
