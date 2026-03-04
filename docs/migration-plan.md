@@ -156,10 +156,11 @@
 
 | Table | Purpose | Status |
 |-------|---------|--------|
-| `unit_maintenance` | Maintenance records per unit | Needs CREATE TABLE |
-| `unit_inventory_history` | Inventory tracking per unit | Needs CREATE TABLE |
-| `property_owner_tag` | Owner tagging taxonomy | Needs CREATE TABLE |
-| `property_owner_tag_map` | Owner-to-tag mapping | Needs CREATE TABLE |
+| `unit_maintenance` | Maintenance records per unit | Done — `backend/migrations/001_create_unit_maintenance.sql` |
+| `unit_inventory_history` | Inventory tracking per unit | Done — `backend/migrations/002_create_unit_inventory_history.sql` |
+| `property_owner_tag` | Owner tagging taxonomy | Done — `backend/migrations/003_create_property_owner_tags.sql` |
+| `property_owner_tag_map` | Owner-to-tag mapping | Done — `backend/migrations/003_create_property_owner_tags.sql` |
+| `property.payment_instructions` | Payment instructions text field on property | Done — `backend/migrations/004_add_payment_instructions_to_property.sql` |
 
 ## Backend Feature Gaps
 
@@ -167,6 +168,6 @@
 |---------|-------------|--------|
 | Overdue invoice scheduler | Auto-update invoice status 0→2 when past due | Missing |
 | PDF generation | Generate PDFs for leases and invoices | Missing |
-| Additional tenants on lease | Join to `leasing_additional_tenant` table | Missing |
+| Additional tenants on lease | Join to `leasing_additional_tenant` table | Done |
 | Bulk email | Email all tenants (filtered) | Missing |
 | File upload to S3/storage | Currently local only | Missing |

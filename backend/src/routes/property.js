@@ -324,11 +324,12 @@ router.get('/unit/:unit_id/inventory', authenticate, async (req, res) => {
 router.post('/unit/:unit_id/inventory', authenticate, async (req, res) => {
   try {
     const { unit_id } = req.params;
+    const orgId = req.user.orgId;
     const { name, description, quantity, condition_status, value, purchase_date } = req.body;
 
     const [result] = await pool.execute(
-      'INSERT INTO unit_inventory (unit_id, name, description, quantity, condition_status, value, purchase_date, active_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW())',
-      [unit_id, name, description, quantity || 1, condition_status, value, purchase_date]
+      'INSERT INTO unit_inventory (org_id, unit_id, name, description, quantity, condition_status, value, purchase_date, active_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())',
+      [orgId, unit_id, name, description, quantity || 1, condition_status, value, purchase_date]
     );
     res.json({ code: 200, message: 'Inventory created', data: { id: result.insertId } });
   } catch (error) {
@@ -381,6 +382,23 @@ router.delete('/unit/inventory/:id', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/property/amenities/list - Get all org property amenities for create form
+// ?type=1 (Residential) or ?type=2 (Commercial) — defaults to 1
+router.get('/amenities/list', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const propertyType = parseInt(req.query.type) || 1;
+    const [amenities] = await pool.execute(
+      'SELECT id, display_name, category, type FROM amenity WHERE org_id = ? AND enabled = 1 AND category = 0 AND type = ? ORDER BY order_id, display_name',
+      [orgId, propertyType]
+    );
+    res.json({ code: 200, data: amenities });
+  } catch (error) {
+    console.error('Get org property amenities error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get amenities' });
+  }
+});
+
 // GET /api/property/:id/base - Get property base info
 router.get('/:id/base', authenticate, async (req, res) => {
   try {
@@ -424,6 +442,48 @@ router.get('/:id/clone', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/property/:id/amenities - Get all org property amenities with selected flag
+// Filters by the property's own type (Residential=1 / Commercial=2) to avoid duplicates
+router.get('/:id/amenities', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const [amenities] = await pool.execute(
+      `SELECT a.id, a.display_name, a.category, a.type,
+              CASE WHEN pa.property_id IS NOT NULL THEN 1 ELSE 0 END AS selected
+       FROM amenity a
+       JOIN property p ON p.id = ? AND p.org_id = ?
+       LEFT JOIN property_amenity pa ON pa.amenity_id = a.id AND pa.property_id = ?
+       WHERE a.org_id = ? AND a.enabled = 1 AND a.category = 0 AND a.type = p.type
+       ORDER BY a.order_id, a.display_name`,
+      [id, orgId, id, orgId]
+    );
+    res.json({ code: 200, data: amenities });
+  } catch (error) {
+    console.error('Get property amenities error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get property amenities' });
+  }
+});
+
+// PUT /api/property/:id/amenities - Update property amenities
+router.put('/:id/amenities', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amenityIds } = req.body;
+    await pool.execute('DELETE FROM property_amenity WHERE property_id = ?', [id]);
+    if (amenityIds && amenityIds.length > 0) {
+      await pool.execute(
+        `INSERT INTO property_amenity (property_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
+        amenityIds.flatMap(aid => [id, aid])
+      );
+    }
+    res.json({ code: 200, message: 'Property amenities updated' });
+  } catch (error) {
+    console.error('Update property amenities error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to update property amenities' });
+  }
+});
+
 // GET /api/property/:id - Get property detail
 router.get('/:id', authenticate, async (req, res) => {
   try {
@@ -436,7 +496,12 @@ router.get('/:id', authenticate, async (req, res) => {
     if (properties.length === 0) {
       return res.status(404).json({ code: 404, message: 'Property not found' });
     }
-    res.json({ code: 200, data: properties[0] });
+    // Attach selected amenity IDs
+    const [amenityRows] = await pool.execute(
+      'SELECT amenity_id FROM property_amenity WHERE property_id = ?', [id]
+    );
+    const data = { ...properties[0], amenity_ids: amenityRows.map(r => r.amenity_id) };
+    res.json({ code: 200, data });
   } catch (error) {
     console.error('Get property error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get property' });
@@ -446,14 +511,30 @@ router.get('/:id', authenticate, async (req, res) => {
 // POST /api/property - Create property
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { display_name, street_address, city, state, country, zip_code, type } = req.body;
+    const { display_name, street_address, city, state, country, zip_code, district,
+            type, status, currency, year_of_built, notes, payment_instructions, amenityIds } = req.body;
     const orgId = req.user.orgId;
 
     const [result] = await pool.execute(
-      'INSERT INTO property (org_id, display_name, street_address, city, state, country, zip_code, type, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())',
-      [orgId, display_name, street_address, city, state, country, zip_code, type]
+      `INSERT INTO property (org_id, display_name, street_address, city, state, country,
+       zip_code, district, type, status, currency, year_of_built, notes, payment_instructions, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [orgId, display_name, street_address, city, state, country, zip_code,
+       district || null, type || 1, status ?? 1, currency || null,
+       year_of_built || null, notes || null, payment_instructions || null]
     );
-    res.json({ code: 200, message: 'Property created', data: { id: result.insertId } });
+
+    const propertyId = result.insertId;
+
+    // Save amenities if provided
+    if (amenityIds && amenityIds.length > 0) {
+      await pool.execute(
+        `INSERT INTO property_amenity (property_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
+        amenityIds.flatMap(aid => [propertyId, aid])
+      );
+    }
+
+    res.json({ code: 200, message: 'Property created', data: { id: propertyId } });
   } catch (error) {
     console.error('Create property error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create property' });
@@ -464,13 +545,31 @@ router.post('/', authenticate, async (req, res) => {
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { display_name, street_address, city, state, country, zip_code, type, status } = req.body;
+    const { display_name, street_address, city, state, country, zip_code, district,
+            type, status, currency, year_of_built, mls, notes, payment_instructions, amenityIds } = req.body;
     const orgId = req.user.orgId;
 
     await pool.execute(
-      'UPDATE property SET display_name = ?, street_address = ?, city = ?, state = ?, country = ?, zip_code = ?, type = ?, status = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
-      [display_name, street_address, city, state, country, zip_code, type, status, id, orgId]
+      `UPDATE property SET display_name = ?, street_address = ?, city = ?, state = ?,
+       country = ?, zip_code = ?, district = ?, type = ?, status = ?, currency = ?,
+       year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, updated_at = NOW()
+       WHERE id = ? AND org_id = ?`,
+      [display_name, street_address, city, state, country, zip_code, district || null,
+       type, status, currency || null, year_of_built || null, mls || null, notes || null,
+       payment_instructions || null, id, orgId]
     );
+
+    // Update amenities if provided
+    if (amenityIds !== undefined) {
+      await pool.execute('DELETE FROM property_amenity WHERE property_id = ?', [id]);
+      if (amenityIds && amenityIds.length > 0) {
+        await pool.execute(
+          `INSERT INTO property_amenity (property_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
+          amenityIds.flatMap(aid => [id, aid])
+        );
+      }
+    }
+
     res.json({ code: 200, message: 'Property updated' });
   } catch (error) {
     console.error('Update property error:', error);
@@ -478,11 +577,26 @@ router.put('/:id', authenticate, async (req, res) => {
   }
 });
 
-// DELETE /api/property/:id - Delete property
+// DELETE /api/property/:id - Delete property (blocked if active lease exists)
 router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
+
+    // Block deletion if any unit in this property has an active lease
+    const [[{ active_count }]] = await pool.execute(
+      `SELECT COUNT(*) as active_count FROM leasing l
+       JOIN unit u ON l.unit_id = u.id
+       WHERE u.property_id = ? AND l.status = 1`,
+      [id]
+    );
+    if (active_count > 0) {
+      return res.status(409).json({
+        code: 409,
+        message: 'Unable to delete as there is an active lease on the property'
+      });
+    }
+
     await pool.execute(
       'UPDATE property SET status = 0, deleted_at = NOW() WHERE id = ? AND org_id = ?',
       [id, orgId]
@@ -649,7 +763,7 @@ router.get('/unit/:id/inventory/sum', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const [[sum]] = await pool.execute(
-      'SELECT COALESCE(SUM(CASE WHEN value IS NOT NULL THEN value * COALESCE(quantity, 1) ELSE 0 END), 0) as total, COUNT(*) as count FROM unit_inventory WHERE unit_id = ? AND org_id = ? AND status = 1',
+      'SELECT COALESCE(SUM(CASE WHEN value IS NOT NULL THEN value * COALESCE(quantity, 1) ELSE 0 END), 0) as total, COUNT(*) as count FROM unit_inventory WHERE unit_id = ? AND org_id = ? AND active_status = 1',
       [id, orgId]
     );
     res.json({ code: 200, data: sum });

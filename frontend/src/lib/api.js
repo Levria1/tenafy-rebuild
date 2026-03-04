@@ -91,7 +91,11 @@ export const property = {
   getMaintenance: (id) => api.get(`/api/property/unit/maintenance/${id}/detail`),
   updateMaintenance: (id, data) => api.put(`/api/property/unit/maintenance/${id}`, data),
   deleteMaintenance: (id) => api.delete(`/api/property/unit/maintenance/${id}`),
-  // Amenity methods
+  // Property amenity methods
+  getOrgPropertyAmenities: (type) => api.get('/api/property/amenities/list', { params: { type } }),
+  getPropertyAmenities: (id) => api.get(`/api/property/${id}/amenities`),
+  updatePropertyAmenities: (id, data) => api.put(`/api/property/${id}/amenities`, data),
+  // Unit amenity methods
   getUnitAmenities: (unitId) => api.get(`/api/property/unit/${unitId}/amenities`),
   updateUnitAmenities: (unitId, data) => api.put(`/api/property/unit/${unitId}/amenities`, data),
   // Furnishing methods

@@ -85,7 +85,14 @@ Core project setup: Express backend with JWT auth, Next.js 14 frontend, MySQL da
 
 ---
 
-## Session: 2026-03-04 (Uncommitted)
+## Session: 2026-03-04
+**Commit**: `23cfeb3` — Rebuild Tenant Detail, deposit refunds, invoice upgrades, and project memory system
+
+*(See prior entry for full details)*
+
+---
+
+## Session: 2026-03-04 (continued)
 **Changes made:**
 
 ### Accounting Page (`accounting/page.js`)
@@ -150,3 +157,77 @@ Core project setup: Express backend with JWT auth, Next.js 14 frontend, MySQL da
 - Created `docs/migration-plan.md`
 - Created `docs/completed-work.md` (this file)
 - Created `docs/style-guide.md`
+
+---
+
+## Session: 2026-03-04 (session 3)
+**Commit**: `ec6e5d8` — Add additional tenants to leasing — save, display, and edit co-tenants
+
+### Backend — `leasing.js`
+- `GET /:id`: fetches `additional_tenants` array (id, names) via join on `leasing_additional_tenant`
+- `POST /`: accepts `additionalTenantIds[]`, inserts rows into `leasing_additional_tenant` after lease creation
+- `PUT /:id`: accepts `additionalTenantIds[]`, does full replace (delete all + re-insert)
+- `DELETE /:id`: now also deletes from `leasing_additional_tenant` before soft-deleting lease
+
+### Backend — `tenant.js`
+- `GET /:id/leases`: for each lease, fetches `additional_tenants` and attaches to response
+
+### Frontend — `leasing/create/page.js`
+- Added multi-select "Additional Tenants" field in Step 1 Tenant card
+- `additionalTenantIds` included in `buildPayload()`
+
+### Frontend — `leasing/[id]/edit/page.js`
+- Added multi-select "Additional Tenants" field
+- Pre-fills from `lease.additional_tenants` on load
+- Sends `additionalTenantIds` on save
+
+### Frontend — `leasing/[id]/detail/page.js`
+- Details tab now shows "Primary Tenant" and "Additional Tenants" as separate rows
+
+### Frontend — `contacts/tenant/[id]/detail/page.js`
+- Leases tab: "Additional Tenants" field now shows real co-tenant names (was hardcoded "—")
+
+---
+
+## Session: 2026-03-04 (session 4)
+
+### Migration Runner (`backend/migrate.js` + `backend/migrations/`)
+- Created `backend/migrate.js` — standalone migration runner using `mysql2`, reads `migrations/*.sql` in alphabetical order, tracks applied files in `schema_migrations` table, runs each in a transaction (rolls back on error)
+- Added `"migrate": "node migrate.js"` to `backend/package.json` scripts
+- Created `backend/migrations/001_create_unit_maintenance.sql` — `unit_maintenance` table with org_id, unit_id, title, description, cost, category, vendor_name, maintenance_date, status, created_at, updated_at
+- Created `backend/migrations/002_create_unit_inventory_history.sql` — `unit_inventory_history` table with unit_id, org_id, inventory_id, action (ADD/REMOVE/UPDATE/ADJUST), quantity_before, quantity_after, note, created_at
+
+### Bug Fixes — `backend/src/routes/property.js`
+- Inventory `POST` was missing `org_id` (sum query filtered by it but it was never saved) — fixed
+- Inventory sum query used `status = 1` but table uses `active_status` — fixed to `active_status = 1`
+
+### Migration 003 (`backend/migrations/003_create_property_owner_tags.sql`)
+- Created `property_owner_tag` — org_id, name, color, status, created_at
+- Created `property_owner_tag_map` — composite PK on (property_owner_id, tag_id), supports ON DUPLICATE KEY for safe re-assignment
+
+---
+
+## Session: 2026-03-04 (session 5)
+
+### Migration 004 (`backend/migrations/004_add_payment_instructions_to_property.sql`)
+- `ALTER TABLE property ADD COLUMN payment_instructions TEXT DEFAULT NULL AFTER notes`
+
+### Backend — `property.js` (amenity duplicate fix)
+- `GET /:id/amenities`: fixed query to `JOIN property p ON p.id = ? AND p.org_id = ?` and filter `AND a.type = p.type` — was returning 2–4× duplicates because amenity table has one row per type (Residential=1, Commercial=2)
+- `POST /`: added `payment_instructions` to INSERT column list and params
+- `PUT /:id`: added `payment_instructions` to UPDATE SET clause and params
+
+### API Client — `lib/api.js`
+- `getOrgPropertyAmenities(type)`: now accepts and passes `type` as a query param to `GET /api/property/amenities/list?type=`
+
+### Property Detail Page — `property/[id]/detail/page.js`
+- Amenities section: now filters to only show selected amenities (hides unselected — no ✗ shown)
+- Added **Payment Instructions** section above Attachments, pulls from `propertyData.payment_instructions`
+
+### Property Edit Page — `property/[id]/edit/page.js`
+- Added `payment_instructions` to `form.setFieldsValue` pre-fill on load
+- Added **Payment Instructions** `Input.TextArea` field above Notes
+
+### Property Create Page — `property/create/page.js`
+- Added `payment_instructions` `Input.TextArea` field above Notes
+- `onValuesChange` now watches the `type` radio group: when property type changes, calls `loadAmenities(newType)` to reload type-filtered amenities and clears previous selections

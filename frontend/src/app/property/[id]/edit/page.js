@@ -2,39 +2,91 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Form, Input, Button, Select, message, Spin, Tabs, Table, Tag, Space, Modal } from 'antd';
-import { ArrowLeftOutlined, EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import {
+  Form, Input, Button, Select, message, Spin, Checkbox, Radio,
+} from 'antd';
+import { ArrowLeftOutlined, UploadOutlined, PlusOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
-import { property } from '../../../../lib/api';
+import { property as propertyApi } from '../../../../lib/api';
+
+// ─── Blue panel header (matches original screenshot) ─────────────────────────
+const PanelHeader = ({ children }) => (
+  <div style={{
+    background: '#1677ff', color: '#fff', fontSize: 13, fontWeight: 600,
+    padding: '8px 14px', borderRadius: '6px 6px 0 0',
+  }}>
+    {children}
+  </div>
+);
+
+const PanelBody = ({ children, style }) => (
+  <div style={{
+    border: '1px solid #d9d9d9', borderTop: 'none',
+    borderRadius: '0 0 6px 6px', padding: 14, marginBottom: 20, ...style,
+  }}>
+    {children}
+  </div>
+);
+
+const SectionLabel = ({ children }) => (
+  <div style={{
+    fontSize: 11, fontWeight: 700, color: '#888', letterSpacing: 1,
+    marginBottom: 14, marginTop: 24,
+  }}>
+    {children}
+  </div>
+);
+
+const RESIDENTIAL_DESC = 'Residential Properties include single family homes where there is only one rental unit associated to the address, and also include houses, single condominium units, single mobile homes, co-ops, townhouses, duplexes, triple-deckers, quadplexes, high-value homes, multi-generational and vacation homes.';
+const COMMERCIAL_DESC  = 'Commercial property usually refers to buildings that house businesses, as well as larger residential rental properties. Commercial properties include properties such as retail properties (store fronts), offices, serviced offices, hotels, cafe, malls, and entire apartment building blocks.';
 
 export default function PropertyEditPage() {
   const router = useRouter();
   const params = useParams();
   const [form] = Form.useForm();
-  const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [propertyData, setPropertyData] = useState(null);
-  const [units, setUnits] = useState([]);
-  const [unitsLoading, setUnitsLoading] = useState(true);
+  const [amenities, setAmenities] = useState([]);
+  const [selectedAmenityIds, setSelectedAmenityIds] = useState([]);
 
   useEffect(() => {
-    if (params.id) {
-      loadProperty();
-    }
+    if (params.id) loadAll();
   }, [params.id]);
 
-  const loadProperty = async () => {
+  const loadAll = async () => {
     try {
-      const response = await property.get(params.id);
-      if (response.data.code === 200) {
-        setPropertyData(response.data.data);
-        form.setFieldsValue(response.data.data);
-        
-        if (response.data.data.units) {
-          setUnits(response.data.data.units);
-        }
+      const [propRes, amenRes] = await Promise.all([
+        propertyApi.get(params.id),
+        propertyApi.getPropertyAmenities(params.id).catch(() => ({ data: { data: [] } })),
+      ]);
+
+      if (propRes.data.code === 200) {
+        const d = propRes.data.data;
+        setPropertyData(d);
+        form.setFieldsValue({
+          display_name:          d.display_name,
+          street_address:        d.street_address,
+          city:                  d.city,
+          state:                 d.state,
+          country:               d.country,
+          zip_code:              d.zip_code,
+          district:              d.district,
+          year_of_built:         d.year_of_built,
+          currency:              d.currency,
+          type:                  d.type || 1,
+          status:                d.status ?? 1,
+          payment_instructions:  d.payment_instructions,
+          notes:                 d.notes,
+        });
       }
-    } catch (error) {
+
+      if (amenRes.data.code === 200) {
+        const list = amenRes.data.data || [];
+        setAmenities(list);
+        setSelectedAmenityIds(list.filter(a => a.selected).map(a => Number(a.id)));
+      }
+    } catch (err) {
       message.error('Failed to load property');
       router.push('/property');
     } finally {
@@ -45,179 +97,246 @@ export default function PropertyEditPage() {
   const onFinish = async (values) => {
     try {
       setLoading(true);
-      const response = await property.update(params.id, values);
-      if (response.data.code === 200) {
+      const res = await propertyApi.update(params.id, { ...values, amenityIds: selectedAmenityIds });
+      if (res.data.code === 200) {
         message.success('Property updated successfully');
-        router.push('/property');
+        router.push(`/property/${params.id}/detail`);
       } else {
-        message.error(response.data.message || 'Failed to update property');
+        message.error(res.data.message || 'Failed to update property');
       }
-    } catch (error) {
-      message.error(error.response?.data?.message || 'Failed to update property');
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to update property');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDelete = () => {
-    Modal.confirm({
-      title: 'Delete Property',
-      content: 'Are you sure you want to delete this property?',
-      onOk: async () => {
-        try {
-          await property.delete(params.id);
-          message.success('Property deleted');
-          router.push('/property');
-        } catch (error) {
-          message.error('Failed to delete property');
-        }
-      }
-    });
+  const toggleAmenity = (id) => {
+    setSelectedAmenityIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
   };
 
-  const unitColumns = [
-    { title: 'Unit', dataIndex: 'name', key: 'name' },
-    { title: 'Type', dataIndex: 'type', key: 'type' },
-    { title: 'Beds', dataIndex: 'beds', key: 'beds' },
-    { title: 'Baths', dataIndex: 'baths', key: 'baths' },
-    { title: 'Rent', dataIndex: 'rent_price_min', key: 'rent', 
-      render: (val, record) => `$${val} - $${record.rent_price_max}` 
-    },
-    { title: 'Status', dataIndex: 'status', key: 'status',
-      render: (status) => (
-        <Tag color={status === 1 ? 'green' : 'red'}>
-          {status === 1 ? 'Occupied' : 'Vacant'}
-        </Tag>
-      )
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      render: (_, record) => (
-        <Space>
-          <Button type="link" size="small" icon={<EditOutlined />}>Edit</Button>
-        </Space>
-      )
-    }
-  ];
-
   if (fetching) {
-    return (
-      <MainLayout>
-        <div style={{ textAlign: 'center', padding: 50 }}>
-          <Spin size="large" />
-        </div>
-      </MainLayout>
-    );
+    return <MainLayout><div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div></MainLayout>;
   }
+
+  const currencyLocked = !!propertyData?.currency;
 
   return (
     <MainLayout>
-      <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-        <Button 
-          icon={<ArrowLeftOutlined />} 
-          onClick={() => router.push('/property')}
-          style={{ marginBottom: 16 }}
-        >
-          Back to Properties
-        </Button>
-
-        <Tabs 
-          defaultActiveKey="details"
-          items={[
-            {
-              key: 'details',
-              label: 'Property Details',
-              children: (
-                <Card title="Edit Property">
-                  <Form
-                    form={form}
-                    layout="vertical"
-                    onFinish={onFinish}
-                  >
-                    <Form.Item
-                      name="display_name"
-                      label="Property Name"
-                      rules={[{ required: true, message: 'Please enter property name' }]}
-                    >
-                      <Input placeholder="e.g., Sunset Apartments" />
-                    </Form.Item>
-
-                    <Form.Item
-                      name="address"
-                      label="Address"
-                      rules={[{ required: true, message: 'Please enter address' }]}
-                    >
-                      <Input.TextArea rows={2} placeholder="Full address" />
-                    </Form.Item>
-
-                    <Form.Item
-                      name="description"
-                      label="Description"
-                    >
-                      <Input.TextArea rows={3} placeholder="Property description (optional)" />
-                    </Form.Item>
-
-                    <Form.Item
-                      name="currency"
-                      label="Currency"
-                    >
-                      <Select>
-                        <Select.Option value="USD">USD - US Dollar</Select.Option>
-                        <Select.Option value="EUR">EUR - Euro</Select.Option>
-                        <Select.Option value="GBP">GBP - British Pound</Select.Option>
-                        <Select.Option value="CAD">CAD - Canadian Dollar</Select.Option>
-                      </Select>
-                    </Form.Item>
-
-                    <Form.Item
-                      name="status"
-                      label="Status"
-                    >
-                      <Select>
-                        <Select.Option value={1}>Active</Select.Option>
-                        <Select.Option value={0}>Inactive</Select.Option>
-                      </Select>
-                    </Form.Item>
-
-                    <Form.Item>
-                      <Space>
-                        <Button type="primary" htmlType="submit" loading={loading}>
-                          Update Property
-                        </Button>
-                        <Button danger onClick={handleDelete}>
-                          Delete Property
-                        </Button>
-                      </Space>
-                    </Form.Item>
-                  </Form>
-                </Card>
-              )
-            },
-            {
-              key: 'units',
-              label: 'Units',
-              children: (
-                <Card 
-                  title="Units" 
-                  extra={
-                    <Button type="primary" icon={<PlusOutlined />}>
-                      Add Unit
-                    </Button>
-                  }
-                >
-                  <Table
-                    columns={unitColumns}
-                    dataSource={units}
-                    rowKey="id"
-                    loading={unitsLoading}
-                  />
-                </Card>
-              )
-            }
-          ]}
+      {/* Page header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 24 }}>
+        <Button
+          type="text" icon={<ArrowLeftOutlined />}
+          onClick={() => router.push(`/property/${params.id}/detail`)}
+          style={{ padding: '0 4px' }}
         />
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>
+          Edit Property: {propertyData?.display_name}
+        </h2>
       </div>
+
+      <Form form={form} layout="vertical" onFinish={onFinish}>
+        <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
+
+          {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
+          <div style={{ width: 300, flexShrink: 0 }}>
+
+            {/* Currency */}
+            <PanelHeader>Currency</PanelHeader>
+            <PanelBody>
+              <div style={{
+                background: '#fff7e6', border: '1px solid #ffd591', borderRadius: 4,
+                padding: '8px 12px', marginBottom: 12, fontSize: 12, color: '#d46b08',
+              }}>
+                You need to select the currency for this property. Please note, you will not be able to edit or change the currency once selected!
+              </div>
+              <Form.Item name="currency" style={{ marginBottom: 0 }}>
+                <Select disabled={currencyLocked} placeholder="Select currency" showSearch>
+                  <Select.Option value="USD">US Dollar (USD)</Select.Option>
+                  <Select.Option value="EUR">Euro (EUR)</Select.Option>
+                  <Select.Option value="GBP">British Pound (GBP)</Select.Option>
+                  <Select.Option value="HKD">Hong Kong Dollar (HK$)</Select.Option>
+                  <Select.Option value="CAD">Canadian Dollar (CAD)</Select.Option>
+                  <Select.Option value="AUD">Australian Dollar (AUD)</Select.Option>
+                  <Select.Option value="SGD">Singapore Dollar (SGD)</Select.Option>
+                  <Select.Option value="JPY">Japanese Yen (JPY)</Select.Option>
+                </Select>
+              </Form.Item>
+            </PanelBody>
+
+            {/* Property Status */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Property Status</div>
+              <Form.Item name="status" style={{ marginBottom: 0 }}>
+                <Select>
+                  <Select.Option value={1}>Active</Select.Option>
+                  <Select.Option value={0}>Inactive</Select.Option>
+                </Select>
+              </Form.Item>
+            </div>
+
+            {/* Main Photo */}
+            <PanelHeader>Main Photo</PanelHeader>
+            <PanelBody>
+              <div style={{
+                width: '100%', height: 180, background: '#f5f5f5',
+                border: '1px dashed #d9d9d9', borderRadius: 4,
+                display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center', marginBottom: 10,
+              }}>
+                <div style={{ fontSize: 40, marginBottom: 8 }}>🏠</div>
+                <div style={{ fontSize: 12, color: '#999' }}>No photo uploaded</div>
+              </div>
+              <Button icon={<UploadOutlined />} block>Upload Photo</Button>
+            </PanelBody>
+
+            {/* Gallery */}
+            <PanelHeader>Gallery</PanelHeader>
+            <PanelBody>
+              <div style={{
+                width: 64, height: 64, border: '1px dashed #d9d9d9',
+                borderRadius: 6, display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', color: '#999', fontSize: 11,
+              }}>
+                <PlusOutlined style={{ fontSize: 18, marginBottom: 4 }} />
+                Upload
+              </div>
+            </PanelBody>
+
+          </div>
+
+          {/* ── RIGHT COLUMN ────────────────────────────────────────────── */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+
+            {/* General Information */}
+            <SectionLabel>GENERAL INFORMATION</SectionLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
+              <Form.Item
+                name="display_name"
+                label={<><span style={{ color: '#ff4d4f', marginRight: 4 }}>*</span>Property Name</>}
+                rules={[{ required: true, message: 'Please enter property name' }]}
+              >
+                <Input placeholder="Property name" />
+              </Form.Item>
+
+              <Form.Item name="year_of_built" label="Year Built">
+                <Input placeholder="e.g. 2005" />
+              </Form.Item>
+
+              <Form.Item name="country" label="Country">
+                <Input placeholder="Country" />
+              </Form.Item>
+
+              <Form.Item name="district" label="District">
+                <Input placeholder="District" />
+              </Form.Item>
+
+              <Form.Item name="city" label="City">
+                <Input placeholder="City" />
+              </Form.Item>
+
+              <Form.Item name="state" label="State / Province">
+                <Input placeholder="State / Province" />
+              </Form.Item>
+            </div>
+
+            {/* Address — full width */}
+            <Form.Item name="street_address" label="Address">
+              <Input placeholder="Street address" />
+            </Form.Item>
+
+            {/* Property Type */}
+            <SectionLabel>PROPERTY TYPE</SectionLabel>
+            <Form.Item name="type">
+              <Radio.Group style={{ width: '100%' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  {[
+                    { value: 1, label: 'RESIDENTIAL PROPERTY', desc: RESIDENTIAL_DESC },
+                    { value: 2, label: 'COMMERCIAL PROPERTY',  desc: COMMERCIAL_DESC  },
+                  ].map(opt => (
+                    <Radio.Button
+                      key={opt.value}
+                      value={opt.value}
+                      style={{
+                        height: 'auto', padding: '14px 16px',
+                        whiteSpace: 'normal', lineHeight: 'normal',
+                        textAlign: 'left', borderRadius: 6,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 6 }}>{opt.label}</div>
+                      <div style={{ fontSize: 11, color: '#888', fontWeight: 400, lineHeight: 1.5 }}>
+                        {opt.desc}
+                      </div>
+                    </Radio.Button>
+                  ))}
+                </div>
+              </Radio.Group>
+            </Form.Item>
+
+            {/* Property Amenities */}
+            <SectionLabel>PROPERTY AMENITIES</SectionLabel>
+            {amenities.length === 0 ? (
+              <div style={{ color: '#bbb', fontSize: 13, marginBottom: 16 }}>
+                No amenities configured. Add them via Settings → Amenity.
+              </div>
+            ) : (
+              <div style={{
+                display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: '10px 0', marginBottom: 16,
+              }}>
+                {amenities.map(a => (
+                  <Checkbox
+                    key={a.id}
+                    checked={selectedAmenityIds.includes(Number(a.id))}
+                    onChange={() => toggleAmenity(Number(a.id))}
+                  >
+                    {a.display_name}
+                  </Checkbox>
+                ))}
+              </div>
+            )}
+
+            {/* Payment Instructions */}
+            <SectionLabel>PAYMENT INSTRUCTIONS</SectionLabel>
+            <Form.Item name="payment_instructions">
+              <Input.TextArea rows={3} placeholder="e.g. Bank account details, accepted payment methods..." />
+            </Form.Item>
+
+            {/* Notes */}
+            <SectionLabel>NOTES</SectionLabel>
+            <Form.Item name="notes">
+              <Input.TextArea rows={4} placeholder="Please input your notes here" />
+            </Form.Item>
+
+            {/* Document upload placeholder */}
+            <div style={{
+              border: '1px dashed #d9d9d9', borderRadius: 6, padding: 28,
+              textAlign: 'center', marginTop: 4,
+            }}>
+              <UploadOutlined style={{ fontSize: 28, color: '#1677ff', marginBottom: 8, display: 'block' }} />
+              <div style={{ fontWeight: 500, marginBottom: 4 }}>Upload</div>
+              <div style={{ fontSize: 12, color: '#999' }}>Store documents and templates</div>
+            </div>
+
+          </div>
+        </div>
+
+        {/* ── Bottom action buttons ─────────────────────────────────────── */}
+        <div style={{
+          display: 'flex', justifyContent: 'space-between',
+          marginTop: 32, paddingTop: 16, borderTop: '1px solid #f0f0f0',
+        }}>
+          <Button onClick={() => router.push(`/property/${params.id}/detail`)}>
+            Cancel
+          </Button>
+          <Button type="primary" htmlType="submit" loading={loading} style={{ minWidth: 120 }}>
+            SUBMIT
+          </Button>
+        </div>
+      </Form>
     </MainLayout>
   );
 }
