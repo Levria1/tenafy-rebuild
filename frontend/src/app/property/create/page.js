@@ -285,8 +285,8 @@ export default function PropertyCreatePage() {
                 {amenities.map(a => (
                   <Checkbox
                     key={a.id}
-                    checked={selectedAmenityIds.includes(Number(a.id))}
-                    onChange={() => toggleAmenity(Number(a.id))}
+                    checked={selectedAmenityIds.includes(a.id)}
+                    onChange={() => toggleAmenity(a.id)}
                   >
                     {a.display_name}
                   </Checkbox>

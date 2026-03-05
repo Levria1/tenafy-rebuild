@@ -76,6 +76,7 @@ export default function PropertyEditPage() {
           currency:              d.currency,
           type:                  d.type || 1,
           status:                d.status ?? 1,
+          mls:                   d.mls,
           payment_instructions:  d.payment_instructions,
           notes:                 d.notes,
         });
@@ -84,7 +85,7 @@ export default function PropertyEditPage() {
       if (amenRes.data.code === 200) {
         const list = amenRes.data.data || [];
         setAmenities(list);
-        setSelectedAmenityIds(list.filter(a => a.selected).map(a => Number(a.id)));
+        setSelectedAmenityIds(list.filter(a => Number(a.selected) === 1).map(a => a.id));
       }
     } catch (err) {
       message.error('Failed to load property');
@@ -137,7 +138,7 @@ export default function PropertyEditPage() {
         </h2>
       </div>
 
-      <Form form={form} layout="vertical" onFinish={onFinish}>
+      <Form form={form} layout="vertical" onFinish={onFinish} onFinishFailed={({ errorFields }) => message.error(errorFields?.[0]?.errors?.[0] || 'Please check required fields')}>
         <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
 
           {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
@@ -241,6 +242,14 @@ export default function PropertyEditPage() {
               <Form.Item name="state" label="State / Province">
                 <Input placeholder="State / Province" />
               </Form.Item>
+
+              <Form.Item name="zip_code" label="Zip / Postal Code">
+                <Input placeholder="Zip / Postal Code" />
+              </Form.Item>
+
+              <Form.Item name="mls" label="MLS #">
+                <Input placeholder="MLS number" />
+              </Form.Item>
             </div>
 
             {/* Address — full width */}
@@ -290,8 +299,8 @@ export default function PropertyEditPage() {
                 {amenities.map(a => (
                   <Checkbox
                     key={a.id}
-                    checked={selectedAmenityIds.includes(Number(a.id))}
-                    onChange={() => toggleAmenity(Number(a.id))}
+                    checked={selectedAmenityIds.includes(a.id)}
+                    onChange={() => toggleAmenity(a.id)}
                   >
                     {a.display_name}
                   </Checkbox>

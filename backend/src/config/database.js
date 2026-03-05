@@ -9,7 +9,9 @@ const pool = mysql.createPool({
   database: config.database.database,
   waitForConnections: config.database.waitForConnections,
   connectionLimit: config.database.connectionLimit,
-  queueLimit: config.database.queueLimit
+  queueLimit: config.database.queueLimit,
+  supportBigNumbers: true,
+  bigNumberStrings: true
 });
 
 pool.on('connection', () => {

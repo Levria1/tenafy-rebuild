@@ -388,13 +388,14 @@ router.get('/amenities/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const propertyType = parseInt(req.query.type) || 1;
+    const category = parseInt(req.query.category) || 0;
     const [amenities] = await pool.execute(
-      'SELECT id, display_name, category, type FROM amenity WHERE org_id = ? AND enabled = 1 AND category = 0 AND type = ? ORDER BY order_id, display_name',
-      [orgId, propertyType]
+      'SELECT id, display_name, category, type FROM amenity WHERE org_id = ? AND enabled = 1 AND category = ? AND type = ? ORDER BY order_id, display_name',
+      [orgId, category, propertyType]
     );
     res.json({ code: 200, data: amenities });
   } catch (error) {
-    console.error('Get org property amenities error:', error);
+    console.error('Get org amenities error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get amenities' });
   }
 });
@@ -515,16 +516,16 @@ router.post('/', authenticate, async (req, res) => {
             type, status, currency, year_of_built, notes, payment_instructions, amenityIds } = req.body;
     const orgId = req.user.orgId;
 
-    const [result] = await pool.execute(
-      `INSERT INTO property (org_id, display_name, street_address, city, state, country,
+    const propertyId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+
+    await pool.execute(
+      `INSERT INTO property (id, org_id, display_name, street_address, city, state, country,
        zip_code, district, type, status, currency, year_of_built, notes, payment_instructions, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [orgId, display_name, street_address, city, state, country, zip_code,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [propertyId, orgId, display_name, street_address, city, state, country, zip_code || null,
        district || null, type || 1, status ?? 1, currency || null,
        year_of_built || null, notes || null, payment_instructions || null]
     );
-
-    const propertyId = result.insertId;
 
     // Save amenities if provided
     if (amenityIds && amenityIds.length > 0) {
@@ -554,8 +555,9 @@ router.put('/:id', authenticate, async (req, res) => {
        country = ?, zip_code = ?, district = ?, type = ?, status = ?, currency = ?,
        year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, updated_at = NOW()
        WHERE id = ? AND org_id = ?`,
-      [display_name, street_address, city, state, country, zip_code, district || null,
-       type, status, currency || null, year_of_built || null, mls || null, notes || null,
+      [display_name || null, street_address || null, city || null, state || null,
+       country || null, zip_code || null, district || null, type ?? 1, status ?? 1,
+       currency || null, year_of_built || null, mls || null, notes || null,
        payment_instructions || null, id, orgId]
     );
 
@@ -637,7 +639,13 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
 router.post('/:property_id/unit', authenticate, async (req, res) => {
   try {
     const { property_id } = req.params;
-    const { name, internal_note, rent_price_min, deposit_price, beds, baths, size } = req.body;
+    const {
+      name, type, amenity_type, beds, baths, size, size_unit, parking,
+      smoking, laundry, amenity_detail, access_information, key_code,
+      wifi_information, payment_information, internal_note,
+      rent_price_min, rent_price_max, deposit_price, owner_id,
+      charge_method, fee, amenityIds
+    } = req.body;
     const orgId = req.user.orgId;
 
     // Verify property belongs to org
@@ -646,11 +654,33 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
       return res.status(404).json({ code: 404, message: 'Property not found' });
     }
 
-    const [result] = await pool.execute(
-      'INSERT INTO unit (property_id, name, internal_note, rent_price_min, deposit_price, status, beds, baths, size, active_status, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 1, NOW())',
-      [property_id, name, internal_note, rent_price_min, deposit_price, beds, baths, size]
+    const unitId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+
+    await pool.execute(
+      `INSERT INTO unit (id, property_id, name, type, amenity_type, beds, baths, size, size_unit,
+       parking, smoking, laundry, amenity_detail, access_information, key_code,
+       wifi_information, payment_information, internal_note,
+       rent_price_min, rent_price_max, deposit_price, owner_id,
+       charge_method, fee, status, active_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
+      [unitId, property_id, name || null, type || null, amenity_type ?? 1,
+       beds ?? null, baths ?? null, size ?? null, size_unit || 'sqft',
+       parking ?? null, smoking ? 1 : 0, laundry ? 1 : 0,
+       amenity_detail || null, access_information || null, key_code || null,
+       wifi_information || null, payment_information || null, internal_note || null,
+       rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
+       owner_id || null, charge_method || null, fee ?? null]
     );
-    res.json({ code: 200, message: 'Unit created', data: { id: result.insertId } });
+
+    // Save unit amenities if provided
+    if (amenityIds && amenityIds.length > 0) {
+      await pool.execute(
+        `INSERT INTO unit_amenity (unit_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
+        amenityIds.flatMap(aid => [unitId, aid])
+      );
+    }
+
+    res.json({ code: 200, message: 'Unit created', data: { id: unitId } });
   } catch (error) {
     console.error('Create unit error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create unit' });
@@ -924,10 +954,11 @@ router.get('/unit/:unit_id/current-lease', authenticate, async (req, res) => {
     const unitId = req.params.unit_id;
     const [leases] = await pool.execute(
       `SELECT l.*, t.first_name, t.last_name, t.email, t.phone,
-              c.symbol AS currency_symbol, c.code AS currency_code
+              p.currency AS currency_code
        FROM leasing l
        LEFT JOIN tenant t ON l.tenant_id = t.id
-       LEFT JOIN currency c ON l.currency_id = c.id
+       LEFT JOIN unit u ON l.unit_id = u.id
+       LEFT JOIN property p ON u.property_id = p.id
        WHERE l.unit_id = ? AND l.status = 1 AND l.deleted_at IS NULL
        ORDER BY l.start_date DESC LIMIT 1`,
       [unitId]
@@ -1058,8 +1089,8 @@ router.get('/unit/:unit_id/property-info', authenticate, async (req, res) => {
   try {
     const unitId = req.params.unit_id;
     const [[propInfo]] = await pool.execute(
-      `SELECT p.id, p.display_name, p.street_address, p.city, p.state, p.zip, p.country,
-              p.year_built, p.code AS property_code
+      `SELECT p.id, p.display_name, p.street_address, p.city, p.state, p.zip_code, p.country,
+              p.year_of_built, p.district, p.currency
        FROM property p
        JOIN unit u ON u.property_id = p.id
        WHERE u.id = ?`,

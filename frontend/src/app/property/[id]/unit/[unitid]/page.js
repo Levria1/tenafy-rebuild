@@ -70,12 +70,12 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 24px' }}>
             {amenities.map((a) => (
               <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 180 }}>
-                {a.selected ? (
+                {Number(a.selected) === 1 ? (
                   <CheckOutlined style={{ color: '#52c41a', fontSize: 12 }} />
                 ) : (
                   <CloseOutlined style={{ color: '#ff4d4f', fontSize: 12 }} />
                 )}
-                <Text style={{ fontSize: 13, color: a.selected ? '#262626' : '#999' }}>{a.display_name}</Text>
+                <Text style={{ fontSize: 13, color: Number(a.selected) === 1 ? '#262626' : '#999' }}>{a.display_name}</Text>
               </div>
             ))}
           </div>

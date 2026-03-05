@@ -93,6 +93,7 @@ export const property = {
   deleteMaintenance: (id) => api.delete(`/api/property/unit/maintenance/${id}`),
   // Property amenity methods
   getOrgPropertyAmenities: (type) => api.get('/api/property/amenities/list', { params: { type } }),
+  getOrgUnitAmenities: (type) => api.get('/api/property/amenities/list', { params: { type, category: 1 } }),
   getPropertyAmenities: (id) => api.get(`/api/property/${id}/amenities`),
   updatePropertyAmenities: (id, data) => api.put(`/api/property/${id}/amenities`, data),
   // Unit amenity methods

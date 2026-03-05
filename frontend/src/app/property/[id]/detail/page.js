@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Button, Spin, Tag, Space, message, Tabs, Modal } from 'antd';
+import { Button, Spin, Tag, Space, message, Tabs, Modal, Dropdown } from 'antd';
 import {
   ArrowLeftOutlined, PlusOutlined, HomeOutlined, UserOutlined,
-  RightOutlined, EditOutlined, DeleteOutlined,
+  RightOutlined, EditOutlined, DeleteOutlined, CopyOutlined, EllipsisOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
 import { property, accounting } from '../../../../lib/api';
@@ -172,7 +172,7 @@ function PropertyInfoTab({ propertyData, amenities }) {
       {/* Property Amenities — show only selected amenities */}
       <SectionHeader title="PROPERTY AMENITIES" />
       {(() => {
-        const selected = amenities.filter(a => a.selected);
+        const selected = amenities.filter(a => Number(a.selected) === 1);
         return selected.length === 0 ? (
           <div style={{ color: '#bbb', fontSize: 13 }}>No amenities selected.</div>
         ) : (
@@ -289,14 +289,23 @@ export default function PropertyDetailPage() {
           <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => router.push('/property')} style={{ padding: '0 4px' }} />
           <span style={{ fontSize: 15, fontWeight: 500 }}>{propertyData.display_name}</span>
         </div>
-        <Space>
-          <Button icon={<EditOutlined />} onClick={() => router.push(`/property/${params.id}/edit`)}>
-            Edit
-          </Button>
-          <Button danger icon={<DeleteOutlined />} onClick={handleDelete}>
-            Delete
-          </Button>
-        </Space>
+        <Dropdown
+          trigger={['hover']}
+          placement="bottomRight"
+          menu={{
+            items: [
+              { key: 'edit', icon: <EditOutlined />, label: 'Edit', onClick: () => router.push(`/property/${params.id}/edit`) },
+              { key: 'clone', icon: <CopyOutlined />, label: 'Clone' },
+              { key: 'delete', icon: <DeleteOutlined />, label: 'Delete', danger: true, onClick: handleDelete },
+            ],
+          }}
+        >
+          <Button
+            shape="circle"
+            icon={<EllipsisOutlined style={{ fontSize: 18 }} />}
+            style={{ border: '1px solid #d9d9d9' }}
+          />
+        </Dropdown>
       </div>
 
       {/* Top 3-column grid */}
