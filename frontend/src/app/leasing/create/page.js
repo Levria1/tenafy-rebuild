@@ -50,6 +50,9 @@ export default function LeaseCreatePage() {
   // Selected tenant info (for pre-filling email fields)
   const [selectedTenant, setSelectedTenant] = useState(null);
 
+  // Recurring invoice toggle
+  const [makeRecurring, setMakeRecurring] = useState(true);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -206,6 +209,7 @@ export default function LeaseCreatePage() {
 
   const buildPayload = () => {
     const values = form.getFieldsValue(true);
+    const price = parseFloat(values.price) || 0;
     return {
       unit_id: values.unit_id,
       tenant_id: values.tenant_id,
@@ -213,12 +217,13 @@ export default function LeaseCreatePage() {
       start_date: values.start_date?.format('YYYY-MM-DD'),
       end_date: values.end_date?.format('YYYY-MM-DD') || null,
       type: values.type ?? 0,
-      price: values.price || 0,
-      deposit: values.deposit || 0,
-      due_date: values.due_date || null,
-      invoicing: values.invoicing || null,
-      amount: values.amount || values.price || 0,
-      first_invoice_date: values.first_invoice_date?.format('YYYY-MM-DD') || null,
+      price: price,
+      deposit: parseFloat(values.deposit) || 0,
+      due_date: makeRecurring ? (values.due_date || null) : null,
+      invoicing: makeRecurring ? (values.invoicing || null) : null,
+      amount: price,
+      first_invoice_date: makeRecurring ? (values.first_invoice_date?.format('YYYY-MM-DD') || null) : null,
+      share_lease: makeRecurring ? 1 : 0,
       contract_type: values.contract_type ?? 0,
       unit_information: values.unit_information || null,
       note: values.note || null,
@@ -241,7 +246,6 @@ export default function LeaseCreatePage() {
       // email
       email_template_id: values.email_template_id || null,
       access_setting: values.access_setting || null,
-      share_lease: values.share_lease || false,
       all_past: values.all_past || false,
       mark_past_paid: values.mark_past_paid || false,
     };
@@ -282,17 +286,23 @@ export default function LeaseCreatePage() {
   };
 
   // ─── Step 1: Property & Tenants ─────────────────────────────
+  const sectionStyle = { border: '1px solid #e8e8e8', borderRadius: 4, padding: 20, marginBottom: 20 };
+  const sectionTitle = { fontSize: 13, fontWeight: 600, letterSpacing: '0.5px', color: '#333', marginBottom: 16 };
+  const fieldLabel = { fontSize: 11, fontWeight: 700, letterSpacing: '0.5px', color: '#555', textTransform: 'uppercase', marginBottom: 4 };
+  const reqStar = { color: '#d4880f', marginRight: 2 };
+  const FLabel = ({ required, children }) => (
+    <div style={fieldLabel}>{required && <span style={reqStar}>*</span>}{children}</div>
+  );
+
   const renderStep1 = () => (
     <>
-      {/* Property & Unit */}
-      <Card size="small" title="Property" style={{ marginBottom: 16 }}>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item
-              name="property_id"
-              label="Property Name"
-              rules={[{ required: true, message: 'Select a property' }]}
-            >
+      {/* Property Information */}
+      <div style={sectionStyle}>
+        <div style={sectionTitle}>PROPERTY INFORMATION</div>
+        <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+          <div style={{ flex: 2 }}>
+            <FLabel required>PROPERTY NAME</FLabel>
+            <Form.Item name="property_id" noStyle rules={[{ required: true, message: 'Select a property' }]}>
               <Select
                 placeholder="Select Property"
                 showSearch
@@ -305,13 +315,10 @@ export default function LeaseCreatePage() {
                 ))}
               </Select>
             </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item
-              name="unit_id"
-              label="Unit"
-              rules={[{ required: true, message: 'Select a unit' }]}
-            >
+          </div>
+          <div style={{ flex: 1 }}>
+            <FLabel required>UNIT</FLabel>
+            <Form.Item name="unit_id" noStyle rules={[{ required: true, message: 'Select a unit' }]}>
               <Select
                 placeholder="Select Unit"
                 showSearch
@@ -324,171 +331,169 @@ export default function LeaseCreatePage() {
                 ))}
               </Select>
             </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item
-              name="type"
-              label="Lease Type"
-              initialValue={0}
-              rules={[{ required: true, message: 'Select lease type' }]}
-            >
+          </div>
+          <div style={{ flex: 1 }}>
+            <FLabel>LEASE TYPE</FLabel>
+            <Form.Item name="type" noStyle initialValue={0}>
               <Select>
-                <Select.Option value={0}>Fixed Term</Select.Option>
+                <Select.Option value={0}>Fixed</Select.Option>
                 <Select.Option value={1}>Month-to-Month</Select.Option>
               </Select>
             </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item
-              name="start_date"
-              label="Start Date"
-              rules={[{ required: true, message: 'Select start date' }]}
-            >
-              <DatePicker style={{ width: '100%' }} onChange={handleDateChange} />
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 0 }}>
+          <FLabel required>START DATE AND END DATE</FLabel>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Form.Item name="start_date" noStyle rules={[{ required: true, message: 'Select start date' }]}>
+              <DatePicker style={{ width: 160 }} onChange={handleDateChange} />
             </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="end_date" label="End Date">
-              <DatePicker style={{ width: '100%' }} onChange={handleDateChange} />
+            <span style={{ color: '#999' }}>~</span>
+            <Form.Item name="end_date" noStyle>
+              <DatePicker style={{ width: 160 }} onChange={handleDateChange} />
             </Form.Item>
-          </Col>
-        </Row>
+          </div>
+        </div>
 
         {/* Conflict Alert */}
         {conflictChecking && (
-          <div style={{ marginBottom: 12 }}>
+          <div style={{ marginTop: 12 }}>
             <Spin size="small" /> Checking for lease conflicts...
           </div>
         )}
         {conflictResult && conflictResult.conflict && (
           <Alert
-            type="error"
-            showIcon
-            icon={<WarningOutlined />}
+            type="error" showIcon icon={<WarningOutlined />}
             message="Lease Conflict Detected"
             description={conflictResult.message}
-            style={{ marginBottom: 12 }}
+            style={{ marginTop: 12 }}
           />
         )}
         {conflictResult && !conflictResult.conflict && form.getFieldValue('unit_id') && (
           <Alert
-            type="success"
-            showIcon
-            icon={<CheckCircleOutlined />}
+            type="success" showIcon icon={<CheckCircleOutlined />}
             message="No conflicts found for this unit and date range."
-            style={{ marginBottom: 12 }}
+            style={{ marginTop: 12 }}
           />
         )}
-      </Card>
+      </div>
 
-      {/* Tenant */}
-      <Card size="small" title="Tenant" style={{ marginBottom: 16 }}>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item
-              name="tenant_id"
-              label="Tenant"
-              rules={[{ required: true, message: 'Select a tenant' }]}
+      {/* Tenants */}
+      <div style={sectionStyle}>
+        <div style={sectionTitle}>TENANTS</div>
+        <div style={{ marginBottom: 16 }}>
+          <FLabel required>SELECT TENANT</FLabel>
+          <Form.Item name="tenant_id" noStyle rules={[{ required: true, message: 'Select a tenant' }]}>
+            <Select
+              placeholder="Please select contact"
+              showSearch
+              optionFilterProp="children"
+              onChange={handleTenantChange}
+              loading={loadingData}
+              style={{ width: '100%' }}
             >
-              <Select
-                placeholder="Select Tenant"
-                showSearch
-                optionFilterProp="children"
-                onChange={handleTenantChange}
-                loading={loadingData}
-              >
-                {tenants.map(t => (
-                  <Select.Option key={t.id} value={t.id}>
-                    {[t.first_name, t.last_name].filter(Boolean).join(' ')} {t.email ? `(${t.email})` : ''}
-                  </Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="contact_phone" label="Contact Phone">
-              <Input placeholder="Phone number" />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={16}>
-          <Col span={24}>
-            <Form.Item name="additionalTenantIds" label="Additional Tenants">
-              <Select
-                mode="multiple"
-                placeholder="Select additional tenants (optional)"
-                showSearch
-                optionFilterProp="children"
-                loading={loadingData}
-                allowClear
-              >
-                {tenants.map(t => (
-                  <Select.Option key={t.id} value={t.id}>
-                    {[t.first_name, t.last_name].filter(Boolean).join(' ')} {t.email ? `(${t.email})` : ''}
-                  </Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-          </Col>
-        </Row>
-      </Card>
+              {tenants.map(t => (
+                <Select.Option key={t.id} value={t.id}>
+                  {[t.first_name, t.last_name].filter(Boolean).join(' ')} {t.email ? `(${t.email})` : ''}
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+        </div>
+        <div>
+          <FLabel>ADDITIONAL TENANT</FLabel>
+          <Form.Item name="additionalTenantIds" noStyle>
+            <Select
+              mode="multiple"
+              placeholder="Please select additional contact"
+              showSearch
+              optionFilterProp="children"
+              loading={loadingData}
+              allowClear
+              style={{ width: '100%' }}
+            >
+              {tenants.map(t => (
+                <Select.Option key={t.id} value={t.id}>
+                  {[t.first_name, t.last_name].filter(Boolean).join(' ')} {t.email ? `(${t.email})` : ''}
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+        </div>
+      </div>
 
       {/* Recurring Invoice */}
-      <Card size="small" title="Recurring Invoice" style={{ marginBottom: 16 }}>
-        <Row gutter={16}>
-          <Col span={8}>
-            <Form.Item name="price" label="Rent (HK$)">
-              <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="0.00" />
+      <div style={sectionStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <div style={sectionTitle}>RECURRING INVOICE</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.5px', color: '#555', textTransform: 'uppercase' }}>
+              MAKE RECURRING
+            </span>
+            <Switch checked={makeRecurring} onChange={setMakeRecurring} size="small" />
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            <FLabel required>AMOUNT</FLabel>
+            <Form.Item name="price" noStyle>
+              <Input placeholder="Please input amount" />
             </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item name="amount" label="Invoice Amount (HK$)">
-              <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="Same as rent if empty" />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item name="invoicing" label="Invoice Schedule">
-              <Select placeholder="Select schedule" allowClear>
-                {INVOICE_SCHEDULES.map(s => (
-                  <Select.Option key={s.value} value={s.value}>{s.label}</Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={16}>
-          <Col span={8}>
-            <Form.Item name="first_invoice_date" label="First Invoice Date">
-              <DatePicker style={{ width: '100%' }} />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item name="due_date" label="Due Date (Day of Month)">
-              <Select placeholder="Select day" allowClear>
-                {DUE_DAY_OPTIONS.map(d => (
-                  <Select.Option key={d.value} value={d.value}>{d.label}</Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item name="deposit" label="Deposit (HK$)">
-              <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="0.00" />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item name="mark_past_paid" valuePropName="checked">
-              <Checkbox>Mark all past invoices as paid</Checkbox>
-            </Form.Item>
-          </Col>
-        </Row>
-      </Card>
+          </div>
+          {makeRecurring && (
+            <>
+              <div style={{ flex: 1 }}>
+                <FLabel required>FIRST INVOICE DATE</FLabel>
+                <Form.Item name="first_invoice_date" noStyle>
+                  <DatePicker style={{ width: '100%' }} placeholder="First Invoice Date" />
+                </Form.Item>
+              </div>
+              <div style={{ flex: 1 }}>
+                <FLabel required>INVOICE SCHEDULE</FLabel>
+                <Form.Item name="invoicing" noStyle>
+                  <Select placeholder="Monthly">
+                    {INVOICE_SCHEDULES.map(s => (
+                      <Select.Option key={s.value} value={s.value}>{s.label}</Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </div>
+              <div style={{ flex: 1 }}>
+                <FLabel required>DUE DATE</FLabel>
+                <Form.Item name="due_date" noStyle>
+                  <Select placeholder="Please select Due date" allowClear>
+                    {DUE_DAY_OPTIONS.map(d => (
+                      <Select.Option key={d.value} value={d.value}>{d.label}</Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Deposit */}
+      <div style={sectionStyle}>
+        <div style={sectionTitle}>DEPOSIT</div>
+        <div>
+          <FLabel>ADD DEPOSIT</FLabel>
+          <Form.Item name="deposit" noStyle>
+            <Input placeholder="Please input deposit" style={{ maxWidth: 500 }} />
+          </Form.Item>
+        </div>
+      </div>
+
+      {/* Mark past invoices */}
+      <div style={{ marginBottom: 16 }}>
+        <Form.Item name="mark_past_paid" valuePropName="checked" noStyle>
+          <Checkbox>Automatically mark all past invoices as paid</Checkbox>
+        </Form.Item>
+        <div style={{ color: '#d4380d', fontSize: 12, marginTop: 8 }}>
+          * If you are adding a lease that started in the past and you want the system to mark all previous transaction as paid, click here and all past invoices will be marked as paid on their due days.
+        </div>
+      </div>
     </>
   );
 

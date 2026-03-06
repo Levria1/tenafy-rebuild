@@ -257,6 +257,14 @@ export default function InvoicesPage() {
       },
     },
     {
+      title: 'INVOICE #', dataIndex: 'invoice_code', key: 'invoice_code', width: 140,
+      render: (code, r) => code ? (
+        <Button type="link" size="small" style={{ padding: 0 }} onClick={() => openDrawer(r)}>
+          {code}
+        </Button>
+      ) : '-',
+    },
+    {
       title: 'DUE DATE', dataIndex: 'due_on', key: 'due_on', width: 110,
       sorter: true,
       render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',

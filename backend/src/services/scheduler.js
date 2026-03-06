@@ -56,59 +56,6 @@ async function sendAdminAlert({ orgId, subject, html }) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getPeriodCheck(schedule) {
-  const s = (schedule || '').toLowerCase();
-
-  switch (s) {
-    case 'weekly':
-      return { sql: 'YEARWEEK(due_on, 1) = YEARWEEK(NOW(), 1)', params: [] };
-    case 'bi-weekly':
-      return { sql: 'due_on >= DATE_SUB(CURDATE(), INTERVAL 13 DAY) AND due_on <= DATE_ADD(CURDATE(), INTERVAL 13 DAY)', params: [] };
-    case 'monthly':
-      return { sql: 'YEAR(due_on) = YEAR(NOW()) AND MONTH(due_on) = MONTH(NOW())', params: [] };
-    case 'quarterly':
-      return { sql: 'YEAR(due_on) = YEAR(NOW()) AND QUARTER(due_on) = QUARTER(NOW())', params: [] };
-    case 'bi-annually':
-      return { sql: 'YEAR(due_on) = YEAR(NOW()) AND CEIL(MONTH(due_on) / 6) = CEIL(MONTH(NOW()) / 6)', params: [] };
-    case 'annually':
-      return { sql: 'YEAR(due_on) = YEAR(NOW())', params: [] };
-    default:
-      return { sql: 'YEAR(due_on) = YEAR(NOW()) AND MONTH(due_on) = MONTH(NOW())', params: [] };
-  }
-}
-
-function calculateDueDate(schedule) {
-  const now = new Date();
-  const s = (schedule || '').toLowerCase();
-
-  switch (s) {
-    case 'weekly':
-      return new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    case 'bi-weekly':
-      return new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
-    case 'monthly': {
-      return new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    }
-    case 'quarterly': {
-      const currentQuarter = Math.floor(now.getMonth() / 3);
-      const nextQuarterMonth = (currentQuarter + 1) * 3;
-      const year = nextQuarterMonth >= 12 ? now.getFullYear() + 1 : now.getFullYear();
-      const month = nextQuarterMonth >= 12 ? 0 : nextQuarterMonth;
-      return new Date(year, month, 1);
-    }
-    case 'bi-annually': {
-      const currentHalf = now.getMonth() < 6 ? 0 : 1;
-      const nextHalfMonth = currentHalf === 0 ? 6 : 0;
-      const nextHalfYear = currentHalf === 0 ? now.getFullYear() : now.getFullYear() + 1;
-      return new Date(nextHalfYear, nextHalfMonth, 1);
-    }
-    case 'annually':
-      return new Date(now.getFullYear() + 1, 0, 1);
-    default:
-      return new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  }
-}
-
 function toDateString(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -116,11 +63,70 @@ function toDateString(date) {
   return `${y}-${m}-${d}`;
 }
 
+// Advance a date by one invoice period (same as leasing.js)
+function advanceInvoiceDate(date, schedule, dueDay) {
+  const inv = String(schedule).toLowerCase();
+  const next = new Date(date);
+  if (inv === '1' || inv === 'daily') {
+    next.setDate(next.getDate() + 1);
+  } else if (inv === '7' || inv === 'weekly') {
+    next.setDate(next.getDate() + 7);
+  } else if (inv === '14' || inv === 'bi-weekly') {
+    next.setDate(next.getDate() + 14);
+  } else if (inv === '28') {
+    next.setDate(next.getDate() + 28);
+  } else if (inv === '30' || inv === 'monthly') {
+    next.setMonth(next.getMonth() + 1);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else if (inv === '60' || inv === 'bi-monthly') {
+    next.setMonth(next.getMonth() + 2);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else if (inv === '90' || inv === 'quarterly') {
+    next.setMonth(next.getMonth() + 3);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else if (inv === '180' || inv === 'bi-annually') {
+    next.setMonth(next.getMonth() + 6);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else if (inv === '365' || inv === 'annually') {
+    next.setFullYear(next.getFullYear() + 1);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else {
+    next.setMonth(next.getMonth() + 1); // default monthly
+  }
+  return next;
+}
+
+function daysDiff(date1, date2) {
+  const d1 = new Date(toDateString(date1));
+  const d2 = new Date(toDateString(date2));
+  return Math.round((d1.getTime() - d2.getTime()) / (1000 * 60 * 60 * 24));
+}
+
 // ---------------------------------------------------------------------------
 // Job 1: Auto-generate recurring invoices
 // ---------------------------------------------------------------------------
 
 async function generateRecurringInvoices() {
+  // Match original Tenafy behavior (LeasingServiceImpl.java):
+  // - Only process leases with share_lease=1 (recurring enabled)
+  // - Find the latest rent invoice for each lease
+  // - 1 day after that invoice's due date → create the next invoice
+  // - Handles catch-up if scheduler missed days (creates all missing invoices)
   const [leases] = await pool.execute(
     `SELECT
        l.id,
@@ -128,15 +134,22 @@ async function generateRecurringInvoices() {
        l.unit_id,
        l.amount AS price,
        l.invoicing,
+       l.due_date,
+       l.first_invoice_date,
+       l.start_date,
+       l.end_date,
+       l.all_past,
        l.currency_id,
        p.org_id   AS org_id,
        p.display_name AS property_name,
-       u.name AS unit_name
+       u.name AS unit_name,
+       u.property_id
      FROM leasing l
      JOIN unit u    ON l.unit_id = u.id
      JOIN property p ON u.property_id = p.id
      WHERE l.status = 1
        AND l.deleted_at IS NULL
+       AND l.share_lease = 1
        AND l.invoicing IS NOT NULL
        AND l.invoicing != ''
        AND l.amount IS NOT NULL
@@ -150,8 +163,8 @@ async function generateRecurringInvoices() {
 
   console.log(`[Scheduler] Found ${leases.length} recurring lease(s) to evaluate.`);
 
-  // Track results per org so we can send grouped notifications
   const orgResults = {}; // orgId -> { created, skipped, errors, errorDetails[] }
+  const today = new Date(toDateString(new Date()));
 
   for (const lease of leases) {
     if (!orgResults[lease.org_id]) {
@@ -160,56 +173,100 @@ async function generateRecurringInvoices() {
     const result = orgResults[lease.org_id];
 
     try {
-      const { sql: periodSql, params: periodParams } = getPeriodCheck(lease.invoicing);
-
-      const [[{ count }]] = await pool.execute(
-        `SELECT COUNT(*) AS count
-         FROM invoice
-         WHERE tenant_id = ?
-           AND unit_id   = ?
-           AND org_id    = ?
-           AND ${periodSql}`,
-        [lease.tenant_id, lease.unit_id, lease.org_id, ...periodParams]
+      // Find the latest invoice for this lease (by due_on)
+      const [[latestInvoice]] = await pool.execute(
+        `SELECT due_on FROM invoice
+         WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL
+         ORDER BY due_on DESC LIMIT 1`,
+        [lease.id, lease.org_id]
       );
 
-      if (count > 0) {
+      if (!latestInvoice) {
         result.skipped++;
         continue;
       }
 
-      const invoiceCode = `INV-${Date.now()}-${lease.id}`;
-      const dueDate = toDateString(calculateDueDate(lease.invoicing));
+      const lastDueDate = new Date(latestInvoice.due_on);
+      const diff = daysDiff(today, lastDueDate);
 
-      const [[defaultCategory]] = await pool.execute(
-        `SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 ORDER BY id LIMIT 1`,
-        [lease.org_id]
+      // Original behavior: only trigger when today >= 1 day after last due date
+      if (diff < 1) {
+        result.skipped++;
+        continue;
+      }
+
+      // Get invoice sequence
+      const [[invSeq]] = await pool.execute(
+        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
+        [lease.org_id, 'invoice_code']
       );
-      const categoryId = defaultCategory ? defaultCategory.id : null;
+      let seqNext = invSeq ? Number(invSeq.seq_next) : 1;
+      let invoicesCreated = 0;
 
-      await pool.execute(
-        `INSERT INTO invoice
-           (org_id, tenant_id, unit_id, invoice_code, amount, note, due_on, currency_id, category, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())`,
-        [
-          lease.org_id,
-          lease.tenant_id,
-          lease.unit_id,
-          invoiceCode,
-          lease.price,
-          'Recurring rent invoice',
-          dueDate,
-          lease.currency_id,
-          categoryId,
-        ]
-      );
+      // Generate missing invoices (handles catch-up if scheduler missed days)
+      // Keep creating until we have one upcoming (future) invoice
+      let cursor = lastDueDate;
+      const MAX = 50;
+      let iterations = 0;
 
-      result.created++;
-      console.log(
-        `[Scheduler] Created invoice ${invoiceCode} for lease ${lease.id} ` +
-        `(tenant ${lease.tenant_id}, unit ${lease.unit_id}, due ${dueDate})`
-      );
+      while (iterations < MAX) {
+        const nextDueDate = advanceInvoiceDate(cursor, lease.invoicing, lease.due_date);
+        const nextDueDateStr = toDateString(nextDueDate);
 
-      await new Promise((resolve) => setTimeout(resolve, 2));
+        // Don't go past lease end date
+        if (lease.end_date && nextDueDate > new Date(lease.end_date)) break;
+
+        // Check for duplicate
+        const [[existing]] = await pool.execute(
+          `SELECT id FROM invoice WHERE leasing_id = ? AND due_on = ? AND deleted_at IS NULL`,
+          [lease.id, nextDueDateStr]
+        );
+
+        if (!existing) {
+          // Generate invoice code from sequence
+          let invoiceCode = 'INV-' + Date.now() + '-' + seqNext;
+          if (invSeq) {
+            invoiceCode = invSeq.pattern
+              .replace(/\{d,(\w+)\}/g, () => {
+                const now = new Date();
+                return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
+              })
+              .replace(/\{#,(\d+)\}/, (_, pad) => String(seqNext).padStart(parseInt(pad), '0'));
+            seqNext++;
+          }
+
+          const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+
+          // Status: past invoices are OPEN (0), not auto-paid
+          await pool.execute(
+            `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
+              invoice_code, amount, due_on, status, category, currency_id, type, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, 0, NOW())`,
+            [invoiceId, lease.org_id, lease.tenant_id, lease.unit_id, lease.id, lease.property_id,
+             invoiceCode, lease.price, nextDueDateStr, lease.currency_id]
+          );
+
+          invoicesCreated++;
+          console.log(
+            `[Scheduler] Created invoice ${invoiceCode} for lease ${lease.id} ` +
+            `(${lease.property_name} / ${lease.unit_name}, due ${nextDueDateStr})`
+          );
+        }
+
+        // If this invoice is in the future → we've created the next upcoming one, stop
+        if (nextDueDate > today) break;
+
+        cursor = nextDueDate;
+        iterations++;
+      }
+
+      // Update sequence counter
+      if (invSeq && invoicesCreated > 0) {
+        await pool.execute('UPDATE sequence SET seq_next = ? WHERE id = ?', [seqNext, invSeq.id]);
+      }
+
+      result.created += invoicesCreated;
+      if (invoicesCreated === 0) result.skipped++;
     } catch (err) {
       result.errors++;
       result.errorDetails.push(`${lease.property_name} / ${lease.unit_name}: ${err.message}`);
@@ -226,7 +283,7 @@ async function generateRecurringInvoices() {
         orgId,
         type: 'success',
         title: `${created} recurring invoice${created > 1 ? 's' : ''} generated`,
-        message: `${created} created, ${skipped} already existed. ${errors > 0 ? `${errors} failed.` : ''}`,
+        message: `${created} created, ${skipped} already up to date. ${errors > 0 ? `${errors} failed.` : ''}`,
         link: '/invoices',
       });
     }
@@ -243,7 +300,6 @@ async function generateRecurringInvoices() {
         link: '/leasing',
       });
 
-      // Also send email alert for errors
       await sendAdminAlert({
         orgId,
         subject: `${errors} recurring invoice(s) failed to generate`,
@@ -484,8 +540,8 @@ async function sendOverdueReminders() {
 function startScheduler() {
   console.log('[Scheduler] Starting background jobs...');
 
-  // Daily at 00:30 - generate recurring invoices
-  cron.schedule('30 0 * * *', async () => {
+  // Daily at 10:00 AM - generate recurring invoices (matches original Tenafy)
+  cron.schedule('0 10 * * *', async () => {
     console.log('[Scheduler] Running recurring invoice generation...');
     try {
       await generateRecurringInvoices();

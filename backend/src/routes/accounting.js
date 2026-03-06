@@ -57,8 +57,10 @@ router.post('/accounts', authenticate, async (req, res) => {
 
     // Server-side sorting
     const sortFieldMap = {
-      'payment_date': 'a.payment_date', 'contact': 't.first_name', 'property': 'p.display_name',
-      'account_name': 'ast.name', 'payment_method': 'pms.payment_method', 'category_name': 'cs.name',
+      'payment_date': 'a.payment_date', 'contact': 't.first_name',
+      'property': 'COALESCE(p.display_name, lp.display_name)',
+      'account_name': 'ast.name', 'payment_method': 'pms.payment_method',
+      'category_name': 'COALESCE(cs.name, lcs.name)',
       'outflow': 'CASE WHEN a.type = 1 THEN a.amount ELSE 0 END',
       'inflow': 'CASE WHEN a.type = 0 THEN a.amount ELSE 0 END',
       'note': 'a.note',
@@ -68,18 +70,27 @@ router.post('/accounts', authenticate, async (req, res) => {
 
     const [accounts] = await pool.execute(
       `SELECT a.*,
-              cs.name as category_name,
+              COALESCE(cs.name, lcs.name) as category_name,
               ast.name as account_name,
-              p.display_name as property_name,
-              u.name as unit_name,
+              COALESCE(p.display_name, lp.display_name) as property_name,
+              COALESCE(u.name, lu.name) as unit_name,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               pms.payment_method as payment_method_name
        FROM accounting a
+       LEFT JOIN (
+         SELECT accounting_id, MIN(id) as first_line_id
+         FROM accounting_line WHERE deleted_at IS NULL
+         GROUP BY accounting_id
+       ) fl ON fl.accounting_id = a.id
+       LEFT JOIN accounting_line al ON al.id = fl.first_line_id
        LEFT JOIN category_setting cs ON a.category = cs.id
+       LEFT JOIN category_setting lcs ON al.category = lcs.id
        LEFT JOIN account_setting ast ON a.account_setting_id = ast.id
        LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
        LEFT JOIN unit u ON a.unit_id = u.id
+       LEFT JOIN unit lu ON al.unit_id = lu.id
        LEFT JOIN property p ON a.property_id = p.id
+       LEFT JOIN property lp ON al.property_id = lp.id
        LEFT JOIN tenant t ON a.tenant_id = t.id
        WHERE ${whereClause}
        ORDER BY ${sortCol} ${sortDir} LIMIT ${limit} OFFSET ${offset}`,
@@ -110,6 +121,23 @@ router.post('/account', authenticate, async (req, res) => {
     } = req.body;
     const orgId = req.user.orgId;
 
+    // If currency_id not provided, look up the org's current currency
+    let resolvedCurrencyId = currency_id || null;
+    let resolvedCurrencyType = currency_type || null;
+    if (!resolvedCurrencyId) {
+      const [[curr]] = await pool.execute(
+        'SELECT id, detail FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1',
+        [orgId]
+      );
+      if (curr) {
+        resolvedCurrencyId = curr.id;
+        try {
+          const detail = typeof curr.detail === 'string' ? JSON.parse(curr.detail) : curr.detail;
+          resolvedCurrencyType = resolvedCurrencyType || detail?.code || null;
+        } catch (e) { /* ignore */ }
+      }
+    }
+
     // Generate snowflake-style ID
     const accountingId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
@@ -136,21 +164,23 @@ router.post('/account', authenticate, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [accountingId.toString(), orgId, property_id || null, unit_id || null, tenant_id || null, lease_id || null,
        category || null, account_setting_id || null, payment_setting_id || null,
-       currency_id || null, currency_type || null,
-       amount, note || null, type || 0, payment_date || null,
+       resolvedCurrencyId, resolvedCurrencyType,
+       amount, note || null, type ?? 0, payment_date || null,
        invoice_code || null, transaction_code, tag_id || null]
     );
 
     // Insert accounting lines if provided
     if (lines && Array.isArray(lines) && lines.length > 0) {
       for (const line of lines) {
+        const lineCategory = line.category || category || null;
+        if (!lineCategory) continue; // skip lines with no category (accounting_line.category is NOT NULL)
         const lineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
         await pool.execute(
           `INSERT INTO accounting_line
              (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
           [lineId.toString(), accountingId.toString(),
-           line.amount || 0, line.category || null, line.invoice_code || null,
+           line.amount || 0, lineCategory, line.invoice_code || null,
            line.property_id || null, line.unit_id || null, line.lease_id || null, line.tag_id || null]
         );
       }
@@ -171,18 +201,31 @@ router.get('/account/:id', authenticate, async (req, res) => {
 
     const [rows] = await pool.execute(
       `SELECT a.*,
-              cs.name as category_name,
+              COALESCE(a.category, al.category) as category,
+              COALESCE(a.property_id, al.property_id) as property_id,
+              COALESCE(a.unit_id, al.unit_id) as unit_id,
+              COALESCE(a.lease_id, al.lease_id) as lease_id,
+              COALESCE(cs.name, lcs.name) as category_name,
               ast.name as account_name,
               pms.payment_method as payment_method_name,
-              p.display_name as property_name,
-              u.name as unit_name,
+              COALESCE(p.display_name, lp.display_name) as property_name,
+              COALESCE(u.name, lu.name) as unit_name,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name
        FROM accounting a
+       LEFT JOIN (
+         SELECT accounting_id, MIN(id) as first_line_id
+         FROM accounting_line WHERE deleted_at IS NULL
+         GROUP BY accounting_id
+       ) fl ON fl.accounting_id = a.id
+       LEFT JOIN accounting_line al ON al.id = fl.first_line_id
        LEFT JOIN category_setting cs ON a.category = cs.id
+       LEFT JOIN category_setting lcs ON al.category = lcs.id
        LEFT JOIN account_setting ast ON a.account_setting_id = ast.id
        LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
        LEFT JOIN unit u ON a.unit_id = u.id
+       LEFT JOIN unit lu ON al.unit_id = lu.id
        LEFT JOIN property p ON a.property_id = p.id
+       LEFT JOIN property lp ON al.property_id = lp.id
        LEFT JOIN tenant t ON a.tenant_id = t.id
        WHERE a.id = ? AND a.org_id = ? AND a.deleted_at IS NULL`,
       [id, orgId]
@@ -217,25 +260,39 @@ router.put('/account/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const {
       category, account_setting_id, payment_setting_id,
-      amount, note, type, payment_date, invoice_code, tag_id
+      amount, note, type, payment_date, invoice_code, tag_id,
+      tenant_id, property_id, unit_id, lease_id
     } = req.body;
     const orgId = req.user.orgId;
+
+    // Check if record exists
+    const [existing] = await pool.execute(
+      'SELECT id FROM accounting WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
+      [id, orgId]
+    );
+    if (existing.length === 0) {
+      return res.status(404).json({ code: 404, message: 'Transaction not found' });
+    }
 
     await pool.execute(
       `UPDATE accounting
        SET category = ?, account_setting_id = ?, payment_setting_id = ?,
            amount = ?, note = ?, type = ?, payment_date = ?,
-           invoice_code = ?, tag_id = ?, updated_at = NOW()
+           invoice_code = ?, tag_id = ?, tenant_id = ?,
+           property_id = ?, unit_id = ?, lease_id = ?,
+           updated_at = NOW()
        WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
       [category || null, account_setting_id || null, payment_setting_id || null,
-       amount, note || null, type || 0, payment_date || null,
-       invoice_code || null, tag_id || null, id, orgId]
+       amount ?? null, note || null, type ?? 0, payment_date || null,
+       invoice_code || null, tag_id || null, tenant_id || null,
+       property_id || null, unit_id || null, lease_id || null,
+       id, orgId]
     );
 
     res.json({ code: 200, message: 'Transaction updated' });
   } catch (error) {
     console.error('Update transaction error:', error);
-    res.status(500).json({ code: 500, message: 'Failed to update transaction' });
+    res.status(500).json({ code: 500, message: error.sqlMessage || error.message || 'Failed to update transaction' });
   }
 });
 

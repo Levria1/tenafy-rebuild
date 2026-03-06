@@ -3,6 +3,54 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
 
+// Helper: advance a date by one invoice period
+function advanceInvoiceDate(date, schedule, dueDay) {
+  const inv = String(schedule).toLowerCase();
+  const next = new Date(date);
+  if (inv === '1' || inv === 'daily') {
+    next.setDate(next.getDate() + 1);
+  } else if (inv === '7' || inv === 'weekly') {
+    next.setDate(next.getDate() + 7);
+  } else if (inv === '14' || inv === 'bi-weekly') {
+    next.setDate(next.getDate() + 14);
+  } else if (inv === '28') {
+    next.setDate(next.getDate() + 28);
+  } else if (inv === '30' || inv === 'monthly') {
+    next.setMonth(next.getMonth() + 1);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else if (inv === '60' || inv === 'bi-monthly') {
+    next.setMonth(next.getMonth() + 2);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else if (inv === '90' || inv === 'quarterly') {
+    next.setMonth(next.getMonth() + 3);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else if (inv === '180' || inv === 'bi-annually') {
+    next.setMonth(next.getMonth() + 6);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else if (inv === '365' || inv === 'annually') {
+    next.setFullYear(next.getFullYear() + 1);
+    if (dueDay) {
+      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(Number(dueDay), maxDay));
+    }
+  } else {
+    next.setMonth(next.getMonth() + 1); // default monthly
+  }
+  return next;
+}
+
 // POST /api/leasing/list - List leases with paging
 router.post('/list', authenticate, async (req, res) => {
   try {
@@ -236,40 +284,86 @@ router.post('/', authenticate, async (req, res) => {
     // Mark unit as occupied
     await pool.execute('UPDATE unit SET status = 1 WHERE id = ?', [unit_id]);
 
-    // Create first invoice if recurring is enabled and amount is set
-    if (invoicing && (amount || price)) {
-      const invoiceAmount = amount || price;
-      const invoiceDate = first_invoice_date || start_date;
-
-      // Generate invoice code
-      const [[invSeq]] = await pool.execute(
-        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-        [orgId, 'invoice_code']
-      );
-      let invoiceCode = 'INV-' + Date.now();
-      if (invSeq) {
-        invoiceCode = invSeq.pattern
-          .replace(/\{d,(\w+)\}/g, () => {
-            const now = new Date();
-            return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
-          })
-          .replace(/\{#,(\d+)\}/, (_, pad) => String(invSeq.seq_next).padStart(parseInt(pad), '0'));
-        await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [invSeq.id]);
-      }
+    // Invoice generation logic:
+    // - If there's an amount/price: ALWAYS create at least one invoice
+    // - If recurring (share_lease=1, invoicing set): generate all past invoices + next upcoming
+    // - If NOT recurring: only ONE invoice ever
+    // - mark_past_paid controls status of past invoices (1=paid vs 0=open)
+    const invoiceAmount = amount || price;
+    if (invoiceAmount && parseFloat(invoiceAmount) > 0) {
+      const today = new Date().toISOString().split('T')[0];
+      const todayMs = new Date(today).getTime();
 
       // Get property_id from unit
       const [[unitRow]] = await pool.execute('SELECT property_id FROM unit WHERE id = ?', [unit_id]);
       const propertyId = unitRow ? unitRow.property_id : null;
 
-      const invoiceId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
-
-      await pool.execute(
-        `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
-          invoice_code, amount, due_on, status, category, currency_id, type, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, 0, NOW())`,
-        [invoiceId.toString(), orgId, tenant_id, unit_id, leaseId.toString(), propertyId,
-         invoiceCode, invoiceAmount, invoiceDate, currencyId]
+      // Get sequence for invoice codes
+      const [[invSeq]] = await pool.execute(
+        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
+        [orgId, 'invoice_code']
       );
+      let seqNext = invSeq ? Number(invSeq.seq_next) : 1;
+
+      // Helper: create a single invoice
+      const createOneInvoice = async (dueDate, status) => {
+        let invoiceCode = 'INV-' + Date.now() + '-' + seqNext;
+        if (invSeq) {
+          invoiceCode = invSeq.pattern
+            .replace(/\{d,(\w+)\}/g, () => {
+              const now = new Date();
+              return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
+            })
+            .replace(/\{#,(\d+)\}/, (_, pad) => String(seqNext).padStart(parseInt(pad), '0'));
+          seqNext++;
+        }
+        const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+        await pool.execute(
+          `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
+            invoice_code, amount, due_on, status, category, currency_id, type, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, NOW())`,
+          [invoiceId, orgId, tenant_id, unit_id, leaseId.toString(), propertyId,
+           invoiceCode, invoiceAmount, dueDate, status, currencyId]
+        );
+      };
+
+      const isRecurring = share_lease && invoicing;
+
+      if (isRecurring) {
+        // RECURRING: Generate all invoices from first_invoice_date through today + next upcoming
+        const firstDate = first_invoice_date || start_date;
+        const MAX_INVOICES = 500;
+        let cursor = new Date(firstDate);
+        let count = 0;
+
+        while (count < MAX_INVOICES) {
+          if (end_date && cursor > new Date(end_date)) break;
+          const dateStr = cursor.toISOString().split('T')[0];
+          const isPast = cursor.getTime() <= todayMs;
+
+          if (isPast) {
+            // Past invoice: paid if mark_past_paid checked, otherwise open
+            await createOneInvoice(dateStr, mark_past_paid ? 1 : 0);
+          } else {
+            // Future: create one upcoming invoice and stop
+            await createOneInvoice(dateStr, 0);
+            break;
+          }
+          cursor = advanceInvoiceDate(cursor, invoicing, due_date);
+          count++;
+        }
+      } else {
+        // NON-RECURRING: Create just ONE invoice
+        const invoiceDate = first_invoice_date || start_date || today;
+        const isPast = new Date(invoiceDate).getTime() <= todayMs;
+        const invoiceStatus = (isPast && mark_past_paid) ? 1 : 0;
+        await createOneInvoice(invoiceDate, invoiceStatus);
+      }
+
+      // Update sequence counter
+      if (invSeq) {
+        await pool.execute('UPDATE sequence SET seq_next = ? WHERE id = ?', [seqNext, invSeq.id]);
+      }
     }
 
     // Create security deposit invoice if deposit amount > 0
@@ -311,15 +405,6 @@ router.post('/', authenticate, async (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, NOW())`,
         [depInvoiceId.toString(), orgId, tenant_id, unit_id, leaseId.toString(), depPropertyId,
          depInvoiceCode, deposit, today, depositCategoryId, currencyId]
-      );
-    }
-
-    // Mark past invoices as paid if requested
-    if (mark_past_paid && start_date) {
-      await pool.execute(
-        `UPDATE invoice SET status = 1, updated_at = NOW()
-         WHERE org_id = ? AND unit_id = ? AND tenant_id = ? AND due_on < ? AND status = 0`,
-        [orgId, unit_id, tenant_id, new Date().toISOString().split('T')[0]]
       );
     }
 
@@ -391,7 +476,7 @@ router.get('/tenant/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [tenants] = await pool.execute(
-      'SELECT * FROM tenant WHERE org_id = ? AND status = 1 ORDER BY first_name, last_name',
+      'SELECT * FROM tenant WHERE org_id = ? AND status = 1 AND category = 1 ORDER BY first_name, last_name',
       [orgId]
     );
     res.json({ code: 200, data: tenants });

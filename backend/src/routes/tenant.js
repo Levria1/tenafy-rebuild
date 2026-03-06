@@ -45,11 +45,12 @@ router.post('/contacts', authenticate, async (req, res) => {
       whereClause += ' AND al.type = 1';
     }
 
-    // Build lease_history subquery — optionally filtered by property/unit
-    let leaseHistorySubquery = 'SELECT DISTINCT l_h.tenant_id FROM leasing l_h';
+    // Build lease_history join — only needed when filtering by property/unit
+    const hasPropertyFilter = propertyId || unitId;
+    let leaseHistoryJoin = '';
     const leaseHistoryParams = [];
-    if (propertyId || unitId) {
-      leaseHistorySubquery += ' JOIN unit u_h ON l_h.unit_id = u_h.id WHERE l_h.deleted_at IS NULL';
+    if (hasPropertyFilter) {
+      let leaseHistorySubquery = 'SELECT DISTINCT l_h.tenant_id FROM leasing l_h JOIN unit u_h ON l_h.unit_id = u_h.id WHERE l_h.deleted_at IS NULL';
       if (propertyId) {
         leaseHistorySubquery += ' AND u_h.property_id = ?';
         leaseHistoryParams.push(propertyId);
@@ -58,8 +59,7 @@ router.post('/contacts', authenticate, async (req, res) => {
         leaseHistorySubquery += ' AND l_h.unit_id = ?';
         leaseHistoryParams.push(unitId);
       }
-    } else {
-      leaseHistorySubquery += ' WHERE l_h.deleted_at IS NULL';
+      leaseHistoryJoin = `INNER JOIN (${leaseHistorySubquery}) lease_history ON lease_history.tenant_id = t.id`;
     }
 
     const query = `
@@ -76,7 +76,7 @@ router.post('/contacts', authenticate, async (req, res) => {
              p.id AS property_id,
              COALESCE(inv.outstanding, 0) AS outstanding_amount
       FROM tenant t
-      INNER JOIN (${leaseHistorySubquery}) lease_history ON lease_history.tenant_id = t.id
+      ${leaseHistoryJoin}
       LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL
       LEFT JOIN unit u ON al.unit_id = u.id
       LEFT JOIN property p ON u.property_id = p.id
@@ -85,7 +85,7 @@ router.post('/contacts', authenticate, async (req, res) => {
         FROM invoice WHERE org_id = ? AND status = 0
         GROUP BY tenant_id
       ) inv ON inv.tenant_id = t.id
-      WHERE ${whereClause}
+      WHERE ${whereClause} AND t.category = 1
       ORDER BY t.first_name, t.last_name
       LIMIT ${limit} OFFSET ${offset}
     `;
@@ -93,9 +93,9 @@ router.post('/contacts', authenticate, async (req, res) => {
     const countQuery = `
       SELECT COUNT(*) as total
       FROM tenant t
-      INNER JOIN (${leaseHistorySubquery}) lease_history ON lease_history.tenant_id = t.id
+      ${leaseHistoryJoin}
       LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL
-      WHERE ${whereClause}
+      WHERE ${whereClause} AND t.category = 1
     `;
 
     const [tenants] = await pool.execute(query, [...leaseHistoryParams, orgId, ...params]);
@@ -162,14 +162,24 @@ router.get('/outstanding', authenticate, async (req, res) => {
 // POST /api/tenant - Create tenant
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { first_name, last_name, email, phone, birth_date, company_name, id_card, profession, employer, salary, emergency_contact, referral } = req.body;
+    const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
+            company_name, type, sex, id_card, profession, budget, employer, salary,
+            emergency_contact, referral, notes, status } = req.body;
     const orgId = req.user.orgId;
+    const tenantId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-    const [result] = await pool.execute(
-      'INSERT INTO tenant (org_id, first_name, last_name, email, phone, birth_date, company_name, id_card, profession, employer, salary, emergency_contact, referral, status, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, NOW())',
-      [orgId, first_name, last_name, email, phone, birth_date, company_name, id_card || null, profession || null, employer || null, salary || null, emergency_contact || null, referral || null]
+    await pool.execute(
+      `INSERT INTO tenant (id, org_id, first_name, last_name, middle_name, email, secondary_email, phone,
+       birth_date, company_name, type, sex, id_card, profession, budget, employer, salary,
+       emergency_contact, referral, notes, status, category, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+      [tenantId, orgId, first_name || null, last_name || null, middle_name || null,
+       email || null, secondary_email || null, phone || null, birth_date || null,
+       company_name || null, type ?? 0, sex ?? 0, id_card || null, profession || null,
+       budget || null, employer || null, salary || null, emergency_contact || null,
+       referral || null, notes || null, status ?? 1]
     );
-    res.json({ code: 200, message: 'Tenant created', data: { id: result.insertId } });
+    res.json({ code: 200, message: 'Tenant created', data: { id: tenantId } });
   } catch (error) {
     console.error('Create tenant error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create tenant' });
@@ -216,11 +226,19 @@ router.get('/:id/profile', authenticate, async (req, res) => {
 router.put('/:id/profile', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { first_name, last_name, email, phone, birth_date, company_name, id_card, profession, employer, salary, emergency_contact, referral, status } = req.body;
+    const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
+            company_name, type, sex, id_card, profession, budget, employer, salary,
+            emergency_contact, referral, notes, status } = req.body;
 
     await pool.execute(
-      'UPDATE tenant SET first_name = ?, last_name = ?, email = ?, phone = ?, birth_date = ?, company_name = ?, id_card = ?, profession = ?, employer = ?, salary = ?, emergency_contact = ?, referral = ?, status = ?, updated_at = NOW() WHERE id = ?',
-      [first_name, last_name, email, phone, birth_date, company_name, id_card, profession, employer, salary, emergency_contact, referral, status, id]
+      `UPDATE tenant SET first_name = ?, last_name = ?, middle_name = ?, email = ?, secondary_email = ?,
+       phone = ?, birth_date = ?, company_name = ?, type = ?, sex = ?, id_card = ?, profession = ?,
+       budget = ?, employer = ?, salary = ?, emergency_contact = ?, referral = ?, notes = ?,
+       status = ?, updated_at = NOW() WHERE id = ?`,
+      [first_name || null, last_name || null, middle_name || null, email || null, secondary_email || null,
+       phone || null, birth_date || null, company_name || null, type ?? 0, sex ?? 0,
+       id_card || null, profession || null, budget || null, employer || null, salary || null,
+       emergency_contact || null, referral || null, notes || null, status ?? 1, id]
     );
     res.json({ code: 200, message: 'Tenant updated' });
   } catch (error) {

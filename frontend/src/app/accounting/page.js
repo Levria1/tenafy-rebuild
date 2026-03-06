@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Table, Button, Space, Tag, Card, Input, Select, DatePicker, Row, Col, Tabs, message, Drawer, Descriptions, Divider, Popover, Radio, Checkbox, Spin } from 'antd';
+import { Table, Button, Space, Tag, Card, Input, Select, DatePicker, Row, Col, Tabs, message, Drawer, Descriptions, Divider, Popover, Radio, Checkbox, Spin, Tooltip } from 'antd';
 import { PlusOutlined, FilterOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, CloseOutlined } from '@ant-design/icons';
 import { useRouter, useSearchParams } from 'next/navigation';
 import dayjs from 'dayjs';
@@ -258,47 +258,57 @@ export default function AccountingPage() {
   );
 
   // === Table columns ===
+  const ellipsisCell = (text, maxLen = 30) => {
+    if (!text) return '-';
+    if (text.length <= maxLen) return <span style={{ whiteSpace: 'nowrap' }}>{text}</span>;
+    return (
+      <Tooltip title={text}>
+        <span style={{ whiteSpace: 'nowrap', cursor: 'default' }}>{text.substring(0, maxLen)}...</span>
+      </Tooltip>
+    );
+  };
+
   const accountColumns = [
     {
       title: 'Payment Date', dataIndex: 'payment_date', key: 'payment_date', width: 120,
       sorter: true,
-      render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',
+      render: (v) => <span style={{ whiteSpace: 'nowrap' }}>{v ? dayjs(v).format('YYYY-MM-DD') : '-'}</span>,
     },
     {
-      title: 'Contact', key: 'contact', width: 140, sorter: true,
-      render: (_, r) => [r.tenant_first_name, r.tenant_last_name].filter(Boolean).join(' ') || r.note?.substring(0, 20) || '-',
+      title: 'Contact', key: 'contact', width: 150, sorter: true,
+      render: (_, r) => ellipsisCell([r.tenant_first_name, r.tenant_last_name].filter(Boolean).join(' ') || r.note?.substring(0, 20) || '-', 18),
     },
     {
       title: 'Property (Unit)', key: 'property', width: 180, sorter: true,
       render: (_, r) => {
         let text = r.property_name || '';
         if (r.unit_name) text += ` (${r.unit_name})`;
-        return text || '-';
+        return ellipsisCell(text || '-', 22);
       },
     },
     {
       title: 'Payment Account', dataIndex: 'account_name', key: 'account_name', width: 160, sorter: true,
-      render: (v) => v || '-',
+      render: (v) => ellipsisCell(v || '-', 18),
     },
     {
-      title: 'Payment Method', dataIndex: 'payment_method_name', key: 'payment_method', width: 130, sorter: true,
-      render: (v) => v || '-',
+      title: 'Payment Method', dataIndex: 'payment_method_name', key: 'payment_method', width: 140, sorter: true,
+      render: (v) => <span style={{ whiteSpace: 'nowrap' }}>{v || '-'}</span>,
     },
     {
-      title: 'Category', dataIndex: 'category_name', key: 'category_name', width: 110, sorter: true,
-      render: (v) => v || '-',
+      title: 'Category', dataIndex: 'category_name', key: 'category_name', width: 150, sorter: true,
+      render: (v) => <span style={{ whiteSpace: 'nowrap' }}>{v || '-'}</span>,
     },
     {
-      title: 'Outflow', key: 'outflow', width: 110, align: 'right', sorter: true,
-      render: (_, r) => r.type === 1 ? <span style={{ color: '#cf1322' }}>{formatCurrency(r.amount)}</span> : '—',
+      title: 'Outflow', key: 'outflow', width: 140, align: 'right', sorter: true,
+      render: (_, r) => r.type === 1 ? <span style={{ color: '#cf1322', whiteSpace: 'nowrap' }}>{formatCurrency(r.amount)}</span> : '—',
     },
     {
-      title: 'Inflow', key: 'inflow', width: 110, align: 'right', sorter: true,
-      render: (_, r) => r.type === 0 ? <span style={{ color: '#389e0d' }}>{formatCurrency(r.amount)}</span> : '—',
+      title: 'Inflow', key: 'inflow', width: 140, align: 'right', sorter: true,
+      render: (_, r) => r.type === 0 ? <span style={{ color: '#389e0d', whiteSpace: 'nowrap' }}>{formatCurrency(r.amount)}</span> : '—',
     },
     {
-      title: 'Notes', dataIndex: 'note', key: 'note', ellipsis: true, sorter: true,
-      render: (v) => v || '-',
+      title: 'Notes', dataIndex: 'note', key: 'note', width: 200, sorter: true,
+      render: (v) => ellipsisCell(v, 30),
     },
     {
       title: 'Action', key: 'actions', width: 80, fixed: 'right',
@@ -314,43 +324,43 @@ export default function AccountingPage() {
     {
       title: 'Payment Date', dataIndex: 'payment_date', key: 'payment_date', width: 120,
       sorter: true,
-      render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',
+      render: (v) => <span style={{ whiteSpace: 'nowrap' }}>{v ? dayjs(v).format('YYYY-MM-DD') : '-'}</span>,
     },
     {
-      title: 'Contact', key: 'contact', width: 140, sorter: true,
-      render: (_, r) => [r.tenant_first_name, r.tenant_last_name].filter(Boolean).join(' ') || '-',
+      title: 'Contact', key: 'contact', width: 150, sorter: true,
+      render: (_, r) => ellipsisCell([r.tenant_first_name, r.tenant_last_name].filter(Boolean).join(' ') || '-', 18),
     },
     {
       title: 'Property (Unit)', key: 'property', width: 180, sorter: true,
       render: (_, r) => {
         let text = r.property_name || '';
         if (r.unit_name) text += ` (${r.unit_name})`;
-        return text || '-';
+        return ellipsisCell(text || '-', 22);
       },
     },
     {
       title: 'Payment Account', dataIndex: 'account_name', key: 'account_name', width: 160, sorter: true,
-      render: (v) => v || '-',
+      render: (v) => ellipsisCell(v || '-', 18),
     },
     {
-      title: 'Payment Method', dataIndex: 'payment_method_name', key: 'payment_method', width: 130, sorter: true,
-      render: (v) => v || '-',
+      title: 'Payment Method', dataIndex: 'payment_method_name', key: 'payment_method', width: 140, sorter: true,
+      render: (v) => <span style={{ whiteSpace: 'nowrap' }}>{v || '-'}</span>,
     },
     {
-      title: 'Category', dataIndex: 'category_name', key: 'category_name', width: 110, sorter: true,
-      render: (v) => v || '-',
+      title: 'Category', dataIndex: 'category_name', key: 'category_name', width: 150, sorter: true,
+      render: (v) => <span style={{ whiteSpace: 'nowrap' }}>{v || '-'}</span>,
     },
     {
-      title: 'Outflow', key: 'outflow', width: 110, align: 'right', sorter: true,
-      render: (_, r) => r.type === 1 ? <span style={{ color: '#cf1322' }}>{formatCurrency(r.amount)}</span> : '—',
+      title: 'Outflow', key: 'outflow', width: 140, align: 'right', sorter: true,
+      render: (_, r) => r.type === 1 ? <span style={{ color: '#cf1322', whiteSpace: 'nowrap' }}>{formatCurrency(r.amount)}</span> : '—',
     },
     {
-      title: 'Inflow', key: 'inflow', width: 110, align: 'right', sorter: true,
-      render: (_, r) => r.type === 0 ? <span style={{ color: '#389e0d' }}>{formatCurrency(r.amount)}</span> : '—',
+      title: 'Inflow', key: 'inflow', width: 140, align: 'right', sorter: true,
+      render: (_, r) => r.type === 0 ? <span style={{ color: '#389e0d', whiteSpace: 'nowrap' }}>{formatCurrency(r.amount)}</span> : '—',
     },
     {
-      title: 'Notes', key: 'note', ellipsis: true, sorter: true,
-      render: (_, r) => r.transaction_note || '-',
+      title: 'Notes', key: 'note', width: 200, sorter: true,
+      render: (_, r) => ellipsisCell(r.transaction_note, 30),
     },
   ];
 
@@ -484,7 +494,7 @@ export default function AccountingPage() {
             dataSource={transactions}
             rowKey="id"
             loading={loading}
-            scroll={{ x: 1200 }}
+            scroll={{ x: 1500 }}
             onChange={(pag, _filters, sorter) => {
               setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
               setSortInfo(sorter.order ? { field: sorter.columnKey || sorter.field, order: sorter.order } : { field: null, order: null });
@@ -586,7 +596,7 @@ export default function AccountingPage() {
             dataSource={lines}
             rowKey="id"
             loading={loading}
-            scroll={{ x: 1200 }}
+            scroll={{ x: 1500 }}
             onChange={(pag, _filters, sorter) => {
               setLinePagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
               setSortInfo(sorter.order ? { field: sorter.columnKey || sorter.field, order: sorter.order } : { field: null, order: null });
