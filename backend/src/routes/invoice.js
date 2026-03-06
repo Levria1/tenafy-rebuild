@@ -7,7 +7,7 @@ const pool = require('../config/database');
 router.post('/invoices', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status, tenantId, propertyId, startDate, endDate, type, tenantStatus, category } = req.body || {};
+    const { search, searchFields, status, tenantId, propertyId, startDate, endDate, type, tenantStatus, category } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
@@ -16,9 +16,42 @@ router.post('/invoices', authenticate, async (req, res) => {
     const params = [orgId];
 
     if (search) {
-      whereClause += ' AND (i.invoice_code LIKE ? OR i.note LIKE ? OR t.first_name LIKE ? OR t.last_name LIKE ? OR CONCAT(t.first_name, " ", t.last_name) LIKE ?)';
       const s = '%' + search + '%';
-      params.push(s, s, s, s, s);
+      // If specific search fields are provided, search only those columns
+      if (searchFields && Array.isArray(searchFields) && searchFields.length > 0) {
+        const conditions = [];
+        for (const field of searchFields) {
+          switch (field) {
+            case 'tenantName':
+              conditions.push('(t.first_name LIKE ? OR t.last_name LIKE ? OR CONCAT(t.first_name, " ", t.last_name) LIKE ? OR t.company_name LIKE ?)');
+              params.push(s, s, s, s);
+              break;
+            case 'propertyUnit':
+              conditions.push('(p.display_name LIKE ? OR u.name LIKE ?)');
+              params.push(s, s);
+              break;
+            case 'category':
+              conditions.push('cs.name LIKE ?');
+              params.push(s);
+              break;
+            case 'note':
+              conditions.push('i.note LIKE ?');
+              params.push(s);
+              break;
+            case 'invoice':
+              conditions.push('i.invoice_code LIKE ?');
+              params.push(s);
+              break;
+          }
+        }
+        if (conditions.length > 0) {
+          whereClause += ' AND (' + conditions.join(' OR ') + ')';
+        }
+      } else {
+        // Default: search all searchable fields
+        whereClause += ' AND (i.invoice_code LIKE ? OR i.note LIKE ? OR t.first_name LIKE ? OR t.last_name LIKE ? OR CONCAT(t.first_name, " ", t.last_name) LIKE ? OR t.company_name LIKE ? OR p.display_name LIKE ? OR u.name LIKE ? OR cs.name LIKE ?)';
+        params.push(s, s, s, s, s, s, s, s, s);
+      }
     }
     if (status !== undefined && status !== null) {
       whereClause += ' AND i.status = ?';
@@ -56,12 +89,23 @@ router.post('/invoices', authenticate, async (req, res) => {
     const [invoices] = await pool.execute(
       `SELECT i.*, t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               p.display_name as property_name, u.name as unit_name, cs.name as category_name,
-              COALESCE((SELECT SUM(CASE WHEN a.type = 0 THEN a.amount ELSE -a.amount END)
-                FROM accounting a WHERE a.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL), 0) as amount_paid
+              COALESCE((SELECT SUM(al.amount)
+                FROM accounting_line al
+                JOIN accounting a ON al.accounting_id = a.id
+                WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL AND al.deleted_at IS NULL), 0) as amount_paid,
+              (CASE i.status
+                WHEN 1 THEN 0
+                ELSE IF(i.amount IS NULL, 0,
+                  i.amount - COALESCE((SELECT SUM(al2.amount)
+                    FROM accounting_line al2
+                    JOIN accounting a2 ON al2.accounting_id = a2.id
+                    WHERE al2.invoice_code = i.invoice_code AND a2.org_id = i.org_id AND a2.deleted_at IS NULL AND al2.deleted_at IS NULL), 0)
+                )
+              END) as outstanding
        FROM invoice i
        LEFT JOIN tenant t ON i.tenant_id = t.id
        LEFT JOIN unit u ON i.unit_id = u.id
-       LEFT JOIN property p ON u.property_id = p.id
+       LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
        LEFT JOIN category_setting cs ON i.category = cs.id
        WHERE ${whereClause}
        ORDER BY i.due_on DESC LIMIT ${limit} OFFSET ${offset}`,
@@ -400,13 +444,18 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const [invoices] = await pool.execute(
-      `SELECT i.*, t.first_name as tenant_first_name, t.last_name as tenant_last_name, t.email as tenant_email,
-              p.display_name as property_name, u.name as unit_name, cs.name as category_name
+      `SELECT i.*, t.first_name as tenant_first_name, t.last_name as tenant_last_name,
+              t.company_name as tenant_company_name, t.type as tenant_type, t.email as tenant_email,
+              p.display_name as property_name, p.id as property_id_resolved, p.currency as property_currency,
+              u.name as unit_name, u.property_id as unit_property_id,
+              cs.name as category_name,
+              l.lease_no as lease_no
        FROM invoice i
        LEFT JOIN tenant t ON i.tenant_id = t.id
        LEFT JOIN unit u ON i.unit_id = u.id
-       LEFT JOIN property p ON u.property_id = p.id
+       LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
        LEFT JOIN category_setting cs ON i.category = cs.id
+       LEFT JOIN leasing l ON i.leasing_id = l.id
        WHERE i.id = ? AND i.org_id = ?`,
       [id, orgId]
     );
@@ -414,27 +463,34 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ code: 404, message: 'Invoice not found' });
     }
 
-    // Get payment activity (accounting records linked to this invoice)
+    // Get payment activity — find accounting records via accounting_line.invoice_code
     const inv = invoices[0];
     const [payments] = await pool.execute(
-      `SELECT a.*, t2.first_name as contact_first_name, t2.last_name as contact_last_name,
-              pms.payment_method as payment_method_name, cs2.name as payment_category_name
-       FROM accounting a
+      `SELECT DISTINCT a.id, a.transaction_code, a.payment_date, a.amount as header_amount, a.type, a.note, a.tenant_id,
+              a.payment_setting_id, a.category as header_category,
+              al.amount, al.invoice_code as line_invoice_code,
+              t2.first_name as contact_first_name, t2.last_name as contact_last_name,
+              pms.payment_method as payment_method_name,
+              COALESCE(cs2.name, cs3.name) as payment_category_name
+       FROM accounting_line al
+       JOIN accounting a ON al.accounting_id = a.id
        LEFT JOIN tenant t2 ON a.tenant_id = t2.id
        LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
-       LEFT JOIN category_setting cs2 ON a.category = cs2.id
-       WHERE a.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL
+       LEFT JOIN category_setting cs2 ON al.category = cs2.id
+       LEFT JOIN category_setting cs3 ON a.category = cs3.id
+       WHERE al.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL
        ORDER BY a.payment_date DESC`,
       [inv.invoice_code, orgId]
     );
 
-    // Calculate amount paid and outstanding
+    // Calculate amount paid and outstanding from accounting_line amounts
     let amountPaid = 0;
     payments.forEach(p => {
-      if (p.type === 0) amountPaid += parseFloat(p.amount) || 0;
-      else amountPaid -= parseFloat(p.amount) || 0;
+      amountPaid += parseFloat(p.amount) || 0;
     });
-    const outstanding = (parseFloat(inv.amount) || 0) - amountPaid;
+    // If status = 1 (Paid), outstanding is always 0; otherwise invoice.amount - sum(payments)
+    const invStatus = Number(inv.status);
+    const outstanding = invStatus === 1 ? 0 : Math.max(0, (parseFloat(inv.amount) || 0) - amountPaid);
 
     res.json({ code: 200, data: { ...inv, payments, amount_paid: amountPaid, outstanding } });
   } catch (error) {
@@ -447,12 +503,38 @@ router.get('/:id', authenticate, async (req, res) => {
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { invoice_code, amount, note, due_date, status } = req.body;
+    const { invoice_code, amount, note, due_date, status, type, category, tenant_id, property_id, unit_id, leasing_id, tag_id } = req.body;
     const orgId = req.user.orgId;
 
+    // Verify invoice exists
+    const [[existing]] = await pool.execute('SELECT id FROM invoice WHERE id = ? AND org_id = ?', [id, orgId]);
+    if (!existing) {
+      return res.status(404).json({ code: 404, message: 'Invoice not found' });
+    }
+
+    // Build dynamic SET clause — only update fields that are provided
+    const fields = [];
+    const params = [];
+
+    if (invoice_code !== undefined) { fields.push('invoice_code = ?'); params.push(invoice_code); }
+    if (amount !== undefined) { fields.push('amount = ?'); params.push(amount); }
+    if (note !== undefined) { fields.push('note = ?'); params.push(note || null); }
+    if (due_date !== undefined) { fields.push('due_on = ?'); params.push(due_date); }
+    if (status !== undefined) { fields.push('status = ?'); params.push(status); }
+    if (type !== undefined) { fields.push('type = ?'); params.push(type); }
+    if (category !== undefined) { fields.push('category = ?'); params.push(category || null); }
+    if (tenant_id !== undefined) { fields.push('tenant_id = ?'); params.push(tenant_id); }
+    if (property_id !== undefined) { fields.push('property_id = ?'); params.push(property_id || null); }
+    if (unit_id !== undefined) { fields.push('unit_id = ?'); params.push(unit_id || null); }
+    if (leasing_id !== undefined) { fields.push('leasing_id = ?'); params.push(leasing_id || null); }
+    if (tag_id !== undefined) { fields.push('tag_id = ?'); params.push(tag_id || null); }
+
+    fields.push('updated_at = NOW()');
+    params.push(id, orgId);
+
     await pool.execute(
-      'UPDATE invoice SET invoice_code = ?, amount = ?, note = ?, due_on = ?, status = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
-      [invoice_code, amount, note, due_date, status, id, orgId]
+      `UPDATE invoice SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`,
+      params
     );
     res.json({ code: 200, message: 'Invoice updated' });
   } catch (error) {

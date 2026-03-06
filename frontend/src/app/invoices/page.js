@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Table, Button, Space, Tag, Input, Select, DatePicker, Drawer, Descriptions, Divider, Spin, Popover, Radio, message } from 'antd';
-import { PlusOutlined, FilterOutlined, FileTextOutlined } from '@ant-design/icons';
+import { Table, Button, Space, Tag, Input, Select, DatePicker, Drawer, Descriptions, Divider, Spin, Popover, Radio, Checkbox, Tooltip, message } from 'antd';
+import { PlusOutlined, FilterOutlined, FileTextOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, SearchOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
@@ -11,11 +11,22 @@ import { invoice, accountingApi, property as propertyApi } from '../../lib/api';
 
 const { RangePicker } = DatePicker;
 
+// Search field options matching original Tenafy
+const SEARCH_FIELD_OPTIONS = [
+  { label: 'Contact', value: 'tenantName' },
+  { label: 'Property', value: 'propertyUnit' },
+  { label: 'Category', value: 'category' },
+  { label: 'Notes', value: 'note' },
+  { label: 'Invoice ID', value: 'invoice' },
+];
+
 export default function InvoicesPage() {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
   const [search, setSearch] = useState('');
+  const [searchFields, setSearchFields] = useState(['tenantName']); // default: Contact checked
+  const [searchDropdownOpen, setSearchDropdownOpen] = useState(false);
   const [dateRange, setDateRange] = useState(() => [dayjs().subtract(3, 'month'), dayjs()]);
   const [activeDateFilter, setActiveDateFilter] = useState('3M');
   const [summary, setSummary] = useState({ outstanding_outflow: 0, outstanding_inflow: 0, paid: 0 });
@@ -62,7 +73,13 @@ export default function InvoicesPage() {
     try {
       setLoading(true);
       const body = { ...filters };
-      if (search) body.search = search;
+      if (search) {
+        body.search = search;
+        // Send selected search fields to backend
+        if (searchFields.length > 0) {
+          body.searchFields = searchFields;
+        }
+      }
       if (dateRange && dateRange[0]) body.startDate = dateRange[0].format('YYYY-MM-DD');
       if (dateRange && dateRange[1]) body.endDate = dateRange[1].format('YYYY-MM-DD');
 
@@ -210,6 +227,27 @@ export default function InvoicesPage() {
     </div>
   );
 
+  // Search field checkboxes dropdown content
+  const searchFieldContent = (
+    <div style={{ padding: '4px 0' }}>
+      <Checkbox.Group
+        value={searchFields}
+        onChange={(checkedValues) => setSearchFields(checkedValues)}
+        style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+      >
+        {SEARCH_FIELD_OPTIONS.map(opt => (
+          <Checkbox key={opt.value} value={opt.value}>{opt.label}</Checkbox>
+        ))}
+      </Checkbox.Group>
+    </div>
+  );
+
+  // Perform search
+  const doSearch = (val) => {
+    setSearch(val);
+    setPagination(p => ({ ...p, current: 1 }));
+  };
+
   // Drawer
   const openDrawer = async (record) => {
     setDrawerOpen(true);
@@ -233,14 +271,15 @@ export default function InvoicesPage() {
   };
 
   const getStatusLabel = (s) => {
-    if (s === 0) return { text: 'Open', color: '#1890ff' };
-    if (s === 1) return { text: 'Paid', color: '#389e0d' };
-    if (s === 2) return { text: 'Overdue', color: '#cf1322' };
+    const n = Number(s);
+    if (n === 0) return { text: 'Open', color: '#1890ff' };
+    if (n === 1) return { text: 'Paid', color: '#389e0d' };
+    if (n === 2) return { text: 'Overdue', color: '#cf1322' };
     return { text: 'Unknown', color: '#999' };
   };
 
   const getDaysLate = (due_on, status) => {
-    if (status === 1) return 0;
+    if (Number(status) === 1) return 0;
     if (!due_on) return 0;
     const diff = dayjs().diff(dayjs(due_on), 'day');
     return diff > 0 ? diff : 0;
@@ -289,7 +328,7 @@ export default function InvoicesPage() {
     {
       title: 'TOTAL / PAID', key: 'total_paid', width: 220,
       render: (_, r) => {
-        const sign = r.type === 1 ? '-' : '+';
+        const sign = Number(r.type) === 1 ? '-' : '+';
         const total = Number(r.amount || 0);
         const paid = Number(r.amount_paid || 0);
         return `${sign} ${formatCurrency(total)} / ${formatCurrency(paid)}`;
@@ -299,7 +338,8 @@ export default function InvoicesPage() {
       title: 'OUTSTANDING', key: 'outstanding', width: 130, align: 'right',
       sorter: true,
       render: (_, r) => {
-        const outstanding = Number(r.amount || 0) - Number(r.amount_paid || 0);
+        // Use backend-calculated outstanding (matches original: status=1 → 0, else amount - SUM(payments))
+        const outstanding = Number(r.outstanding || 0);
         return outstanding > 0 ? formatCurrency(outstanding) : formatCurrency(0);
       },
     },
@@ -314,13 +354,17 @@ export default function InvoicesPage() {
     },
     {
       title: 'NOTES', dataIndex: 'note', key: 'note', width: 60, align: 'center',
-      render: (v) => v ? <FileTextOutlined style={{ color: '#1890ff' }} title={v} /> : '—',
+      render: (v) => v ? (
+        <Tooltip title={v} placement="topRight">
+          <FileTextOutlined style={{ color: '#1890ff', cursor: 'pointer' }} />
+        </Tooltip>
+      ) : '—',
     },
     {
       title: 'ACTION', key: 'actions', width: 120, fixed: 'right',
       render: (_, r) => (
         <Space size="small">
-          {r.status !== 1 && (
+          {Number(r.status) !== 1 && (
             <Button type="link" size="small" style={{ color: '#999', padding: 0 }}
               onClick={() => router.push(`/accounting/accounts/create?invoice=${r.invoice_code}`)}>
               Pay
@@ -342,12 +386,22 @@ export default function InvoicesPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
         <div style={{ color: '#666' }}>{pagination.total} Total</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Input.Search
-            placeholder="Type here to search"
-            style={{ width: 200 }}
-            allowClear
-            onSearch={(v) => { setSearch(v); setPagination(p => ({ ...p, current: 1 })); }}
-          />
+          {/* Search input with column-selection dropdown */}
+          <Popover
+            content={searchFieldContent}
+            trigger="click"
+            placement="bottomLeft"
+            open={searchDropdownOpen}
+            onOpenChange={setSearchDropdownOpen}
+          >
+            <Input.Search
+              placeholder="Type here to search"
+              style={{ width: 250 }}
+              allowClear
+              onSearch={doSearch}
+              onFocus={() => setSearchDropdownOpen(true)}
+            />
+          </Popover>
           <RangePicker
             value={dateRange}
             onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
@@ -412,7 +466,7 @@ export default function InvoicesPage() {
         title={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>Invoice</span>
-            {selectedInvoice && selectedInvoice.status !== 1 && (
+            {selectedInvoice && Number(selectedInvoice.status) !== 1 && (
               <Button type="default" size="small" onClick={() => router.push(`/accounting/accounts/create?invoice=${selectedInvoice.invoice_code}`)}>Pay</Button>
             )}
           </div>
@@ -421,94 +475,132 @@ export default function InvoicesPage() {
         width={440}
         onClose={closeDrawer}
         open={drawerOpen}
+        footer={selectedInvoice ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Button type="primary" icon={<PrinterOutlined />} block onClick={() => window.print()}>
+              Print
+            </Button>
+            <Button type="primary" icon={<EditOutlined />} block style={{ background: '#52c41a', borderColor: '#52c41a' }}
+              onClick={() => { closeDrawer(); router.push(`/invoices/${selectedInvoice.id}/edit`); }}>
+              Edit
+            </Button>
+            <Button block onClick={closeDrawer}>
+              Close
+            </Button>
+          </div>
+        ) : null}
       >
         {drawerLoading ? (
           <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>
         ) : selectedInvoice ? (
           <>
-            <Descriptions column={1} size="small" labelStyle={{ width: 130, fontWeight: 500, color: '#888', textAlign: 'right', paddingRight: 12 }} contentStyle={{ fontWeight: 400 }}>
-              <Descriptions.Item label="ENTRY TYPE">
-                <span style={{ color: selectedInvoice.type === 0 ? '#389e0d' : '#cf1322' }}>
-                  {selectedInvoice.type === 0 ? 'Inflow' : 'Outflow'}
-                </span>
+            {/* Invoice Details */}
+            <Descriptions column={1} size="small" labelStyle={{ width: 130, fontWeight: 600, color: '#555', textAlign: 'right', paddingRight: 12 }} contentStyle={{ fontWeight: 400 }}>
+              <Descriptions.Item label="ENTRY TYPE:">
+                {Number(selectedInvoice.type) === 0 ? 'Inflow' : 'Outflow'}
               </Descriptions.Item>
-              <Descriptions.Item label="STATUS">
-                <span style={{ color: getStatusLabel(selectedInvoice.status).color }}>
-                  {getStatusLabel(selectedInvoice.status).text}
-                </span>
+              <Descriptions.Item label="STATUS:">
+                {getStatusLabel(Number(selectedInvoice.status)).text}
               </Descriptions.Item>
-              <Descriptions.Item label="Invoice ID">
+            </Descriptions>
+            <Divider style={{ margin: '12px 0' }} />
+            <Descriptions column={1} size="small" labelStyle={{ width: 130, fontWeight: 600, color: '#555', textAlign: 'right', paddingRight: 12 }} contentStyle={{ fontWeight: 400 }}>
+              <Descriptions.Item label="Invoice ID:">
                 {selectedInvoice.invoice_code || '-'}
               </Descriptions.Item>
-              <Descriptions.Item label="Contact">
-                <span style={{ color: '#1890ff' }}>
-                  {[selectedInvoice.tenant_first_name, selectedInvoice.tenant_last_name].filter(Boolean).join(' ') || '-'}
-                </span>
+              <Descriptions.Item label="Contact:">
+                {(() => {
+                  if (Number(selectedInvoice.tenant_type) === 1 && selectedInvoice.tenant_company_name) {
+                    return selectedInvoice.tenant_company_name;
+                  }
+                  return [selectedInvoice.tenant_first_name, selectedInvoice.tenant_last_name].filter(Boolean).join(' ') || '-';
+                })()}
               </Descriptions.Item>
-              <Descriptions.Item label="Due Date">
-                <span style={{ color: '#1890ff' }}>
-                  {selectedInvoice.due_on ? dayjs(selectedInvoice.due_on).format('YYYY-MM-DD') : '-'}
-                </span>
+              <Descriptions.Item label="Due Date:">
+                {selectedInvoice.due_on ? dayjs(selectedInvoice.due_on).format('YYYY-MM-DD') : '-'}
               </Descriptions.Item>
-              <Descriptions.Item label="Amount">
-                <span style={{ color: '#389e0d' }}>{formatCurrency(selectedInvoice.amount)}</span>
+              <Descriptions.Item label="Amount:">
+                {formatCurrency(selectedInvoice.amount)}
               </Descriptions.Item>
-              <Descriptions.Item label="Amount Paid">
-                <span style={{ color: '#389e0d' }}>{formatCurrency(selectedInvoice.amount_paid)}</span>
+              <Descriptions.Item label="Amount Paid:">
+                {formatCurrency(selectedInvoice.amount_paid)}
               </Descriptions.Item>
-              <Descriptions.Item label="Outstanding">
-                <span style={{ color: '#cf1322' }}>{formatCurrency(selectedInvoice.outstanding)}</span>
+              <Descriptions.Item label="Outstanding:">
+                {formatCurrency(selectedInvoice.outstanding)}
               </Descriptions.Item>
-              <Descriptions.Item label="Property">
-                <span style={{ color: '#1890ff' }}>{selectedInvoice.property_name || '-'}</span>
-              </Descriptions.Item>
-              <Descriptions.Item label="Unit">
-                <span style={{ color: '#1890ff' }}>{selectedInvoice.unit_name || '-'}</span>
-              </Descriptions.Item>
-              <Descriptions.Item label="Notes">
-                <span style={{ color: '#1890ff' }}>{selectedInvoice.note || '-'}</span>
-              </Descriptions.Item>
-              <Descriptions.Item label="Files">—</Descriptions.Item>
             </Descriptions>
 
+            {/* Property + Unit side by side */}
+            <div style={{ display: 'flex', margin: '8px 0', paddingLeft: 0 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Property:</div>
+                <div>{selectedInvoice.property_name || '-'}</div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Unit:</div>
+                <div>{selectedInvoice.unit_name || '-'}</div>
+              </div>
+            </div>
+
+            {/* Notes */}
+            <div style={{ margin: '12px 0' }}>
+              <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Notes:</div>
+              <div style={{ color: '#1890ff' }}>{selectedInvoice.note || '-'}</div>
+            </div>
+
+            {/* Files */}
+            <div style={{ margin: '12px 0' }}>
+              <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
+              <div>—</div>
+            </div>
+
             {/* Payment Activity */}
-            {selectedInvoice.payments && selectedInvoice.payments.length > 0 && (
-              <>
-                <Divider orientation="left" style={{ marginTop: 24, fontWeight: 600 }}>Payment Activity</Divider>
-                {selectedInvoice.payments.map((p, idx) => (
-                  <div key={idx} style={{ marginBottom: 20, borderBottom: '1px solid #f0f0f0', paddingBottom: 16 }}>
-                    <Descriptions column={1} size="small" labelStyle={{ width: 130, fontWeight: 500, color: '#888', textAlign: 'right', paddingRight: 12 }} contentStyle={{ fontWeight: 400 }}>
-                      <Descriptions.Item label="Transaction ID">
-                        <span style={{ color: '#1890ff' }}>{p.transaction_code || '-'}</span>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="Date">
-                        <span style={{ color: '#1890ff' }}>{p.payment_date ? dayjs(p.payment_date).format('YYYY-MM-DD') : '-'}</span>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="Contact">
-                        <span style={{ color: '#1890ff' }}>{[p.contact_first_name, p.contact_last_name].filter(Boolean).join(' ') || '-'}</span>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="Method">
-                        <span style={{ color: '#1890ff' }}>{p.payment_method_name || '-'}</span>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="Category">
-                        {p.payment_category_name || '—'}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="Amount Paid">
-                        <span style={{ color: '#389e0d' }}>{formatCurrency(p.amount)}</span>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="Notes">
-                        <span style={{ color: '#1890ff' }}>{p.note || '-'}</span>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="Files">—</Descriptions.Item>
-                    </Descriptions>
+            <Divider style={{ margin: '16px 0 12px' }} />
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Payment Activity</div>
+            {selectedInvoice.payments && selectedInvoice.payments.length > 0 ? (
+              selectedInvoice.payments.map((p, idx) => (
+                <div key={idx} style={{ marginBottom: 16, borderBottom: '1px solid #f0f0f0', paddingBottom: 12 }}>
+                  <Descriptions column={1} size="small" labelStyle={{ width: 130, fontWeight: 600, color: '#555', textAlign: 'right', paddingRight: 12 }} contentStyle={{ fontWeight: 400 }}>
+                    <Descriptions.Item label="Transaction ID:">
+                      {p.transaction_code || '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Date:">
+                      {p.payment_date ? dayjs(p.payment_date).format('YYYY-MM-DD') : '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Contact:">
+                      {[p.contact_first_name, p.contact_last_name].filter(Boolean).join(' ') || '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Method:">
+                      {p.payment_method_name || '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Category:">
+                      {p.payment_category_name || '—'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Amount Paid:">
+                      {formatCurrency(p.amount)}
+                    </Descriptions.Item>
+                  </Descriptions>
+                  <div style={{ margin: '8px 0 4px' }}>
+                    <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Notes:</div>
+                    <div>{p.note || '-'}</div>
                   </div>
-                ))}
-              </>
+                  <div style={{ margin: '8px 0 4px' }}>
+                    <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
+                    <div>—</div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ textAlign: 'center', color: '#999', padding: '12px 0' }}>No payment activity</div>
             )}
 
             {/* Submitted Payments */}
-            <Divider orientation="left" style={{ marginTop: 24, fontWeight: 600 }}>Submitted Payments</Divider>
-            <div style={{ textAlign: 'center', color: '#999', padding: '20px 0' }}>No Data</div>
+            <Divider style={{ margin: '16px 0 12px' }} />
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Submitted Payments</div>
+            <div style={{ textAlign: 'center', color: '#999', padding: '20px 0' }}>
+              <div style={{ fontSize: 40, marginBottom: 4 }}>✉</div>
+              No Data
+            </div>
           </>
         ) : (
           <div style={{ textAlign: 'center', color: '#999', padding: 60 }}>No invoice selected</div>
