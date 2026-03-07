@@ -161,6 +161,8 @@
 | `property_owner_tag` | Owner tagging taxonomy | Done — `backend/migrations/003_create_property_owner_tags.sql` |
 | `property_owner_tag_map` | Owner-to-tag mapping | Done — `backend/migrations/003_create_property_owner_tags.sql` |
 | `property.payment_instructions` | Payment instructions text field on property | Done — `backend/migrations/004_add_payment_instructions_to_property.sql` |
+| `unit_inventory` | Inventory items per unit (furnishings, appliances) | Done — `backend/migrations/005_create_unit_inventory.sql` |
+| `email_log` | Outbound email tracking for admin monitoring | Done — `backend/migrations/006_create_email_log.sql` |
 
 ## Backend Feature Gaps
 
