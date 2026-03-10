@@ -203,6 +203,7 @@ export const contact = {
   createServiceVendor: (data) => api.post('/api/service-vendor', data),
   updateServiceVendor: (id, data) => api.put(`/api/service-vendor/${id}/update`, data),
   deleteServiceVendor: (id) => api.delete(`/api/service-vendor/${id}`),
+  getVendorServices: (id, data, params) => api.post(`/api/service-vendor/services/${id}`, data || {}, { params }),
   // Email groups
   listEmailGroups: (data, params) => api.post('/api/contact/email/groups', data, { params }),
   getEmailGroupEmails: (params) => api.get('/api/contact/email/groups/emails', { params }),

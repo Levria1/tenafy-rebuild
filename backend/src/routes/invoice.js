@@ -9,8 +9,26 @@ router.post('/invoices', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { search, searchFields, status, tenantId, propertyId, startDate, endDate, type, tenantStatus, category } = req.body || {};
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
+
+    // Server-side sorting — whitelist of allowed sort columns
+    const sortFieldMap = {
+      'status': 'i.status',
+      'due_on': 'i.due_on',
+      'dueOn': 'i.due_on',
+      'contact': 'tenant_first_name',
+      'tenantName': 'tenant_first_name',
+      'property_unit': 'property_name',
+      'propertyUnit': 'property_name',
+      'amount': 'i.amount',
+      'outstanding': 'outstanding',
+      'days_late': 'days_late',
+    };
+    const sortBy = req.query.sort || req.body.sort;
+    const sortOrder = (req.query.order || req.body.order || '').toLowerCase() === 'ascend' ? 'ASC' : 'DESC';
+    const sortColumn = sortFieldMap[sortBy] || 'i.due_on';
+    const orderClause = `${sortColumn} ${sortBy ? sortOrder : 'DESC'}`;
 
     let whereClause = 'i.org_id = ? AND i.deleted_at IS NULL';
     const params = [orgId];
@@ -101,14 +119,18 @@ router.post('/invoices', authenticate, async (req, res) => {
                     JOIN accounting a2 ON al2.accounting_id = a2.id
                     WHERE al2.invoice_code = i.invoice_code AND a2.org_id = i.org_id AND a2.deleted_at IS NULL AND al2.deleted_at IS NULL), 0)
                 )
-              END) as outstanding
+              END) as outstanding,
+              (CASE i.status
+                WHEN 2 THEN IF(i.due_on IS NULL, 0, IF(DATEDIFF(CURRENT_TIMESTAMP, i.due_on) >= 0, DATEDIFF(CURRENT_TIMESTAMP, i.due_on), 0))
+                ELSE 0
+              END) as days_late
        FROM invoice i
        LEFT JOIN tenant t ON i.tenant_id = t.id
        LEFT JOIN unit u ON i.unit_id = u.id
        LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
        LEFT JOIN category_setting cs ON i.category = cs.id
        WHERE ${whereClause}
-       ORDER BY i.due_on DESC LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY ${orderClause} LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 

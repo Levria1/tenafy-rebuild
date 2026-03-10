@@ -86,7 +86,7 @@ router.post('/contacts', authenticate, async (req, res) => {
         GROUP BY tenant_id
       ) inv ON inv.tenant_id = t.id
       WHERE ${whereClause} AND t.category = 1
-      ORDER BY t.first_name, t.last_name
+      ORDER BY COALESCE(t.first_name, t.company_name, '') ASC, COALESCE(t.last_name, '') ASC
       LIMIT ${limit} OFFSET ${offset}
     `;
 
@@ -127,7 +127,7 @@ router.get('/tenants', authenticate, async (req, res) => {
     }
 
     const [tenants] = await pool.execute(
-      'SELECT * FROM tenant WHERE ' + whereClause + ' ORDER BY first_name, last_name',
+      'SELECT * FROM tenant WHERE ' + whereClause + ' ORDER BY COALESCE(first_name, company_name, \'\') ASC, COALESCE(last_name, \'\') ASC',
       params
     );
     res.json({ code: 200, data: tenants });

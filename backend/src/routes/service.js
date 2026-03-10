@@ -7,42 +7,90 @@ const pool = require('../config/database');
 router.post('/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status, category } = req.body || {};
+    const { search, searchFields, status, category, subCategoryList, property, unitIdList } = req.body || {};
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
 
     let whereClause = 's.org_id = ? AND s.deleted_at IS NULL';
     const params = [orgId];
 
+    // Search: supports searchFields array (propertyName, tenantName)
     if (search) {
-      whereClause += ' AND (s.code LIKE ? OR s.note LIKE ? OR s.additional_info LIKE ?)';
       const sv = '%' + search + '%';
-      params.push(sv, sv, sv);
+      const fields = Array.isArray(searchFields) && searchFields.length > 0 ? searchFields : null;
+      if (!fields) {
+        // No fields selected: search property name, unit name, and tenant name
+        whereClause += ` AND (p.display_name LIKE ? OR u.name LIKE ?
+          OR t.id IN (SELECT id FROM tenant WHERE type = 0 AND CONCAT(COALESCE(first_name,''), ' ', COALESCE(middle_name,''), ' ', COALESCE(last_name,'')) LIKE ?)
+          OR t.id IN (SELECT id FROM tenant WHERE type = 1 AND company_name LIKE ?))`;
+        params.push(sv, sv, sv, sv);
+      } else {
+        const searchParts = [];
+        for (const f of fields) {
+          if (f === 'propertyName') {
+            searchParts.push('(p.display_name LIKE ? OR u.name LIKE ?)');
+            params.push(sv, sv);
+          } else if (f === 'tenantName') {
+            searchParts.push(`(t.id IN (SELECT id FROM tenant WHERE type = 0 AND CONCAT(COALESCE(first_name,''), ' ', COALESCE(middle_name,''), ' ', COALESCE(last_name,'')) LIKE ?)
+              OR t.id IN (SELECT id FROM tenant WHERE type = 1 AND company_name LIKE ?))`);
+            params.push(sv, sv);
+          }
+        }
+        if (searchParts.length > 0) {
+          whereClause += ' AND (' + searchParts.join(' OR ') + ')';
+        }
+      }
     }
+
     if (status !== undefined && status !== null) {
       whereClause += ' AND s.status = ?';
       params.push(status);
     }
-    if (category) {
+    // Category filter — supports array or single value
+    if (Array.isArray(category) && category.length > 0) {
+      whereClause += ' AND s.category IN (' + category.map(() => '?').join(',') + ')';
+      params.push(...category);
+    } else if (category && !Array.isArray(category)) {
       whereClause += ' AND s.category = ?';
       params.push(category);
     }
+    // Sub-category filter
+    if (Array.isArray(subCategoryList) && subCategoryList.length > 0) {
+      whereClause += ' AND s.sub_category IN (' + subCategoryList.map(() => '?').join(',') + ')';
+      params.push(...subCategoryList);
+    }
+    // Property filter — array of property IDs
+    if (Array.isArray(property) && property.length > 0) {
+      whereClause += ' AND p.id IN (' + property.map(() => '?').join(',') + ')';
+      params.push(...property);
+    }
+    // Unit filter — array of unit IDs
+    if (Array.isArray(unitIdList) && unitIdList.length > 0) {
+      whereClause += ' AND u.id IN (' + unitIdList.map(() => '?').join(',') + ')';
+      params.push(...unitIdList);
+    }
+
+    // Count query needs same JOINs for property/unit/tenant filters
+    const joinClause = `FROM service s
+       LEFT JOIN unit u ON s.unit_id = u.id
+       LEFT JOIN property p ON u.property_id = p.id
+       LEFT JOIN tenant t ON s.created_by = t.id`;
 
     const [services] = await pool.execute(
       `SELECT s.*, u.name as unit_name, p.display_name as property_name,
-              ua.first_name as assignee_first_name, ua.last_name as assignee_last_name
-       FROM service s
-       LEFT JOIN unit u ON s.unit_id = u.id
-       LEFT JOIN property p ON u.property_id = p.id
-       LEFT JOIN user ua ON s.assignee = ua.id
+              CASE WHEN t.type = 1 THEN t.company_name
+                   ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
+              END AS tenant_name,
+              t.phone AS tenant_phone
+       ${joinClause}
        WHERE ${whereClause} ORDER BY s.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       [...params]
     );
 
     const [[{ total }]] = await pool.execute(
-      `SELECT COUNT(*) as total FROM service s WHERE ${whereClause}`,
-      params
+      `SELECT COUNT(*) as total ${joinClause} WHERE ${whereClause}`,
+      [...params]
     );
 
     res.json({ code: 200, data: { content: services, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page } });
@@ -92,33 +140,40 @@ router.post('/create', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const userId = req.user.id;
 
+    // Snowflake ID
+    const serviceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+
     // Generate service code from sequence
-    let code = 'SRV-' + Date.now();
-    const [[seq]] = await pool.execute(
-      'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-      [orgId, 'service_code']
-    );
-    if (seq) {
-      code = seq.pattern.replace(/{#,(\d+)}/, (_, pad) =>
-        String(seq.seq_next).padStart(parseInt(pad), '0')
+    let code = 'S' + Date.now();
+    try {
+      const [[seq]] = await pool.execute(
+        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
+        [orgId, 'service_code']
       );
-      await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
+      if (seq) {
+        code = seq.pattern.replace(/{#,(\d+)}/, (_, pad) =>
+          String(seq.seq_next).padStart(parseInt(pad), '0')
+        );
+        await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
+      }
+    } catch (seqErr) {
+      console.error('Sequence lookup failed, using fallback code:', seqErr.message);
     }
 
-    const [result] = await pool.execute(
-      `INSERT INTO service (org_id, code, unit_id, category, sub_category,
+    await pool.execute(
+      `INSERT INTO service (id, org_id, code, unit_id, category, sub_category,
         note, additional_info, status, assignee, priority, created_by,
         preferred_date_first_start, preferred_date_first_end,
         preferred_date_second_start, preferred_date_second_end,
         service_date_start, service_date_end, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [orgId, code, unit_id, category || null, sub_category || null,
-       note || null, additional_info || null, status || 0, assignee || null, priority || null, userId,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [serviceId, orgId, code, unit_id, category || null, sub_category || null,
+       note || null, additional_info || null, status ?? 0, assignee || null, priority ?? null, userId,
        preferred_date_first_start || null, preferred_date_first_end || null,
        preferred_date_second_start || null, preferred_date_second_end || null,
        service_date_start || null, service_date_end || null]
     );
-    res.json({ code: 200, message: 'Service created', data: { id: result.insertId, code } });
+    res.json({ code: 200, message: 'Service created', data: { id: serviceId, code } });
   } catch (error) {
     console.error('Create service error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create service' });
@@ -231,13 +286,16 @@ router.get('/detail/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const [services] = await pool.execute(
       `SELECT s.*, u.name as unit_name, p.display_name as property_name, p.id as property_id,
-              ua.first_name as assignee_first_name, ua.last_name as assignee_last_name,
-              uc.first_name as created_by_first_name, uc.last_name as created_by_last_name
+              sv.first_name as assignee_first_name, sv.last_name as assignee_last_name,
+              CASE WHEN t.type = 1 THEN t.company_name
+                   ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
+              END AS tenant_name,
+              t.phone AS tenant_phone
        FROM service s
        LEFT JOIN unit u ON s.unit_id = u.id
        LEFT JOIN property p ON u.property_id = p.id
-       LEFT JOIN user ua ON s.assignee = ua.id
-       LEFT JOIN user uc ON s.created_by = uc.id
+       LEFT JOIN service_vendor sv ON s.assignee = sv.id
+       LEFT JOIN tenant t ON s.created_by = t.id
        WHERE s.id = ? AND s.org_id = ? AND s.deleted_at IS NULL`,
       [id, orgId]
     );
@@ -257,24 +315,32 @@ router.put('/update/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const {
-      category, sub_category, note, additional_info,
+      unit_id, category, sub_category, note, additional_info,
       status, assignee, priority,
       preferred_date_first_start, preferred_date_first_end,
       preferred_date_second_start, preferred_date_second_end,
       service_date_start, service_date_end
     } = req.body;
 
+    // Verify exists
+    const [existing] = await pool.execute(
+      'SELECT id FROM service WHERE id = ? AND org_id = ? AND deleted_at IS NULL', [id, orgId]
+    );
+    if (existing.length === 0) {
+      return res.status(404).json({ code: 404, message: 'Service not found' });
+    }
+
     await pool.execute(
       `UPDATE service SET
-        category = ?, sub_category = ?, note = ?, additional_info = ?,
+        unit_id = ?, category = ?, sub_category = ?, note = ?, additional_info = ?,
         status = ?, assignee = ?, priority = ?,
         preferred_date_first_start = ?, preferred_date_first_end = ?,
         preferred_date_second_start = ?, preferred_date_second_end = ?,
         service_date_start = ?, service_date_end = ?,
         updated_at = NOW()
        WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
-      [category || null, sub_category || null, note || null, additional_info || null,
-       status, assignee || null, priority || null,
+      [unit_id || null, category || null, sub_category || null, note || null, additional_info || null,
+       status ?? 0, assignee || null, priority ?? null,
        preferred_date_first_start || null, preferred_date_first_end || null,
        preferred_date_second_start || null, preferred_date_second_end || null,
        service_date_start || null, service_date_end || null,

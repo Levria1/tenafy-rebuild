@@ -2,26 +2,17 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Card, Form, Input, Select, DatePicker, Button, Space, message, Row, Col } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import {
+  Form, Input, Select, DatePicker, TimePicker, Button, Space, message,
+  Row, Col, Upload, Radio,
+} from 'antd';
+import { ArrowLeftOutlined, UploadOutlined, InboxOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
-import { service, user } from '../../../lib/api';
+import { service } from '../../../lib/api';
 
 const { TextArea } = Input;
-const { RangePicker } = DatePicker;
-
-const CATEGORY_OPTIONS = [
-  { label: 'Plumbing', value: 'Plumbing' },
-  { label: 'Electrical', value: 'Electrical' },
-  { label: 'HVAC', value: 'HVAC' },
-  { label: 'Appliance', value: 'Appliance' },
-  { label: 'Structural', value: 'Structural' },
-  { label: 'Painting', value: 'Painting' },
-  { label: 'Cleaning', value: 'Cleaning' },
-  { label: 'Landscaping', value: 'Landscaping' },
-  { label: 'General', value: 'General' },
-  { label: 'Other', value: 'Other' },
-];
+const { Dragger } = Upload;
 
 const PRIORITY_OPTIONS = [
   { label: 'High', value: 0 },
@@ -33,10 +24,19 @@ export default function ServiceCreatePage() {
   const router = useRouter();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+
+  // Dropdown data
   const [properties, setProperties] = useState([]);
   const [units, setUnits] = useState([]);
   const [unitsLoading, setUnitsLoading] = useState(false);
-  const [users, setUsers] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [vendors, setVendors] = useState([]);
+
+  // Assignee mode: 'self' or 'vendor'
+  const [assignMode, setAssignMode] = useState(null);
+
+  // File list
+  const [fileList, setFileList] = useState([]);
 
   useEffect(() => {
     loadInitialData();
@@ -44,18 +44,16 @@ export default function ServiceCreatePage() {
 
   const loadInitialData = async () => {
     try {
-      const [propRes, userRes] = await Promise.all([
+      const [propRes, catRes, vendorRes] = await Promise.all([
         service.getPropertyList(),
-        user.listUsers({}, { page: 1, limit: 200 }),
+        service.getCategories(),
+        service.getVendors(),
       ]);
-      if (propRes.data.code === 200) {
-        setProperties(propRes.data.data || []);
-      }
-      if (userRes.data.code === 200) {
-        const userData = userRes.data.data?.content || userRes.data.data || [];
-        setUsers(userData);
-      }
+      if (propRes.data.code === 200) setProperties(propRes.data.data || []);
+      if (catRes.data.code === 200) setCategories(catRes.data.data || []);
+      if (vendorRes.data.code === 200) setVendors(vendorRes.data.data || []);
     } catch (error) {
+      console.error('Failed to load form data:', error);
       message.error('Failed to load form data');
     }
   };
@@ -83,17 +81,34 @@ export default function ServiceCreatePage() {
     try {
       const payload = {
         unit_id: values.unit_id,
-        category: values.category,
+        category: values.category || null,
         sub_category: values.sub_category || null,
         priority: values.priority,
         additional_info: values.additional_info || null,
         note: values.note || null,
-        assignee: values.assignee || null,
       };
 
-      if (values.preferred_date_range && values.preferred_date_range.length === 2) {
-        payload.preferred_date_first_start = values.preferred_date_range[0].format('YYYY-MM-DD');
-        payload.preferred_date_first_end = values.preferred_date_range[1].format('YYYY-MM-DD');
+      // Assignee
+      if (assignMode === 'vendor' && values.vendor_id) {
+        payload.assignee = values.vendor_id;
+      }
+
+      // Preferred Date and Time - Option 1
+      if (values.pref1_date) {
+        const dateStr = values.pref1_date.format('YYYY-MM-DD');
+        const startTime = values.pref1_start ? values.pref1_start.format('HH:mm:ss') : '00:00:00';
+        const endTime = values.pref1_end ? values.pref1_end.format('HH:mm:ss') : '23:59:59';
+        payload.preferred_date_first_start = `${dateStr} ${startTime}`;
+        payload.preferred_date_first_end = `${dateStr} ${endTime}`;
+      }
+
+      // Preferred Date and Time - Option 2
+      if (values.pref2_date) {
+        const dateStr = values.pref2_date.format('YYYY-MM-DD');
+        const startTime = values.pref2_start ? values.pref2_start.format('HH:mm:ss') : '00:00:00';
+        const endTime = values.pref2_end ? values.pref2_end.format('HH:mm:ss') : '23:59:59';
+        payload.preferred_date_second_start = `${dateStr} ${startTime}`;
+        payload.preferred_date_second_end = `${dateStr} ${endTime}`;
       }
 
       await service.create(payload);
@@ -106,14 +121,22 @@ export default function ServiceCreatePage() {
     }
   };
 
+  // Disable past dates
+  const disabledDate = (current) => current && current < dayjs().startOf('day');
+
   return (
     <MainLayout>
       <Space direction="vertical" style={{ width: '100%' }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/services')}>
           Back
         </Button>
-        <Card title="Create Work Order">
-          <Form form={form} layout="vertical" onFinish={onFinish} style={{ maxWidth: 800 }}>
+
+        <div style={{ background: '#fff', border: '1px solid #f0f0f0', borderRadius: 8, padding: '24px 32px' }}>
+          <h2 style={{ marginBottom: 24 }}>Create Work Order</h2>
+
+          <Form form={form} layout="vertical" onFinish={onFinish} style={{ maxWidth: 900 }}>
+
+            {/* ── Property & Unit ───────────────────────────────────── */}
             <Row gutter={16}>
               <Col span={12}>
                 <Form.Item name="property_id" label="Property" rules={[{ required: true, message: 'Please select a property' }]}>
@@ -124,7 +147,7 @@ export default function ServiceCreatePage() {
                     optionFilterProp="label"
                     onChange={handlePropertyChange}
                     options={properties.map((p) => ({
-                      label: p.display_name || p.name,
+                      label: p.display_name,
                       value: p.id,
                     }))}
                   />
@@ -139,7 +162,7 @@ export default function ServiceCreatePage() {
                     optionFilterProp="label"
                     loading={unitsLoading}
                     options={units.map((u) => ({
-                      label: u.unit_number || u.name,
+                      label: u.name,
                       value: u.id,
                     }))}
                   />
@@ -147,55 +170,144 @@ export default function ServiceCreatePage() {
               </Col>
             </Row>
 
+            {/* ── Category & Sub-Category ──────────────────────────── */}
             <Row gutter={16}>
               <Col span={12}>
                 <Form.Item name="category" label="Category" rules={[{ required: true, message: 'Please select a category' }]}>
-                  <Select placeholder="Select Category" options={CATEGORY_OPTIONS} />
+                  <Select
+                    placeholder="Select Category"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    options={categories.map((c) => ({
+                      label: c.category,
+                      value: c.category,
+                    }))}
+                  />
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item name="sub_category" label="Sub-Category">
-                  <Input placeholder="e.g. Leaking faucet" />
+                <Form.Item name="sub_category" label="Issues / Sub-Category">
+                  <Input placeholder="e.g. Leaking faucet, Broken door" />
                 </Form.Item>
               </Col>
             </Row>
 
+            {/* ── Priority ─────────────────────────────────────────── */}
             <Row gutter={16}>
               <Col span={12}>
                 <Form.Item name="priority" label="Priority" rules={[{ required: true, message: 'Please select priority' }]}>
                   <Select placeholder="Select Priority" options={PRIORITY_OPTIONS} />
                 </Form.Item>
               </Col>
-              <Col span={12}>
-                <Form.Item name="assignee" label="Assignee">
-                  <Select
-                    placeholder="Select Assignee"
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    options={users.map((u) => ({
-                      label: u.first_name && u.last_name
-                        ? `${u.first_name} ${u.last_name}`
-                        : u.username,
-                      value: u.id,
-                    }))}
-                  />
-                </Form.Item>
-              </Col>
             </Row>
 
-            <Form.Item name="preferred_date_range" label="Preferred Date Range">
-              <RangePicker style={{ width: '100%' }} />
+            {/* ── Preferred Date and Time ──────────────────────────── */}
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ color: '#d4830d', fontWeight: 600, fontSize: 14, marginBottom: 12 }}>
+                Preferred Date and Time:
+              </div>
+
+              {/* Option 1 */}
+              <div style={{ marginBottom: 12 }}>
+                <span style={{ color: '#ff4d4f', marginRight: 4 }}>*</span>
+                <span style={{ fontWeight: 500, marginRight: 12 }}>Option 1:</span>
+                <Space>
+                  <Form.Item name="pref1_date" noStyle rules={[{ required: true, message: 'Select date' }]}>
+                    <DatePicker placeholder="Select date" disabledDate={disabledDate} style={{ width: 150 }} />
+                  </Form.Item>
+                  <Form.Item name="pref1_start" noStyle>
+                    <TimePicker placeholder="Start Time" format="HH:mm" minuteStep={15} style={{ width: 120 }} />
+                  </Form.Item>
+                  <span style={{ color: '#999' }}>-</span>
+                  <Form.Item name="pref1_end" noStyle>
+                    <TimePicker placeholder="End Time" format="HH:mm" minuteStep={15} style={{ width: 120 }} />
+                  </Form.Item>
+                </Space>
+              </div>
+
+              {/* Option 2 */}
+              <div style={{ marginBottom: 16 }}>
+                <span style={{ marginRight: 4, visibility: 'hidden' }}>*</span>
+                <span style={{ fontWeight: 500, marginRight: 12 }}>Option 2:</span>
+                <Space>
+                  <Form.Item name="pref2_date" noStyle>
+                    <DatePicker placeholder="Select date" disabledDate={disabledDate} style={{ width: 150 }} />
+                  </Form.Item>
+                  <Form.Item name="pref2_start" noStyle>
+                    <TimePicker placeholder="Start Time" format="HH:mm" minuteStep={15} style={{ width: 120 }} />
+                  </Form.Item>
+                  <span style={{ color: '#999' }}>-</span>
+                  <Form.Item name="pref2_end" noStyle>
+                    <TimePicker placeholder="End Time" format="HH:mm" minuteStep={15} style={{ width: 120 }} />
+                  </Form.Item>
+                </Space>
+              </div>
+            </div>
+
+            {/* ── Assignee ─────────────────────────────────────────── */}
+            <Form.Item label="Select Assignee">
+              <Radio.Group
+                value={assignMode}
+                onChange={(e) => {
+                  setAssignMode(e.target.value);
+                  if (e.target.value !== 'vendor') {
+                    form.setFieldValue('vendor_id', undefined);
+                  }
+                }}
+              >
+                <Space direction="vertical">
+                  <Radio value="self">Assign to Myself</Radio>
+                  <Radio value="vendor">
+                    <Space>
+                      Assign to Vendor
+                      {assignMode === 'vendor' && (
+                        <Form.Item name="vendor_id" noStyle>
+                          <Select
+                            placeholder="Select Vendor"
+                            allowClear
+                            showSearch
+                            optionFilterProp="label"
+                            style={{ width: 250 }}
+                            options={vendors.map((v) => ({
+                              label: [v.first_name, v.last_name].filter(Boolean).join(' '),
+                              value: v.id,
+                            }))}
+                          />
+                        </Form.Item>
+                      )}
+                    </Space>
+                  </Radio>
+                </Space>
+              </Radio.Group>
             </Form.Item>
 
+            {/* ── Additional Information ───────────────────────────── */}
             <Form.Item name="additional_info" label="Additional Information">
-              <TextArea rows={3} placeholder="Any additional details about the issue..." />
+              <TextArea rows={4} placeholder="Any additional details about the issue..." />
             </Form.Item>
 
+            {/* ── Note ─────────────────────────────────────────────── */}
             <Form.Item name="note" label="Note">
               <TextArea rows={3} placeholder="Internal notes..." />
             </Form.Item>
 
+            {/* ── Upload Images or Documents ───────────────────────── */}
+            <Form.Item label="Upload Images or Documents">
+              <Dragger
+                multiple
+                fileList={fileList}
+                onChange={({ fileList: fl }) => setFileList(fl)}
+                beforeUpload={() => false}
+                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"
+              >
+                <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                <p className="ant-upload-text">Click or drag files to this area to upload</p>
+                <p className="ant-upload-hint">Support images, PDF, Word, Excel files</p>
+              </Dragger>
+            </Form.Item>
+
+            {/* ── Actions ──────────────────────────────────────────── */}
             <Form.Item>
               <Space>
                 <Button onClick={() => router.push('/services')}>Cancel</Button>
@@ -205,7 +317,7 @@ export default function ServiceCreatePage() {
               </Space>
             </Form.Item>
           </Form>
-        </Card>
+        </div>
       </Space>
     </MainLayout>
   );

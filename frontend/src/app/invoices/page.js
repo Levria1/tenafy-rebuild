@@ -27,8 +27,9 @@ export default function InvoicesPage() {
   const [search, setSearch] = useState('');
   const [searchFields, setSearchFields] = useState(['tenantName']); // default: Contact checked
   const [searchDropdownOpen, setSearchDropdownOpen] = useState(false);
-  const [dateRange, setDateRange] = useState(() => [dayjs().subtract(3, 'month'), dayjs()]);
-  const [activeDateFilter, setActiveDateFilter] = useState('3M');
+  const [dateRange, setDateRange] = useState(() => [dayjs().subtract(1, 'month'), dayjs()]);
+  const [activeDateFilter, setActiveDateFilter] = useState('1M');
+  const [sortInfo, setSortInfo] = useState({ field: 'due_on', order: 'descend' });
   const [summary, setSummary] = useState({ outstanding_outflow: 0, outstanding_inflow: 0, paid: 0 });
   const router = useRouter();
 
@@ -56,7 +57,7 @@ export default function InvoicesPage() {
 
   useEffect(() => {
     loadInvoices();
-  }, [pagination.current, pagination.pageSize, search, dateRange, filters]);
+  }, [pagination.current, pagination.pageSize, search, dateRange, filters, sortInfo]);
 
   const loadSettings = async () => {
     try {
@@ -83,7 +84,10 @@ export default function InvoicesPage() {
       if (dateRange && dateRange[0]) body.startDate = dateRange[0].format('YYYY-MM-DD');
       if (dateRange && dateRange[1]) body.endDate = dateRange[1].format('YYYY-MM-DD');
 
-      const response = await invoice.list(body, { page: pagination.current, limit: pagination.pageSize });
+      const queryParams = { page: pagination.current, limit: pagination.pageSize };
+      if (sortInfo.field) queryParams.sort = sortInfo.field;
+      if (sortInfo.order) queryParams.order = sortInfo.order;
+      const response = await invoice.list(body, queryParams);
       if (response.data.code === 200) {
         setInvoices(response.data.data.content || []);
         setPagination(prev => ({ ...prev, total: response.data.data.totalElements || 0 }));
@@ -290,6 +294,7 @@ export default function InvoicesPage() {
     {
       title: 'STATUS', dataIndex: 'status', key: 'status', width: 80,
       sorter: true,
+      sortOrder: sortInfo.field === 'status' ? sortInfo.order : null,
       render: (s) => {
         const st = getStatusLabel(s);
         return <span style={{ color: st.color, fontWeight: 500 }}>{st.text}</span>;
@@ -306,19 +311,22 @@ export default function InvoicesPage() {
     {
       title: 'DUE DATE', dataIndex: 'due_on', key: 'due_on', width: 110,
       sorter: true,
+      sortOrder: sortInfo.field === 'due_on' ? sortInfo.order : null,
       render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',
     },
     {
-      title: 'CONTACT', key: 'contact', width: 160,
+      title: 'CONTACT', dataIndex: 'contact', key: 'contact', width: 160,
       sorter: true,
+      sortOrder: sortInfo.field === 'contact' ? sortInfo.order : null,
       render: (_, r) => {
         const name = [r.tenant_first_name, r.tenant_last_name].filter(Boolean).join(' ');
         return name ? <Link href={`/contacts/tenant/${r.tenant_id}/detail`} style={{ color: '#1890ff' }}>{name}</Link> : '-';
       },
     },
     {
-      title: 'PROPERTY (Unit)', key: 'property_unit', width: 200,
+      title: 'PROPERTY (Unit)', dataIndex: 'property_unit', key: 'property_unit', width: 200,
       sorter: true,
+      sortOrder: sortInfo.field === 'property_unit' ? sortInfo.order : null,
       render: (_, r) => {
         const prop = r.property_name || '';
         const unit = r.unit_name ? `(${r.unit_name})` : '';
@@ -335,18 +343,19 @@ export default function InvoicesPage() {
       },
     },
     {
-      title: 'OUTSTANDING', key: 'outstanding', width: 130, align: 'right',
+      title: 'OUTSTANDING', dataIndex: 'outstanding', key: 'outstanding', width: 130, align: 'right',
       sorter: true,
+      sortOrder: sortInfo.field === 'outstanding' ? sortInfo.order : null,
       render: (_, r) => {
-        // Use backend-calculated outstanding (matches original: status=1 → 0, else amount - SUM(payments))
         const outstanding = Number(r.outstanding || 0);
         return outstanding > 0 ? formatCurrency(outstanding) : formatCurrency(0);
       },
     },
     {
-      title: 'DAYS LATE', key: 'days_late', width: 90, align: 'center',
+      title: 'DAYS LATE', dataIndex: 'days_late', key: 'days_late', width: 90, align: 'center',
       sorter: true,
-      render: (_, r) => getDaysLate(r.due_on, r.status),
+      sortOrder: sortInfo.field === 'days_late' ? sortInfo.order : null,
+      render: (_, r) => Number(r.days_late || 0),
     },
     {
       title: 'CATEGORY', dataIndex: 'category_name', key: 'category', width: 130,
@@ -452,7 +461,15 @@ export default function InvoicesPage() {
         rowKey="id"
         loading={loading}
         scroll={{ x: 1400 }}
-        onChange={(pag) => setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }))}
+        onChange={(pag, _filters, sorter) => {
+          setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
+          if (sorter && sorter.field) {
+            setSortInfo({ field: sorter.field, order: sorter.order || 'descend' });
+          } else if (sorter && !sorter.order) {
+            // User clicked to remove sort — revert to default
+            setSortInfo({ field: 'due_on', order: 'descend' });
+          }
+        }}
         pagination={{
           ...pagination,
           showSizeChanger: true,

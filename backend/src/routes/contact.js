@@ -65,18 +65,39 @@ router.get('/contacts/property-owner/all', authenticate, async (req, res) => {
 router.post('/contacts/service-vendor', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status } = req.body || {};
+    const { search, searchFields, status } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    let whereClause = 'org_id = ?';
+    let whereClause = 'org_id = ? AND deleted_at IS NULL';
     const params = [orgId];
 
     if (search) {
-      whereClause += ' AND (name LIKE ? OR email LIKE ? OR category LIKE ?)';
+      // Column-specific search via searchFields array (default: name)
+      const fields = Array.isArray(searchFields) && searchFields.length > 0
+        ? searchFields
+        : ['name'];
+      const conditions = [];
       const s = '%' + search + '%';
-      params.push(s, s, s);
+      for (const f of fields) {
+        if (f === 'name') {
+          conditions.push('(first_name LIKE ? OR last_name LIKE ? OR CONCAT(COALESCE(first_name,\'\'), \' \', COALESCE(last_name,\'\')) LIKE ?)');
+          params.push(s, s, s);
+        } else if (f === 'email') {
+          conditions.push('email LIKE ?');
+          params.push(s);
+        } else if (f === 'phone') {
+          conditions.push('phone LIKE ?');
+          params.push(s);
+        } else if (f === 'idCard') {
+          conditions.push('id_card LIKE ?');
+          params.push(s);
+        }
+      }
+      if (conditions.length > 0) {
+        whereClause += ' AND (' + conditions.join(' OR ') + ')';
+      }
     }
     if (status !== undefined && status !== null) {
       whereClause += ' AND status = ?';
@@ -84,7 +105,10 @@ router.post('/contacts/service-vendor', authenticate, async (req, res) => {
     }
 
     const [vendors] = await pool.execute(
-      'SELECT * FROM service_vendor WHERE ' + whereClause + ' ORDER BY name LIMIT ' + limit + ' OFFSET ' + offset + '',
+      `SELECT *, CONCAT(COALESCE(first_name,''), ' ', COALESCE(last_name,'')) AS display_name
+       FROM service_vendor WHERE ${whereClause}
+       ORDER BY COALESCE(first_name, '') ASC, COALESCE(last_name, '') ASC
+       LIMIT ${limit} OFFSET ${offset}`,
       [...params]
     );
     const [[{ total }]] = await pool.execute(
