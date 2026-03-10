@@ -24,7 +24,7 @@ const INVOICE_SCHEDULES = [
   { value: 'annually', label: 'Annually' },
 ];
 
-const DUE_DAY_OPTIONS = Array.from({ length: 28 }, (_, i) => ({ value: i + 1, label: `${i + 1}` }));
+const DUE_DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => ({ value: i + 1, label: `${i + 1}` }));
 
 export default function LeaseCreatePage() {
   const router = useRouter();

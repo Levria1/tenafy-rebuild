@@ -13,7 +13,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../../components/Layout';
-import { tenant } from '../../../../../lib/api';
+import { tenant, invoice } from '../../../../../lib/api';
 
 const { Text } = Typography;
 
@@ -71,6 +71,7 @@ export default function TenantDetailPage() {
   const [invoicesLoading, setInvoicesLoading] = useState(false);
   const [invoicePagination, setInvoicePagination] = useState({ current: 1, pageSize: 20, total: 0 });
   const [activeTab, setActiveTab] = useState(initialTab);
+  const [publishLoading, setPublishLoading] = useState(false);
 
   const loadTenant = useCallback(async () => {
     try {
@@ -287,6 +288,52 @@ export default function TenantDetailPage() {
               <FieldValue label="First Rent Invoice Date" value={activeLease.first_invoice_date ? dayjs(activeLease.first_invoice_date).format('YYYY-MM-DD') : '—'} />
               <FieldValue label="Next Invoice Publish Date" value={activeLease.next_invoice_date ? dayjs(activeLease.next_invoice_date).format('YYYY-MM-DD') : '—'} />
             </div>
+            {activeLease.next_invoice_date && (
+              <div style={{ marginTop: 8 }}>
+                <Button
+                  type="primary"
+                  icon={<DollarOutlined />}
+                  loading={publishLoading}
+                  onClick={async () => {
+                    try {
+                      setPublishLoading(true);
+                      const res = await invoice.publish({
+                        tenant_id: tenantId,
+                        unit_id: activeLease.unit_id || null,
+                        leasing_id: activeLease.id,
+                        property_id: activeLease.property_id || null,
+                        amount: activeLease.amount || activeLease.price || 0,
+                        due_date: dayjs(activeLease.next_invoice_date).format('YYYY-MM-DD'),
+                        type: 0,
+                      });
+                      if (res.data.code === 200) {
+                        message.success(`Invoice ${res.data.data?.invoice_code || ''} published successfully`);
+                        loadLeases();
+                      } else {
+                        message.error(res.data.message || 'Failed to publish invoice');
+                      }
+                    } catch (err) {
+                      const errMsg = err.response?.data?.message || 'Failed to publish invoice';
+                      if (err.response?.status === 409) {
+                        message.warning(errMsg);
+                      } else {
+                        message.error(errMsg);
+                      }
+                    } finally {
+                      setPublishLoading(false);
+                    }
+                  }}
+                  style={{
+                    background: '#d4880f',
+                    borderColor: '#d4880f',
+                    fontWeight: 600,
+                    height: 36,
+                  }}
+                >
+                  Publish Invoice
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>

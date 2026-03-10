@@ -3,8 +3,8 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
 
-// GET /api/user/setting/category/list - Get categories
-router.get('/user/setting/category/list', authenticate, async (req, res) => {
+// GET /api/setting/category/list - Get categories
+router.get('/setting/category/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [categories] = await pool.execute(
@@ -18,8 +18,8 @@ router.get('/user/setting/category/list', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/user/setting/category/add - Create category
-router.post('/user/setting/category/add', authenticate, async (req, res) => {
+// POST /api/setting/category/add - Create category
+router.post('/setting/category/add', authenticate, async (req, res) => {
   try {
     const { name } = req.body;
     const orgId = req.user.orgId;
@@ -34,8 +34,8 @@ router.post('/user/setting/category/add', authenticate, async (req, res) => {
   }
 });
 
-// PUT /api/user/setting/category/update/:id - Update category
-router.put('/user/setting/category/update/:id', authenticate, async (req, res) => {
+// PUT /api/setting/category/update/:id - Update category
+router.put('/setting/category/update/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { name } = req.body;
@@ -51,8 +51,8 @@ router.put('/user/setting/category/update/:id', authenticate, async (req, res) =
   }
 });
 
-// DELETE /api/user/setting/category/delete/:id - Delete category
-router.delete('/user/setting/category/delete/:id', authenticate, async (req, res) => {
+// DELETE /api/setting/category/delete/:id - Delete category
+router.delete('/setting/category/delete/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -67,8 +67,8 @@ router.delete('/user/setting/category/delete/:id', authenticate, async (req, res
   }
 });
 
-// GET /api/user/setting/payment/list - Get payment methods
-router.get('/user/setting/payment/list', authenticate, async (req, res) => {
+// GET /api/setting/payment/list - Get payment methods
+router.get('/setting/payment/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [payments] = await pool.execute(
@@ -82,8 +82,8 @@ router.get('/user/setting/payment/list', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/user/setting/payment/add - Create payment method
-router.post('/user/setting/payment/add', authenticate, async (req, res) => {
+// POST /api/setting/payment/add - Create payment method
+router.post('/setting/payment/add', authenticate, async (req, res) => {
   try {
     const { name } = req.body;
     const orgId = req.user.orgId;
@@ -98,8 +98,8 @@ router.post('/user/setting/payment/add', authenticate, async (req, res) => {
   }
 });
 
-// PUT /api/user/setting/payment/update/:id - Update payment method
-router.put('/user/setting/payment/update/:id', authenticate, async (req, res) => {
+// PUT /api/setting/payment/update/:id - Update payment method
+router.put('/setting/payment/update/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { name } = req.body;
@@ -115,8 +115,8 @@ router.put('/user/setting/payment/update/:id', authenticate, async (req, res) =>
   }
 });
 
-// DELETE /api/user/setting/payment/delete/:id - Delete payment method
-router.delete('/user/setting/payment/delete/:id', authenticate, async (req, res) => {
+// DELETE /api/setting/payment/delete/:id - Delete payment method
+router.delete('/setting/payment/delete/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -131,8 +131,8 @@ router.delete('/user/setting/payment/delete/:id', authenticate, async (req, res)
   }
 });
 
-// GET /api/user/setting/category/page/list - Get categories with paging
-router.get('/user/setting/category/page/list', authenticate, async (req, res) => {
+// GET /api/setting/category/page/list - Get categories with paging
+router.get('/setting/category/page/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { search } = req.query;
@@ -162,8 +162,8 @@ router.get('/user/setting/category/page/list', authenticate, async (req, res) =>
   }
 });
 
-// GET /api/user/setting/category/list/tenant - Get tenant-specific categories
-router.get('/user/setting/category/list/tenant', authenticate, async (req, res) => {
+// GET /api/setting/category/list/tenant - Get tenant-specific categories
+router.get('/setting/category/list/tenant', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [categories] = await pool.execute(
@@ -179,8 +179,8 @@ router.get('/user/setting/category/list/tenant', authenticate, async (req, res) 
 
 // ─── LANDLORD / ORGANIZATION SETTINGS ────────────────────────────────────────
 
-// GET /api/user/setting/landlord - Get landlord/org info
-router.get('/user/setting/landlord', authenticate, async (req, res) => {
+// GET /api/setting/landlord - Get landlord/org info
+router.get('/setting/landlord', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [orgs] = await pool.execute(
@@ -197,8 +197,8 @@ router.get('/user/setting/landlord', authenticate, async (req, res) => {
   }
 });
 
-// PUT /api/user/setting/landlord/update - Update landlord/org general info
-router.put('/user/setting/landlord/update', authenticate, async (req, res) => {
+// PUT /api/setting/landlord/update - Update landlord/org general info
+router.put('/setting/landlord/update', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { display_name, address, city, state, country, zip_code, phone, email, currency, invoice_prefix, tax_id } = req.body;
@@ -216,8 +216,8 @@ router.put('/user/setting/landlord/update', authenticate, async (req, res) => {
   }
 });
 
-// GET /api/user/setting/currency - Get currency settings
-router.get('/user/setting/currency', authenticate, async (req, res) => {
+// GET /api/setting/currency - Get currency settings
+router.get('/setting/currency', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [orgs] = await pool.execute('SELECT currency FROM organization WHERE id = ?', [orgId]);
@@ -229,8 +229,8 @@ router.get('/user/setting/currency', authenticate, async (req, res) => {
   }
 });
 
-// GET /api/user/setting/country - Get country list
-router.get('/user/setting/country', authenticate, async (req, res) => {
+// GET /api/setting/country - Get country list
+router.get('/setting/country', authenticate, async (req, res) => {
   try {
     const countries = [
       { code: 'US', name: 'United States' },
@@ -256,8 +256,8 @@ router.get('/user/setting/country', authenticate, async (req, res) => {
   }
 });
 
-// GET /api/user/setting/exchange-rate - Get exchange rate
-router.get('/user/setting/exchange-rate', authenticate, async (req, res) => {
+// GET /api/setting/exchange-rate - Get exchange rate
+router.get('/setting/exchange-rate', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [orgs] = await pool.execute('SELECT currency, exchange_rate FROM organization WHERE id = ?', [orgId]);
@@ -268,8 +268,8 @@ router.get('/user/setting/exchange-rate', authenticate, async (req, res) => {
   }
 });
 
-// PUT /api/user/setting/landlord/exchange-rate/update - Update exchange rate
-router.put('/user/setting/landlord/exchange-rate/update', authenticate, async (req, res) => {
+// PUT /api/setting/landlord/exchange-rate/update - Update exchange rate
+router.put('/setting/landlord/exchange-rate/update', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { exchange_rate } = req.query;
@@ -284,8 +284,8 @@ router.put('/user/setting/landlord/exchange-rate/update', authenticate, async (r
   }
 });
 
-// GET /api/user/setting/landlord/exchange-rate/history - Exchange rate history
-router.get('/user/setting/landlord/exchange-rate/history', authenticate, async (req, res) => {
+// GET /api/setting/landlord/exchange-rate/history - Exchange rate history
+router.get('/setting/landlord/exchange-rate/history', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     // Return empty list for now - exchange rate history would need a separate table
@@ -298,8 +298,8 @@ router.get('/user/setting/landlord/exchange-rate/history', authenticate, async (
 
 // ─── SEQUENCE SETTINGS ────────────────────────────────────────────────────────
 
-// GET /api/user/setting/sequences - Get sequence list
-router.get('/user/setting/sequences', authenticate, async (req, res) => {
+// GET /api/setting/sequences - Get sequence list
+router.get('/setting/sequences', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [sequences] = await pool.execute(
@@ -318,8 +318,8 @@ router.get('/user/setting/sequences', authenticate, async (req, res) => {
   }
 });
 
-// PUT /api/user/setting/sequence/:id - Update sequence
-router.put('/user/setting/sequence/:id', authenticate, async (req, res) => {
+// PUT /api/setting/sequence/:id - Update sequence
+router.put('/setting/sequence/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -337,8 +337,8 @@ router.put('/user/setting/sequence/:id', authenticate, async (req, res) => {
 
 // ─── ACCOUNT SETTINGS ────────────────────────────────────────────────────────
 
-// GET /api/user/setting/account/list - Get account settings list
-router.get('/user/setting/account/list', authenticate, async (req, res) => {
+// GET /api/setting/account/list - Get account settings list
+router.get('/setting/account/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [accounts] = await pool.execute(
@@ -352,8 +352,8 @@ router.get('/user/setting/account/list', authenticate, async (req, res) => {
   }
 });
 
-// GET /api/user/setting/account/page/list - Get account settings with paging
-router.get('/user/setting/account/page/list', authenticate, async (req, res) => {
+// GET /api/setting/account/page/list - Get account settings with paging
+router.get('/setting/account/page/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const page = parseInt(req.query.page) || 1;
@@ -375,8 +375,8 @@ router.get('/user/setting/account/page/list', authenticate, async (req, res) => 
   }
 });
 
-// POST /api/user/setting/account/add - Create account setting
-router.post('/user/setting/account/add', authenticate, async (req, res) => {
+// POST /api/setting/account/add - Create account setting
+router.post('/setting/account/add', authenticate, async (req, res) => {
   try {
     const { name } = req.body;
     const orgId = req.user.orgId;
@@ -391,8 +391,8 @@ router.post('/user/setting/account/add', authenticate, async (req, res) => {
   }
 });
 
-// PUT /api/user/setting/account/update/:id - Update account setting
-router.put('/user/setting/account/update/:id', authenticate, async (req, res) => {
+// PUT /api/setting/account/update/:id - Update account setting
+router.put('/setting/account/update/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { name } = req.body;
@@ -408,8 +408,8 @@ router.put('/user/setting/account/update/:id', authenticate, async (req, res) =>
   }
 });
 
-// DELETE /api/user/setting/account/delete/:id - Delete account setting
-router.delete('/user/setting/account/delete/:id', authenticate, async (req, res) => {
+// DELETE /api/setting/account/delete/:id - Delete account setting
+router.delete('/setting/account/delete/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;

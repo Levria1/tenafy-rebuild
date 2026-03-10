@@ -231,23 +231,63 @@ router.post('/', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/invoice/publish - Publish invoice
+// POST /api/invoice/publish - Publish next invoice for a lease
+// Creates the next invoice based on the lease's schedule and next_invoice_date
 router.post('/publish', authenticate, async (req, res) => {
   try {
-    const { tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_date, category, currency_id, type, tag_id } = req.body;
+    const { tenant_id, unit_id, leasing_id, property_id, amount, due_date, category, currency_id, type, tag_id } = req.body;
     const orgId = req.user.orgId;
 
+    if (!leasing_id || !due_date) {
+      return res.status(400).json({ code: 400, message: 'leasing_id and due_date are required' });
+    }
+
+    // Check for duplicate: don't create if invoice already exists for this lease + due date
+    const [[existing]] = await pool.execute(
+      'SELECT id FROM invoice WHERE leasing_id = ? AND due_on = ? AND org_id = ? AND deleted_at IS NULL',
+      [leasing_id, due_date, orgId]
+    );
+    if (existing) {
+      return res.status(409).json({ code: 409, message: 'Invoice already exists for this date' });
+    }
+
+    // Generate Snowflake ID
+    const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+
+    // Auto-generate invoice_code from sequence
+    let code;
+    const [[seq]] = await pool.execute(
+      'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
+      [orgId, 'invoice_code']
+    );
+    if (seq) {
+      code = seq.pattern
+        .replace(/\{d,(\w+)\}/g, () => {
+          const now = new Date();
+          return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
+        })
+        .replace(/\{#,(\d+)\}/, (_, pad) => String(seq.seq_next).padStart(parseInt(pad), '0'));
+      await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
+    } else {
+      code = 'INV-' + Date.now();
+    }
+
+    // Resolve currency
     let currId = currency_id;
     if (!currId) {
       const [[cur]] = await pool.execute('SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [orgId]);
       currId = cur ? cur.id : null;
     }
 
-    const [result] = await pool.execute(
-      'INSERT INTO invoice (org_id, tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_on, status, category, currency_id, type, tag_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, NOW())',
-      [orgId, tenant_id, unit_id, leasing_id || null, property_id || null, invoice_code, amount, note, due_date, category || null, currId, type || 0, tag_id || null]
+    await pool.execute(
+      `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
+        invoice_code, amount, due_on, status, category, currency_id, type, tag_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, NOW())`,
+      [invoiceId, orgId, tenant_id, unit_id || null, leasing_id, property_id || null,
+       code, amount, due_date, category || null, currId, type || 0, tag_id || null]
     );
-    res.json({ code: 200, message: 'Invoice published', data: { id: result.insertId } });
+
+    res.json({ code: 200, message: 'Invoice published', data: { id: invoiceId, invoice_code: code } });
   } catch (error) {
     console.error('Publish invoice error:', error);
     res.status(500).json({ code: 500, message: 'Failed to publish invoice' });
@@ -298,7 +338,7 @@ router.get('/initialization-payer', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { leaseId, unitId, propertyId } = req.query;
 
-    let whereClause = 't.org_id = ? AND t.status = 1';
+    let whereClause = 't.org_id = ? AND t.status IN (0, 1)';
     const params = [orgId];
 
     if (unitId) {
@@ -311,7 +351,7 @@ router.get('/initialization-payer', authenticate, async (req, res) => {
     }
 
     const [tenants] = await pool.execute(
-      'SELECT id, first_name, last_name, email FROM tenant t WHERE ' + whereClause + ' ORDER BY first_name, last_name',
+      'SELECT id, first_name, last_name, company_name, type, email FROM tenant t WHERE ' + whereClause + ' ORDER BY COALESCE(first_name, company_name, \'\') ASC, last_name ASC',
       params
     );
 
@@ -362,7 +402,7 @@ router.get('/initialization-leasing', authenticate, async (req, res) => {
     }
 
     const [leases] = await pool.execute(
-      `SELECT l.id, l.start_date, l.end_date, l.price,
+      `SELECT l.id, l.lease_no, l.start_date, l.end_date, l.price,
               u.name as unit_name, p.display_name as property_name,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name
        FROM leasing l

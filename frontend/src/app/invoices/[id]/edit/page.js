@@ -2,11 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Form, Input, Button, Select, DatePicker, InputNumber, message, Row, Col, Spin, Upload } from 'antd';
+import { Form, Input, Button, Select, DatePicker, InputNumber, message, Row, Col, Spin, Upload, Divider } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
-import { invoice, settings } from '../../../../lib/api';
+import { invoice, settings, contact } from '../../../../lib/api';
 
 export default function InvoiceEditPage() {
   const router = useRouter();
@@ -25,7 +25,7 @@ export default function InvoiceEditPage() {
   const [tags, setTags] = useState([]);
   const [currencySymbol, setCurrencySymbol] = useState('HK$');
 
-  // Original invoice data for reference
+  // Original invoice data
   const [invoiceData, setInvoiceData] = useState(null);
 
   useEffect(() => {
@@ -34,22 +34,24 @@ export default function InvoiceEditPage() {
 
   const loadAllData = async () => {
     try {
-      // Load invoice detail + dropdown data in parallel
-      const [invRes, payersRes, propsRes, catsRes] = await Promise.all([
+      const [invRes, payersRes, propsRes, catsRes, tagsRes] = await Promise.all([
         invoice.get(invoiceId),
         invoice.getInitializationPayer({}),
         invoice.getInitializationProperty({}),
         settings.getCategories(),
+        contact.getAllTags().catch(() => ({ data: { data: [] } })),
       ]);
 
       const inv = invRes.data.code === 200 ? invRes.data.data : null;
       const payersData = payersRes.data.code === 200 ? (payersRes.data.data || []) : [];
       const propsData = propsRes.data.code === 200 ? (propsRes.data.data || []) : [];
       const catsData = catsRes.data.code === 200 ? (catsRes.data.data || []) : [];
+      const tagsData = tagsRes.data?.data || [];
 
       setTenants(payersData);
       setProperties(propsData);
       setCategories(catsData);
+      setTags(tagsData);
 
       if (!inv) {
         message.error('Invoice not found');
@@ -59,7 +61,7 @@ export default function InvoiceEditPage() {
 
       setInvoiceData(inv);
 
-      // Determine property_id (could be on invoice directly or via unit)
+      // Determine property_id
       const propId = inv.property_id || inv.property_id_resolved || inv.unit_property_id || null;
 
       // Load units for the property
@@ -80,7 +82,7 @@ export default function InvoiceEditPage() {
         } catch (e) { /* ignore */ }
       }
 
-      // Set currency symbol from property
+      // Set currency symbol
       if (inv.property_currency) setCurrencySymbol(inv.property_currency);
 
       // Set form values
@@ -104,7 +106,7 @@ export default function InvoiceEditPage() {
     }
   };
 
-  // When property changes, reload units
+  // Cascading: Property -> Units
   const onPropertyChange = async (propertyId) => {
     form.setFieldsValue({ unit_id: undefined, leasing_id: undefined });
     setUnits([]);
@@ -115,7 +117,6 @@ export default function InvoiceEditPage() {
       if (unitsRes.data.code === 200) setUnits(unitsRes.data.data || []);
     } catch (e) { /* ignore */ }
 
-    // Reload leases filtered by property
     const tenantId = form.getFieldValue('tenant_id');
     if (tenantId) {
       try {
@@ -125,7 +126,7 @@ export default function InvoiceEditPage() {
     }
   };
 
-  // When contact changes, reload leases
+  // Cascading: Contact -> Leases
   const onContactChange = async (tenantId) => {
     form.setFieldsValue({ leasing_id: undefined });
     setLeases([]);
@@ -133,24 +134,26 @@ export default function InvoiceEditPage() {
     const propertyId = form.getFieldValue('property_id');
     const unitId = form.getFieldValue('unit_id');
     try {
-      const params = { tenantId };
-      if (propertyId) params.propertyId = propertyId;
-      if (unitId) params.unitId = unitId;
-      const leasesRes = await invoice.getInitializationLeasing(params);
+      const p = { tenantId };
+      if (propertyId) p.propertyId = propertyId;
+      if (unitId) p.unitId = unitId;
+      const leasesRes = await invoice.getInitializationLeasing(p);
       if (leasesRes.data.code === 200) setLeases(leasesRes.data.data || []);
     } catch (e) { /* ignore */ }
   };
 
-  // When unit changes, reload leases
+  // Cascading: Unit -> Leases
   const onUnitChange = async (unitId) => {
     form.setFieldsValue({ leasing_id: undefined });
     setLeases([]);
     const tenantId = form.getFieldValue('tenant_id');
     if (tenantId) {
       try {
-        const params = { tenantId };
-        if (unitId) params.unitId = unitId;
-        const leasesRes = await invoice.getInitializationLeasing(params);
+        const p = { tenantId };
+        if (unitId) p.unitId = unitId;
+        const propertyId = form.getFieldValue('property_id');
+        if (propertyId) p.propertyId = propertyId;
+        const leasesRes = await invoice.getInitializationLeasing(p);
         if (leasesRes.data.code === 200) setLeases(leasesRes.data.data || []);
       } catch (e) { /* ignore */ }
     }
@@ -170,9 +173,6 @@ export default function InvoiceEditPage() {
         amount: values.amount,
         tag_id: values.tag_id || null,
         note: values.note || null,
-        // Keep existing invoice_code and status
-        invoice_code: invoiceData?.invoice_code,
-        status: Number(invoiceData?.status),
       };
       const res = await invoice.update(invoiceId, payload);
       if (res.data.code === 200) {
@@ -189,6 +189,12 @@ export default function InvoiceEditPage() {
     }
   };
 
+  const labelStyle = { fontSize: 11, fontWeight: 700, letterSpacing: '0.5px', color: '#555', textTransform: 'uppercase', marginBottom: 4 };
+  const reqStar = { color: '#d4880f', marginRight: 2 };
+  const FLabel = ({ required, children }) => (
+    <div style={labelStyle}>{required && <span style={reqStar}>*</span>}{children}</div>
+  );
+
   if (initialLoading) {
     return (
       <MainLayout>
@@ -199,142 +205,163 @@ export default function InvoiceEditPage() {
 
   return (
     <MainLayout>
-      <h2 style={{ marginBottom: 24 }}>Edit Invoice</h2>
+      <div style={{ width: '100%' }}>
+        <h2 style={{ marginBottom: 24, fontWeight: 600 }}>Edit Invoice</h2>
 
-      <Form form={form} layout="vertical" onFinish={onFinish}>
-        {/* Row 1: Entry Type + Contact */}
-        <div style={{ background: '#fafafa', padding: '20px 24px', borderRadius: 6, marginBottom: 16 }}>
-          <Row gutter={24}>
-            <Col span={8}>
-              <Form.Item name="type" label="* ENTRY TYPE" rules={[{ required: true, message: 'Required' }]}>
-                <Select>
-                  <Select.Option value={0}>Inflow</Select.Option>
-                  <Select.Option value={1}>Outflow</Select.Option>
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="tenant_id" label="* CONTACT" rules={[{ required: true, message: 'Required' }]}>
-                <Select
-                  placeholder="Select contact"
-                  showSearch
-                  optionFilterProp="children"
-                  onChange={onContactChange}
-                >
-                  {tenants.map(t => (
-                    <Select.Option key={t.id} value={t.id}>
-                      {t.first_name} {t.last_name}
-                    </Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-          </Row>
+        <Form form={form} layout="vertical" onFinish={onFinish}>
+          {/* Section 1: Entry Type + Contact + Property + Unit + Lease */}
+          <div style={{ background: '#fafafa', padding: '20px 24px', borderRadius: 6, marginBottom: 16 }}>
+            <Row gutter={[24, 16]}>
+              <Col xs={24} sm={12} md={8}>
+                <FLabel required>ENTRY TYPE</FLabel>
+                <Form.Item name="type" noStyle rules={[{ required: true, message: 'Please input entry type' }]}>
+                  <Select placeholder="Please input entry type" style={{ width: '100%' }}>
+                    <Select.Option value={0}>Inflow (CR)</Select.Option>
+                    <Select.Option value={1}>Outflow (DR)</Select.Option>
+                  </Select>
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={8}>
+                <FLabel required>CONTACT</FLabel>
+                <Form.Item name="tenant_id" noStyle rules={[{ required: true, message: 'Please input contact' }]}>
+                  <Select
+                    placeholder="Please input contact"
+                    showSearch
+                    optionFilterProp="children"
+                    onChange={onContactChange}
+                    allowClear
+                    style={{ width: '100%' }}
+                  >
+                    {tenants.map(t => (
+                      <Select.Option key={t.id} value={t.id}>
+                        {Number(t.type) === 1 ? (t.company_name || 'Company') : [t.first_name, t.last_name].filter(Boolean).join(' ')}
+                      </Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </Col>
+            </Row>
 
-          {/* Row 2: Property + Unit + Lease */}
-          <Row gutter={24}>
-            <Col span={8}>
-              <Form.Item name="property_id" label="* PROPERTY">
-                <Select
-                  placeholder="Select property"
-                  showSearch
-                  optionFilterProp="children"
-                  allowClear
-                  onChange={onPropertyChange}
-                >
-                  {properties.map(p => (
-                    <Select.Option key={p.id} value={p.id}>{p.display_name || p.street_address}</Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="unit_id" label="UNIT">
-                <Select
-                  placeholder="Select unit"
-                  showSearch
-                  optionFilterProp="children"
-                  allowClear
-                  onChange={onUnitChange}
-                >
-                  {units.map(u => (
-                    <Select.Option key={u.id} value={u.id}>{u.name}</Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="leasing_id" label="LEASE">
-                <Select
-                  placeholder="Select lease"
-                  showSearch
-                  optionFilterProp="children"
-                  allowClear
-                >
-                  {leases.map(l => (
-                    <Select.Option key={l.id} value={l.id}>
-                      {l.id ? `LEA${String(l.id).slice(-4)}` : '-'}
-                    </Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-          </Row>
-        </div>
+            {/* Property + Unit + Lease */}
+            <Row gutter={[24, 16]} style={{ marginTop: 20 }}>
+              <Col xs={24} sm={12} md={8}>
+                <FLabel required>PROPERTY</FLabel>
+                <Form.Item name="property_id" noStyle rules={[{ required: true, message: 'Please input property' }]}>
+                  <Select
+                    placeholder="Please input property"
+                    showSearch
+                    optionFilterProp="children"
+                    allowClear
+                    onChange={onPropertyChange}
+                    style={{ width: '100%' }}
+                  >
+                    {properties.map(p => (
+                      <Select.Option key={p.id} value={p.id}>{p.display_name || p.street_address}</Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={8}>
+                <FLabel>UNIT</FLabel>
+                <Form.Item name="unit_id" noStyle>
+                  <Select
+                    placeholder="Please input unit"
+                    showSearch
+                    optionFilterProp="children"
+                    allowClear
+                    onChange={onUnitChange}
+                    style={{ width: '100%' }}
+                  >
+                    {units.map(u => (
+                      <Select.Option key={u.id} value={u.id}>{u.name}</Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={8}>
+                <FLabel>LEASE</FLabel>
+                <Form.Item name="leasing_id" noStyle>
+                  <Select
+                    placeholder="Please input lease"
+                    showSearch
+                    optionFilterProp="children"
+                    allowClear
+                    style={{ width: '100%' }}
+                  >
+                    {leases.map(l => (
+                      <Select.Option key={l.id} value={l.id}>
+                        {l.lease_no || (l.unit_name ? `${l.unit_name}` : `Lease #${String(l.id).slice(-4)}`)}
+                        {l.start_date ? ` (${dayjs(l.start_date).format('YYYY-MM-DD')})` : ''}
+                      </Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </Col>
+            </Row>
+          </div>
 
-        {/* Row 3: Due Date + Category + Amount + Property Owner Tag */}
-        <div style={{ background: '#f0f5ff', padding: '20px 24px', borderRadius: 6, marginBottom: 16 }}>
-          <Row gutter={24}>
-            <Col span={6}>
-              <Form.Item name="due_on" label="* DUE DATE" rules={[{ required: true, message: 'Required' }]}>
-                <DatePicker style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item name="category" label="* CATEGORY" rules={[{ required: true, message: 'Required' }]}>
-                <Select
-                  placeholder="Select category"
-                  showSearch
-                  optionFilterProp="children"
-                  allowClear
-                >
-                  {categories.map(c => (
-                    <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item name="amount" label="* AMOUNT" rules={[{ required: true, message: 'Required' }]}>
-                <InputNumber
-                  style={{ width: '100%' }}
-                  min={0}
-                  precision={2}
-                  prefix={currencySymbol}
-                />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item name="tag_id" label="PROPERTY OWNER TAG">
-                <Select placeholder="Please select the tag" allowClear>
-                  {tags.map(tg => (
-                    <Select.Option key={tg.id} value={tg.id}>{tg.name}</Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-          </Row>
-        </div>
+          <Divider style={{ margin: '8px 0 16px' }} />
 
-        {/* Row 4: Notes + Files */}
-        <Row gutter={24}>
-          <Col span={12}>
-            <Form.Item name="note" label="NOTES">
-              <Input.TextArea rows={5} placeholder="Notes..." />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item label="FILES">
+          {/* Section 2: Due Date + Category + Amount + Property Owner Tag */}
+          <div style={{ padding: '0 0 16px' }}>
+            <Row gutter={[24, 16]}>
+              <Col xs={24} sm={12} md={6}>
+                <FLabel required>DUE DATE</FLabel>
+                <Form.Item name="due_on" noStyle rules={[{ required: true, message: 'Please input due date' }]}>
+                  <DatePicker style={{ width: '100%' }} placeholder="Please input due date" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={6}>
+                <FLabel required>CATEGORY</FLabel>
+                <Form.Item name="category" noStyle rules={[{ required: true, message: 'Please input category' }]}>
+                  <Select
+                    placeholder="Please input category"
+                    showSearch
+                    optionFilterProp="children"
+                    allowClear
+                    style={{ width: '100%' }}
+                  >
+                    {categories.map(c => (
+                      <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={6}>
+                <FLabel required>AMOUNT</FLabel>
+                <Form.Item name="amount" noStyle rules={[{ required: true, message: 'Please input your amount' }]}>
+                  <InputNumber
+                    style={{ width: '100%' }}
+                    min={0}
+                    precision={2}
+                    prefix={currencySymbol}
+                    placeholder="Please input your amount"
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={6}>
+                <FLabel>PROPERTY OWNER TAG</FLabel>
+                <Form.Item name="tag_id" noStyle>
+                  <Select placeholder="Please select the tag" allowClear style={{ width: '100%' }}>
+                    {tags.map(tg => (
+                      <Select.Option key={tg.id} value={tg.id}>{tg.name}</Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </Col>
+            </Row>
+          </div>
+
+          {/* Section 3: Notes + Files */}
+          <Row gutter={[24, 16]} style={{ marginTop: 8 }}>
+            <Col xs={24} md={12}>
+              <FLabel>NOTES</FLabel>
+              <Form.Item name="note" noStyle>
+                <Input.TextArea rows={5} placeholder="Please input your notes" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <FLabel>FILES</FLabel>
               <Upload.Dragger
                 name="file"
                 multiple
@@ -347,24 +374,24 @@ export default function InvoiceEditPage() {
                 <p className="ant-upload-text">Upload</p>
                 <p className="ant-upload-hint">Store documents and templates</p>
               </Upload.Dragger>
-            </Form.Item>
-          </Col>
-        </Row>
+            </Col>
+          </Row>
 
-        {/* Action Buttons */}
-        <Row gutter={24} style={{ marginTop: 24 }}>
-          <Col span={12}>
-            <Button block size="large" onClick={() => router.push('/invoices')}>
-              Cancel
-            </Button>
-          </Col>
-          <Col span={12}>
-            <Button type="primary" htmlType="submit" block size="large" loading={loading}>
-              SUBMIT
-            </Button>
-          </Col>
-        </Row>
-      </Form>
+          {/* Action Buttons */}
+          <Row gutter={[24, 16]} style={{ marginTop: 32, marginBottom: 40 }}>
+            <Col xs={24} sm={12}>
+              <Button block size="large" onClick={() => router.push('/invoices')}>
+                Cancel
+              </Button>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Button type="primary" htmlType="submit" block size="large" loading={loading}>
+                SUBMIT
+              </Button>
+            </Col>
+          </Row>
+        </Form>
+      </div>
     </MainLayout>
   );
 }

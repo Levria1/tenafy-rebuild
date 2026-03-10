@@ -178,7 +178,7 @@ router.post('/check-conflict', authenticate, async (req, res) => {
     let query = `SELECT l.id, l.start_date, l.end_date, t.first_name, t.last_name, l.lease_no
       FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
       WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status = 1
-        AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)`;
+        AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`;
     const params = [unit_id, end_date || '2099-12-31', start_date];
 
     if (exclude_lease_id) {
