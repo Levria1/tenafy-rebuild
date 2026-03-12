@@ -550,7 +550,7 @@ async function markOverdueInvoices() {
          (SELECT SUM(al.amount)
           FROM accounting_line al
           JOIN accounting a ON al.accounting_id = a.id
-          WHERE al.invoice_code = i.invoice_code AND a.deleted_at IS NULL),
+          WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL),
          0
        )`
   );
@@ -567,7 +567,7 @@ async function markOverdueInvoices() {
          (SELECT SUM(al.amount)
           FROM accounting_line al
           JOIN accounting a ON al.accounting_id = a.id
-          WHERE al.invoice_code = i.invoice_code AND a.deleted_at IS NULL),
+          WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL),
          0
        )`
   );

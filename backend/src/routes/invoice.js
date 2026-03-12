@@ -565,7 +565,7 @@ router.get('/:id', authenticate, async (req, res) => {
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { invoice_code, amount, note, due_date, status, type, category, tenant_id, property_id, unit_id, leasing_id, tag_id } = req.body;
+    const { amount, note, due_date, status, type, category, tenant_id, property_id, unit_id, leasing_id, tag_id } = req.body;
     const orgId = req.user.orgId;
 
     // Verify invoice exists
@@ -575,10 +575,11 @@ router.put('/:id', authenticate, async (req, res) => {
     }
 
     // Build dynamic SET clause — only update fields that are provided
+    // NOTE: invoice_code is intentionally NOT editable — it's the key that links
+    // invoices to accounting_line payments. Changing it would orphan payments or
+    // accidentally link to another invoice's payments.
     const fields = [];
     const params = [];
-
-    if (invoice_code !== undefined) { fields.push('invoice_code = ?'); params.push(invoice_code); }
     if (amount !== undefined) { fields.push('amount = ?'); params.push(amount); }
     if (note !== undefined) { fields.push('note = ?'); params.push(note || null); }
     if (due_date !== undefined) { fields.push('due_on = ?'); params.push(due_date); }
@@ -599,10 +600,10 @@ router.put('/:id', authenticate, async (req, res) => {
       params
     );
 
-    // Recalculate status based on actual payments whenever amount changes
-    if (amount !== undefined) {
+    // Recalculate status based on actual payments whenever amount or due_date changes
+    if (amount !== undefined || due_date !== undefined) {
       const [[inv]] = await pool.execute(
-        'SELECT invoice_code, amount, status FROM invoice WHERE id = ? AND org_id = ?',
+        'SELECT invoice_code, amount, due_on, status FROM invoice WHERE id = ? AND org_id = ?',
         [id, orgId]
       );
       if (inv && inv.invoice_code) {
@@ -615,13 +616,17 @@ router.put('/:id', authenticate, async (req, res) => {
         );
         const invAmount = parseFloat(inv.amount) || 0;
         const paid = parseFloat(total_paid) || 0;
+        const today = new Date().toISOString().split('T')[0];
+        const dueOn = inv.due_on ? new Date(inv.due_on).toISOString().split('T')[0] : null;
+        const isPastDue = dueOn && today > dueOn;
+
         let newStatus;
         if (invAmount <= 0) {
           newStatus = 0; // Open if amount is 0 or negative
         } else if (paid >= invAmount) {
           newStatus = 1; // Paid
-        } else if (Number(inv.status) === 2) {
-          newStatus = 2; // Keep Overdue if it was Overdue
+        } else if (isPastDue) {
+          newStatus = 2; // Overdue (past due, not fully paid)
         } else {
           newStatus = 0; // Open (includes partial — frontend handles display)
         }
