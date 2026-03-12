@@ -66,10 +66,18 @@ export default function LeasingEditPage() {
       let unitsList = [];
       let propsList = [];
       if (propRes.data.code === 200) {
-        const data = propRes.data.data || [];
-        propsList = data;
-        setProperties(data);
-        unitsList = data.flatMap(p => (p.units || []).map(u => ({ ...u, property_id: p.id, property_name: p.display_name })));
+        const rawUnits = propRes.data.data || [];
+        // Backend returns flat unit list with property_name — group into properties
+        const propMap = {};
+        rawUnits.forEach(u => {
+          const pid = String(u.property_id);
+          if (!propMap[pid]) {
+            propMap[pid] = { id: pid, display_name: u.property_name };
+          }
+        });
+        propsList = Object.values(propMap);
+        setProperties(propsList);
+        unitsList = rawUnits.map(u => ({ ...u, property_id: String(u.property_id), property_name: u.property_name }));
         setAllUnits(unitsList);
       }
       if (tenantRes.data.code === 200) {

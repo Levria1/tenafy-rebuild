@@ -534,11 +534,64 @@ async function sendOverdueReminders() {
 }
 
 // ---------------------------------------------------------------------------
+// Job 4: Mark overdue invoices (daily status update)
+// ---------------------------------------------------------------------------
+
+async function markOverdueInvoices() {
+  // Mark all OPEN invoices (status=0) that are past their due date as OVERDUE (status=2)
+  // But skip invoices that are fully paid (check actual payments from accounting_line)
+  const [result] = await pool.execute(
+    `UPDATE invoice i
+     SET i.status = 2
+     WHERE i.status = 0
+       AND i.due_on < CURDATE()
+       AND i.deleted_at IS NULL
+       AND i.amount > COALESCE(
+         (SELECT SUM(al.amount)
+          FROM accounting_line al
+          JOIN accounting a ON al.accounting_id = a.id
+          WHERE al.invoice_code = i.invoice_code AND a.deleted_at IS NULL),
+         0
+       )`
+  );
+  console.log(`[Scheduler] Marked ${result.affectedRows} invoice(s) as overdue.`);
+
+  // Also fix any invoices marked OVERDUE that are actually fully paid
+  const [fixResult] = await pool.execute(
+    `UPDATE invoice i
+     SET i.status = 1
+     WHERE i.status IN (0, 2)
+       AND i.deleted_at IS NULL
+       AND i.amount > 0
+       AND i.amount <= COALESCE(
+         (SELECT SUM(al.amount)
+          FROM accounting_line al
+          JOIN accounting a ON al.accounting_id = a.id
+          WHERE al.invoice_code = i.invoice_code AND a.deleted_at IS NULL),
+         0
+       )`
+  );
+  if (fixResult.affectedRows > 0) {
+    console.log(`[Scheduler] Fixed ${fixResult.affectedRows} invoice(s) that were actually fully paid.`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Start scheduler
 // ---------------------------------------------------------------------------
 
 function startScheduler() {
   console.log('[Scheduler] Starting background jobs...');
+
+  // Daily at 00:05 AM - mark overdue invoices & fix paid statuses
+  cron.schedule('5 0 * * *', async () => {
+    console.log('[Scheduler] Updating invoice statuses...');
+    try {
+      await markOverdueInvoices();
+    } catch (err) {
+      console.error('[Scheduler] Invoice status update error:', err);
+    }
+  });
 
   // Daily at 10:00 AM - generate recurring invoices (matches original Tenafy)
   cron.schedule('0 10 * * *', async () => {
@@ -569,6 +622,9 @@ function startScheduler() {
       console.error('[Scheduler] Overdue reminder error:', err);
     }
   });
+
+  // Run once at startup to fix any stale statuses
+  markOverdueInvoices().catch(err => console.error('[Scheduler] Startup status fix error:', err));
 
   console.log('[Scheduler] All jobs scheduled.');
 }

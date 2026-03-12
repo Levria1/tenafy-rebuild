@@ -3,6 +3,64 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
 
+// Helper: recalculate invoice status after payment changes
+// Finds all invoices linked to accounting_lines in the given transaction,
+// then updates each invoice's status based on total payments vs amount vs due date
+async function recalcInvoiceStatuses(accountingId) {
+  // Get all distinct invoice_codes from this transaction's lines
+  const [lines] = await pool.execute(
+    `SELECT DISTINCT al.invoice_code
+     FROM accounting_line al
+     WHERE al.accounting_id = ? AND al.invoice_code IS NOT NULL AND al.invoice_code != ''`,
+    [accountingId]
+  );
+  // Also check the header's invoice_code
+  const [[header]] = await pool.execute(
+    'SELECT invoice_code FROM accounting WHERE id = ?',
+    [accountingId]
+  );
+  const codes = new Set(lines.map(l => l.invoice_code));
+  if (header && header.invoice_code) codes.add(header.invoice_code);
+
+  for (const invoiceCode of codes) {
+    // Get the invoice
+    const [invoices] = await pool.execute(
+      'SELECT id, amount, due_on, status FROM invoice WHERE invoice_code = ? AND deleted_at IS NULL LIMIT 1',
+      [invoiceCode]
+    );
+    if (invoices.length === 0) continue;
+    const invoice = invoices[0];
+
+    // Sum all payments for this invoice from accounting_line
+    const [[{ total_paid }]] = await pool.execute(
+      `SELECT COALESCE(SUM(al.amount), 0) as total_paid
+       FROM accounting_line al
+       JOIN accounting a ON al.accounting_id = a.id
+       WHERE al.invoice_code = ? AND a.deleted_at IS NULL`,
+      [invoiceCode]
+    );
+
+    const amount = parseFloat(invoice.amount) || 0;
+    const paid = parseFloat(total_paid) || 0;
+    const today = new Date().toISOString().split('T')[0];
+    const dueOn = invoice.due_on ? new Date(invoice.due_on).toISOString().split('T')[0] : null;
+    const isPastDue = dueOn && today > dueOn;
+
+    let newStatus;
+    if (paid >= amount && amount > 0) {
+      newStatus = 1; // Paid
+    } else if (isPastDue) {
+      newStatus = 2; // Overdue (past due, not fully paid)
+    } else {
+      newStatus = 0; // Open
+    }
+
+    if (Number(invoice.status) !== newStatus) {
+      await pool.execute('UPDATE invoice SET status = ? WHERE id = ?', [newStatus, invoice.id]);
+    }
+  }
+}
+
 // POST /api/accounting/accounts - List transactions with paging
 router.post('/accounts', authenticate, async (req, res) => {
   try {
@@ -186,6 +244,9 @@ router.post('/account', authenticate, async (req, res) => {
       }
     }
 
+    // Recalculate invoice statuses for any linked invoices
+    await recalcInvoiceStatuses(accountingId.toString());
+
     res.json({ code: 200, message: 'Transaction created', data: { id: accountingId.toString(), transaction_code } });
   } catch (error) {
     console.error('Create transaction error:', error);
@@ -289,6 +350,9 @@ router.put('/account/:id', authenticate, async (req, res) => {
        id, orgId]
     );
 
+    // Recalculate invoice statuses for any linked invoices
+    await recalcInvoiceStatuses(id);
+
     res.json({ code: 200, message: 'Transaction updated' });
   } catch (error) {
     console.error('Update transaction error:', error);
@@ -301,10 +365,46 @@ router.delete('/account/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
+    // Get linked invoice codes BEFORE soft-deleting (so we can recalculate after)
+    const [delLines] = await pool.execute(
+      `SELECT DISTINCT al.invoice_code FROM accounting_line al
+       WHERE al.accounting_id = ? AND al.invoice_code IS NOT NULL AND al.invoice_code != ''`,
+      [id]
+    );
+    const [[delHeader]] = await pool.execute('SELECT invoice_code FROM accounting WHERE id = ?', [id]);
+    const delCodes = new Set(delLines.map(l => l.invoice_code));
+    if (delHeader && delHeader.invoice_code) delCodes.add(delHeader.invoice_code);
+
     await pool.execute(
       'UPDATE accounting SET deleted_at = NOW() WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
+
+    // Recalculate invoice statuses (now that this payment is soft-deleted)
+    for (const invoiceCode of delCodes) {
+      const [invoices] = await pool.execute(
+        'SELECT id, amount, due_on, status FROM invoice WHERE invoice_code = ? AND deleted_at IS NULL LIMIT 1',
+        [invoiceCode]
+      );
+      if (invoices.length === 0) continue;
+      const invoice = invoices[0];
+      const [[{ total_paid }]] = await pool.execute(
+        `SELECT COALESCE(SUM(al.amount), 0) as total_paid
+         FROM accounting_line al JOIN accounting a ON al.accounting_id = a.id
+         WHERE al.invoice_code = ? AND a.deleted_at IS NULL`,
+        [invoiceCode]
+      );
+      const amt = parseFloat(invoice.amount) || 0;
+      const paid = parseFloat(total_paid) || 0;
+      const today = new Date().toISOString().split('T')[0];
+      const dueOn = invoice.due_on ? new Date(invoice.due_on).toISOString().split('T')[0] : null;
+      const isPastDue = dueOn && today > dueOn;
+      let newStatus = paid >= amt && amt > 0 ? 1 : isPastDue ? 2 : 0;
+      if (Number(invoice.status) !== newStatus) {
+        await pool.execute('UPDATE invoice SET status = ? WHERE id = ?', [newStatus, invoice.id]);
+      }
+    }
+
     res.json({ code: 200, message: 'Transaction deleted' });
   } catch (error) {
     console.error('Delete transaction error:', error);
