@@ -394,7 +394,8 @@ router.put('/:id', authenticate, async (req, res) => {
       unit_id, tenant_id, start_date, end_date, type, price, deposit,
       due_date, invoicing, amount, contract_type, unit_information,
       note, credits, contact_phone, first_invoice_date, status,
-      additionalTenantIds
+      additionalTenantIds,
+      mark_past_paid
     } = req.body;
 
     // Build dynamic SET clause
@@ -433,6 +434,15 @@ router.put('/:id', authenticate, async (req, res) => {
           [id, atId]
         );
       }
+    }
+
+    // Mark past invoices as paid if requested
+    if (mark_past_paid) {
+      const today = new Date().toISOString().split('T')[0];
+      await pool.execute(
+        'UPDATE invoice SET status = 1 WHERE leasing_id = ? AND org_id = ? AND status = 0 AND due_on <= ? AND deleted_at IS NULL',
+        [id, orgId, today]
+      );
     }
 
     res.json({ code: 200, message: 'Lease updated' });

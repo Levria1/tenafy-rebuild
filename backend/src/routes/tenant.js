@@ -77,7 +77,7 @@ router.post('/contacts', authenticate, async (req, res) => {
              COALESCE(inv.outstanding, 0) AS outstanding_amount
       FROM tenant t
       ${leaseHistoryJoin}
-      LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL
+      LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL AND al.start_date <= CURDATE() AND (al.end_date >= CURDATE() OR al.end_date IS NULL)
       LEFT JOIN unit u ON al.unit_id = u.id
       LEFT JOIN property p ON u.property_id = p.id
       LEFT JOIN (
@@ -94,7 +94,7 @@ router.post('/contacts', authenticate, async (req, res) => {
       SELECT COUNT(*) as total
       FROM tenant t
       ${leaseHistoryJoin}
-      LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL
+      LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL AND al.start_date <= CURDATE() AND (al.end_date >= CURDATE() OR al.end_date IS NULL)
       WHERE ${whereClause} AND t.category = 1
     `;
 

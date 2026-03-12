@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Form, Input, DatePicker, Select, Button, message, Spin, Row, Col, Divider } from 'antd';
+import { Form, Input, DatePicker, Select, Button, message, Spin, Row, Col, Divider, Switch, Checkbox } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
@@ -47,6 +47,7 @@ export default function LeasingEditPage() {
   const [filteredUnits, setFilteredUnits] = useState([]);
   const [tenants, setTenants] = useState([]);
   const [leaseData, setLeaseData] = useState(null);
+  const [makeRecurring, setMakeRecurring] = useState(false);
   const router = useRouter();
   const params = useParams();
   const leaseId = params.id;
@@ -96,6 +97,9 @@ export default function LeasingEditPage() {
           setFilteredUnits(unitsList.filter(u => String(u.property_id) === String(propertyId)));
         }
 
+        // Initialize recurring toggle from existing data
+        setMakeRecurring(!!d.invoicing);
+
         form.setFieldsValue({
           property_id: propertyId ? String(propertyId) : undefined,
           unit_id: d.unit_id ? String(d.unit_id) : undefined,
@@ -134,6 +138,13 @@ export default function LeasingEditPage() {
   const stripCommas = (v) => parseFloat(String(v || '').replace(/,/g, '')) || 0;
 
   const onFinish = async (values) => {
+    // Validate recurring fields for month-to-month
+    if (makeRecurring && values.type === 1) {
+      if (!values.invoicing || !values.due_date) {
+        message.error('Please fill in all required fields');
+        return;
+      }
+    }
     try {
       setLoading(true);
       const price = stripCommas(values.price);
@@ -147,15 +158,16 @@ export default function LeasingEditPage() {
         price: price,
         amount: price,
         deposit: stripCommas(values.deposit),
-        due_date: values.due_date || null,
-        invoicing: values.invoicing || null,
-        first_invoice_date: values.first_invoice_date?.format('YYYY-MM-DD') || null,
+        due_date: makeRecurring ? (values.due_date || null) : null,
+        invoicing: makeRecurring ? (values.invoicing || null) : null,
+        first_invoice_date: makeRecurring ? (values.first_invoice_date?.format('YYYY-MM-DD') || null) : null,
         contract_type: values.contract_type ?? 0,
         unit_information: values.unit_information || null,
         note: values.note || null,
         credits: values.credits || null,
         contact_phone: values.contact_phone || null,
         status: values.status ?? 1,
+        mark_past_paid: values.mark_past_paid || false,
       };
       const res = await leasing.update(leaseId, payload);
       if (res.data.code === 200) {
@@ -233,6 +245,9 @@ export default function LeasingEditPage() {
                 />
               </Form.Item>
             </Col>
+          </Row>
+          <div style={{ height: 16 }} />
+          <Row gutter={16}>
             <Col span={12}>
               <FLabel>Additional Tenants</FLabel>
               <Form.Item name="additionalTenantIds" noStyle>
@@ -278,7 +293,19 @@ export default function LeasingEditPage() {
               </Form.Item>
             </Col>
           </Row>
-          <div style={{ height: 16 }} />
+        </div>
+
+        {/* Recurring Invoice */}
+        <div style={sectionStyle}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+            <div style={sectionTitle}>Recurring Invoice</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.5px', color: '#555', textTransform: 'uppercase' }}>
+                MAKE RECURRING
+              </span>
+              <Switch checked={makeRecurring} onChange={setMakeRecurring} size="small" />
+            </div>
+          </div>
           <Row gutter={16}>
             <Col span={6}>
               <FLabel required>Amount</FLabel>
@@ -286,33 +313,45 @@ export default function LeasingEditPage() {
                 <Input placeholder="Please input amount" />
               </Form.Item>
             </Col>
-            <Col span={6}>
-              <FLabel>Invoice Schedule</FLabel>
-              <Form.Item name="invoicing" noStyle>
-                <Select placeholder="Select schedule" allowClear>
-                  {INVOICE_SCHEDULES.map(s => (
-                    <Select.Option key={s.value} value={s.value}>{s.label}</Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <FLabel>Due Date (Day of Month)</FLabel>
-              <Form.Item name="due_date" noStyle>
-                <Select placeholder="Select due day" allowClear>
-                  {DUE_DAY_OPTIONS.map(d => (
-                    <Select.Option key={d.value} value={d.value}>{d.label}</Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <FLabel>First Invoice Date</FLabel>
-              <Form.Item name="first_invoice_date" noStyle>
-                <DatePicker style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
+            {makeRecurring && (
+              <>
+                <Col span={6}>
+                  <FLabel required>First Invoice Date</FLabel>
+                  <Form.Item name="first_invoice_date" noStyle>
+                    <DatePicker style={{ width: '100%' }} placeholder="First Invoice Date" />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <FLabel required>Invoice Schedule</FLabel>
+                  <Form.Item name="invoicing" noStyle rules={[{ required: true, message: 'Select invoice schedule' }]}>
+                    <Select placeholder="Select schedule">
+                      {INVOICE_SCHEDULES.map(s => (
+                        <Select.Option key={s.value} value={s.value}>{s.label}</Select.Option>
+                      ))}
+                    </Select>
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <FLabel required>Due Date (Day of Month)</FLabel>
+                  <Form.Item name="due_date" noStyle rules={[{ required: true, message: 'Select due date' }]}>
+                    <Select placeholder="Select due day">
+                      {DUE_DAY_OPTIONS.map(d => (
+                        <Select.Option key={d.value} value={d.value}>{d.label}</Select.Option>
+                      ))}
+                    </Select>
+                  </Form.Item>
+                </Col>
+              </>
+            )}
           </Row>
+          <div style={{ marginTop: 16 }}>
+            <Form.Item name="mark_past_paid" valuePropName="checked" noStyle>
+              <Checkbox>Automatically mark all past invoices as paid</Checkbox>
+            </Form.Item>
+            <div style={{ color: '#d4380d', fontSize: 12, marginTop: 8 }}>
+              * If you are updating a lease and want the system to mark all previous transactions as paid, check here and all past invoices will be marked as paid on their due days.
+            </div>
+          </div>
         </div>
 
         {/* Deposit & Status */}

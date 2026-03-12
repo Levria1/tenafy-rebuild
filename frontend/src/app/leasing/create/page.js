@@ -188,9 +188,12 @@ export default function LeaseCreatePage() {
   const nextStep = async () => {
     try {
       if (currentStep === 0) {
-        await form.validateFields([
-          'property_id', 'unit_id', 'start_date', 'tenant_id', 'type'
-        ]);
+        const step1Fields = ['property_id', 'unit_id', 'start_date', 'tenant_id', 'type', 'price'];
+        const leaseType = form.getFieldValue('type');
+        if (makeRecurring && leaseType === 1) {
+          step1Fields.push('invoicing', 'due_date');
+        }
+        await form.validateFields(step1Fields);
         // Block if conflict
         if (conflictResult && conflictResult.conflict) {
           message.error('Please resolve the lease conflict before proceeding.');
@@ -198,8 +201,10 @@ export default function LeaseCreatePage() {
         }
       }
       setCurrentStep(prev => prev + 1);
-    } catch {
-      // validation failed
+    } catch (err) {
+      if (err?.errorFields?.length) {
+        message.error('Please fill in all required fields');
+      }
     }
   };
 
@@ -438,7 +443,7 @@ export default function LeaseCreatePage() {
         <div style={{ display: 'flex', gap: 16 }}>
           <div style={{ flex: 1 }}>
             <FLabel required>AMOUNT</FLabel>
-            <Form.Item name="price" noStyle>
+            <Form.Item name="price" noStyle rules={[{ required: true, message: 'Please input amount' }]}>
               <Input placeholder="Please input amount" />
             </Form.Item>
           </div>
@@ -452,7 +457,7 @@ export default function LeaseCreatePage() {
               </div>
               <div style={{ flex: 1 }}>
                 <FLabel required>INVOICE SCHEDULE</FLabel>
-                <Form.Item name="invoicing" noStyle>
+                <Form.Item name="invoicing" noStyle rules={[{ required: true, message: 'Select invoice schedule' }]}>
                   <Select placeholder="Monthly">
                     {INVOICE_SCHEDULES.map(s => (
                       <Select.Option key={s.value} value={s.value}>{s.label}</Select.Option>
@@ -462,7 +467,7 @@ export default function LeaseCreatePage() {
               </div>
               <div style={{ flex: 1 }}>
                 <FLabel required>DUE DATE</FLabel>
-                <Form.Item name="due_date" noStyle>
+                <Form.Item name="due_date" noStyle rules={[{ required: true, message: 'Select due date' }]}>
                   <Select placeholder="Please select Due date" allowClear>
                     {DUE_DAY_OPTIONS.map(d => (
                       <Select.Option key={d.value} value={d.value}>{d.label}</Select.Option>
