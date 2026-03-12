@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
+const { generateInvoiceCode } = require('../utils/invoiceCode');
 
 // POST /api/invoice/invoices - List invoices with paging
 router.post('/invoices', authenticate, async (req, res) => {
@@ -184,23 +185,10 @@ router.post('/', authenticate, async (req, res) => {
     const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
     // Auto-generate invoice_code from sequence if not provided
+    // Uses helper that skips codes with orphaned accounting_line records
     let code = invoice_code;
     if (!code) {
-      const [[seq]] = await pool.execute(
-        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-        [orgId, 'invoice_code']
-      );
-      if (seq) {
-        code = seq.pattern
-          .replace(/\{d,(\w+)\}/g, () => {
-            const now = new Date();
-            return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
-          })
-          .replace(/\{#,(\d+)\}/, () => String(seq.seq_next));
-        await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
-      } else {
-        code = 'INV-' + Date.now();
-      }
+      code = await generateInvoiceCode(orgId);
     }
 
     // Look up default category if not provided (use first enabled category)
@@ -254,23 +242,8 @@ router.post('/publish', authenticate, async (req, res) => {
     // Generate Snowflake ID
     const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-    // Auto-generate invoice_code from sequence
-    let code;
-    const [[seq]] = await pool.execute(
-      'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-      [orgId, 'invoice_code']
-    );
-    if (seq) {
-      code = seq.pattern
-        .replace(/\{d,(\w+)\}/g, () => {
-          const now = new Date();
-          return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
-        })
-        .replace(/\{#,(\d+)\}/, () => String(seq.seq_next));
-      await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
-    } else {
-      code = 'INV-' + Date.now();
-    }
+    // Auto-generate invoice_code — skips codes with orphaned accounting_line records
+    const code = await generateInvoiceCode(orgId);
 
     // Resolve currency
     let currId = currency_id;

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
+const { generateInvoiceCode } = require('../utils/invoiceCode');
 
 // Helper: advance a date by one invoice period
 function advanceInvoiceDate(date, schedule, dueDay) {
@@ -305,25 +306,9 @@ router.post('/', authenticate, async (req, res) => {
       );
       const rentCategoryId = rentCat ? rentCat.id : null;
 
-      // Get sequence for invoice codes
-      const [[invSeq]] = await pool.execute(
-        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-        [orgId, 'invoice_code']
-      );
-      let seqNext = invSeq ? Number(invSeq.seq_next) : 1;
-
-      // Helper: create a single invoice
+      // Helper: create a single invoice with collision-safe code generation
       const createOneInvoice = async (dueDate, status) => {
-        let invoiceCode = 'INV-' + Date.now() + '-' + seqNext;
-        if (invSeq) {
-          invoiceCode = invSeq.pattern
-            .replace(/\{d,(\w+)\}/g, () => {
-              const now = new Date();
-              return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
-            })
-            .replace(/\{#,(\d+)\}/, () => String(seqNext));
-          seqNext++;
-        }
+        const invoiceCode = await generateInvoiceCode(orgId);
         const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
         await pool.execute(
           `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
@@ -349,10 +334,8 @@ router.post('/', authenticate, async (req, res) => {
           const isPast = cursor.getTime() <= todayMs;
 
           if (isPast) {
-            // Past invoice: paid if mark_past_paid checked, otherwise open
             await createOneInvoice(dateStr, mark_past_paid ? 1 : 0);
           } else {
-            // Future: create one upcoming invoice and stop
             await createOneInvoice(dateStr, 0);
             break;
           }
@@ -366,30 +349,12 @@ router.post('/', authenticate, async (req, res) => {
         const invoiceStatus = (isPast && mark_past_paid) ? 1 : 0;
         await createOneInvoice(invoiceDate, invoiceStatus);
       }
-
-      // Update sequence counter
-      if (invSeq) {
-        await pool.execute('UPDATE sequence SET seq_next = ? WHERE id = ?', [seqNext, invSeq.id]);
-      }
     }
 
     // Create security deposit invoice if deposit amount > 0
     if (deposit && parseFloat(deposit) > 0) {
-      // Generate deposit invoice code
-      const [[depSeq]] = await pool.execute(
-        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-        [orgId, 'invoice_code']
-      );
-      let depInvoiceCode = 'INV-DEP-' + Date.now();
-      if (depSeq) {
-        depInvoiceCode = depSeq.pattern
-          .replace(/\{d,(\w+)\}/g, () => {
-            const now = new Date();
-            return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
-          })
-          .replace(/\{#,(\d+)\}/, () => String(depSeq.seq_next));
-        await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [depSeq.id]);
-      }
+      // Generate collision-safe deposit invoice code
+      const depInvoiceCode = await generateInvoiceCode(orgId);
 
       // Get property_id from unit (may already have it from rent invoice block)
       let depPropertyId = null;
