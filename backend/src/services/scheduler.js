@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const pool = require('../config/database');
 const { sendMail } = require('../config/mailer');
+const { generateInvoiceCode } = require('../utils/sequenceCode');
 
 // ---------------------------------------------------------------------------
 // Notification helper — creates in-app notification + optional email alert
@@ -164,6 +165,8 @@ async function generateRecurringInvoices() {
   console.log(`[Scheduler] Found ${leases.length} recurring lease(s) to evaluate.`);
 
   const orgResults = {}; // orgId -> { created, skipped, errors, errorDetails[] }
+  const orgRentalCategory = {}; // orgId -> category_setting.id for "Rental Income"
+  const orgCurrency = {}; // orgId -> currency.id
   const today = new Date(toDateString(new Date()));
 
   for (const lease of leases) {
@@ -195,12 +198,31 @@ async function generateRecurringInvoices() {
         continue;
       }
 
-      // Get invoice sequence
-      const [[invSeq]] = await pool.execute(
-        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-        [lease.org_id, 'invoice_code']
-      );
-      let seqNext = invSeq ? Number(invSeq.seq_next) : 1;
+      // Resolve Rental Income category (cached per org)
+      if (!orgRentalCategory[lease.org_id]) {
+        const [[rentalCat]] = await pool.execute(
+          "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1",
+          [lease.org_id]
+        );
+        orgRentalCategory[lease.org_id] = rentalCat ? rentalCat.id : null;
+      }
+      const catId = orgRentalCategory[lease.org_id];
+      if (!catId) {
+        result.errors++;
+        result.errorDetails.push(`${lease.property_name} / ${lease.unit_name}: No 'Rental Income' category found`);
+        continue;
+      }
+
+      // Resolve currency (cached per org)
+      let currId = lease.currency_id;
+      if (!currId) {
+        if (!orgCurrency[lease.org_id]) {
+          const [[cur]] = await pool.execute('SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [lease.org_id]);
+          orgCurrency[lease.org_id] = cur ? cur.id : null;
+        }
+        currId = orgCurrency[lease.org_id];
+      }
+
       let invoicesCreated = 0;
 
       // Generate missing invoices (handles catch-up if scheduler missed days)
@@ -223,27 +245,17 @@ async function generateRecurringInvoices() {
         );
 
         if (!existing) {
-          // Generate invoice code from sequence
-          let invoiceCode = 'INV-' + Date.now() + '-' + seqNext;
-          if (invSeq) {
-            invoiceCode = invSeq.pattern
-              .replace(/\{d,(\w+)\}/g, () => {
-                const now = new Date();
-                return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
-              })
-              .replace(/\{#,(\d+)\}/, (_, pad) => String(seqNext).padStart(parseInt(pad), '0'));
-            seqNext++;
-          }
+          // Generate invoice code using unified sequence helper (checks MAX existing, skips orphans)
+          const invoiceCode = await generateInvoiceCode(lease.org_id);
 
           const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-          // Status: past invoices are OPEN (0), not auto-paid
           await pool.execute(
             `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
               invoice_code, amount, due_on, status, category, currency_id, type, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, 0, NOW())`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, NOW())`,
             [invoiceId, lease.org_id, lease.tenant_id, lease.unit_id, lease.id, lease.property_id,
-             invoiceCode, lease.price, nextDueDateStr, lease.currency_id]
+             invoiceCode, lease.price, nextDueDateStr, catId, currId]
           );
 
           invoicesCreated++;
@@ -258,11 +270,6 @@ async function generateRecurringInvoices() {
 
         cursor = nextDueDate;
         iterations++;
-      }
-
-      // Update sequence counter
-      if (invSeq && invoicesCreated > 0) {
-        await pool.execute('UPDATE sequence SET seq_next = ? WHERE id = ?', [seqNext, invSeq.id]);
       }
 
       result.created += invoicesCreated;

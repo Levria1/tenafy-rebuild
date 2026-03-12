@@ -245,6 +245,26 @@ router.post('/publish', authenticate, async (req, res) => {
     // Auto-generate invoice_code — skips codes with orphaned accounting_line records
     const code = await generateInvoiceCode(orgId);
 
+    // Resolve category: if not provided, copy from the most recent invoice for the same lease,
+    // or fall back to the first "Rental Income" category for the org
+    let catId = category || null;
+    if (!catId) {
+      const [[prevInv]] = await pool.execute(
+        'SELECT category FROM invoice WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
+        [leasing_id, orgId]
+      );
+      if (prevInv && prevInv.category) {
+        catId = prevInv.category;
+      } else {
+        // Fall back to "Rental Income" category
+        const [[rentalCat]] = await pool.execute(
+          "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1",
+          [orgId]
+        );
+        if (rentalCat) catId = rentalCat.id;
+      }
+    }
+
     // Resolve currency
     let currId = currency_id;
     if (!currId) {
@@ -252,12 +272,19 @@ router.post('/publish', authenticate, async (req, res) => {
       currId = cur ? cur.id : null;
     }
 
+    // Resolve property_id from unit if not provided
+    let propId = property_id || null;
+    if (!propId && unit_id) {
+      const [[unitRow]] = await pool.execute('SELECT property_id FROM unit WHERE id = ?', [unit_id]);
+      if (unitRow) propId = unitRow.property_id;
+    }
+
     await pool.execute(
       `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
         invoice_code, amount, due_on, status, category, currency_id, type, tag_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, NOW())`,
-      [invoiceId, orgId, tenant_id, unit_id || null, leasing_id, property_id || null,
-       code, amount, due_date, category || null, currId, type || 0, tag_id || null]
+      [invoiceId, orgId, tenant_id, unit_id || null, leasing_id, propId,
+       code, amount, due_date, catId, currId, type || 0, tag_id || null]
     );
 
     res.json({ code: 200, message: 'Invoice published', data: { id: invoiceId, invoice_code: code } });

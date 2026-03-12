@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../components/Layout';
 import { settings, user, amenity, role, emailTemplate } from '../../lib/api';
 import { useCallback } from 'react';
@@ -17,7 +17,7 @@ export default function SettingsPage() {
   const [categories, setCategories] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [users, setUsers] = useState([]);
-  const [amenities, setAmenities] = useState([]);
+  // amenities managed by AmenitySettings component
   const [roles, setRoles] = useState([]);
   const [emailTemplates, setEmailTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -45,9 +45,6 @@ export default function SettingsPage() {
       } else if (activeTab === 'users') {
         const response = await user.listUsers({}, { page: 1, limit: 50 });
         if (response.data.code === 200) setUsers(response.data.data.content || []);
-      } else if (activeTab === 'amenities') {
-        const response = await amenity.list({}, { page: 1, limit: 50 });
-        if (response.data.code === 200) setAmenities(response.data.data.content || []);
       } else if (activeTab === 'roles') {
         const response = await role.list({}, { page: 1, limit: 50 });
         if (response.data.code === 200) setRoles(response.data.data.content || []);
@@ -79,21 +76,6 @@ export default function SettingsPage() {
         try { await settings.deletePaymentMethod(r.id); message.success('Deleted'); loadData(); } 
         catch (error) { message.error('Failed to delete'); }
       }}>Delete</Button>
-    )},
-  ];
-
-  const amenityColumns = [
-    { title: 'Name', dataIndex: 'name', key: 'name' },
-    { title: 'Type', dataIndex: 'type', key: 'type' },
-    { title: 'Status', dataIndex: 'status', render: (s) => <Tag color={s === 1 ? 'green' : 'red'}>{s === 1 ? 'Active' : 'Inactive'}</Tag> },
-    { title: 'Actions', key: 'actions', render: (_, r) => (
-      <Space>
-        <Button type="link" onClick={() => router.push(`/settings/amenity/${r.id}`)}>Edit</Button>
-        <Button type="link" danger onClick={async () => {
-          try { await amenity.delete(r.id); message.success('Deleted'); loadData(); } 
-          catch (error) { message.error('Failed to delete'); }
-        }}>Delete</Button>
-      </Space>
     )},
   ];
 
@@ -142,39 +124,18 @@ export default function SettingsPage() {
   const canSeeUsers = hasPermission ? hasPermission('LANDLORD/USER_LIST') : false;
   const canSeeRoles = hasPermission ? hasPermission('LANDLORD/ROLE_LIST') : false;
 
-  const tabItems = [
-    { key: 'sequences', label: 'Sequences', children: <SequenceSettings /> },
+  // Group tabs by section — each sidebar link only shows its own tabs
+  const accountTabs = [
     { key: 'personal', label: 'Personal Info', children: <PersonalSettings /> },
     { key: 'landlord', label: 'Landlord Info', children: <LandlordSettings /> },
-    ...(canSeeUsers ? [{ key: 'users', label: 'User Management', children: (
-      <Card>
-        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/users/create')}>Add User</Button></div>
-        <Table columns={userColumns} dataSource={users} rowKey="id" loading={loading} pagination={false} />
-      </Card>
-    )}] : []),
-    ...(canSeeRoles ? [{ key: 'roles', label: 'Roles', children: (
-      <Card>
-        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/role/create')}>Add Role</Button></div>
-        <Table columns={roleColumns} dataSource={roles} rowKey="id" loading={loading} pagination={false} />
-      </Card>
-    )}] : []),
-    { key: 'amenities', label: 'Amenities', children: (
-      <Card>
-        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/amenity/create')}>Add Amenity</Button></div>
-        <Table columns={amenityColumns} dataSource={amenities} rowKey="id" loading={loading} pagination={false} />
-      </Card>
-    )},
-    { key: 'emailTemplates', label: 'Email Templates', children: (
-      <Card>
-        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/email-templates/create')}>Add Template</Button></div>
-        <Table columns={templateColumns} dataSource={emailTemplates} rowKey="id" loading={loading} pagination={false} />
-      </Card>
-    )},
+  ];
+
+  const accountingTabs = [
     { key: 'categories', label: 'Categories', children: (
       <Card>
         <div style={{ marginBottom: 16 }}>
           <Form layout="inline" onFinish={async (values) => {
-            try { await settings.createCategory(values); message.success('Created'); loadData(); } 
+            try { await settings.createCategory(values); message.success('Created'); loadData(); }
             catch (error) { message.error('Failed'); }
           }}>
             <Form.Item name="name" rules={[{ required: true }]}><Input placeholder="Category name" /></Form.Item>
@@ -188,7 +149,7 @@ export default function SettingsPage() {
       <Card>
         <div style={{ marginBottom: 16 }}>
           <Form layout="inline" onFinish={async (values) => {
-            try { await settings.createPaymentMethod(values); message.success('Created'); loadData(); } 
+            try { await settings.createPaymentMethod(values); message.success('Created'); loadData(); }
             catch (error) { message.error('Failed'); }
           }}>
             <Form.Item name="name" rules={[{ required: true }]}><Input placeholder="Payment method name" /></Form.Item>
@@ -198,11 +159,65 @@ export default function SettingsPage() {
         <Table columns={paymentColumns} dataSource={paymentMethods} rowKey="id" loading={loading} pagination={false} />
       </Card>
     )},
+    { key: 'sequences', label: 'Sequences', children: <SequenceSettings /> },
   ];
+
+  const amenityTabs = [
+    { key: 'amenities', label: 'Amenities', children: <AmenitySettings /> },
+  ];
+
+  const emailTabs = [
+    { key: 'emailTemplates', label: 'Email Templates', children: (
+      <Card>
+        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/email-templates/create')}>Add Template</Button></div>
+        <Table columns={templateColumns} dataSource={emailTemplates} rowKey="id" loading={loading} pagination={false} />
+      </Card>
+    )},
+  ];
+
+  const userTabs = [
+    ...(canSeeUsers ? [{ key: 'users', label: 'User Management', children: (
+      <Card>
+        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/users/create')}>Add User</Button></div>
+        <Table columns={userColumns} dataSource={users} rowKey="id" loading={loading} pagination={false} />
+      </Card>
+    )}] : []),
+    ...(canSeeRoles ? [{ key: 'roles', label: 'Roles', children: (
+      <Card>
+        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/role/create')}>Add Role</Button></div>
+        <Table columns={roleColumns} dataSource={roles} rowKey="id" loading={loading} pagination={false} />
+      </Card>
+    )}] : []),
+  ];
+
+  // Determine which group the active tab belongs to
+  const accountKeys = ['personal', 'landlord'];
+  const accountingKeys = ['categories', 'payment', 'sequences'];
+  const amenityKeys = ['amenities'];
+  const emailKeys = ['emailTemplates'];
+  const userKeys = ['users', 'roles'];
+
+  let tabItems, pageTitle;
+  if (accountingKeys.includes(activeTab)) {
+    tabItems = accountingTabs;
+    pageTitle = 'Accounting Settings';
+  } else if (amenityKeys.includes(activeTab)) {
+    tabItems = amenityTabs;
+    pageTitle = 'Amenity Settings';
+  } else if (emailKeys.includes(activeTab)) {
+    tabItems = emailTabs;
+    pageTitle = 'Email Settings';
+  } else if (userKeys.includes(activeTab)) {
+    tabItems = userTabs;
+    pageTitle = 'User Management';
+  } else {
+    tabItems = accountTabs;
+    pageTitle = 'Account Settings';
+  }
 
   return (
     <MainLayout>
-      <h1 style={{ marginBottom: 16 }}>Settings</h1>
+      <h1 style={{ marginBottom: 16 }}>{pageTitle}</h1>
       <Card><Tabs activeKey={activeTab} onChange={(key) => { setActiveTab(key); router.push(`/settings?tab=${key}`); }} items={tabItems} /></Card>
     </MainLayout>
   );
@@ -308,8 +323,9 @@ function LandlordSettings() {
 
 function SequenceSettings() {
   const [sequences, setSequences] = useState([]);
+  const [edited, setEdited] = useState({});
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState({});
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     settings.getSequences()
@@ -318,54 +334,221 @@ function SequenceSettings() {
       .finally(() => setLoading(false));
   }, []);
 
-  const updateSeq = async (id, field, value) => {
-    setSaving(s => ({ ...s, [id]: true }));
+  const handleChange = (id, field, value) => {
+    setEdited(prev => ({
+      ...prev,
+      [id]: { ...(prev[id] || {}), [field]: value },
+    }));
+  };
+
+  const getVal = (r, field) => {
+    if (edited[r.id] && edited[r.id][field] !== undefined) return edited[r.id][field];
+    return r[field];
+  };
+
+  const hasChanges = Object.keys(edited).length > 0;
+
+  const handleSave = async () => {
+    setSaving(true);
     try {
-      const seq = sequences.find(s => s.id === id);
-      await settings.updateSequence(id, { ...seq, [field]: value });
-      setSequences(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
-      message.success('Sequence updated');
+      for (const id of Object.keys(edited)) {
+        const seq = sequences.find(s => String(s.id) === String(id));
+        if (!seq) continue;
+        const updates = edited[id];
+        await settings.updateSequence(id, {
+          pattern: updates.pattern !== undefined ? updates.pattern : seq.pattern,
+          seq_next: updates.seq_next !== undefined ? updates.seq_next : seq.seq_next,
+        });
+      }
+      // Reload fresh data
+      const r = await settings.getSequences();
+      if (r.data.code === 200) setSequences(r.data.data || []);
+      setEdited({});
+      message.success('Sequences saved');
     } catch (error) {
-      message.error('Failed to update sequence');
+      message.error('Failed to save sequences');
     } finally {
-      setSaving(s => ({ ...s, [id]: false }));
+      setSaving(false);
     }
   };
 
+  // Build example from pattern: "TRIV{#,010}" with seq_next=31400 → "TRIV31400"
+  const buildExample = (r) => {
+    const pattern = getVal(r, 'pattern') || '';
+    const num = Number(getVal(r, 'seq_next')) || 1;
+    return pattern
+      .replace(/\{d,(\w+)\}/g, () => {
+        const now = new Date();
+        return now.getFullYear().toString() +
+          String(now.getMonth() + 1).padStart(2, '0') +
+          String(now.getDate()).padStart(2, '0');
+      })
+      .replace(/\{#,(\d+)\}/, () => String(num));
+  };
+
   const columns = [
-    { title: 'Sequence Name', dataIndex: 'name', key: 'name' },
-    { title: 'Prefix', dataIndex: 'prefix', key: 'prefix',
+    { title: 'Sequence Name', dataIndex: 'name', key: 'name', width: 180 },
+    { title: 'Pattern', dataIndex: 'pattern', key: 'pattern', width: 200,
       render: (val, r) => (
-        <Input defaultValue={val} style={{ width: 120 }}
-          onBlur={(e) => { if (e.target.value !== val) updateSeq(r.id, 'prefix', e.target.value); }} />
+        <Input value={getVal(r, 'pattern')} style={{ width: 180 }}
+          onChange={(e) => handleChange(r.id, 'pattern', e.target.value)} />
       )
     },
-    { title: 'Next Number', dataIndex: 'next_number', key: 'next_number',
+    { title: 'Next Number', dataIndex: 'seq_next', key: 'seq_next', width: 150,
       render: (val, r) => (
-        <InputNumber defaultValue={val} min={1} style={{ width: 120 }}
-          onBlur={(e) => { const v = parseInt(e.target.value); if (v && v !== val) updateSeq(r.id, 'next_number', v); }} />
+        <InputNumber value={Number(getVal(r, 'seq_next')) || 1} min={1} style={{ width: 130 }}
+          onChange={(v) => handleChange(r.id, 'seq_next', v)} />
       )
     },
-    { title: 'Padding', dataIndex: 'padding', key: 'padding',
-      render: (val, r) => (
-        <InputNumber defaultValue={val} min={1} max={10} style={{ width: 80 }}
-          onBlur={(e) => { const v = parseInt(e.target.value); if (v && v !== val) updateSeq(r.id, 'padding', v); }} />
-      )
-    },
-    { title: 'Example', key: 'example',
-      render: (_, r) => {
-        const num = String(r.next_number || 1).padStart(r.padding || 4, '0');
-        return <Tag>{r.prefix || ''}{num}</Tag>;
-      }
+    { title: 'Preview', key: 'preview', width: 200,
+      render: (_, r) => <Tag>{buildExample(r)}</Tag>
     },
   ];
 
   return (
     <Card>
       <p style={{ marginBottom: 16, color: '#666' }}>
-        Configure numbering sequences for invoices, leases, and other documents.
+        Configure numbering sequences for invoices, leases, transactions, and services.
+        The pattern uses <code>{'{#,010}'}</code> for the sequence number and <code>{'{d,yyyyMMdd}'}</code> for the date.
       </p>
       <Table columns={columns} dataSource={sequences} rowKey="id" loading={loading} pagination={false} />
+      <div style={{ marginTop: 16, textAlign: 'right' }}>
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={!hasChanges}>
+          Save Changes
+        </Button>
+      </div>
     </Card>
+  );
+}
+
+const CATEGORY_OPTIONS = [
+  { label: 'All', value: '' },
+  { label: 'Property', value: 0 },
+  { label: 'Unit', value: 1 },
+];
+const TYPE_OPTIONS = [
+  { label: 'All', value: '' },
+  { label: 'Residential', value: 1 },
+  { label: 'Commercial', value: 2 },
+];
+
+function getCategoryLabel(val) {
+  return Number(val) === 0 ? 'Property' : Number(val) === 1 ? 'Unit' : '-';
+}
+function getTypeLabel(cat, type) {
+  const catLabel = getCategoryLabel(cat);
+  const typeLabel = Number(type) === 1 ? 'Residential' : Number(type) === 2 ? 'Commercial' : '';
+  return typeLabel ? `${typeLabel} ${catLabel}` : catLabel;
+}
+
+function AmenitySettings() {
+  const router = useRouter();
+  const [data, setData] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const [filterCategory, setFilterCategory] = useState('');
+  const [filterType, setFilterType] = useState('');
+  const [filterOpen, setFilterOpen] = useState(false);
+  const limit = 10;
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const body = {};
+      if (search) body.search = search;
+      if (filterCategory !== '') body.category = filterCategory;
+      if (filterType !== '') body.type = filterType;
+      const r = await amenity.list(body, { page, limit });
+      if (r.data.code === 200) {
+        setData(r.data.data.content || []);
+        setTotal(Number(r.data.data.totalElements) || 0);
+      }
+    } catch (err) {
+      console.error('Load amenities error:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [page, search, filterCategory, filterType]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleDelete = async (id) => {
+    try {
+      await amenity.delete(id);
+      message.success('Amenity deleted');
+      loadData();
+    } catch (err) {
+      message.error('Failed to delete');
+    }
+  };
+
+  const activeFilters = (filterCategory !== '' ? 1 : 0) + (filterType !== '' ? 1 : 0);
+
+  const filterContent = (
+    <div style={{ width: 220 }}>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontWeight: 500, marginBottom: 4 }}>Category</div>
+        <Select value={filterCategory} onChange={setFilterCategory} options={CATEGORY_OPTIONS} style={{ width: '100%' }} />
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontWeight: 500, marginBottom: 4 }}>Type</div>
+        <Select value={filterType} onChange={setFilterType} options={TYPE_OPTIONS} style={{ width: '100%' }} />
+      </div>
+      <Button size="small" onClick={() => { setFilterCategory(''); setFilterType(''); }}>Clear Filters</Button>
+    </div>
+  );
+
+  const columns = [
+    { title: 'Display Name', dataIndex: 'display_name', key: 'display_name' },
+    { title: 'Category', dataIndex: 'category', key: 'category', width: 120,
+      render: (v) => getCategoryLabel(v)
+    },
+    { title: 'Type', key: 'type', width: 200,
+      render: (_, r) => getTypeLabel(r.category, r.type)
+    },
+    { title: 'Operation', key: 'actions', width: 150,
+      render: (_, r) => (
+        <Space>
+          <Button type="link" style={{ padding: 0 }} onClick={() => router.push(`/settings/amenity/${r.id}`)}>Edit</Button>
+          <Button type="link" danger style={{ padding: 0 }} onClick={() => handleDelete(r.id)}>Delete</Button>
+        </Space>
+      )
+    },
+  ];
+
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <Tag style={{ fontSize: 14, padding: '4px 12px' }}>{total} Total</Tag>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Input
+            placeholder="Type here to search"
+            prefix={<SearchOutlined />}
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            style={{ width: 220 }}
+            allowClear
+          />
+          <Popover content={filterContent} trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
+            <Badge count={activeFilters} size="small">
+              <Button icon={<FilterOutlined />}>Filter</Button>
+            </Badge>
+          </Popover>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/amenity/create')}>
+            CREATE AMENITY
+          </Button>
+        </div>
+      </div>
+      <Table columns={columns} dataSource={data} rowKey="id" loading={loading}
+        pagination={false} size="middle" />
+      {total > limit && (
+        <div style={{ marginTop: 16, textAlign: 'right' }}>
+          <Pagination current={page} total={total} pageSize={limit}
+            onChange={(p) => setPage(p)} showSizeChanger={false} />
+        </div>
+      )}
+    </>
   );
 }

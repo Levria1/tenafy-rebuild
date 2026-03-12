@@ -19,9 +19,9 @@ router.post('/contacts', authenticate, async (req, res) => {
     const params = [orgId];
 
     if (search) {
-      whereClause += ' AND (t.first_name LIKE ? OR t.last_name LIKE ? OR t.email LIKE ? OR t.phone LIKE ?)';
+      whereClause += ' AND (t.first_name LIKE ? OR t.last_name LIKE ? OR CONCAT(COALESCE(t.first_name,\'\'), \' \', COALESCE(t.last_name,\'\')) LIKE ? OR t.company_name LIKE ? OR t.email LIKE ? OR t.phone LIKE ?)';
       const searchParam = '%' + search + '%';
-      params.push(searchParam, searchParam, searchParam, searchParam);
+      params.push(searchParam, searchParam, searchParam, searchParam, searchParam, searchParam);
     }
 
     // Tenant Status: active = status 1, inactive = status 0
