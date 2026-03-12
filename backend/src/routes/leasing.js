@@ -244,7 +244,7 @@ router.post('/', authenticate, async (req, res) => {
             const now = new Date();
             return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
           })
-          .replace(/\{#,(\d+)\}/, (_, pad) => String(seq.seq_next).padStart(parseInt(pad), '0'));
+          .replace(/\{#,(\d+)\}/, () => String(seq.seq_next));
         await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
       }
     }
@@ -321,7 +321,7 @@ router.post('/', authenticate, async (req, res) => {
               const now = new Date();
               return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
             })
-            .replace(/\{#,(\d+)\}/, (_, pad) => String(seqNext).padStart(parseInt(pad), '0'));
+            .replace(/\{#,(\d+)\}/, () => String(seqNext));
           seqNext++;
         }
         const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -387,7 +387,7 @@ router.post('/', authenticate, async (req, res) => {
             const now = new Date();
             return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
           })
-          .replace(/\{#,(\d+)\}/, (_, pad) => String(depSeq.seq_next).padStart(parseInt(pad), '0'));
+          .replace(/\{#,(\d+)\}/, () => String(depSeq.seq_next));
         await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [depSeq.id]);
       }
 
@@ -436,12 +436,40 @@ router.post('/', authenticate, async (req, res) => {
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { start_date, end_date, rent_amount, deposit_amount, invoice_schedule, status, additionalTenantIds } = req.body;
+    const orgId = req.user.orgId;
+    const {
+      unit_id, tenant_id, start_date, end_date, type, price, deposit,
+      due_date, invoicing, amount, contract_type, unit_information,
+      note, credits, contact_phone, first_invoice_date, status,
+      additionalTenantIds
+    } = req.body;
 
-    await pool.execute(
-      'UPDATE leasing SET start_date = ?, end_date = ?, amount = ?, deposit = ?, invoicing = ?, status = ?, updated_at = NOW() WHERE id = ?',
-      [start_date, end_date, rent_amount, deposit_amount, invoice_schedule, status, id]
-    );
+    // Build dynamic SET clause
+    const fields = [];
+    const params = [];
+    if (unit_id !== undefined) { fields.push('unit_id = ?'); params.push(unit_id); }
+    if (tenant_id !== undefined) { fields.push('tenant_id = ?'); params.push(tenant_id); }
+    if (start_date !== undefined) { fields.push('start_date = ?'); params.push(start_date); }
+    if (end_date !== undefined) { fields.push('end_date = ?'); params.push(end_date || null); }
+    if (type !== undefined) { fields.push('type = ?'); params.push(type); }
+    if (price !== undefined) { fields.push('price = ?'); params.push(price); }
+    if (amount !== undefined) { fields.push('amount = ?'); params.push(amount); }
+    if (deposit !== undefined) { fields.push('deposit = ?'); params.push(deposit); }
+    if (due_date !== undefined) { fields.push('due_date = ?'); params.push(due_date); }
+    if (invoicing !== undefined) { fields.push('invoicing = ?'); params.push(invoicing); }
+    if (contract_type !== undefined) { fields.push('contract_type = ?'); params.push(contract_type); }
+    if (unit_information !== undefined) { fields.push('unit_information = ?'); params.push(unit_information || null); }
+    if (note !== undefined) { fields.push('note = ?'); params.push(note || null); }
+    if (credits !== undefined) { fields.push('credits = ?'); params.push(credits || null); }
+    if (contact_phone !== undefined) { fields.push('contact_phone = ?'); params.push(contact_phone || null); }
+    if (first_invoice_date !== undefined) { fields.push('first_invoice_date = ?'); params.push(first_invoice_date || null); }
+    if (status !== undefined) { fields.push('status = ?'); params.push(status); }
+    fields.push('updated_at = NOW()');
+    params.push(id);
+
+    if (fields.length > 1) {
+      await pool.execute(`UPDATE leasing SET ${fields.join(', ')} WHERE id = ?`, params);
+    }
 
     // Replace additional tenants
     if (Array.isArray(additionalTenantIds)) {

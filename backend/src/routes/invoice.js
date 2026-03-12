@@ -196,7 +196,7 @@ router.post('/', authenticate, async (req, res) => {
             const now = new Date();
             return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
           })
-          .replace(/\{#,(\d+)\}/, (_, pad) => String(seq.seq_next).padStart(parseInt(pad), '0'));
+          .replace(/\{#,(\d+)\}/, () => String(seq.seq_next));
         await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
       } else {
         code = 'INV-' + Date.now();
@@ -266,7 +266,7 @@ router.post('/publish', authenticate, async (req, res) => {
           const now = new Date();
           return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
         })
-        .replace(/\{#,(\d+)\}/, (_, pad) => String(seq.seq_next).padStart(parseInt(pad), '0'));
+        .replace(/\{#,(\d+)\}/, () => String(seq.seq_next));
       await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
     } else {
       code = 'INV-' + Date.now();
@@ -598,6 +598,39 @@ router.put('/:id', authenticate, async (req, res) => {
       `UPDATE invoice SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`,
       params
     );
+
+    // Recalculate status based on actual payments whenever amount changes
+    if (amount !== undefined) {
+      const [[inv]] = await pool.execute(
+        'SELECT invoice_code, amount, status FROM invoice WHERE id = ? AND org_id = ?',
+        [id, orgId]
+      );
+      if (inv && inv.invoice_code) {
+        const [[{ total_paid }]] = await pool.execute(
+          `SELECT COALESCE(SUM(al.amount), 0) as total_paid
+           FROM accounting_line al
+           JOIN accounting a ON al.accounting_id = a.id
+           WHERE al.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
+          [inv.invoice_code, orgId]
+        );
+        const invAmount = parseFloat(inv.amount) || 0;
+        const paid = parseFloat(total_paid) || 0;
+        let newStatus;
+        if (invAmount <= 0) {
+          newStatus = 0; // Open if amount is 0 or negative
+        } else if (paid >= invAmount) {
+          newStatus = 1; // Paid
+        } else if (Number(inv.status) === 2) {
+          newStatus = 2; // Keep Overdue if it was Overdue
+        } else {
+          newStatus = 0; // Open (includes partial — frontend handles display)
+        }
+        if (newStatus !== Number(inv.status)) {
+          await pool.execute('UPDATE invoice SET status = ? WHERE id = ? AND org_id = ?', [newStatus, id, orgId]);
+        }
+      }
+    }
+
     res.json({ code: 200, message: 'Invoice updated' });
   } catch (error) {
     console.error('Update invoice error:', error);

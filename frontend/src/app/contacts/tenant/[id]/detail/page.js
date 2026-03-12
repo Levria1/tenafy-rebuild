@@ -149,6 +149,21 @@ export default function TenantDetailPage() {
   }, [activeTab, loadInvoices]);
 
   const statusMap = { 0: { text: 'Open', color: 'blue' }, 1: { text: 'Paid', color: 'green' }, 2: { text: 'Overdue', color: 'red' } };
+  // Compute effective status: show "Partial" when partially paid
+  const getEffectiveStatus = (r) => {
+    const amt = Number(r.amount) || 0;
+    const paid = Number(r.amount_paid) || 0;
+    const status = Number(r.status);
+    if (status === 1 && paid >= amt) return { text: 'Paid', color: 'green' };
+    if (paid > 0 && paid < amt) return { text: 'Partial', color: 'orange' };
+    if (status === 2) return { text: 'Overdue', color: 'red' };
+    return { text: 'Open', color: 'blue' };
+  };
+  const hasOutstanding = (r) => {
+    const amt = Number(r.amount) || 0;
+    const paid = Number(r.amount_paid) || 0;
+    return amt > paid;
+  };
   const hasActiveLease = leases.some(l => l.status === 1);
   const fmt = (v) => v != null ? `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : '—';
 
@@ -395,9 +410,9 @@ export default function TenantDetailPage() {
   const invoiceColumns = [
     {
       title: 'STATUS', dataIndex: 'status', key: 'status', width: 80,
-      render: (s) => {
-        const cfg = statusMap[Number(s)] || { text: 'Unknown', color: 'default' };
-        return <span style={{ fontSize: 13 }}>{cfg.text}</span>;
+      render: (_, r) => {
+        const cfg = getEffectiveStatus(r);
+        return <span style={{ fontSize: 13, color: cfg.color === 'blue' ? '#1890ff' : cfg.color === 'green' ? '#389e0d' : cfg.color === 'red' ? '#cf1322' : '#faad14' }}>{cfg.text}</span>;
       },
     },
     {
@@ -461,16 +476,18 @@ export default function TenantDetailPage() {
     },
     {
       title: 'ACTION', key: 'action', width: 130, fixed: 'right',
-      render: (_, r) => (
+      render: (_, r) => {
+        const canPay = hasOutstanding(r);
+        return (
         <Space size="small">
           <Button
             size="small"
-            disabled={Number(r.status) === 1}
+            disabled={!canPay}
             onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${r.id}`)}
             style={{
               borderRadius: 4, padding: '0 10px', fontSize: 13,
-              color: Number(r.status) === 1 ? '#ccc' : '#666',
-              borderColor: Number(r.status) === 1 ? '#eee' : '#d9d9d9',
+              color: !canPay ? '#ccc' : '#666',
+              borderColor: !canPay ? '#eee' : '#d9d9d9',
               background: 'transparent',
             }}
           >
@@ -480,7 +497,8 @@ export default function TenantDetailPage() {
             View &gt;
           </Button>
         </Space>
-      ),
+        );
+      },
     },
   ];
 
@@ -714,7 +732,7 @@ export default function TenantDetailPage() {
             <span>Accounting</span>
             {selectedInvoice && (
               <Button type="default" size="small"
-                disabled={Number(selectedInvoice.status) === 1}
+                disabled={!hasOutstanding(selectedInvoice)}
                 onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${selectedInvoice.id}`)}>
                 Pay
               </Button>

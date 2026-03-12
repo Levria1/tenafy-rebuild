@@ -407,11 +407,28 @@ router.get('/:id/profile/sum', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
+    // Calculate outstanding and paid using actual payment data from accounting_line
     const [[invoiceSums]] = await pool.execute(
       `SELECT
-         COALESCE(SUM(CASE WHEN status = 0 THEN amount ELSE 0 END), 0) as outstanding,
-         COALESCE(SUM(CASE WHEN status = 1 THEN amount ELSE 0 END), 0) as paid
-       FROM invoice WHERE org_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+         COALESCE(SUM(
+           CASE WHEN i.status != 1 THEN
+             GREATEST(i.amount - COALESCE((
+               SELECT SUM(al.amount) FROM accounting_line al
+               JOIN accounting a ON al.accounting_id = a.id
+               WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id
+                 AND a.deleted_at IS NULL AND al.deleted_at IS NULL
+             ), 0), 0)
+           ELSE 0 END
+         ), 0) as outstanding,
+         COALESCE(SUM(
+           COALESCE((
+             SELECT SUM(al.amount) FROM accounting_line al
+             JOIN accounting a ON al.accounting_id = a.id
+             WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id
+               AND a.deleted_at IS NULL AND al.deleted_at IS NULL
+           ), 0)
+         ), 0) as paid
+       FROM invoice i WHERE i.org_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL`,
       [orgId, id]
     );
 
@@ -519,25 +536,40 @@ router.post('/:id/accounting/sum', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { startDate, endDate } = req.body || {};
 
-    let whereClause = 'org_id = ? AND tenant_id = ? AND deleted_at IS NULL';
+    let whereClause = 'i.org_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL';
     const params = [orgId, id];
 
     if (startDate) {
-      whereClause += ' AND due_on >= ?';
+      whereClause += ' AND i.due_on >= ?';
       params.push(startDate);
     }
     if (endDate) {
-      whereClause += ' AND due_on <= ?';
+      whereClause += ' AND i.due_on <= ?';
       params.push(endDate);
     }
 
+    // Use actual payment data from accounting_line for accurate outstanding/paid
     const [[sums]] = await pool.execute(
       `SELECT
-         COALESCE(SUM(CASE WHEN status IN (0,2) AND type = 1 THEN amount ELSE 0 END), 0) as outstanding_outflow,
-         COALESCE(SUM(CASE WHEN status IN (0,2) AND (type = 0 OR type IS NULL) THEN amount ELSE 0 END), 0) as outstanding_inflow,
-         COALESCE(SUM(CASE WHEN status = 0 THEN amount ELSE 0 END), 0) as outstanding,
-         COALESCE(SUM(CASE WHEN status = 1 THEN amount ELSE 0 END), 0) as paid
-       FROM invoice WHERE ${whereClause}`,
+         COALESCE(SUM(CASE WHEN i.status != 1 AND i.type = 1 THEN
+           GREATEST(i.amount - COALESCE((
+             SELECT SUM(al.amount) FROM accounting_line al JOIN accounting a ON al.accounting_id = a.id
+             WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL AND al.deleted_at IS NULL
+           ), 0), 0)
+         ELSE 0 END), 0) as outstanding_outflow,
+         COALESCE(SUM(CASE WHEN i.status != 1 AND (i.type = 0 OR i.type IS NULL) THEN
+           GREATEST(i.amount - COALESCE((
+             SELECT SUM(al.amount) FROM accounting_line al JOIN accounting a ON al.accounting_id = a.id
+             WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL AND al.deleted_at IS NULL
+           ), 0), 0)
+         ELSE 0 END), 0) as outstanding_inflow,
+         COALESCE(SUM(
+           COALESCE((
+             SELECT SUM(al.amount) FROM accounting_line al JOIN accounting a ON al.accounting_id = a.id
+             WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL AND al.deleted_at IS NULL
+           ), 0)
+         ), 0) as paid
+       FROM invoice i WHERE ${whereClause}`,
       params
     );
 

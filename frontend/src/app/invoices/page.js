@@ -274,12 +274,24 @@ export default function InvoicesPage() {
     setSelectedInvoice(null);
   };
 
-  const getStatusLabel = (s) => {
+  const getStatusLabel = (s, r) => {
     const n = Number(s);
+    // Show "Partial" when some payment made but not fully paid
+    if (r) {
+      const amt = Number(r.amount) || 0;
+      const paid = Number(r.amount_paid) || 0;
+      if (n === 1 && paid >= amt) return { text: 'Paid', color: '#389e0d' };
+      if (paid > 0 && paid < amt) return { text: 'Partial', color: '#faad14' };
+    }
     if (n === 0) return { text: 'Open', color: '#1890ff' };
     if (n === 1) return { text: 'Paid', color: '#389e0d' };
     if (n === 2) return { text: 'Overdue', color: '#cf1322' };
     return { text: 'Unknown', color: '#999' };
+  };
+  const hasOutstanding = (r) => {
+    const amt = Number(r.amount) || 0;
+    const paid = Number(r.amount_paid) || 0;
+    return amt > paid;
   };
 
   const getDaysLate = (due_on, status) => {
@@ -295,8 +307,8 @@ export default function InvoicesPage() {
       title: 'STATUS', dataIndex: 'status', key: 'status', width: 80,
       sorter: true,
       sortOrder: sortInfo.field === 'status' ? sortInfo.order : null,
-      render: (s) => {
-        const st = getStatusLabel(s);
+      render: (s, r) => {
+        const st = getStatusLabel(s, r);
         return <span style={{ color: st.color, fontWeight: 500 }}>{st.text}</span>;
       },
     },
@@ -371,16 +383,18 @@ export default function InvoicesPage() {
     },
     {
       title: 'ACTION', key: 'actions', width: 130, fixed: 'right',
-      render: (_, r) => (
+      render: (_, r) => {
+        const canPay = hasOutstanding(r);
+        return (
         <Space size="small">
           <Button
             size="small"
-            disabled={Number(r.status) === 1}
+            disabled={!canPay}
             onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${r.id}`)}
             style={{
               borderRadius: 4, padding: '0 10px', fontSize: 13,
-              color: Number(r.status) === 1 ? '#ccc' : '#666',
-              borderColor: Number(r.status) === 1 ? '#eee' : '#d9d9d9',
+              color: !canPay ? '#ccc' : '#666',
+              borderColor: !canPay ? '#eee' : '#d9d9d9',
               background: 'transparent',
             }}
           >
@@ -390,7 +404,8 @@ export default function InvoicesPage() {
             View &gt;
           </Button>
         </Space>
-      ),
+        );
+      },
     },
   ];
 
@@ -492,7 +507,7 @@ export default function InvoicesPage() {
             <span>Invoice</span>
             {selectedInvoice && (
               <Button type="default" size="small"
-                disabled={Number(selectedInvoice.status) === 1}
+                disabled={!hasOutstanding(selectedInvoice)}
                 onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${selectedInvoice.id}`)}>
                 Pay
               </Button>

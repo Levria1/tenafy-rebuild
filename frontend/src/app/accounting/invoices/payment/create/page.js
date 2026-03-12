@@ -62,11 +62,8 @@ export default function CreatePaymentPage() {
         const inv = res.data.data;
         setInvoiceData(inv);
 
-        // Calculate outstanding = amount - amount_paid
-        const amt = Number(inv.amount) || 0;
-        const paid = Number(inv.amount_paid) || 0;
-        const outs = Number(inv.status) === 1 ? 0 : Math.max(amt - paid, 0);
-        setOutstanding(outs);
+        // Use backend-calculated outstanding directly
+        setOutstanding(Number(inv.outstanding) || 0);
 
         // Set currency symbol
         const sym = getCurSymbol(inv.property_currency);
@@ -78,6 +75,7 @@ export default function CreatePaymentPage() {
           tenant_id: inv.tenant_id ? String(inv.tenant_id) : undefined,
           dueOn: inv.due_on ? dayjs(inv.due_on) : undefined,
           payment_date: dayjs(),
+          category: inv.category ? String(inv.category) : undefined,
         });
       }
     } catch (e) {
@@ -240,8 +238,7 @@ export default function CreatePaymentPage() {
                   allowClear
                   showSearch
                   optionFilterProp="label"
-                  disabled={!!invoiceData?.category}
-                  options={categories.map(c => ({ label: c.name, value: c.id }))}
+                  options={categories.map(c => ({ label: c.name, value: String(c.id) }))}
                 />
               </Form.Item>
             </Col>

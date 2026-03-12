@@ -151,8 +151,8 @@ router.post('/create', authenticate, async (req, res) => {
         [orgId, 'service_code']
       );
       if (seq) {
-        code = seq.pattern.replace(/{#,(\d+)}/, (_, pad) =>
-          String(seq.seq_next).padStart(parseInt(pad), '0')
+        code = seq.pattern.replace(/{#,(\d+)}/, () =>
+          String(seq.seq_next)
         );
         await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
       }

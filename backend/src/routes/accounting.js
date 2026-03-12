@@ -148,8 +148,8 @@ router.post('/account', authenticate, async (req, res) => {
     );
     let transaction_code = 'TXN-' + Date.now();
     if (seq) {
-      transaction_code = seq.pattern.replace(/{#,(\d+)}/, (_, pad) =>
-        String(seq.seq_next).padStart(parseInt(pad), '0')
+      transaction_code = seq.pattern.replace(/{#,(\d+)}/, () =>
+        String(seq.seq_next)
       );
       await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
     }

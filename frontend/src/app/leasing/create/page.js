@@ -209,7 +209,8 @@ export default function LeaseCreatePage() {
 
   const buildPayload = () => {
     const values = form.getFieldsValue(true);
-    const price = parseFloat(values.price) || 0;
+    const stripCommas = (v) => parseFloat(String(v || '').replace(/,/g, '')) || 0;
+    const price = stripCommas(values.price);
     return {
       unit_id: values.unit_id,
       tenant_id: values.tenant_id,
@@ -218,7 +219,7 @@ export default function LeaseCreatePage() {
       end_date: values.end_date?.format('YYYY-MM-DD') || null,
       type: values.type ?? 0,
       price: price,
-      deposit: parseFloat(values.deposit) || 0,
+      deposit: stripCommas(values.deposit),
       due_date: makeRecurring ? (values.due_date || null) : null,
       invoicing: makeRecurring ? (values.invoicing || null) : null,
       amount: price,
@@ -272,7 +273,7 @@ export default function LeaseCreatePage() {
     const payload = buildPayload();
 
     // If no security deposit, confirm with user before proceeding
-    if (!payload.deposit || parseFloat(payload.deposit) <= 0) {
+    if (!payload.deposit || payload.deposit <= 0) {
       Modal.confirm({
         title: 'No Security Deposit',
         content: 'Are you sure you want to proceed with creating this lease? There is no security deposit.',
