@@ -20,9 +20,12 @@ export default function EditUserPage() {
       user.getUser(userId),
       role.getAll(),
     ]).then(([userRes, roleRes]) => {
-      if (userRes.data.code === 200) form.setFieldsValue(userRes.data.data);
+      if (userRes.data.code === 200) {
+        const ud = userRes.data.data;
+        form.setFieldsValue({ ...ud, status: Number(ud.status) === 1 });
+      }
       if (roleRes.data.code === 200) {
-        setRoles((roleRes.data.data || []).map(ro => ({ label: ro.name, value: ro.id })));
+        setRoles((roleRes.data.data || []).map(ro => ({ label: ro.display_name, value: ro.id })));
       }
     }).catch(() => message.error('Failed to load user')).finally(() => setLoading(false));
   }, [userId]);
@@ -30,7 +33,7 @@ export default function EditUserPage() {
   const onFinish = async (values) => {
     setSubmitting(true);
     try {
-      await user.updateUser(userId, values);
+      await user.updateUser(userId, { ...values, status: values.status ? 1 : 0 });
       message.success('User updated');
       router.push('/settings?tab=users');
     } catch (error) {
@@ -71,11 +74,6 @@ export default function EditUserPage() {
               </Col>
             </Row>
             <Row gutter={16}>
-              <Col span={12}>
-                <Form.Item name="phone" label="Phone">
-                  <Input />
-                </Form.Item>
-              </Col>
               <Col span={12}>
                 <Form.Item name="role_id" label="Role">
                   <Select options={roles} placeholder="Select role" allowClear />

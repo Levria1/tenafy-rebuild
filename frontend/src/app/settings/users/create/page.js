@@ -15,7 +15,7 @@ export default function CreateUserPage() {
   useEffect(() => {
     role.getAll().then(r => {
       if (r.data.code === 200) {
-        setRoles((r.data.data || []).map(ro => ({ label: ro.name, value: ro.id })));
+        setRoles((r.data.data || []).map(ro => ({ label: ro.display_name, value: ro.id })));
       }
     }).catch(() => {});
   }, []);
@@ -65,19 +65,16 @@ export default function CreateUserPage() {
             </Row>
             <Row gutter={16}>
               <Col span={12}>
-                <Form.Item name="phone" label="Phone">
-                  <Input />
-                </Form.Item>
-              </Col>
-              <Col span={12}>
                 <Form.Item name="role_id" label="Role">
                   <Select options={roles} placeholder="Select role" allowClear />
                 </Form.Item>
               </Col>
+              <Col span={12}>
+                <Form.Item name="password" label="Password" rules={[{ required: true, min: 6 }]}>
+                  <Input.Password placeholder="Minimum 6 characters" />
+                </Form.Item>
+              </Col>
             </Row>
-            <Form.Item name="password" label="Password" rules={[{ required: true, min: 6 }]}>
-              <Input.Password placeholder="Minimum 6 characters" />
-            </Form.Item>
             <Form.Item>
               <Space>
                 <Button onClick={() => router.push('/settings?tab=users')}>Cancel</Button>

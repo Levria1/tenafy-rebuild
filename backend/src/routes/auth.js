@@ -53,7 +53,21 @@ router.post('/login', async (req, res) => {
       maxAge: 7200 * 1000
     });
 
-    res.json({ code: 200, message: 'Login successful', data: { token, orgType: org?.type } });
+    // Fetch user permissions for the frontend
+    let permissions = [];
+    if (Number(org?.type) === 6) {
+      permissions = ['*'];
+    } else {
+      const [perms] = await pool.execute(
+        `SELECT rp.permission_code FROM role_permission rp
+         JOIN user_role ur ON rp.role_id = ur.role_id
+         WHERE ur.user_id = ?`,
+        [user.id]
+      );
+      permissions = perms.map(p => p.permission_code);
+    }
+
+    res.json({ code: 200, message: 'Login successful', data: { token, orgType: org?.type, permissions } });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ code: 500, message: 'Login failed' });

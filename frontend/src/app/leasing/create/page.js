@@ -651,9 +651,9 @@ export default function LeaseCreatePage() {
           <Col span={12}>
             <Form.Item name="access_setting" label="Access Setting">
               <Select placeholder="Select access level" allowClear>
-                <Select.Option value="private">Private</Select.Option>
-                <Select.Option value="shared">Shared</Select.Option>
-                <Select.Option value="public">Public</Select.Option>
+                <Select.Option value={0}>Private</Select.Option>
+                <Select.Option value={1}>Shared</Select.Option>
+                <Select.Option value={2}>Public</Select.Option>
               </Select>
             </Form.Item>
           </Col>

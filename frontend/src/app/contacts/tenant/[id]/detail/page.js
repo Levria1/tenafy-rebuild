@@ -3,13 +3,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import {
-  Button, Space, Tag, Table, message, Spin, Empty, Dropdown,
-  Typography, Statistic, Row, Col, Divider, Avatar,
+  Button, Space, Tag, Table, message, Spin, Empty, Dropdown, Tooltip,
+  Typography, Statistic, Row, Col, Divider, Avatar, Drawer, Descriptions,
 } from 'antd';
 import {
   EditOutlined, UserOutlined, MailOutlined,
-  FileTextOutlined, DollarOutlined,
-  DownOutlined,
+  FileTextOutlined, DollarOutlined, PrinterOutlined,
+  DownOutlined, EyeOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../../components/Layout';
@@ -69,9 +69,13 @@ export default function TenantDetailPage() {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
-  const [invoicePagination, setInvoicePagination] = useState({ current: 1, pageSize: 20, total: 0 });
+  const [invoicePagination, setInvoicePagination] = useState({ current: 1, pageSize: 10, total: 0 });
+  const [accountingSum, setAccountingSum] = useState(null);
   const [activeTab, setActiveTab] = useState(initialTab);
   const [publishLoading, setPublishLoading] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerLoading, setDrawerLoading] = useState(false);
+  const [selectedInvoice, setSelectedInvoice] = useState(null);
 
   const loadTenant = useCallback(async () => {
     try {
@@ -100,14 +104,20 @@ export default function TenantDetailPage() {
   const loadInvoices = useCallback(async (page = 1) => {
     setInvoicesLoading(true);
     try {
-      const res = await tenant.getAccountingList(tenantId, {}, { page, limit: 20 });
-      if (res.data.code === 200) {
-        setInvoices(res.data.data.content || []);
+      const [listRes, sumRes] = await Promise.all([
+        tenant.getAccountingList(tenantId, {}, { page, limit: 10 }),
+        page === 1 ? tenant.getAccountingSum(tenantId, {}) : Promise.resolve(null),
+      ]);
+      if (listRes.data.code === 200) {
+        setInvoices(listRes.data.data.content || []);
         setInvoicePagination(prev => ({
           ...prev,
           current: page,
-          total: res.data.data.totalElements || 0,
+          total: listRes.data.data.totalElements || 0,
         }));
+      }
+      if (sumRes && sumRes.data.code === 200) {
+        setAccountingSum(sumRes.data.data);
       }
     } catch (err) {
       console.error('Failed to load invoices:', err);
@@ -115,6 +125,22 @@ export default function TenantDetailPage() {
       setInvoicesLoading(false);
     }
   }, [tenantId]);
+
+  const openInvoiceDrawer = async (record) => {
+    setDrawerOpen(true);
+    setDrawerLoading(true);
+    setSelectedInvoice(null);
+    try {
+      const res = await invoice.get(record.id);
+      if (res.data.code === 200) setSelectedInvoice(res.data.data);
+    } catch (err) {
+      message.error('Failed to load invoice details');
+    } finally {
+      setDrawerLoading(false);
+    }
+  };
+
+  const closeDrawer = () => { setDrawerOpen(false); setSelectedInvoice(null); };
 
   useEffect(() => { loadTenant(); }, [loadTenant]);
   useEffect(() => { loadLeases(); }, [loadLeases]);
@@ -343,56 +369,147 @@ export default function TenantDetailPage() {
   // =========================================================================
   // ACCOUNTING TAB CONTENT
   // =========================================================================
+  // Currency symbol lookup
+  const currencySymbolMap = { HKD: 'HK$', USD: '$', EUR: '€', GBP: '£', JPY: '¥', CNY: '¥', CAD: 'C$', AUD: 'A$', SGD: 'S$', TWD: 'NT$' };
+  const getCurSymbol = (code) => currencySymbolMap[code] || code || 'HK$';
+
+  const fmtCur = (v, symbolOrCode) => {
+    if (v == null) return '—';
+    const symbol = symbolOrCode || 'HK$';
+    return `${symbol}${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const getContactName = (r) => {
+    if (Number(r.tenant_type) === 1 && r.tenant_company_name) return r.tenant_company_name;
+    return [r.tenant_first_name, r.tenant_middle_name, r.tenant_last_name].filter(Boolean).join(' ') || '—';
+  };
+
+  const getDaysLate = (r) => {
+    if (Number(r.status) !== 2) return 0;
+    const due = dayjs(r.due_on);
+    if (!due.isValid()) return 0;
+    const diff = dayjs().diff(due, 'day');
+    return diff > 0 ? diff : 0;
+  };
+
   const invoiceColumns = [
     {
-      title: 'Invoice Code', dataIndex: 'invoice_code', key: 'invoice_code',
-      render: (code, r) => (
-        <Button type="link" size="small" onClick={() => router.push(`/invoices/${r.id}`)}>
-          {code || `INV-${r.id}`}
-        </Button>
-      ),
-    },
-    { title: 'Description', dataIndex: 'description', key: 'description', ellipsis: true },
-    {
-      title: 'Amount', dataIndex: 'amount', key: 'amount',
-      render: (v) => fmt(v),
-    },
-    {
-      title: 'Due Date', dataIndex: 'due_on', key: 'due_on',
-      render: (d) => d ? dayjs(d).format('YYYY-MM-DD') : '—',
-    },
-    {
-      title: 'Status', dataIndex: 'status', key: 'status',
+      title: 'STATUS', dataIndex: 'status', key: 'status', width: 80,
       render: (s) => {
-        const cfg = statusMap[s] || { text: 'Unknown', color: 'default' };
-        return <Tag color={cfg.color}>{cfg.text}</Tag>;
+        const cfg = statusMap[Number(s)] || { text: 'Unknown', color: 'default' };
+        return <span style={{ fontSize: 13 }}>{cfg.text}</span>;
       },
     },
     {
-      title: 'Created', dataIndex: 'created_at', key: 'created_at',
+      title: 'DUE DATE', dataIndex: 'due_on', key: 'due_on', width: 110,
       render: (d) => d ? dayjs(d).format('YYYY-MM-DD') : '—',
+    },
+    {
+      title: 'CONTACT', key: 'contact', width: 170, ellipsis: true,
+      render: (_, r) => getContactName(r),
+    },
+    {
+      title: 'PROPERTY (Unit)', key: 'property_unit', width: 150, ellipsis: true,
+      render: (_, r) => {
+        if (!r.property_name && !r.unit_name) return '—';
+        if (r.property_name && r.unit_name) return `${r.property_name} (${r.unit_name})`;
+        return r.property_name || r.unit_name;
+      },
+    },
+    {
+      title: 'TOTAL / PAID', key: 'total_paid', width: 200,
+      render: (_, r) => {
+        const sym = getCurSymbol(r.property_currency);
+        const amt = Number(r.amount) || 0;
+        const paid = Number(r.amount_paid) || 0;
+        const isInflow = Number(r.type) === 0 || r.type === null || r.type === undefined;
+        const sign = isInflow ? '+' : '-';
+        const color = isInflow ? '#389e0d' : '#cf1322';
+        return (
+          <span style={{ color, fontWeight: 500 }}>
+            {sign} {sym}{amt.toLocaleString(undefined, { minimumFractionDigits: 0 })} / {sym}{paid.toLocaleString(undefined, { minimumFractionDigits: 0 })}
+          </span>
+        );
+      },
+    },
+    {
+      title: 'OUTSTANDING', key: 'outstanding', width: 140,
+      render: (_, r) => {
+        const sym = getCurSymbol(r.property_currency);
+        const amt = Number(r.amount) || 0;
+        const paid = Number(r.amount_paid) || 0;
+        const outstanding = Number(r.status) === 1 ? 0 : Math.max(amt - paid, 0);
+        return fmtCur(outstanding, sym);
+      },
+    },
+    {
+      title: 'DAYS LATE', key: 'days_late', width: 90, align: 'center',
+      render: (_, r) => getDaysLate(r),
+    },
+    {
+      title: 'CATEGORY', dataIndex: 'category_name', key: 'category_name', width: 130,
+      ellipsis: true,
+      render: (v) => v || '—',
+    },
+    {
+      title: 'NOTES', dataIndex: 'note', key: 'note', width: 60, align: 'center',
+      render: (v) => v ? (
+        <Tooltip title={v} placement="topRight">
+          <FileTextOutlined style={{ color: '#1890ff', cursor: 'pointer' }} />
+        </Tooltip>
+      ) : '—',
+    },
+    {
+      title: 'ACTION', key: 'action', width: 130, fixed: 'right',
+      render: (_, r) => (
+        <Space size="small">
+          <Button
+            size="small"
+            disabled={Number(r.status) === 1}
+            onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${r.id}`)}
+            style={{
+              borderRadius: 4, padding: '0 10px', fontSize: 13,
+              color: Number(r.status) === 1 ? '#ccc' : '#666',
+              borderColor: Number(r.status) === 1 ? '#eee' : '#d9d9d9',
+              background: 'transparent',
+            }}
+          >
+            Pay
+          </Button>
+          <Button type="link" size="small" style={{ padding: 0 }} onClick={() => openInvoiceDrawer(r)}>
+            View &gt;
+          </Button>
+        </Space>
+      ),
     },
   ];
 
   const AccountingContent = () => (
     <div>
-      <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={8}>
-          <div style={{ background: '#fff', border: '1px solid #f0f0f0', borderRadius: 6, padding: 16 }}>
-            <Statistic title="Outstanding" value={profileSum?.outstanding || 0} prefix="$" precision={2} valueStyle={{ color: '#cf1322' }} />
+      {/* Summary cards matching original: Outstanding Outflow | Outstanding Inflow | Paid */}
+      <div style={{
+        display: 'flex', border: '1px solid #e8e8e8', borderRadius: 6,
+        marginBottom: 16, background: '#fafafa',
+      }}>
+        <div style={{ flex: 1, padding: '12px 20px', borderRight: '1px solid #e8e8e8' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>Outstanding Outflow</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: '#cf1322', marginTop: 4 }}>
+            {fmtCur(accountingSum?.outstanding_outflow || 0, 'HK$ ')}
           </div>
-        </Col>
-        <Col span={8}>
-          <div style={{ background: '#fff', border: '1px solid #f0f0f0', borderRadius: 6, padding: 16 }}>
-            <Statistic title="Total Paid" value={profileSum?.paid || 0} prefix="$" precision={2} valueStyle={{ color: '#3f8600' }} />
+        </div>
+        <div style={{ flex: 1, padding: '12px 20px', borderRight: '1px solid #e8e8e8' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>Outstanding Inflow</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: '#cf1322', marginTop: 4 }}>
+            {fmtCur(accountingSum?.outstanding_inflow || 0, 'HK$ ')}
           </div>
-        </Col>
-        <Col span={8}>
-          <div style={{ background: '#fff', border: '1px solid #f0f0f0', borderRadius: 6, padding: 16 }}>
-            <Statistic title="Active Leases" value={profileSum?.activeLeases || 0} valueStyle={{ color: '#1677ff' }} />
+        </div>
+        <div style={{ flex: 1, padding: '12px 20px' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>Paid</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: '#389e0d', marginTop: 4 }}>
+            {fmtCur(accountingSum?.paid || 0, 'HK$ ')}
           </div>
-        </Col>
-      </Row>
+        </div>
+      </div>
 
       <Table
         columns={invoiceColumns}
@@ -400,11 +517,13 @@ export default function TenantDetailPage() {
         rowKey="id"
         loading={invoicesLoading}
         size="small"
+        scroll={{ x: 1300 }}
         pagination={{
           ...invoicePagination,
           onChange: (page) => loadInvoices(page),
           showSizeChanger: false,
-          showTotal: (total) => `Total ${total} invoices`,
+          showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}`,
+          pageSize: 10,
         }}
         locale={{ emptyText: 'No invoices found' }}
       />
@@ -588,6 +707,134 @@ export default function TenantDetailPage() {
           </div>
         </div>
       </div>
+      {/* Invoice Detail Drawer */}
+      <Drawer
+        title={
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Accounting</span>
+            {selectedInvoice && (
+              <Button type="default" size="small"
+                disabled={Number(selectedInvoice.status) === 1}
+                onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${selectedInvoice.id}`)}>
+                Pay
+              </Button>
+            )}
+          </div>
+        }
+        placement="right"
+        width={440}
+        onClose={closeDrawer}
+        open={drawerOpen}
+        footer={selectedInvoice ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Button type="primary" icon={<PrinterOutlined />} block onClick={() => window.print()}>
+              Print
+            </Button>
+            <Button type="primary" icon={<EditOutlined />} block style={{ background: '#52c41a', borderColor: '#52c41a' }}
+              onClick={() => { closeDrawer(); router.push(`/invoices/${selectedInvoice.id}/edit`); }}>
+              Edit
+            </Button>
+            <Button block onClick={closeDrawer}>
+              Close
+            </Button>
+          </div>
+        ) : null}
+      >
+        {drawerLoading ? (
+          <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>
+        ) : selectedInvoice ? (
+          <>
+            <Descriptions column={1} size="small" labelStyle={{ width: 130, fontWeight: 600, color: '#555', textAlign: 'right', paddingRight: 12 }} contentStyle={{ fontWeight: 400 }}>
+              <Descriptions.Item label="ENTRY TYPE:">
+                {Number(selectedInvoice.type) === 0 ? 'Inflow' : 'Outflow'}
+              </Descriptions.Item>
+              <Descriptions.Item label="STATUS:">
+                {(() => { const s = Number(selectedInvoice.status); return s === 0 ? 'Open' : s === 1 ? 'Paid' : s === 2 ? 'Overdue' : 'Unknown'; })()}
+              </Descriptions.Item>
+            </Descriptions>
+            <Divider style={{ margin: '12px 0' }} />
+            <Descriptions column={1} size="small" labelStyle={{ width: 130, fontWeight: 600, color: '#555', textAlign: 'right', paddingRight: 12 }} contentStyle={{ fontWeight: 400 }}>
+              <Descriptions.Item label="Invoice ID:">
+                {selectedInvoice.invoice_code || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="Contact:">
+                {(() => {
+                  if (Number(selectedInvoice.tenant_type) === 1 && selectedInvoice.tenant_company_name) return selectedInvoice.tenant_company_name;
+                  return [selectedInvoice.tenant_first_name, selectedInvoice.tenant_last_name].filter(Boolean).join(' ') || '-';
+                })()}
+              </Descriptions.Item>
+              <Descriptions.Item label="Due Date:">
+                {selectedInvoice.due_on ? dayjs(selectedInvoice.due_on).format('YYYY-MM-DD') : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="Amount:">
+                {fmtCur(selectedInvoice.amount, getCurSymbol(selectedInvoice.property_currency))}
+              </Descriptions.Item>
+              <Descriptions.Item label="Amount Paid:">
+                {fmtCur(selectedInvoice.amount_paid, getCurSymbol(selectedInvoice.property_currency))}
+              </Descriptions.Item>
+              <Descriptions.Item label="Outstanding:">
+                {fmtCur(selectedInvoice.outstanding, getCurSymbol(selectedInvoice.property_currency))}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <div style={{ display: 'flex', margin: '8px 0', paddingLeft: 0 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Property:</div>
+                <div>{selectedInvoice.property_name || '-'}</div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Unit:</div>
+                <div>{selectedInvoice.unit_name || '-'}</div>
+              </div>
+            </div>
+
+            <div style={{ margin: '12px 0' }}>
+              <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Notes:</div>
+              <div style={{ color: '#1890ff' }}>{selectedInvoice.note || '-'}</div>
+            </div>
+
+            <div style={{ margin: '12px 0' }}>
+              <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
+              <div>—</div>
+            </div>
+
+            <Divider style={{ margin: '16px 0 12px' }} />
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Payment Activity</div>
+            {selectedInvoice.payments && selectedInvoice.payments.length > 0 ? (
+              selectedInvoice.payments.map((p, idx) => (
+                <div key={idx} style={{ marginBottom: 16, borderBottom: '1px solid #f0f0f0', paddingBottom: 12 }}>
+                  <Descriptions column={1} size="small" labelStyle={{ width: 130, fontWeight: 600, color: '#555', textAlign: 'right', paddingRight: 12 }} contentStyle={{ fontWeight: 400 }}>
+                    <Descriptions.Item label="Transaction ID:">{p.transaction_code || '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Date:">{p.payment_date ? dayjs(p.payment_date).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Contact:">{[p.contact_first_name, p.contact_last_name].filter(Boolean).join(' ') || '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Method:">{p.payment_method_name || '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Amount Paid:">{fmtCur(p.amount, getCurSymbol(selectedInvoice.property_currency))}</Descriptions.Item>
+                  </Descriptions>
+                  <div style={{ margin: '8px 0 4px' }}>
+                    <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Notes:</div>
+                    <div>{p.note || '-'}</div>
+                  </div>
+                  <div style={{ margin: '8px 0 4px' }}>
+                    <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
+                    <div>—</div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ textAlign: 'center', color: '#999', padding: '12px 0' }}>No payment activity</div>
+            )}
+
+            <Divider style={{ margin: '16px 0 12px' }} />
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Submitted Payments</div>
+            <div style={{ textAlign: 'center', color: '#999', padding: '20px 0' }}>
+              <div style={{ fontSize: 40, marginBottom: 4 }}>&#9993;</div>
+              No Data
+            </div>
+          </>
+        ) : (
+          <div style={{ textAlign: 'center', color: '#999', padding: 60 }}>No invoice selected</div>
+        )}
+      </Drawer>
     </MainLayout>
   );
 }

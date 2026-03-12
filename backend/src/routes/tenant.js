@@ -459,28 +459,49 @@ router.post('/:id/accounting/list', authenticate, async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    let whereClause = 'org_id = ? AND tenant_id = ?';
+    let whereClause = 'i.org_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL';
     const params = [orgId, id];
 
     if (status !== undefined && status !== null) {
-      whereClause += ' AND status = ?';
+      whereClause += ' AND i.status = ?';
       params.push(status);
     }
     if (startDate) {
-      whereClause += ' AND due_on >= ?';
+      whereClause += ' AND i.due_on >= ?';
       params.push(startDate);
     }
     if (endDate) {
-      whereClause += ' AND due_on <= ?';
+      whereClause += ' AND i.due_on <= ?';
       params.push(endDate);
     }
 
     const [invoices] = await pool.execute(
-      'SELECT * FROM invoice WHERE ' + whereClause + ' ORDER BY due_on DESC LIMIT ' + limit + ' OFFSET ' + offset + '',
-      [...params]
+      `SELECT i.*, cs.name as category_name,
+              p.display_name as property_name, p.currency as property_currency,
+              u.name as unit_name,
+              l.lease_no,
+              t.first_name as tenant_first_name, t.middle_name as tenant_middle_name,
+              t.last_name as tenant_last_name, t.company_name as tenant_company_name,
+              t.type as tenant_type,
+              COALESCE((
+                SELECT SUM(al.amount)
+                FROM accounting_line al
+                JOIN accounting a ON al.accounting_id = a.id
+                WHERE al.invoice_code = i.invoice_code AND a.deleted_at IS NULL
+              ), 0) as amount_paid
+       FROM invoice i
+       LEFT JOIN category_setting cs ON i.category = cs.id
+       LEFT JOIN property p ON i.property_id = p.id
+       LEFT JOIN unit u ON i.unit_id = u.id
+       LEFT JOIN leasing l ON i.leasing_id = l.id
+       LEFT JOIN tenant t ON i.tenant_id = t.id
+       WHERE ${whereClause}
+       ORDER BY i.due_on DESC
+       LIMIT ${limit} OFFSET ${offset}`,
+      params
     );
     const [[{ total }]] = await pool.execute(
-      'SELECT COUNT(*) as total FROM invoice WHERE ' + whereClause,
+      `SELECT COUNT(*) as total FROM invoice i WHERE ${whereClause}`,
       params
     );
 
@@ -498,7 +519,7 @@ router.post('/:id/accounting/sum', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { startDate, endDate } = req.body || {};
 
-    let whereClause = 'org_id = ? AND tenant_id = ?';
+    let whereClause = 'org_id = ? AND tenant_id = ? AND deleted_at IS NULL';
     const params = [orgId, id];
 
     if (startDate) {
@@ -512,9 +533,11 @@ router.post('/:id/accounting/sum', authenticate, async (req, res) => {
 
     const [[sums]] = await pool.execute(
       `SELECT
+         COALESCE(SUM(CASE WHEN status IN (0,2) AND type = 1 THEN amount ELSE 0 END), 0) as outstanding_outflow,
+         COALESCE(SUM(CASE WHEN status IN (0,2) AND (type = 0 OR type IS NULL) THEN amount ELSE 0 END), 0) as outstanding_inflow,
          COALESCE(SUM(CASE WHEN status = 0 THEN amount ELSE 0 END), 0) as outstanding,
          COALESCE(SUM(CASE WHEN status = 1 THEN amount ELSE 0 END), 0) as paid
-       FROM invoice WHERE ` + whereClause,
+       FROM invoice WHERE ${whereClause}`,
       params
     );
 

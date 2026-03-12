@@ -90,10 +90,12 @@ export default function InvoiceCreatePage() {
         initialValues.due_on = dayjs();
       }
 
-      // Load leases if we have a tenant
-      if (paramTenantId) {
+      // Load leases if we have any filter (tenant, property, or unit)
+      if (paramTenantId || paramPropertyId || paramUnitId) {
         try {
-          const leaseParams = { tenantId: paramTenantId };
+          const leaseParams = {};
+          if (paramTenantId) leaseParams.tenantId = paramTenantId;
+          if (paramPropertyId) leaseParams.propertyId = paramPropertyId;
           if (paramUnitId) leaseParams.unitId = paramUnitId;
           const leasesRes = await invoice.getInitializationLeasing(leaseParams);
           if (leasesRes.data.code === 200) setLeases(leasesRes.data.data || []);
@@ -111,7 +113,28 @@ export default function InvoiceCreatePage() {
     }
   };
 
-  // Cascading: Property -> Units
+  // Helper: reload leases based on current form state (any combination of tenant/property/unit)
+  const reloadLeases = async (overrides = {}) => {
+    const tenantId = overrides.tenantId !== undefined ? overrides.tenantId : form.getFieldValue('tenant_id');
+    const propertyId = overrides.propertyId !== undefined ? overrides.propertyId : form.getFieldValue('property_id');
+    const unitId = overrides.unitId !== undefined ? overrides.unitId : form.getFieldValue('unit_id');
+
+    // Need at least one filter to load leases
+    if (!tenantId && !propertyId && !unitId) {
+      setLeases([]);
+      return;
+    }
+    try {
+      const p = {};
+      if (tenantId) p.tenantId = tenantId;
+      if (propertyId) p.propertyId = propertyId;
+      if (unitId) p.unitId = unitId;
+      const leasesRes = await invoice.getInitializationLeasing(p);
+      if (leasesRes.data.code === 200) setLeases(leasesRes.data.data || []);
+    } catch (e) { setLeases([]); }
+  };
+
+  // Cascading: Property -> Units + Leases
   const onPropertyChange = async (propertyId) => {
     form.setFieldsValue({ unit_id: undefined, leasing_id: undefined });
     setUnits([]);
@@ -122,46 +145,25 @@ export default function InvoiceCreatePage() {
       if (unitsRes.data.code === 200) setUnits(unitsRes.data.data || []);
     } catch (e) { /* ignore */ }
 
-    const tenantId = form.getFieldValue('tenant_id');
-    if (tenantId) {
-      try {
-        const leasesRes = await invoice.getInitializationLeasing({ tenantId, propertyId });
-        if (leasesRes.data.code === 200) setLeases(leasesRes.data.data || []);
-      } catch (e) { /* ignore */ }
-    }
+    await reloadLeases({ propertyId, unitId: undefined });
   };
 
   // Cascading: Contact -> Leases
   const onContactChange = async (tenantId) => {
     form.setFieldsValue({ leasing_id: undefined });
     setLeases([]);
-    if (!tenantId) return;
-    const propertyId = form.getFieldValue('property_id');
-    const unitId = form.getFieldValue('unit_id');
-    try {
-      const p = { tenantId };
-      if (propertyId) p.propertyId = propertyId;
-      if (unitId) p.unitId = unitId;
-      const leasesRes = await invoice.getInitializationLeasing(p);
-      if (leasesRes.data.code === 200) setLeases(leasesRes.data.data || []);
-    } catch (e) { /* ignore */ }
+    if (!tenantId) {
+      await reloadLeases({ tenantId: undefined });
+      return;
+    }
+    await reloadLeases({ tenantId });
   };
 
   // Cascading: Unit -> Leases
   const onUnitChange = async (unitId) => {
     form.setFieldsValue({ leasing_id: undefined });
     setLeases([]);
-    const tenantId = form.getFieldValue('tenant_id');
-    if (tenantId) {
-      try {
-        const p = { tenantId };
-        if (unitId) p.unitId = unitId;
-        const propertyId = form.getFieldValue('property_id');
-        if (propertyId) p.propertyId = propertyId;
-        const leasesRes = await invoice.getInitializationLeasing(p);
-        if (leasesRes.data.code === 200) setLeases(leasesRes.data.data || []);
-      } catch (e) { /* ignore */ }
-    }
+    await reloadLeases({ unitId });
   };
 
   const onFinish = async (values) => {
@@ -299,12 +301,20 @@ export default function InvoiceCreatePage() {
                     allowClear
                     style={{ width: '100%' }}
                   >
-                    {leases.map(l => (
-                      <Select.Option key={l.id} value={l.id}>
-                        {l.lease_no || (l.unit_name ? `${l.unit_name}` : `Lease #${String(l.id).slice(-4)}`)}
-                        {l.start_date ? ` (${dayjs(l.start_date).format('YYYY-MM-DD')})` : ''}
-                      </Select.Option>
-                    ))}
+                    {leases.map(l => {
+                      const tenantName = [l.tenant_first_name, l.tenant_last_name].filter(Boolean).join(' ');
+                      const label = l.lease_no || `Lease #${String(l.id).slice(-4)}`;
+                      const extra = [
+                        l.unit_name,
+                        tenantName,
+                        l.start_date ? dayjs(l.start_date).format('YYYY-MM-DD') : null
+                      ].filter(Boolean).join(' · ');
+                      return (
+                        <Select.Option key={l.id} value={l.id}>
+                          {label}{extra ? ` (${extra})` : ''}
+                        </Select.Option>
+                      );
+                    })}
                   </Select>
                 </Form.Item>
               </Col>

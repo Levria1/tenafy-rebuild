@@ -4,11 +4,12 @@ import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
-import MainLayout from '../../components/Layout';
+import MainLayout, { useAuth } from '../../components/Layout';
 import { settings, user, amenity, role, emailTemplate } from '../../lib/api';
 import { useCallback } from 'react';
 
 export default function SettingsPage() {
+  const { hasPermission } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
@@ -97,7 +98,7 @@ export default function SettingsPage() {
   ];
 
   const roleColumns = [
-    { title: 'Name', dataIndex: 'name', key: 'name' },
+    { title: 'Name', dataIndex: 'display_name', key: 'display_name' },
     { title: 'Description', dataIndex: 'description', key: 'description' },
     { title: 'Status', dataIndex: 'status', render: (s) => <Tag color={s === 1 ? 'green' : 'red'}>{s === 1 ? 'Active' : 'Inactive'}</Tag> },
     { title: 'Actions', key: 'actions', render: (_, r) => (
@@ -129,7 +130,7 @@ export default function SettingsPage() {
   const userColumns = [
     { title: 'Username', dataIndex: 'username', key: 'username' },
     { title: 'Email', dataIndex: 'email', key: 'email' },
-    { title: 'Role', dataIndex: 'role', key: 'role' },
+    { title: 'Role', dataIndex: 'role_name', key: 'role_name' },
     { title: 'Status', dataIndex: 'status', key: 'status', render: (s) => <Tag color={s === 1 ? 'green' : 'red'}>{s === 1 ? 'Active' : 'Inactive'}</Tag> },
     { title: 'Actions', key: 'actions', render: (_, r) => (
       <Space>
@@ -138,22 +139,25 @@ export default function SettingsPage() {
     )},
   ];
 
+  const canSeeUsers = hasPermission ? hasPermission('LANDLORD/USER_LIST') : false;
+  const canSeeRoles = hasPermission ? hasPermission('LANDLORD/ROLE_LIST') : false;
+
   const tabItems = [
     { key: 'sequences', label: 'Sequences', children: <SequenceSettings /> },
     { key: 'personal', label: 'Personal Info', children: <PersonalSettings /> },
     { key: 'landlord', label: 'Landlord Info', children: <LandlordSettings /> },
-    { key: 'users', label: 'User Management', children: (
+    ...(canSeeUsers ? [{ key: 'users', label: 'User Management', children: (
       <Card>
         <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/users/create')}>Add User</Button></div>
         <Table columns={userColumns} dataSource={users} rowKey="id" loading={loading} pagination={false} />
       </Card>
-    )},
-    { key: 'roles', label: 'Roles', children: (
+    )}] : []),
+    ...(canSeeRoles ? [{ key: 'roles', label: 'Roles', children: (
       <Card>
         <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/role/create')}>Add Role</Button></div>
         <Table columns={roleColumns} dataSource={roles} rowKey="id" loading={loading} pagination={false} />
       </Card>
-    )},
+    )}] : []),
     { key: 'amenities', label: 'Amenities', children: (
       <Card>
         <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/amenity/create')}>Add Amenity</Button></div>
@@ -227,7 +231,6 @@ function PersonalSettings() {
         <Form.Item name="email" label="Email" rules={[{ type: 'email' }]}><Input /></Form.Item>
         <Form.Item name="first_name" label="First Name"><Input /></Form.Item>
         <Form.Item name="last_name" label="Last Name"><Input /></Form.Item>
-        <Form.Item name="phone" label="Phone"><Input /></Form.Item>
         <Form.Item><Button type="primary" htmlType="submit" loading={loading}>Save</Button></Form.Item>
       </Form>
     </Card>

@@ -298,6 +298,13 @@ router.post('/', authenticate, async (req, res) => {
       const [[unitRow]] = await pool.execute('SELECT property_id FROM unit WHERE id = ?', [unit_id]);
       const propertyId = unitRow ? unitRow.property_id : null;
 
+      // Look up default rent category (invoice.category is NOT NULL)
+      const [[rentCat]] = await pool.execute(
+        "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 AND name LIKE '%Rental Income%' ORDER BY id LIMIT 1",
+        [orgId]
+      );
+      const rentCategoryId = rentCat ? rentCat.id : null;
+
       // Get sequence for invoice codes
       const [[invSeq]] = await pool.execute(
         'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
@@ -321,9 +328,9 @@ router.post('/', authenticate, async (req, res) => {
         await pool.execute(
           `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
             invoice_code, amount, due_on, status, category, currency_id, type, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, NOW())`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())`,
           [invoiceId, orgId, tenant_id, unit_id, leaseId.toString(), propertyId,
-           invoiceCode, invoiceAmount, dueDate, status, currencyId]
+           invoiceCode, invoiceAmount, dueDate, status, rentCategoryId, currencyId]
         );
       };
 

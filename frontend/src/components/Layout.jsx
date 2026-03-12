@@ -33,87 +33,102 @@ const { Text } = Typography;
 
 export const AuthContext = createContext(null);
 
-const menuItems = [
-  {
-    key: '/dashboard',
-    icon: <DashboardOutlined />,
-    label: <Link href="/dashboard">Dashboard</Link>,
-  },
-  {
-    key: '/property',
-    icon: <HomeOutlined />,
-    label: <Link href="/property">Properties</Link>,
-  },
-  {
-    key: '/contacts',
-    icon: <TeamOutlined />,
-    label: 'Contacts',
-    children: [
-      { key: '/contacts/tenants', label: <Link href="/contacts/tenants">Tenants</Link> },
-      { key: '/contacts/groups', label: <Link href="/contacts/groups">Groups</Link> },
-      { key: '/contacts/payees', label: <Link href="/contacts/payees">Payees</Link> },
-      { key: '/contacts/service-vendors', label: <Link href="/contacts/service-vendors">Service Vendors</Link> },
-    ],
-  },
-  {
-    key: '/leasing',
-    icon: <CalendarOutlined />,
-    label: <Link href="/leasing">Leasing</Link>,
-  },
-  {
-    key: '/accounting',
-    icon: <DollarOutlined />,
-    label: 'Accounting',
-    children: [
-      {
-        key: '/accounting/accounts',
-        label: <Link href="/accounting">Accounts</Link>,
-      },
-      {
-        key: '/accounting/invoices',
-        label: <Link href="/invoices">Invoices</Link>,
-      },
-    ],
-  },
-  {
-    key: '/services',
-    icon: <ToolOutlined />,
-    label: <Link href="/services">Service</Link>,
-  },
-  {
+// Build menu items dynamically based on permissions
+function buildMenuItems(hasPermission) {
+  const items = [
+    {
+      key: '/dashboard',
+      icon: <DashboardOutlined />,
+      label: <Link href="/dashboard">Dashboard</Link>,
+    },
+    {
+      key: '/property',
+      icon: <HomeOutlined />,
+      label: <Link href="/property">Properties</Link>,
+    },
+    {
+      key: '/contacts',
+      icon: <TeamOutlined />,
+      label: 'Contacts',
+      children: [
+        { key: '/contacts/tenants', label: <Link href="/contacts/tenants">Tenants</Link> },
+        { key: '/contacts/groups', label: <Link href="/contacts/groups">Groups</Link> },
+        { key: '/contacts/payees', label: <Link href="/contacts/payees">Payees</Link> },
+        { key: '/contacts/service-vendors', label: <Link href="/contacts/service-vendors">Service Vendors</Link> },
+      ],
+    },
+    {
+      key: '/leasing',
+      icon: <CalendarOutlined />,
+      label: <Link href="/leasing">Leasing</Link>,
+    },
+    {
+      key: '/accounting',
+      icon: <DollarOutlined />,
+      label: 'Accounting',
+      children: [
+        {
+          key: '/accounting/accounts',
+          label: <Link href="/accounting">Accounts</Link>,
+        },
+        {
+          key: '/accounting/invoices',
+          label: <Link href="/invoices">Invoices</Link>,
+        },
+      ],
+    },
+    {
+      key: '/services',
+      icon: <ToolOutlined />,
+      label: <Link href="/services">Service</Link>,
+    },
+  ];
+
+  // Build settings children based on permissions
+  const settingsChildren = [
+    { key: '/settings?tab=personal', label: <Link href="/settings?tab=personal">Account Settings</Link> },
+    { key: '/settings?tab=landlord', label: <Link href="/settings?tab=landlord">Landlord Setting</Link> },
+    { key: '/settings?tab=amenities', label: <Link href="/settings?tab=amenities">Amenity Setting</Link> },
+    {
+      key: '/settings/accounting',
+      label: 'Accounting Settings',
+      children: [
+        { key: '/settings?tab=payment', label: <Link href="/settings?tab=payment">Payment Methods</Link> },
+        { key: '/settings?tab=categories', label: <Link href="/settings?tab=categories">Categories</Link> },
+      ],
+    },
+    {
+      key: '/settings/email',
+      label: 'Email Settings',
+      children: [
+        { key: '/settings?tab=emailTemplates', label: <Link href="/settings?tab=emailTemplates">Email Template</Link> },
+      ],
+    },
+  ];
+
+  // Only show User Management if user has USER_LIST or ROLE_LIST permissions
+  const canSeeUsers = hasPermission('LANDLORD/USER_LIST');
+  const canSeeRoles = hasPermission('LANDLORD/ROLE_LIST');
+  if (canSeeUsers || canSeeRoles) {
+    const userMgmtChildren = [];
+    if (canSeeUsers) userMgmtChildren.push({ key: '/settings?tab=users', label: <Link href="/settings?tab=users">Create/Edit Users</Link> });
+    if (canSeeRoles) userMgmtChildren.push({ key: '/settings?tab=roles', label: <Link href="/settings?tab=roles">Role Management</Link> });
+    settingsChildren.push({
+      key: '/settings/users',
+      label: 'User Management',
+      children: userMgmtChildren,
+    });
+  }
+
+  items.push({
     key: '/settings',
     icon: <SettingOutlined />,
     label: 'Settings',
-    children: [
-      { key: '/settings?tab=personal', label: <Link href="/settings?tab=personal">Account Settings</Link> },
-      { key: '/settings?tab=landlord', label: <Link href="/settings?tab=landlord">Landlord Setting</Link> },
-      { key: '/settings?tab=amenities', label: <Link href="/settings?tab=amenities">Amenity Setting</Link> },
-      {
-        key: '/settings/accounting',
-        label: 'Accounting Settings',
-        children: [
-          { key: '/settings?tab=payment', label: <Link href="/settings?tab=payment">Payment Methods</Link> },
-          { key: '/settings?tab=categories', label: <Link href="/settings?tab=categories">Categories</Link> },
-        ],
-      },
-      {
-        key: '/settings/email',
-        label: 'Email Settings',
-        children: [
-          { key: '/settings?tab=emailTemplates', label: <Link href="/settings?tab=emailTemplates">Email Template</Link> },
-        ],
-      },
-      {
-        key: '/settings/users',
-        label: 'User Management',
-        children: [
-          { key: '/settings?tab=users', label: <Link href="/settings?tab=users">Users</Link> },
-          { key: '/settings?tab=roles', label: <Link href="/settings?tab=roles">Role Management</Link> },
-        ],
-      },
-    ],
-  },
-];
+    children: settingsChildren,
+  });
+
+  return items;
+}
 
 export function AuthProvider({ children }) {
   const router = useRouter();
@@ -124,11 +139,33 @@ export function AuthProvider({ children }) {
     const token = Cookies.get('__s_t');
     if (!token) {
       router.push('/login');
+      setLoading(false);
     } else {
-      setUser({ name: 'User' });
+      // Fetch profile with permissions and orgType
+      import('../lib/api').then(({ user: userApi }) => {
+        userApi.getProfile().then(r => {
+          if (r.data.code === 200) {
+            setUser(r.data.data);
+          } else {
+            Cookies.remove('__s_t');
+            router.push('/login');
+          }
+        }).catch(() => {
+          // If profile fetch fails, still allow basic usage
+          setUser({ name: 'User' });
+        }).finally(() => setLoading(false));
+      });
     }
-    setLoading(false);
   }, [router]);
+
+  const isSuperAdmin = Number(user?.orgType) === 6;
+
+  const hasPermission = (perm) => {
+    if (isSuperAdmin) return true;
+    if (!user?.permissions) return false;
+    if (user.permissions.includes('*')) return true;
+    return user.permissions.includes(perm);
+  };
 
   const logout = () => {
     Cookies.remove('__s_t');
@@ -136,7 +173,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, logout }}>
+    <AuthContext.Provider value={{ user, loading, logout, isSuperAdmin, hasPermission }}>
       {children}
     </AuthContext.Provider>
   );
@@ -340,7 +377,7 @@ export default function MainLayout({ children }) {
   const [openKeys, setOpenKeys] = useState([]);
   const pathname = usePathname();
   const router = useRouter();
-  const { user, logout } = useAuth();
+  const { user, logout, hasPermission } = useAuth();
 
   const searchParams = useSearchParams();
   const tab = searchParams.get('tab');
@@ -449,7 +486,7 @@ export default function MainLayout({ children }) {
           selectedKeys={getSelectedKeys()}
           openKeys={openKeys}
           onOpenChange={setOpenKeys}
-          items={menuItems}
+          items={buildMenuItems(hasPermission || (() => false))}
           style={{ background: '#001529' }}
         />
       </Sider>
@@ -474,7 +511,7 @@ export default function MainLayout({ children }) {
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
               <div style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 8 }}>
                 <Avatar icon={<UserOutlined />} />
-                <span>{user?.name || 'User'}</span>
+                <span>{user?.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : (user?.username || 'User')}</span>
               </div>
             </Dropdown>
           </div>

@@ -1,22 +1,10 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Form, Input, Button, Space, message, Checkbox, Row, Col, Divider } from 'antd';
+import { Card, Form, Input, Button, Space, message, Checkbox, Row, Col, Select } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../components/Layout';
 import { role } from '../../../../../lib/api';
-
-const PERMISSION_GROUPS = [
-  { group: 'Properties', perms: [{ key: 'property.view', label: 'View' }, { key: 'property.manage', label: 'Manage' }] },
-  { group: 'Tenants', perms: [{ key: 'tenant.view', label: 'View' }, { key: 'tenant.manage', label: 'Manage' }] },
-  { group: 'Leasing', perms: [{ key: 'leasing.view', label: 'View' }, { key: 'leasing.manage', label: 'Manage' }] },
-  { group: 'Invoices', perms: [{ key: 'invoice.view', label: 'View' }, { key: 'invoice.manage', label: 'Manage' }] },
-  { group: 'Accounting', perms: [{ key: 'accounting.view', label: 'View' }, { key: 'accounting.manage', label: 'Manage' }] },
-  { group: 'Services', perms: [{ key: 'service.view', label: 'View' }, { key: 'service.manage', label: 'Manage' }] },
-  { group: 'Contacts', perms: [{ key: 'contacts.view', label: 'View' }, { key: 'contacts.manage', label: 'Manage' }] },
-  { group: 'Settings', perms: [{ key: 'settings.view', label: 'View' }, { key: 'settings.manage', label: 'Manage' }] },
-  { group: 'Reports', perms: [{ key: 'reports.view', label: 'View' }] },
-];
 
 export default function EditRolePage() {
   const router = useRouter();
@@ -25,14 +13,31 @@ export default function EditRolePage() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [permissionGroups, setPermissionGroups] = useState({});
 
   useEffect(() => {
-    role.get(roleId).then(r => {
-      if (r.data.code === 200) {
-        const data = r.data.data;
+    Promise.all([
+      role.getPermissions(),
+      role.get(roleId),
+    ]).then(([permRes, roleRes]) => {
+      if (permRes.data.code === 200) {
+        const grouped = {};
+        (permRes.data.data || []).forEach(p => {
+          if (!grouped[p.group]) grouped[p.group] = [];
+          grouped[p.group].push(p);
+        });
+        setPermissionGroups(grouped);
+      }
+      if (roleRes.data.code === 200) {
+        const data = roleRes.data.data;
+        const perms = Array.isArray(data.permissions)
+          ? data.permissions
+          : (data.permissions ? data.permissions.split(',').filter(Boolean) : []);
         form.setFieldsValue({
-          ...data,
-          permissions: data.permissions ? data.permissions.split(',').filter(Boolean) : [],
+          display_name: data.display_name,
+          description: data.description,
+          status: Number(data.status),
+          permissions: perms,
         });
       }
     }).catch(() => message.error('Failed to load role')).finally(() => setLoading(false));
@@ -42,7 +47,7 @@ export default function EditRolePage() {
     setSubmitting(true);
     try {
       const permissions = values.permissions || [];
-      await role.update(roleId, { ...values, permissions: permissions.join(',') });
+      await role.update(roleId, { display_name: values.display_name, description: values.description, permissions, status: values.status ?? 1 });
       message.success('Role updated');
       router.push('/settings?tab=roles');
     } catch (error) {
@@ -52,38 +57,67 @@ export default function EditRolePage() {
     }
   };
 
+  const groupNames = Object.keys(permissionGroups);
+  const midpoint = Math.ceil(groupNames.length / 2);
+  const leftGroups = groupNames.slice(0, midpoint);
+  const rightGroups = groupNames.slice(midpoint);
+
+  const renderGroups = (groups) => groups.map(groupName => (
+    <div key={groupName} style={{ marginBottom: 12 }}>
+      <Checkbox
+        onChange={(e) => {
+          const groupPerms = permissionGroups[groupName].map(p => p.key);
+          const current = form.getFieldValue('permissions') || [];
+          if (e.target.checked) {
+            const merged = [...new Set([...current, ...groupPerms])];
+            form.setFieldsValue({ permissions: merged });
+          } else {
+            form.setFieldsValue({ permissions: current.filter(p => !groupPerms.includes(p)) });
+          }
+        }}
+        style={{ fontWeight: 600, fontSize: 13 }}
+      >
+        {groupName}
+      </Checkbox>
+      {permissionGroups[groupName].map(p => (
+        <div key={p.key} style={{ marginLeft: 24, marginTop: 2 }}>
+          <Checkbox value={p.key}>{p.label}</Checkbox>
+        </div>
+      ))}
+    </div>
+  ));
+
   return (
     <MainLayout>
       <Space direction="vertical" style={{ width: '100%' }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/settings?tab=roles')}>Back</Button>
-        <Card title="Edit Role" loading={loading}>
-          <Form form={form} layout="vertical" onFinish={onFinish} style={{ maxWidth: 800 }}>
-            <Form.Item name="name" label="Role Name" rules={[{ required: true }]}>
-              <Input />
+        <Card loading={loading}>
+          <h2 style={{ marginBottom: 24 }}>Edit Role</h2>
+          <Form form={form} layout="vertical" onFinish={onFinish}>
+            <Row gutter={24}>
+              <Col xs={24} md={16}>
+                <Form.Item name="display_name" label={<span style={{ color: '#d4380d' }}>* Display Name</span>} rules={[{ required: true, message: 'Please input display name' }]}>
+                  <Input placeholder="Please input display name" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item name="status" label={<span style={{ color: '#d4380d' }}>* Status</span>}>
+                  <Select options={[{ label: 'Active', value: 1 }, { label: 'Inactive', value: 0 }]} />
+                </Form.Item>
+              </Col>
+            </Row>
+            <Form.Item name="description" label={<span style={{ color: '#d4380d' }}>* Description</span>}>
+              <Input.TextArea rows={3} placeholder="Please input description" />
             </Form.Item>
-            <Form.Item name="description" label="Description">
-              <Input.TextArea rows={2} />
-            </Form.Item>
-            <Divider>Permissions</Divider>
+            <div style={{ marginBottom: 8, fontWeight: 600, color: '#d4380d' }}>* Permissions</div>
             <Form.Item name="permissions">
               <Checkbox.Group style={{ width: '100%' }}>
-                <Row gutter={[16, 8]}>
-                  {PERMISSION_GROUPS.map(({ group, perms }) => (
-                    <Col span={24} key={group}>
-                      <strong style={{ color: '#666' }}>{group}</strong>
-                      <Row style={{ marginTop: 4, marginBottom: 8 }}>
-                        {perms.map(p => (
-                          <Col span={6} key={p.key}>
-                            <Checkbox value={p.key}>{p.label}</Checkbox>
-                          </Col>
-                        ))}
-                      </Row>
-                    </Col>
-                  ))}
-                  <Col span={24}>
-                    <Checkbox value="admin" style={{ fontWeight: 'bold', color: '#f5222d' }}>
-                      Administrator (Full Access)
-                    </Checkbox>
+                <Row gutter={24}>
+                  <Col span={12}>
+                    {renderGroups(leftGroups)}
+                  </Col>
+                  <Col span={12}>
+                    {renderGroups(rightGroups)}
                   </Col>
                 </Row>
               </Checkbox.Group>

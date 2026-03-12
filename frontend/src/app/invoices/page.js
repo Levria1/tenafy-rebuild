@@ -370,15 +370,22 @@ export default function InvoicesPage() {
       ) : '—',
     },
     {
-      title: 'ACTION', key: 'actions', width: 120, fixed: 'right',
+      title: 'ACTION', key: 'actions', width: 130, fixed: 'right',
       render: (_, r) => (
         <Space size="small">
-          {Number(r.status) !== 1 && (
-            <Button type="link" size="small" style={{ color: '#999', padding: 0 }}
-              onClick={() => router.push(`/accounting/accounts/create?invoice=${r.invoice_code}`)}>
-              Pay
-            </Button>
-          )}
+          <Button
+            size="small"
+            disabled={Number(r.status) === 1}
+            onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${r.id}`)}
+            style={{
+              borderRadius: 4, padding: '0 10px', fontSize: 13,
+              color: Number(r.status) === 1 ? '#ccc' : '#666',
+              borderColor: Number(r.status) === 1 ? '#eee' : '#d9d9d9',
+              background: 'transparent',
+            }}
+          >
+            Pay
+          </Button>
           <Button type="link" size="small" style={{ padding: 0 }} onClick={() => openDrawer(r)}>
             View &gt;
           </Button>
@@ -483,8 +490,12 @@ export default function InvoicesPage() {
         title={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>Invoice</span>
-            {selectedInvoice && Number(selectedInvoice.status) !== 1 && (
-              <Button type="default" size="small" onClick={() => router.push(`/accounting/accounts/create?invoice=${selectedInvoice.invoice_code}`)}>Pay</Button>
+            {selectedInvoice && (
+              <Button type="default" size="small"
+                disabled={Number(selectedInvoice.status) === 1}
+                onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${selectedInvoice.id}`)}>
+                Pay
+              </Button>
             )}
           </div>
         }
