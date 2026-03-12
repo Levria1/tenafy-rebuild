@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
+const { generateSequenceCode } = require('../utils/sequenceCode');
 
 // POST /api/service/list - List services with paging
 router.post('/list', authenticate, async (req, res) => {
@@ -143,21 +144,13 @@ router.post('/create', authenticate, async (req, res) => {
     // Snowflake ID
     const serviceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-    // Generate service code from sequence
-    let code = 'S' + Date.now();
+    // Generate service code from sequence (uses MAX of existing codes)
+    let code;
     try {
-      const [[seq]] = await pool.execute(
-        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-        [orgId, 'service_code']
-      );
-      if (seq) {
-        code = seq.pattern.replace(/{#,(\d+)}/, () =>
-          String(seq.seq_next)
-        );
-        await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
-      }
+      code = await generateSequenceCode(orgId, 'service_code');
     } catch (seqErr) {
       console.error('Sequence lookup failed, using fallback code:', seqErr.message);
+      code = 'S' + Date.now();
     }
 
     await pool.execute(

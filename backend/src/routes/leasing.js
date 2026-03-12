@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
-const { generateInvoiceCode } = require('../utils/invoiceCode');
+const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequenceCode');
 
 // Helper: advance a date by one invoice period
 function advanceInvoiceDate(date, schedule, dueDay) {
@@ -232,22 +232,10 @@ router.post('/', authenticate, async (req, res) => {
     // Generate lease ID (snowflake-style)
     const leaseId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
-    // Generate lease_no from sequence
+    // Generate lease_no from sequence (uses highest existing + 1)
     let leaseNo = lease_no || null;
     if (!leaseNo) {
-      const [[seq]] = await pool.execute(
-        'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-        [orgId, 'leasing_code']
-      );
-      if (seq) {
-        leaseNo = seq.pattern
-          .replace(/\{d,(\w+)\}/g, () => {
-            const now = new Date();
-            return now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
-          })
-          .replace(/\{#,(\d+)\}/, () => String(seq.seq_next));
-        await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
-      }
+      leaseNo = await generateSequenceCode(orgId, 'leasing_code');
     }
 
     // Get currency

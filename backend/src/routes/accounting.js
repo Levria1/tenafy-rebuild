@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
+const { generateSequenceCode } = require('../utils/sequenceCode');
 
 // Helper: recalculate invoice status after payment changes
 // Finds all invoices linked to accounting_lines in the given transaction,
@@ -206,18 +207,8 @@ router.post('/account', authenticate, async (req, res) => {
     // Generate snowflake-style ID
     const accountingId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
-    // Generate transaction code from sequence
-    const [[seq]] = await pool.execute(
-      'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
-      [orgId, 'transaction_code']
-    );
-    let transaction_code = 'TXN-' + Date.now();
-    if (seq) {
-      transaction_code = seq.pattern.replace(/{#,(\d+)}/, () =>
-        String(seq.seq_next)
-      );
-      await pool.execute('UPDATE sequence SET seq_next = seq_next + 1 WHERE id = ?', [seq.id]);
-    }
+    // Generate transaction code from sequence (uses MAX of existing codes)
+    const transaction_code = await generateSequenceCode(orgId, 'transaction_code');
 
     await pool.execute(
       `INSERT INTO accounting

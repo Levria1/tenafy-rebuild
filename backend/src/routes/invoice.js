@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
-const { generateInvoiceCode } = require('../utils/invoiceCode');
+const { generateInvoiceCode } = require('../utils/sequenceCode');
 
 // POST /api/invoice/invoices - List invoices with paging
 router.post('/invoices', authenticate, async (req, res) => {
