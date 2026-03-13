@@ -4,6 +4,16 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Invoice Delete + Admin Seed Script
+**Commit**: `834acd6` — Add invoice delete with cascade soft delete and admin seed script
+
+- **Backend**: Fixed DELETE `/api/invoice/:id` — was incorrectly setting `status=-1`, now does proper cascade soft delete (`deleted_at` on invoice + accounting + accounting_line by invoice_code)
+- **Frontend**: Added Delete button to invoice detail drawer footer, gated by `LANDLORD/INVOICE_DELETE` permission, with confirmation modal matching original Tenafy
+- **Tooling**: Added `backend/scripts/seedAdmin.js` for creating super admin users on deploy (Snowflake ID, bcrypt password, Landlord System Manager role assignment)
+- **Production**: Set up `alextn@gmail.com` as super admin on Digital Ocean droplet (activated user, reset password, assigned role `230000000001`)
+
+---
+
 ## Session: Initial Commit
 **Commit**: `5a2cc40` — Initial commit - Tenafy Rebuild current working state
 
