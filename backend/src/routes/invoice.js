@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requirePermission } = require('../middleware/auth');
 const pool = require('../config/database');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 
@@ -644,7 +644,7 @@ router.put('/:id', authenticate, async (req, res) => {
 });
 
 // DELETE /api/invoice/:id - Soft delete invoice + cascade to accounting
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', authenticate, requirePermission('LANDLORD/INVOICE_DELETE'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
