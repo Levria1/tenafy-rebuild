@@ -643,12 +643,46 @@ router.put('/:id', authenticate, async (req, res) => {
   }
 });
 
-// DELETE /api/invoice/:id - Delete invoice
+// DELETE /api/invoice/:id - Soft delete invoice + cascade to accounting
 router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('UPDATE invoice SET status = -1 WHERE id = ? AND org_id = ?', [id, orgId]);
+
+    // Get invoice to find invoice_code for cascade
+    const [rows] = await pool.execute(
+      'SELECT id, invoice_code FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
+      [id, orgId]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ code: 404, message: 'Invoice not found' });
+    }
+    const invoiceCode = rows[0].invoice_code;
+
+    // Soft delete invoice
+    await pool.execute(
+      'UPDATE invoice SET deleted_at = CURRENT_TIMESTAMP() WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+
+    // Cascade soft delete: accounting records linked by invoice_code
+    if (invoiceCode) {
+      await pool.execute(
+        `UPDATE accounting SET deleted_at = CURRENT_TIMESTAMP()
+         WHERE org_id = ? AND id IN (
+           SELECT accounting_id FROM accounting_line WHERE invoice_code = ?
+         )`,
+        [orgId, invoiceCode]
+      );
+      await pool.execute(
+        `UPDATE accounting_line SET deleted_at = CURRENT_TIMESTAMP()
+         WHERE accounting_id IN (
+           SELECT id FROM accounting WHERE org_id = ?
+         ) AND invoice_code = ?`,
+        [orgId, invoiceCode]
+      );
+    }
+
     res.json({ code: 200, message: 'Invoice deleted' });
   } catch (error) {
     console.error('Delete invoice error:', error);

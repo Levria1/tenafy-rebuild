@@ -1,13 +1,15 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Table, Button, Space, Tag, Input, Select, DatePicker, Drawer, Descriptions, Divider, Spin, Popover, Radio, Checkbox, Tooltip, message } from 'antd';
-import { PlusOutlined, FilterOutlined, FileTextOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, SearchOutlined } from '@ant-design/icons';
+import { Table, Button, Space, Tag, Input, Select, DatePicker, Drawer, Descriptions, Divider, Spin, Popover, Radio, Checkbox, Tooltip, message, Modal } from 'antd';
+import { PlusOutlined, FilterOutlined, FileTextOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
-import MainLayout from '../../components/Layout';
+import MainLayout, { useAuth } from '../../components/Layout';
 import { invoice, accountingApi, property as propertyApi } from '../../lib/api';
+
+const { confirm } = Modal;
 
 const { RangePicker } = DatePicker;
 
@@ -32,6 +34,33 @@ export default function InvoicesPage() {
   const [sortInfo, setSortInfo] = useState({ field: 'due_on', order: 'descend' });
   const [summary, setSummary] = useState({ outstanding_outflow: 0, outstanding_inflow: 0, paid: 0 });
   const router = useRouter();
+  const { hasPermission } = useAuth();
+  const canDelete = hasPermission('LANDLORD/INVOICE_DELETE');
+
+  const handleDeleteInvoice = (inv) => {
+    confirm({
+      title: 'Are you sure you want to delete this invoice?',
+      icon: <ExclamationCircleOutlined />,
+      content: 'Please note that any deleted invoices can not be recovered.',
+      okText: 'Delete',
+      okType: 'danger',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        try {
+          const res = await invoice.delete(inv.id);
+          if (res.data.code === 200) {
+            message.success('Delete Invoice Success!');
+            closeDrawer();
+            loadInvoices();
+          } else {
+            message.error(res.data.message || 'Failed to delete invoice');
+          }
+        } catch (err) {
+          message.error('Failed to delete invoice');
+        }
+      },
+    });
+  };
 
   // Settings data for filters
   const [categories, setCategories] = useState([]);
@@ -527,6 +556,11 @@ export default function InvoicesPage() {
               onClick={() => { closeDrawer(); router.push(`/invoices/${selectedInvoice.id}/edit`); }}>
               Edit
             </Button>
+            {canDelete && (
+              <Button danger type="primary" icon={<DeleteOutlined />} block onClick={() => handleDeleteInvoice(selectedInvoice)}>
+                Delete
+              </Button>
+            )}
             <Button block onClick={closeDrawer}>
               Close
             </Button>
