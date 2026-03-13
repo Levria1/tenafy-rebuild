@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import {
-  Table, Button, Input, Popover, Checkbox, Row, Col, Select, Badge, message,
+  Table, Button, Input, Popover, Checkbox, Row, Col, Select, Badge, message, DatePicker,
 } from 'antd';
 import { PlusOutlined, SearchOutlined, FilterOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
@@ -14,6 +14,7 @@ const STATUS_MAP = {
   0: { label: 'Pending' },
   1: { label: 'In Progress' },
   2: { label: 'Completed' },
+  3: { label: 'Cancelled' },
 };
 
 const STATUS_TABS = [
@@ -21,22 +22,15 @@ const STATUS_TABS = [
   { key: '0', label: 'Pending' },
   { key: '1', label: 'In Progress' },
   { key: '2', label: 'Completed' },
+  { key: '3', label: 'Cancelled' },
 ];
 
-// ---------------------------------------------------------------------------
-// Format datetime range like "Feb 27, 2020 11:25 - 11:30"
-// ---------------------------------------------------------------------------
-function fmtDateRange(start, end) {
-  if (!start) return '';
-  const s = dayjs(start);
-  if (!s.isValid()) return '';
-  const datePart = s.format('MMM DD, YYYY');
-  const startTime = s.format('HH:mm');
-  if (!end) return `${datePart} ${startTime}`;
-  const e = dayjs(end);
-  if (!e.isValid()) return `${datePart} ${startTime}`;
-  return `${datePart} ${startTime} - ${e.format('HH:mm')}`;
-}
+const STATUS_OPTIONS = [
+  { label: 'Pending', value: 0 },
+  { label: 'In Progress', value: 1 },
+  { label: 'Completed', value: 2 },
+  { label: 'Cancelled', value: 3 },
+];
 
 // ---------------------------------------------------------------------------
 // Main Page
@@ -103,6 +97,21 @@ export default function ServicesPage() {
     }
   };
 
+  // ─── Inline update helper ───────────────────────────────────────────────────
+  const handleInlineUpdate = async (record, field, value) => {
+    try {
+      const payload = { [field]: value };
+      await service.patch(record.id, payload);
+      // Update local state immediately
+      setServices(prev => prev.map(s =>
+        s.id === record.id ? { ...s, [field]: value } : s
+      ));
+      message.success('Updated');
+    } catch (error) {
+      message.error('Failed to update');
+    }
+  };
+
   // Count active filters
   const filterCount = [filterCategory, filterProperty].filter(Boolean).length;
 
@@ -163,15 +172,11 @@ export default function ServicesPage() {
     </div>
   );
 
-  // ─── Table columns matching original ────────────────────────────────────────
+  // ─── Table columns ────────────────────────────────────────────────────────
   const columns = [
     {
-      title: 'ID', dataIndex: 'code', key: 'code', width: 80, sorter: true,
-      render: (v) => <span style={{ color: '#1890ff' }}>{v}</span>,
-    },
-    {
-      title: 'Submission Date', dataIndex: 'created_at', key: 'created_at', width: 170, sorter: true,
-      render: (v) => v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '-',
+      title: 'Submission Date', dataIndex: 'created_at', key: 'created_at', width: 130, sorter: true,
+      render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',
     },
     {
       title: 'Property Name', key: 'property_name', width: 200,
@@ -182,28 +187,62 @@ export default function ServicesPage() {
       },
     },
     {
-      title: 'Status', dataIndex: 'status', key: 'status', width: 100,
-      render: (v) => (STATUS_MAP[Number(v)] || { label: 'Unknown' }).label,
+      title: 'Status', dataIndex: 'status', key: 'status', width: 140,
+      render: (v, r) => (
+        <Select
+          size="small"
+          value={Number(v)}
+          options={STATUS_OPTIONS}
+          style={{ width: 120 }}
+          onChange={(val) => handleInlineUpdate(r, 'status', val)}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ),
+    },
+    {
+      title: 'Assigned To', key: 'assigned_to', width: 160,
+      render: (_, r) => {
+        const v1 = (r.assignee_name || '').trim();
+        const v2 = (r.assignee_2_name || '').trim();
+        if (v1 && v2) return `${v1}, ${v2}`;
+        return v1 || v2 || '-';
+      },
     },
     {
       title: 'Category', dataIndex: 'category', key: 'category', width: 160, sorter: true,
       render: (v) => v ? v.toUpperCase() : '-',
     },
     {
-      title: 'Preferred Date', key: 'preferred_date', width: 220, sorter: true,
-      render: (_, r) => fmtDateRange(r.preferred_date_first_start, r.preferred_date_first_end) || '-',
+      title: 'Date Started', dataIndex: 'service_date_start', key: 'service_date_start', width: 150,
+      render: (v, r) => (
+        <DatePicker
+          size="small"
+          value={v ? dayjs(v) : null}
+          format="YYYY-MM-DD"
+          allowClear
+          style={{ width: 130 }}
+          onChange={(date) => handleInlineUpdate(r, 'service_date_start', date ? date.format('YYYY-MM-DD HH:mm:ss') : null)}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ),
     },
     {
-      title: 'Optional Date', key: 'optional_date', width: 220, sorter: true,
-      render: (_, r) => fmtDateRange(r.preferred_date_second_start, r.preferred_date_second_end) || '-',
+      title: 'Date Completed', dataIndex: 'service_date_end', key: 'service_date_end', width: 150,
+      render: (v, r) => (
+        <DatePicker
+          size="small"
+          value={v ? dayjs(v) : null}
+          format="YYYY-MM-DD"
+          allowClear
+          style={{ width: 130 }}
+          onChange={(date) => handleInlineUpdate(r, 'service_date_end', date ? date.format('YYYY-MM-DD HH:mm:ss') : null)}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ),
     },
     {
-      title: 'Tenant', dataIndex: 'tenant_name', key: 'tenant_name', width: 140,
-      render: (v) => v && v.trim() ? v.trim() : '',
-    },
-    {
-      title: 'Contact Phone', dataIndex: 'tenant_phone', key: 'tenant_phone', width: 130,
-      render: (v) => v || '',
+      title: 'Reported By', key: 'reported_by_name', width: 150,
+      render: (_, r) => (r.reported_by_name || '').trim() || '-',
     },
     {
       title: 'Action', key: 'action', width: 70, fixed: 'right',
@@ -216,7 +255,7 @@ export default function ServicesPage() {
       <h1 style={{ marginBottom: 16 }}>Service</h1>
 
       <div style={{ background: '#fff', border: '1px solid #f0f0f0', borderRadius: 8 }}>
-        {/* ── Top bar: Total + Search + Filter + Add Request + List View ── */}
+        {/* ── Top bar: Total + Search + Filter + Add Request ── */}
         <div style={{
           padding: '12px 20px',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -272,13 +311,10 @@ export default function ServicesPage() {
             <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/services/create')}>
               Add Request
             </Button>
-
-            {/* List View (just label, already in list view) */}
-            <Button>List View</Button>
           </div>
         </div>
 
-        {/* ── Status tabs: ALL | Pending | In Progress | Completed ── */}
+        {/* ── Status tabs: ALL | Pending | In Progress | Completed | Cancelled ── */}
         <div style={{
           padding: '8px 20px', display: 'flex', gap: 20,
           borderBottom: '1px solid #f0f0f0', background: '#fafafa',
@@ -315,7 +351,7 @@ export default function ServicesPage() {
               setPagination(prev => ({ ...prev, current: page, pageSize }));
             },
           }}
-          scroll={{ x: 1500 }}
+          scroll={{ x: 1300 }}
           size="small"
         />
       </div>

@@ -9,7 +9,7 @@ import {
 import { ArrowLeftOutlined, InboxOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
-import { service } from '../../../../lib/api';
+import { service, file as fileApi } from '../../../../lib/api';
 
 const { TextArea } = Input;
 const { Dragger } = Upload;
@@ -24,6 +24,7 @@ const STATUS_OPTIONS = [
   { label: 'Pending', value: 0 },
   { label: 'In Progress', value: 1 },
   { label: 'Completed', value: 2 },
+  { label: 'Cancelled', value: 3 },
 ];
 
 export default function ServiceEditPage() {
@@ -40,6 +41,7 @@ export default function ServiceEditPage() {
   const [unitsLoading, setUnitsLoading] = useState(false);
   const [categories, setCategories] = useState([]);
   const [vendors, setVendors] = useState([]);
+  const [contacts, setContacts] = useState([]);
 
   // Assignee mode
   const [assignMode, setAssignMode] = useState(null);
@@ -47,23 +49,28 @@ export default function ServiceEditPage() {
   // File list
   const [fileList, setFileList] = useState([]);
 
+  // Contact phone (auto-populated)
+  const [contactPhone, setContactPhone] = useState('');
+
   useEffect(() => {
     loadAll();
   }, [serviceId]);
 
   const loadAll = async () => {
     try {
-      // Load dropdown data and service detail in parallel
-      const [propRes, catRes, vendorRes, svcRes] = await Promise.all([
+      const [propRes, catRes, vendorRes, contactRes, svcRes] = await Promise.all([
         service.getPropertyList(),
         service.getCategories(),
         service.getVendors(),
+        service.getContacts(),
         service.get(serviceId),
       ]);
 
       if (propRes.data.code === 200) setProperties(propRes.data.data || []);
       if (catRes.data.code === 200) setCategories(catRes.data.data || []);
       if (vendorRes.data.code === 200) setVendors(vendorRes.data.data || []);
+      const contactList = contactRes.data.code === 200 ? (contactRes.data.data || []) : [];
+      setContacts(contactList);
 
       if (svcRes.data.code === 200) {
         const data = svcRes.data.data;
@@ -76,9 +83,30 @@ export default function ServiceEditPage() {
           } catch (e) { /* ignore */ }
         }
 
+        // Load existing files into fileList
+        if (Array.isArray(data.files) && data.files.length > 0) {
+          setFileList(data.files.map(f => ({
+            uid: f.id.toString(),
+            name: f.filename,
+            status: 'done',
+            fileId: f.id.toString(),
+            url: `/api/file/preview/${f.id}`,
+          })));
+        }
+
         // Determine assignee mode
         if (data.assignee) {
           setAssignMode('vendor');
+        }
+
+        // Auto-populate contact phone from reported_by
+        if (data.reported_by) {
+          const found = contactList.find(c => String(c.id) === String(data.reported_by));
+          if (found) {
+            setContactPhone(found.phone || '');
+          } else if (data.reported_by_phone) {
+            setContactPhone(data.reported_by_phone || '');
+          }
         }
 
         // Pre-fill form
@@ -92,6 +120,11 @@ export default function ServiceEditPage() {
           additional_info: data.additional_info || '',
           note: data.note || '',
           vendor_id: data.assignee || undefined,
+          vendor_id_2: data.assignee_2 || undefined,
+          reported_by: data.reported_by || undefined,
+          // Service Dates
+          service_date_start: data.service_date_start ? dayjs(data.service_date_start) : undefined,
+          service_date_end: data.service_date_end ? dayjs(data.service_date_end) : undefined,
           // Preferred Date and Time - Option 1
           pref1_date: data.preferred_date_first_start ? dayjs(data.preferred_date_first_start) : undefined,
           pref1_start: data.preferred_date_first_start ? dayjs(data.preferred_date_first_start) : undefined,
@@ -126,6 +159,15 @@ export default function ServiceEditPage() {
     }
   };
 
+  const handleContactChange = (contactId) => {
+    if (!contactId) {
+      setContactPhone('');
+      return;
+    }
+    const found = contacts.find((c) => c.id === contactId);
+    setContactPhone(found?.phone || '');
+  };
+
   const onFinish = async (values) => {
     setSubmitting(true);
     try {
@@ -139,11 +181,29 @@ export default function ServiceEditPage() {
         note: values.note || null,
       };
 
-      // Assignee
-      if (assignMode === 'vendor' && values.vendor_id) {
-        payload.assignee = values.vendor_id;
+      // Reported By
+      payload.reported_by = values.reported_by || null;
+      payload.contact_phone = contactPhone || null;
+
+      // Assignee(s)
+      if (assignMode === 'vendor') {
+        payload.assignee = values.vendor_id || null;
+        payload.assignee_2 = values.vendor_id_2 || null;
       } else {
         payload.assignee = null;
+        payload.assignee_2 = null;
+      }
+
+      // Service Dates
+      if (values.service_date_start) {
+        payload.service_date_start = values.service_date_start.format('YYYY-MM-DD HH:mm:ss');
+      } else {
+        payload.service_date_start = null;
+      }
+      if (values.service_date_end) {
+        payload.service_date_end = values.service_date_end.format('YYYY-MM-DD HH:mm:ss');
+      } else {
+        payload.service_date_end = null;
       }
 
       // Preferred Date and Time - Option 1
@@ -170,6 +230,22 @@ export default function ServiceEditPage() {
         payload.preferred_date_second_end = null;
       }
 
+      // Upload new files, keep existing file IDs
+      const allFileIds = [];
+      for (const f of fileList) {
+        if (f.fileId) {
+          allFileIds.push(f.fileId);
+        } else if (f.originFileObj) {
+          const formData = new FormData();
+          formData.append('file', f.originFileObj);
+          const uploadRes = await fileApi.upload(formData);
+          if (uploadRes.data.code === 200) {
+            allFileIds.push(uploadRes.data.data.id);
+          }
+        }
+      }
+      payload.file_ids = allFileIds;
+
       await service.update(serviceId, payload);
       message.success('Service updated successfully');
       router.push(`/services/${serviceId}/detail`);
@@ -182,6 +258,14 @@ export default function ServiceEditPage() {
 
   // Disable past dates
   const disabledDate = (current) => current && current < dayjs().startOf('day');
+
+  const contactOptions = contacts.map((c) => {
+    const name = Number(c.type) === 1 && c.company_name
+      ? c.company_name
+      : [c.first_name, c.last_name].filter(Boolean).join(' ');
+    const tag = c.contact_type === 'vendor' ? ' (Vendor)' : ' (Tenant)';
+    return { label: name + tag, value: c.id };
+  });
 
   if (initialLoading) {
     return (
@@ -317,6 +401,54 @@ export default function ServiceEditPage() {
               </div>
             </div>
 
+            {/* ── Service Start / End Date ────────────────────────── */}
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item name="service_date_start" label="Service Start Date">
+                  <DatePicker
+                    showTime={{ format: 'HH:mm', minuteStep: 15 }}
+                    format="YYYY-MM-DD HH:mm"
+                    placeholder="Select start date & time"
+                    style={{ width: '100%' }}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item name="service_date_end" label="Service End Date">
+                  <DatePicker
+                    showTime={{ format: 'HH:mm', minuteStep: 15 }}
+                    format="YYYY-MM-DD HH:mm"
+                    placeholder="Select end date & time"
+                    style={{ width: '100%' }}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            {/* ── Reported By ────────────────────────────────────── */}
+            <div style={{ color: '#d4830d', fontWeight: 600, fontSize: 14, marginBottom: 12 }}>
+              Reported By:
+            </div>
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item name="reported_by" label="Contact">
+                  <Select
+                    placeholder="Select Contact"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    onChange={handleContactChange}
+                    options={contactOptions}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item label="Contact Phone">
+                  <Input value={contactPhone} readOnly placeholder="Auto-populated from contact" />
+                </Form.Item>
+              </Col>
+            </Row>
+
             {/* ── Assignee ─────────────────────────────────────────── */}
             <Form.Item label="Select Assignee">
               <Radio.Group
@@ -325,34 +457,49 @@ export default function ServiceEditPage() {
                   setAssignMode(e.target.value);
                   if (e.target.value !== 'vendor') {
                     form.setFieldValue('vendor_id', undefined);
+                    form.setFieldValue('vendor_id_2', undefined);
                   }
                 }}
               >
                 <Space direction="vertical">
                   <Radio value="self">Assign to Myself</Radio>
-                  <Radio value="vendor">
-                    <Space>
-                      Assign to Vendor
-                      {assignMode === 'vendor' && (
-                        <Form.Item name="vendor_id" noStyle>
-                          <Select
-                            placeholder="Select Vendor"
-                            allowClear
-                            showSearch
-                            optionFilterProp="label"
-                            style={{ width: 250 }}
-                            options={vendors.map((v) => ({
-                              label: [v.first_name, v.last_name].filter(Boolean).join(' '),
-                              value: v.id,
-                            }))}
-                          />
-                        </Form.Item>
-                      )}
-                    </Space>
-                  </Radio>
+                  <Radio value="vendor">Assign to Vendor</Radio>
                 </Space>
               </Radio.Group>
             </Form.Item>
+
+            {assignMode === 'vendor' && (
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item name="vendor_id" label="Vendor 1">
+                    <Select
+                      placeholder="Select Vendor"
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      options={vendors.map((v) => ({
+                        label: [v.first_name, v.last_name].filter(Boolean).join(' '),
+                        value: v.id,
+                      }))}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="vendor_id_2" label="Vendor 2">
+                    <Select
+                      placeholder="Select Vendor (optional)"
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      options={vendors.map((v) => ({
+                        label: [v.first_name, v.last_name].filter(Boolean).join(' '),
+                        value: v.id,
+                      }))}
+                    />
+                  </Form.Item>
+                </Col>
+              </Row>
+            )}
 
             {/* ── Additional Information ───────────────────────────── */}
             <Form.Item name="additional_info" label="Additional Information">

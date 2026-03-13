@@ -2,6 +2,15 @@
 const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ['antd', '@ant-design/icons'],
+  async rewrites() {
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+    return [
+      {
+        source: '/api/:path*',
+        destination: `${backendUrl}/api/:path*`,
+      },
+    ];
+  },
 }
 
 module.exports = nextConfig

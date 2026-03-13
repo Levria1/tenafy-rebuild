@@ -82,9 +82,11 @@ router.post('/accounts', authenticate, async (req, res) => {
     const params = [orgId];
 
     if (search) {
-      whereClause += ' AND (a.note LIKE ? OR a.transaction_code LIKE ? OR a.invoice_code LIKE ?)';
+      whereClause += ` AND (a.note LIKE ? OR a.transaction_code LIKE ? OR a.invoice_code LIKE ?
+        OR t.first_name LIKE ? OR t.last_name LIKE ? OR CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) LIKE ?
+        OR t.company_name LIKE ?)`;
       const s = '%' + search + '%';
-      params.push(s, s, s);
+      params.push(s, s, s, s, s, s, s);
     }
     if (category !== undefined && category !== null) {
       whereClause += ' AND a.category = ?';
@@ -164,7 +166,9 @@ router.post('/accounts', authenticate, async (req, res) => {
     );
 
     const [[{ total }]] = await pool.execute(
-      `SELECT COUNT(*) as total FROM accounting a WHERE ${whereClause}`,
+      `SELECT COUNT(*) as total FROM accounting a
+       LEFT JOIN tenant t ON a.tenant_id = t.id
+       WHERE ${whereClause}`,
       params
     );
 
@@ -416,31 +420,35 @@ router.post('/account/inflow-outflow', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { startDate, endDate, propertyId, account_setting_ids, account_setting_id, type, category, payment_setting_id, search } = req.body || {};
 
-    let whereClause = 'org_id = ? AND deleted_at IS NULL';
+    let whereClause = 'a.org_id = ? AND a.deleted_at IS NULL';
     const params = [orgId];
 
     if (search) {
-      whereClause += ' AND (note LIKE ? OR transaction_code LIKE ? OR invoice_code LIKE ?)';
+      whereClause += ` AND (a.note LIKE ? OR a.transaction_code LIKE ? OR a.invoice_code LIKE ?
+        OR t.first_name LIKE ? OR t.last_name LIKE ? OR CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) LIKE ?
+        OR t.company_name LIKE ?)`;
       const s = '%' + search + '%';
-      params.push(s, s, s);
+      params.push(s, s, s, s, s, s, s);
     }
-    if (type !== undefined && type !== null) { whereClause += ' AND type = ?'; params.push(type); }
-    if (category !== undefined && category !== null) { whereClause += ' AND category = ?'; params.push(category); }
-    if (payment_setting_id) { whereClause += ' AND payment_setting_id = ?'; params.push(payment_setting_id); }
-    if (startDate) { whereClause += ' AND payment_date >= ?'; params.push(startDate); }
-    if (endDate)   { whereClause += ' AND payment_date <= ?'; params.push(endDate); }
-    if (propertyId){ whereClause += ' AND property_id = ?';  params.push(propertyId); }
+    if (type !== undefined && type !== null) { whereClause += ' AND a.type = ?'; params.push(type); }
+    if (category !== undefined && category !== null) { whereClause += ' AND a.category = ?'; params.push(category); }
+    if (payment_setting_id) { whereClause += ' AND a.payment_setting_id = ?'; params.push(payment_setting_id); }
+    if (startDate) { whereClause += ' AND a.payment_date >= ?'; params.push(startDate); }
+    if (endDate)   { whereClause += ' AND a.payment_date <= ?'; params.push(endDate); }
+    if (propertyId){ whereClause += ' AND a.property_id = ?';  params.push(propertyId); }
     const sumAcctIds = account_setting_ids || (account_setting_id ? [account_setting_id] : null);
     if (sumAcctIds && sumAcctIds.length > 0) {
-      whereClause += ` AND account_setting_id IN (${sumAcctIds.map(() => '?').join(',')})`;
+      whereClause += ` AND a.account_setting_id IN (${sumAcctIds.map(() => '?').join(',')})`;
       params.push(...sumAcctIds);
     }
 
     const [[sums]] = await pool.execute(
       `SELECT
-         COALESCE(SUM(CASE WHEN type = 0 THEN amount ELSE 0 END), 0) as inflow,
-         COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) as outflow
-       FROM accounting WHERE ${whereClause}`,
+         COALESCE(SUM(CASE WHEN a.type = 0 THEN a.amount ELSE 0 END), 0) as inflow,
+         COALESCE(SUM(CASE WHEN a.type = 1 THEN a.amount ELSE 0 END), 0) as outflow
+       FROM accounting a
+       LEFT JOIN tenant t ON a.tenant_id = t.id
+       WHERE ${whereClause}`,
       params
     );
 
@@ -464,9 +472,11 @@ router.post('/account/lines', authenticate, async (req, res) => {
     const params = [orgId];
 
     if (search) {
-      whereClause += ' AND (a.note LIKE ? OR a.transaction_code LIKE ? OR a.invoice_code LIKE ?)';
+      whereClause += ` AND (a.note LIKE ? OR a.transaction_code LIKE ? OR a.invoice_code LIKE ?
+        OR t.first_name LIKE ? OR t.last_name LIKE ? OR CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) LIKE ?
+        OR t.company_name LIKE ?)`;
       const s = '%' + search + '%';
-      params.push(s, s, s);
+      params.push(s, s, s, s, s, s, s);
     }
     if (category)   { whereClause += ' AND al.category = ?';    params.push(category); }
     if (type !== undefined && type !== null) { whereClause += ' AND a.type = ?'; params.push(type); }
@@ -515,6 +525,7 @@ router.post('/account/lines', authenticate, async (req, res) => {
       `SELECT COUNT(*) as total
        FROM accounting_line al
        JOIN accounting a ON al.accounting_id = a.id
+       LEFT JOIN tenant t ON a.tenant_id = t.id
        WHERE ${whereClause}`,
       params
     );

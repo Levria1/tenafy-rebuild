@@ -6,10 +6,10 @@ import {
   Form, Input, Select, DatePicker, TimePicker, Button, Space, message,
   Row, Col, Upload, Radio,
 } from 'antd';
-import { ArrowLeftOutlined, UploadOutlined, InboxOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, InboxOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
-import { service } from '../../../lib/api';
+import { service, file as fileApi } from '../../../lib/api';
 
 const { TextArea } = Input;
 const { Dragger } = Upload;
@@ -31,6 +31,7 @@ export default function ServiceCreatePage() {
   const [unitsLoading, setUnitsLoading] = useState(false);
   const [categories, setCategories] = useState([]);
   const [vendors, setVendors] = useState([]);
+  const [contacts, setContacts] = useState([]);
 
   // Assignee mode: 'self' or 'vendor'
   const [assignMode, setAssignMode] = useState(null);
@@ -38,20 +39,25 @@ export default function ServiceCreatePage() {
   // File list
   const [fileList, setFileList] = useState([]);
 
+  // Contact phone (auto-populated)
+  const [contactPhone, setContactPhone] = useState('');
+
   useEffect(() => {
     loadInitialData();
   }, []);
 
   const loadInitialData = async () => {
     try {
-      const [propRes, catRes, vendorRes] = await Promise.all([
+      const [propRes, catRes, vendorRes, contactRes] = await Promise.all([
         service.getPropertyList(),
         service.getCategories(),
         service.getVendors(),
+        service.getContacts(),
       ]);
       if (propRes.data.code === 200) setProperties(propRes.data.data || []);
       if (catRes.data.code === 200) setCategories(catRes.data.data || []);
       if (vendorRes.data.code === 200) setVendors(vendorRes.data.data || []);
+      if (contactRes.data.code === 200) setContacts(contactRes.data.data || []);
     } catch (error) {
       console.error('Failed to load form data:', error);
       message.error('Failed to load form data');
@@ -76,6 +82,15 @@ export default function ServiceCreatePage() {
     }
   };
 
+  const handleContactChange = (contactId) => {
+    if (!contactId) {
+      setContactPhone('');
+      return;
+    }
+    const found = contacts.find((c) => c.id === contactId);
+    setContactPhone(found?.phone || '');
+  };
+
   const onFinish = async (values) => {
     setSubmitting(true);
     try {
@@ -88,9 +103,24 @@ export default function ServiceCreatePage() {
         note: values.note || null,
       };
 
-      // Assignee
-      if (assignMode === 'vendor' && values.vendor_id) {
-        payload.assignee = values.vendor_id;
+      // Reported By
+      if (values.reported_by) {
+        payload.reported_by = values.reported_by;
+        payload.contact_phone = contactPhone || null;
+      }
+
+      // Assignee(s)
+      if (assignMode === 'vendor') {
+        if (values.vendor_id) payload.assignee = values.vendor_id;
+        if (values.vendor_id_2) payload.assignee_2 = values.vendor_id_2;
+      }
+
+      // Service Date Start / End
+      if (values.service_date_start) {
+        payload.service_date_start = values.service_date_start.format('YYYY-MM-DD HH:mm:ss');
+      }
+      if (values.service_date_end) {
+        payload.service_date_end = values.service_date_end.format('YYYY-MM-DD HH:mm:ss');
       }
 
       // Preferred Date and Time - Option 1
@@ -111,6 +141,22 @@ export default function ServiceCreatePage() {
         payload.preferred_date_second_end = `${dateStr} ${endTime}`;
       }
 
+      // Upload files first, collect their IDs
+      if (fileList.length > 0) {
+        const uploadedIds = [];
+        for (const f of fileList) {
+          const formData = new FormData();
+          formData.append('file', f.originFileObj);
+          const uploadRes = await fileApi.upload(formData);
+          if (uploadRes.data.code === 200) {
+            uploadedIds.push(uploadRes.data.data.id);
+          }
+        }
+        if (uploadedIds.length > 0) {
+          payload.file_ids = uploadedIds;
+        }
+      }
+
       await service.create(payload);
       message.success('Work order created successfully');
       router.push('/services');
@@ -123,6 +169,14 @@ export default function ServiceCreatePage() {
 
   // Disable past dates
   const disabledDate = (current) => current && current < dayjs().startOf('day');
+
+  const contactOptions = contacts.map((c) => {
+    const name = Number(c.type) === 1 && c.company_name
+      ? c.company_name
+      : [c.first_name, c.last_name].filter(Boolean).join(' ');
+    const tag = c.contact_type === 'vendor' ? ' (Vendor)' : ' (Tenant)';
+    return { label: name + tag, value: c.id };
+  });
 
   return (
     <MainLayout>
@@ -245,6 +299,54 @@ export default function ServiceCreatePage() {
               </div>
             </div>
 
+            {/* ── Service Start / End Date ────────────────────────── */}
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item name="service_date_start" label="Service Start Date">
+                  <DatePicker
+                    showTime={{ format: 'HH:mm', minuteStep: 15 }}
+                    format="YYYY-MM-DD HH:mm"
+                    placeholder="Select start date & time"
+                    style={{ width: '100%' }}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item name="service_date_end" label="Service End Date">
+                  <DatePicker
+                    showTime={{ format: 'HH:mm', minuteStep: 15 }}
+                    format="YYYY-MM-DD HH:mm"
+                    placeholder="Select end date & time"
+                    style={{ width: '100%' }}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            {/* ── Reported By ────────────────────────────────────── */}
+            <div style={{ color: '#d4830d', fontWeight: 600, fontSize: 14, marginBottom: 12 }}>
+              Reported By:
+            </div>
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item name="reported_by" label="Contact">
+                  <Select
+                    placeholder="Select Contact"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    onChange={handleContactChange}
+                    options={contactOptions}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item label="Contact Phone">
+                  <Input value={contactPhone} readOnly placeholder="Auto-populated from contact" />
+                </Form.Item>
+              </Col>
+            </Row>
+
             {/* ── Assignee ─────────────────────────────────────────── */}
             <Form.Item label="Select Assignee">
               <Radio.Group
@@ -253,34 +355,49 @@ export default function ServiceCreatePage() {
                   setAssignMode(e.target.value);
                   if (e.target.value !== 'vendor') {
                     form.setFieldValue('vendor_id', undefined);
+                    form.setFieldValue('vendor_id_2', undefined);
                   }
                 }}
               >
                 <Space direction="vertical">
                   <Radio value="self">Assign to Myself</Radio>
-                  <Radio value="vendor">
-                    <Space>
-                      Assign to Vendor
-                      {assignMode === 'vendor' && (
-                        <Form.Item name="vendor_id" noStyle>
-                          <Select
-                            placeholder="Select Vendor"
-                            allowClear
-                            showSearch
-                            optionFilterProp="label"
-                            style={{ width: 250 }}
-                            options={vendors.map((v) => ({
-                              label: [v.first_name, v.last_name].filter(Boolean).join(' '),
-                              value: v.id,
-                            }))}
-                          />
-                        </Form.Item>
-                      )}
-                    </Space>
-                  </Radio>
+                  <Radio value="vendor">Assign to Vendor</Radio>
                 </Space>
               </Radio.Group>
             </Form.Item>
+
+            {assignMode === 'vendor' && (
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item name="vendor_id" label="Vendor 1">
+                    <Select
+                      placeholder="Select Vendor"
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      options={vendors.map((v) => ({
+                        label: [v.first_name, v.last_name].filter(Boolean).join(' '),
+                        value: v.id,
+                      }))}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="vendor_id_2" label="Vendor 2">
+                    <Select
+                      placeholder="Select Vendor (optional)"
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      options={vendors.map((v) => ({
+                        label: [v.first_name, v.last_name].filter(Boolean).join(' '),
+                        value: v.id,
+                      }))}
+                    />
+                  </Form.Item>
+                </Col>
+              </Row>
+            )}
 
             {/* ── Additional Information ───────────────────────────── */}
             <Form.Item name="additional_info" label="Additional Information">
