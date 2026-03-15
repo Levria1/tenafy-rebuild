@@ -11,8 +11,8 @@
     },
     {
       "name": "frontend",
-      "runtimeExecutable": "npm.cmd",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["next", "dev"],
       "port": 3000,
       "autoPort": false,
       "cwd": "frontend"
