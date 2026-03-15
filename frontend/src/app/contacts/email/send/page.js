@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { Suspense, useEffect, useState, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Card, Form, Input, Button, Select, message, Row, Col, Space, Divider, Tag, Alert,
@@ -27,7 +27,11 @@ const quillModules = {
   ],
 };
 
-export default function SendEmailPage() {
+export default function SendEmailPageWrapper() {
+  return <Suspense fallback={<div />}><SendEmailPage /></Suspense>;
+}
+
+function SendEmailPage() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);

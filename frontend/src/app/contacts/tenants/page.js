@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { Suspense, useEffect, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Input, Button, Space, Avatar, Empty, Spin, Pagination, Badge,
@@ -106,7 +106,11 @@ function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
 // ---------------------------------------------------------------------------
 // Main Tenants page
 // ---------------------------------------------------------------------------
-export default function TenantsPage() {
+export default function TenantsPageWrapper() {
+  return <Suspense fallback={<div />}><TenantsPage /></Suspense>;
+}
+
+function TenantsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const propertyIdParam = searchParams.get('propertyId');

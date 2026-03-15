@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { Suspense, useEffect, useState, useCallback } from 'react';
 import { Table, Button, Space, Tag, Card, Input, Select, DatePicker, Row, Col, Tabs, message, Drawer, Descriptions, Divider, Popover, Radio, Checkbox, Spin, Tooltip } from 'antd';
 import { PlusOutlined, FilterOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, CloseOutlined } from '@ant-design/icons';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -10,7 +10,11 @@ import { accounting, accountingApi } from '../../lib/api';
 
 const { RangePicker } = DatePicker;
 
-export default function AccountingPage() {
+export default function AccountingPageWrapper() {
+  return <Suspense fallback={<div />}><AccountingPage /></Suspense>;
+}
+
+function AccountingPage() {
   const [activeTab, setActiveTab] = useState('accounts');
   const [transactions, setTransactions] = useState([]);
   const [lines, setLines] = useState([]);

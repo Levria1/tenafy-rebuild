@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Form, Input, Button, Select, DatePicker, InputNumber, message, Row, Col, Spin, Upload, Divider } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
@@ -8,7 +8,11 @@ import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
 import { invoice, settings, contact } from '../../../lib/api';
 
-export default function InvoiceCreatePage() {
+export default function InvoiceCreatePageWrapper() {
+  return <Suspense fallback={<div />}><InvoiceCreatePage /></Suspense>;
+}
+
+function InvoiceCreatePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [form] = Form.useForm();

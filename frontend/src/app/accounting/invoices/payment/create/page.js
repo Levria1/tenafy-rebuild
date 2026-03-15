@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Form, Input, InputNumber, Select, DatePicker, Button, message, Row, Col, Divider, Upload, Spin } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
@@ -17,7 +17,11 @@ const getDisplayName = (t) => {
   return [t.first_name, t.middle_name, t.last_name].filter(Boolean).join(' ') || '-';
 };
 
-export default function CreatePaymentPage() {
+export default function CreatePaymentPageWrapper() {
+  return <Suspense fallback={<div />}><CreatePaymentPage /></Suspense>;
+}
+
+function CreatePaymentPage() {
   const [form] = Form.useForm();
   const router = useRouter();
   const searchParams = useSearchParams();

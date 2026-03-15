@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, Form, Input, InputNumber, Select, DatePicker, Radio, Button, Space, message, Row, Col } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
@@ -9,7 +9,11 @@ import { accounting, property, tenant, settings } from '../../../lib/api';
 
 const { TextArea } = Input;
 
-export default function PaymentCreatePage() {
+export default function PaymentCreatePageWrapper() {
+  return <Suspense fallback={<div />}><PaymentCreatePage /></Suspense>;
+}
+
+function PaymentCreatePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [form] = Form.useForm();

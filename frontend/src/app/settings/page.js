@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined } from '@ant-design/icons';
@@ -8,7 +8,11 @@ import MainLayout, { useAuth } from '../../components/Layout';
 import { settings, user, amenity, role, emailTemplate } from '../../lib/api';
 import { useCallback } from 'react';
 
-export default function SettingsPage() {
+export default function SettingsPageWrapper() {
+  return <Suspense fallback={<div />}><SettingsPage /></Suspense>;
+}
+
+function SettingsPage() {
   const { hasPermission } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();

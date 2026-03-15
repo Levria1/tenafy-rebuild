@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, createContext, useContext, useEffect, useCallback } from 'react';
+import { Suspense, useState, createContext, useContext, useEffect, useCallback } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Layout, Menu, Avatar, Dropdown, Badge, Button, List, Typography, Empty, Popover, Spin, Tag } from 'antd';
@@ -373,7 +373,11 @@ function NotificationBell() {
 // ---------------------------------------------------------------------------
 // Main Layout
 // ---------------------------------------------------------------------------
-export default function MainLayout({ children }) {
+export default function MainLayoutWrapper({ children }) {
+  return <Suspense fallback={<div />}><MainLayout>{children}</MainLayout></Suspense>;
+}
+
+function MainLayout({ children }) {
   const [collapsed, setCollapsed] = useState(false);
   const [openKeys, setOpenKeys] = useState([]);
   const pathname = usePathname();
