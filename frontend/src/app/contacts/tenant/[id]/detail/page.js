@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { Suspense, useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import {
   Button, Space, Tag, Table, message, Spin, Empty, Dropdown, Tooltip,
@@ -56,7 +56,11 @@ function SectionHeader({ title }) {
 // ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
-export default function TenantDetailPage() {
+export default function TenantDetailPageWrapper() {
+  return <Suspense fallback={<div />}><TenantDetailPage /></Suspense>;
+}
+
+function TenantDetailPage() {
   const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();

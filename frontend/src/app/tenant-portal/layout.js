@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Layout, Menu, Button, Typography, Space, theme } from 'antd';
 import {
@@ -22,7 +22,11 @@ const navItems = [
   { key: '/tenant-portal/profile', label: 'Profile', icon: <UserOutlined /> },
 ];
 
-export default function TenantPortalLayout({ children }) {
+export default function TenantPortalLayoutWrapper({ children }) {
+  return <Suspense fallback={<div />}><TenantPortalLayout>{children}</TenantPortalLayout></Suspense>;
+}
+
+function TenantPortalLayout({ children }) {
   const router = useRouter();
   const pathname = usePathname();
   const [mounted, setMounted] = useState(false);
