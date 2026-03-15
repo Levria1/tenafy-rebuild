@@ -173,6 +173,7 @@ export default function SettingsPage() {
         <Table columns={templateColumns} dataSource={emailTemplates} rowKey="id" loading={loading} pagination={false} />
       </Card>
     )},
+    { key: 'emailSettings', label: 'Settings', children: <EmailWhitelistSettings /> },
   ];
 
   const userTabs = [
@@ -194,7 +195,7 @@ export default function SettingsPage() {
   const accountKeys = ['personal', 'landlord'];
   const accountingKeys = ['categories', 'payment', 'sequences'];
   const amenityKeys = ['amenities'];
-  const emailKeys = ['emailTemplates'];
+  const emailKeys = ['emailTemplates', 'emailSettings'];
   const userKeys = ['users', 'roles'];
 
   let tabItems, pageTitle;
@@ -550,5 +551,80 @@ function AmenitySettings() {
         </div>
       )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Email Whitelist Settings
+// ---------------------------------------------------------------------------
+
+function EmailWhitelistSettings() {
+  const [enabled, setEnabled] = useState(false);
+  const [emails, setEmails] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    settings.getEmailSettings().then(r => {
+      if (r.data.code === 200) {
+        setEnabled(r.data.data.email_whitelist_enabled);
+        setEmails(r.data.data.email_whitelist || '');
+      }
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await settings.updateEmailSettings({
+        email_whitelist_enabled: enabled,
+        email_whitelist: emails,
+      });
+      message.success('Email settings saved');
+    } catch (err) {
+      message.error('Failed to save email settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <Card loading />;
+
+  return (
+    <Card>
+      <h3 style={{ marginBottom: 4 }}>Email Whitelist</h3>
+      <p style={{ color: '#666', marginBottom: 20, fontSize: 13 }}>
+        When enabled, emails will only be sent to addresses listed below. All other recipients will be silently skipped. Use this to safely test email sending before going live.
+      </p>
+
+      <div style={{ marginBottom: 20 }}>
+        <Space>
+          <Switch checked={enabled} onChange={setEnabled} />
+          <span style={{ fontWeight: 500 }}>
+            {enabled ? 'Whitelist ON — only whitelisted emails will receive messages' : 'Whitelist OFF — all emails will be sent normally'}
+          </span>
+        </Space>
+      </div>
+
+      {enabled && (
+        <div style={{ marginBottom: 20 }}>
+          <label style={{ display: 'block', marginBottom: 6, fontWeight: 500 }}>Whitelisted Email Addresses</label>
+          <Input.TextArea
+            rows={6}
+            value={emails}
+            onChange={e => setEmails(e.target.value)}
+            placeholder={"Enter email addresses, one per line:\nyou@example.com\ntest@example.com"}
+            style={{ fontFamily: 'monospace', fontSize: 13 }}
+          />
+          <div style={{ marginTop: 4, color: '#999', fontSize: 12 }}>
+            One email per line. Only these addresses will receive emails while the whitelist is active.
+          </div>
+        </div>
+      )}
+
+      <Button type="primary" onClick={handleSave} loading={saving}>
+        Save
+      </Button>
+    </Card>
   );
 }

@@ -175,7 +175,7 @@ export default function TenantsPage() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleEmail = (t) => {
-    router.push(`/contacts/email/send?to=${encodeURIComponent(t.email || '')}&name=${encodeURIComponent(t.first_name + ' ' + t.last_name)}`);
+    router.push(`/contacts/email/send?category=tenant&id=${t.id}`);
   };
 
   const handleInvoice = (t) => {
@@ -191,7 +191,7 @@ export default function TenantsPage() {
   };
 
   const handleEmailAll = () => {
-    message.info('Email All feature coming soon');
+    router.push('/contacts/email/send?category=tenants');
   };
 
   const resetFilters = () => {

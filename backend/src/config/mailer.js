@@ -49,19 +49,25 @@ async function getTransporter() {
 
 /**
  * Send an email.
- * @param {object} options - { to, subject, html, text, from }
+ * @param {object} options - { to, subject, html, text, from, cc, bcc, replyTo }
  */
-async function sendMail({ to, subject, html, text, from }) {
+async function sendMail({ to, subject, html, text, from, cc, bcc, replyTo }) {
   const transport = await getTransporter();
   const fromAddress = from || process.env.EMAIL_FROM || 'Tenafy <no-reply@tenafy.com>';
 
-  const info = await transport.sendMail({
+  const mailOptions = {
     from: fromAddress,
     to: Array.isArray(to) ? to.join(', ') : to,
     subject,
     html: html || text,
     text: text || '',
-  });
+  };
+
+  if (cc) mailOptions.cc = Array.isArray(cc) ? cc.join(', ') : cc;
+  if (bcc) mailOptions.bcc = Array.isArray(bcc) ? bcc.join(', ') : bcc;
+  if (replyTo) mailOptions.replyTo = replyTo;
+
+  const info = await transport.sendMail(mailOptions);
 
   // Log preview URL for Ethereal test emails
   const previewUrl = nodemailer.getTestMessageUrl(info);

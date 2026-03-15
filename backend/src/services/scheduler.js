@@ -2,6 +2,14 @@ const cron = require('node-cron');
 const pool = require('../config/database');
 const { sendMail } = require('../config/mailer');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
+const {
+  sendInvoiceToTenant,
+  sendInvoiceToLandlord,
+  sendLeaseExpiryToLandlord,
+  sendOverdueToTenant,
+  sendOverdueToLandlord,
+  shouldSendEmail,
+} = require('./emailService');
 
 // ---------------------------------------------------------------------------
 // Notification helper — creates in-app notification + optional email alert
@@ -263,6 +271,18 @@ async function generateRecurringInvoices() {
             `[Scheduler] Created invoice ${invoiceCode} for lease ${lease.id} ` +
             `(${lease.property_name} / ${lease.unit_name}, due ${nextDueDateStr})`
           );
+
+          // Send invoice emails if toggles are enabled
+          try {
+            await sendInvoiceToTenant(lease.org_id, lease.id, {
+              invoiceId, invoiceCode, category: catId, dueDate: nextDueDate,
+            });
+            await sendInvoiceToLandlord(lease.org_id, lease.id, {
+              invoiceId, invoiceCode, category: catId, dueDate: nextDueDate,
+            });
+          } catch (emailErr) {
+            console.error(`[Scheduler] Invoice email error for ${invoiceCode}:`, emailErr.message);
+          }
         }
 
         // If this invoice is in the future → we've created the next upcoming one, stop
@@ -383,24 +403,30 @@ async function sendLeaseExpiryNotifications() {
     const result = orgResults[lease.org_id];
 
     try {
-      const endDateFormatted = new Date(lease.end_date).toLocaleDateString('en-US', {
-        year: 'numeric', month: 'long', day: 'numeric',
-      });
+      // Try template-based email first (checks landlord_expired toggle internally)
+      const templateResult = await sendLeaseExpiryToLandlord(lease.org_id, lease.id);
 
-      const subject = `Lease Expiry Notice — ${lease.property_name}`;
-      const html = `
-        <p>Dear ${lease.tenant_first_name} ${lease.tenant_last_name},</p>
-        <p>
-          This is a reminder that your lease at
-          <strong>${lease.property_name}</strong>${lease.unit_name ? `, Unit ${lease.unit_name}` : ''}
-          will expire on <strong>${endDateFormatted}</strong>
-          (${lease.days_remaining} day${lease.days_remaining === 1 ? '' : 's'} remaining).
-        </p>
-        <p>Please contact your property manager if you would like to discuss renewal options.</p>
-        <p>— The Tenafy Team</p>
-      `;
+      if (!templateResult) {
+        // Fallback: send hardcoded email directly
+        const endDateFormatted = new Date(lease.end_date).toLocaleDateString('en-US', {
+          year: 'numeric', month: 'long', day: 'numeric',
+        });
 
-      await sendMail({ to: lease.tenant_email, subject, html });
+        const subject = `Lease Expiry Notice — ${lease.property_name}`;
+        const html = `
+          <p>Dear ${lease.tenant_first_name} ${lease.tenant_last_name},</p>
+          <p>
+            This is a reminder that your lease at
+            <strong>${lease.property_name}</strong>${lease.unit_name ? `, Unit ${lease.unit_name}` : ''}
+            will expire on <strong>${endDateFormatted}</strong>
+            (${lease.days_remaining} day${lease.days_remaining === 1 ? '' : 's'} remaining).
+          </p>
+          <p>Please contact your property manager if you would like to discuss renewal options.</p>
+          <p>— The Tenafy Team</p>
+        `;
+
+        await sendMail({ to: lease.tenant_email, subject, html });
+      }
       result.sent++;
       result.details.push(`${lease.tenant_first_name} ${lease.tenant_last_name} @ ${lease.property_name} ${lease.unit_name || ''} (${lease.days_remaining}d)`);
     } catch (err) {
@@ -450,6 +476,7 @@ async function sendOverdueReminders() {
        i.amount,
        i.due_on,
        i.org_id,
+       i.leasing_id,
        t.email        AS tenant_email,
        t.first_name   AS tenant_first_name,
        t.last_name    AS tenant_last_name,
@@ -486,26 +513,39 @@ async function sendOverdueReminders() {
     result.totalOverdue++;
 
     try {
-      const dueDateFormatted = new Date(inv.due_on).toLocaleDateString('en-US', {
-        year: 'numeric', month: 'long', day: 'numeric',
-      });
+      // Try template-based email if invoice has a lease
+      let sent = false;
+      if (inv.leasing_id) {
+        const templateResult = await sendOverdueToTenant(inv.org_id, inv.leasing_id, {
+          dueDate: inv.due_on,
+          overdueAmount: inv.amount,
+        });
+        if (templateResult) sent = true;
+      }
 
-      const amountFormatted = Number(inv.amount).toFixed(2);
-      const subject = `Payment Reminder — Invoice ${inv.invoice_code} is Overdue`;
-      const html = `
-        <p>Dear ${inv.tenant_first_name} ${inv.tenant_last_name},</p>
-        <p>
-          This is a reminder that invoice <strong>${inv.invoice_code}</strong>
-          for <strong>$${amountFormatted}</strong> at
-          <strong>${inv.property_name}</strong>${inv.unit_name ? `, Unit ${inv.unit_name}` : ''}
-          was due on <strong>${dueDateFormatted}</strong>
-          and is now <strong>${inv.days_overdue} day${inv.days_overdue === 1 ? '' : 's'} overdue</strong>.
-        </p>
-        <p>Please arrange payment at your earliest convenience or contact your property manager.</p>
-        <p>— The Tenafy Team</p>
-      `;
+      if (!sent) {
+        // Fallback: send hardcoded email directly
+        const dueDateFormatted = new Date(inv.due_on).toLocaleDateString('en-US', {
+          year: 'numeric', month: 'long', day: 'numeric',
+        });
 
-      await sendMail({ to: inv.tenant_email, subject, html });
+        const amountFormatted = Number(inv.amount).toFixed(2);
+        const subject = `Payment Reminder — Invoice ${inv.invoice_code} is Overdue`;
+        const html = `
+          <p>Dear ${inv.tenant_first_name} ${inv.tenant_last_name},</p>
+          <p>
+            This is a reminder that invoice <strong>${inv.invoice_code}</strong>
+            for <strong>$${amountFormatted}</strong> at
+            <strong>${inv.property_name}</strong>${inv.unit_name ? `, Unit ${inv.unit_name}` : ''}
+            was due on <strong>${dueDateFormatted}</strong>
+            and is now <strong>${inv.days_overdue} day${inv.days_overdue === 1 ? '' : 's'} overdue</strong>.
+          </p>
+          <p>Please arrange payment at your earliest convenience or contact your property manager.</p>
+          <p>— The Tenafy Team</p>
+        `;
+
+        await sendMail({ to: inv.tenant_email, subject, html });
+      }
       result.sent++;
     } catch (err) {
       result.failures++;

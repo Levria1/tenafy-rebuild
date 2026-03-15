@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { Table, Button, Space, Tag, Input, Select, DatePicker, Drawer, Descriptions, Divider, Spin, Popover, Radio, Checkbox, Tooltip, message, Modal } from 'antd';
-import { PlusOutlined, FilterOutlined, FileTextOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
+import { PlusOutlined, FilterOutlined, FileTextOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ExclamationCircleOutlined, MailOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
@@ -549,6 +549,10 @@ export default function InvoicesPage() {
         open={drawerOpen}
         footer={selectedInvoice ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Button type="primary" icon={<MailOutlined />} block
+              onClick={() => { closeDrawer(); router.push(`/contacts/email/send?category=invoice&invoiceId=${selectedInvoice.id}&leaseId=${selectedInvoice.leasing_id || ''}&invoiceCode=${selectedInvoice.invoice_code || ''}`); }}>
+              Send Email
+            </Button>
             <Button type="primary" icon={<PrinterOutlined />} block onClick={() => window.print()}>
               Print
             </Button>

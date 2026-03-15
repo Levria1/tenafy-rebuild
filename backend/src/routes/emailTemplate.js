@@ -2,6 +2,12 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
+const {
+  TEMPLATE_TYPES,
+  TEMPLATE_VARIABLES,
+  sendTemplateEmail,
+  previewTemplate,
+} = require('../services/emailService');
 
 // POST /api/email-template/list - List email templates with paging
 router.post('/list', authenticate, async (req, res) => {
@@ -55,7 +61,7 @@ router.get('/all', authenticate, async (req, res) => {
     }
 
     const [templates] = await pool.execute(
-      'SELECT id, template_name as name, subject, template_type as type FROM email_template WHERE ' + whereClause + ' ORDER BY template_name',
+      'SELECT id, template_name as name, subject, template_type as type, is_default_template FROM email_template WHERE ' + whereClause + ' ORDER BY template_name',
       params
     );
 
@@ -69,14 +75,7 @@ router.get('/all', authenticate, async (req, res) => {
 // GET /api/email-template/types/get - Get email template types
 router.get('/types/get', authenticate, async (req, res) => {
   try {
-    const types = [
-      { value: 'lease', label: 'Lease' },
-      { value: 'invoice', label: 'Invoice' },
-      { value: 'payment', label: 'Payment' },
-      { value: 'maintenance', label: 'Maintenance' },
-      { value: 'general', label: 'General' },
-    ];
-    res.json({ code: 200, data: types });
+    res.json({ code: 200, data: TEMPLATE_TYPES });
   } catch (error) {
     console.error('Get email template types error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get types' });
@@ -86,23 +85,133 @@ router.get('/types/get', authenticate, async (req, res) => {
 // GET /api/email-template/variable/get - Get email template variables
 router.get('/variable/get', authenticate, async (req, res) => {
   try {
-    const variables = [
-      { key: '{{tenant_name}}', description: 'Tenant full name' },
-      { key: '{{tenant_email}}', description: 'Tenant email address' },
-      { key: '{{property_name}}', description: 'Property name' },
-      { key: '{{unit_name}}', description: 'Unit name' },
-      { key: '{{lease_start}}', description: 'Lease start date' },
-      { key: '{{lease_end}}', description: 'Lease end date' },
-      { key: '{{rent_amount}}', description: 'Monthly rent amount' },
-      { key: '{{invoice_number}}', description: 'Invoice number' },
-      { key: '{{invoice_amount}}', description: 'Invoice amount' },
-      { key: '{{invoice_due_date}}', description: 'Invoice due date' },
-      { key: '{{organization_name}}', description: 'Organization name' },
-    ];
-    res.json({ code: 200, data: variables });
+    res.json({ code: 200, data: TEMPLATE_VARIABLES });
   } catch (error) {
     console.error('Get email template variables error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get variables' });
+  }
+});
+
+// POST /api/email-template/send - Send a template email (supports multi-recipient)
+router.post('/send', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const {
+      templateId, templateType, leaseId, category, dueDate,
+      invoiceId, invoiceCode, toOverride,
+      // Manual compose fields (override template content)
+      subject: manualSubject, body: manualBody, cc, bcc, replyTo,
+    } = req.body;
+
+    // Parse toOverride — could be comma/semicolon-separated list
+    let recipients = [];
+    if (toOverride) {
+      recipients = toOverride.split(/[;,\n]/).map(e => e.trim()).filter(Boolean);
+    }
+
+    // If manual subject/body provided, send directly without template lookup
+    if (manualSubject && manualBody && recipients.length > 0) {
+      const { sendMail } = require('../config/mailer');
+      const { resolveVariables, substituteVariables, getSampleVariables } = require('../services/emailService');
+
+      let variables = getSampleVariables();
+      if (leaseId) {
+        variables = await resolveVariables(orgId, leaseId, {
+          category, dueDate: dueDate ? new Date(dueDate) : undefined,
+          invoiceCode, invoiceId,
+        });
+      }
+
+      const results = [];
+      for (const recipient of recipients) {
+        try {
+          const renderedSubject = substituteVariables(manualSubject, variables);
+          const renderedBody = substituteVariables(manualBody, variables);
+          const mailOpts = {
+            to: recipient,
+            subject: renderedSubject,
+            html: renderedBody,
+          };
+          if (cc) mailOpts.cc = cc;
+          if (bcc) mailOpts.bcc = bcc;
+          if (replyTo) mailOpts.replyTo = replyTo;
+
+          const result = await sendMail(mailOpts);
+          results.push({ email: recipient, status: 'sent', messageId: result.messageId });
+
+          // Log
+          try {
+            await pool.execute(
+              `INSERT INTO email_log (org_id, to_email, subject, type, template_id, lease_id, status, sent_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'sent', NOW(), NOW())`,
+              [orgId, recipient, renderedSubject, templateType || 'manual', templateId || null, leaseId || null]
+            );
+          } catch (logErr) { /* ignore */ }
+        } catch (err) {
+          results.push({ email: recipient, status: 'failed', error: err.message });
+        }
+      }
+
+      return res.json({ code: 200, message: `Email sent to ${results.filter(r => r.status === 'sent').length} recipient(s)`, data: results });
+    }
+
+    // Template-based send (single or multi-recipient)
+    if (recipients.length > 1) {
+      // Multi-recipient: send to each via template
+      const results = [];
+      for (const email of recipients) {
+        try {
+          const result = await sendTemplateEmail(orgId, {
+            templateType, templateId, leaseId, category,
+            dueDate: dueDate ? new Date(dueDate) : undefined,
+            invoiceCode, invoiceId,
+            toOverride: email,
+          });
+          results.push({ email, status: result ? 'sent' : 'skipped' });
+        } catch (err) {
+          results.push({ email, status: 'failed', error: err.message });
+        }
+      }
+      return res.json({ code: 200, message: `Email sent to ${results.filter(r => r.status === 'sent').length} recipient(s)`, data: results });
+    }
+
+    // Single recipient (or auto-resolve from lease)
+    const result = await sendTemplateEmail(orgId, {
+      templateType, templateId, leaseId, category,
+      dueDate: dueDate ? new Date(dueDate) : undefined,
+      invoiceCode, invoiceId,
+      toOverride: recipients[0] || undefined,
+    });
+
+    if (!result) {
+      return res.status(400).json({ code: 400, message: 'Could not send email. Check that a template exists and a recipient is available.' });
+    }
+
+    res.json({ code: 200, message: 'Email sent', data: result });
+  } catch (error) {
+    console.error('Send template email error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to send email' });
+  }
+});
+
+// POST /api/email-template/preview - Preview a rendered template
+router.post('/preview', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { templateId, templateType, leaseId, category, dueDate } = req.body;
+
+    const result = await previewTemplate(orgId, {
+      templateId,
+      templateType,
+      leaseId,
+      category,
+      dueDate: dueDate ? new Date(dueDate) : undefined,
+    });
+
+    res.json({ code: 200, data: result });
+  } catch (error) {
+    console.error('Preview template error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to preview template' });
   }
 });
 
@@ -131,15 +240,39 @@ router.get('/:id', authenticate, async (req, res) => {
 // POST /api/email-template - Create email template
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { name, subject, body, type } = req.body;
+    const {
+      name, subject, body, type,
+      bcc, cc, reply_to, from: fromAddr,
+      is_default_template,
+      before_date, date_first, date_second,
+    } = req.body;
     const orgId = req.user.orgId;
 
-    const [result] = await pool.execute(
-      'INSERT INTO email_template (org_id, template_name, subject, template_content, template_type, status, created_time) VALUES (?, ?, ?, ?, ?, 1, NOW())',
-      [orgId, name, subject, body, type]
+    // If marking as default, unset other defaults for this type
+    if (is_default_template === 1 || is_default_template === true) {
+      await pool.execute(
+        'UPDATE email_template SET is_default_template = 2 WHERE org_id = ? AND template_type = ? AND is_default_template = 1',
+        [orgId, type]
+      );
+    }
+
+    const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+
+    await pool.execute(
+      `INSERT INTO email_template
+       (id, org_id, template_name, subject, template_content, template_type, status,
+        bcc, cc, reply_to, \`from\`, is_default_template, before_date, date_first, date_second, created_time)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [
+        id.toString(), orgId, name, subject, body, type,
+        bcc || null, cc || null, reply_to || null, fromAddr || null,
+        (is_default_template === 1 || is_default_template === true) ? 1 : 2,
+        before_date != null ? (before_date ? 1 : 0) : 1,
+        date_first || null, date_second || null,
+      ]
     );
 
-    res.json({ code: 200, message: 'Email template created', data: { id: result.insertId } });
+    res.json({ code: 200, message: 'Email template created', data: { id: id.toString() } });
   } catch (error) {
     console.error('Create email template error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create email template' });
@@ -150,12 +283,38 @@ router.post('/', authenticate, async (req, res) => {
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, subject, body, type, status } = req.body;
+    const {
+      name, subject, body, type, status,
+      bcc, cc, reply_to, from: fromAddr,
+      is_default_template,
+      before_date, date_first, date_second,
+    } = req.body;
     const orgId = req.user.orgId;
 
+    // If marking as default, unset other defaults for this type
+    if (is_default_template === 1 || is_default_template === true) {
+      await pool.execute(
+        'UPDATE email_template SET is_default_template = 2 WHERE org_id = ? AND template_type = ? AND is_default_template = 1 AND id != ?',
+        [orgId, type, id]
+      );
+    }
+
     await pool.execute(
-      'UPDATE email_template SET template_name = ?, subject = ?, template_content = ?, template_type = ?, status = ?, updated_time = NOW() WHERE id = ? AND org_id = ?',
-      [name, subject, body, type, status, id, orgId]
+      `UPDATE email_template SET
+         template_name = ?, subject = ?, template_content = ?, template_type = ?, status = ?,
+         bcc = ?, cc = ?, reply_to = ?, \`from\` = ?,
+         is_default_template = ?,
+         before_date = ?, date_first = ?, date_second = ?,
+         updated_time = NOW()
+       WHERE id = ? AND org_id = ?`,
+      [
+        name, subject, body, type, status ?? 1,
+        bcc || null, cc || null, reply_to || null, fromAddr || null,
+        (is_default_template === 1 || is_default_template === true) ? 1 : 2,
+        before_date != null ? (before_date ? 1 : 0) : 1,
+        date_first || null, date_second || null,
+        id, orgId,
+      ]
     );
 
     res.json({ code: 200, message: 'Email template updated' });

@@ -261,6 +261,8 @@ export const emailTemplate = {
   create: (data) => api.post('/api/email-template', data),
   update: (id, data) => api.put(`/api/email-template/${id}`, data),
   delete: (id) => api.delete(`/api/email-template/${id}`),
+  send: (data) => api.post('/api/email-template/send', data),
+  preview: (data) => api.post('/api/email-template/preview', data),
 };
 
 export const settings = {
@@ -293,6 +295,9 @@ export const settings = {
   createAccountSetting: (data) => api.post('/api/user/setting/account/add', data),
   updateAccountSetting: (id, data) => api.put(`/api/user/setting/account/update/${id}`, data),
   deleteAccountSetting: (id) => api.delete(`/api/user/setting/account/delete/${id}`),
+  // Email settings (whitelist)
+  getEmailSettings: () => api.get('/api/user/setting/email'),
+  updateEmailSettings: (data) => api.put('/api/user/setting/email', data),
 };
 
 export const pdf = {

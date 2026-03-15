@@ -3,6 +3,61 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const pool = require('../config/database');
 
+// ---------------------------------------------------------------------------
+// Email Settings (whitelist)
+// ---------------------------------------------------------------------------
+
+// GET /api/user/setting/email - Get email whitelist settings
+router.get('/setting/email', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[org]] = await pool.execute(
+      'SELECT email_whitelist_enabled, email_whitelist FROM organization WHERE id = ?',
+      [orgId]
+    );
+    if (!org) return res.json({ code: 404, message: 'Organization not found' });
+
+    // Convert BIT to boolean
+    let enabled = false;
+    if (org.email_whitelist_enabled) {
+      if (Buffer.isBuffer(org.email_whitelist_enabled)) {
+        enabled = org.email_whitelist_enabled[0] === 1;
+      } else {
+        enabled = Boolean(org.email_whitelist_enabled);
+      }
+    }
+
+    res.json({
+      code: 200,
+      data: {
+        email_whitelist_enabled: enabled,
+        email_whitelist: org.email_whitelist || '',
+      },
+    });
+  } catch (err) {
+    console.error('Get email settings error:', err);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// PUT /api/user/setting/email - Update email whitelist settings
+router.put('/setting/email', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { email_whitelist_enabled, email_whitelist } = req.body;
+
+    await pool.execute(
+      'UPDATE organization SET email_whitelist_enabled = ?, email_whitelist = ? WHERE id = ?',
+      [email_whitelist_enabled ? 1 : 0, email_whitelist || null, orgId]
+    );
+
+    res.json({ code: 200, message: 'Email settings updated' });
+  } catch (err) {
+    console.error('Update email settings error:', err);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
 // GET /api/setting/category/list - Get categories
 router.get('/setting/category/list', authenticate, async (req, res) => {
   try {

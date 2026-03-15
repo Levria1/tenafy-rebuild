@@ -175,8 +175,8 @@ export default function TenantDetailPage() {
     ],
     onClick: ({ key }) => {
       if (key === 'edit') router.push(`/contacts/tenant/${tenantId}/edit`);
-      else if (key === 'email' && tenantData?.email) {
-        router.push(`/contacts/email/send?to=${encodeURIComponent(tenantData.email)}&name=${encodeURIComponent(tenantData.first_name + ' ' + tenantData.last_name)}`);
+      else if (key === 'email') {
+        router.push(`/contacts/email/send?category=tenant&id=${tenantId}`);
       } else if (key === 'invoice') {
         router.push(`/invoices/create?tenantId=${tenantId}&tenantName=${encodeURIComponent((tenantData?.first_name || '') + ' ' + (tenantData?.last_name || ''))}`);
       }
@@ -372,6 +372,14 @@ export default function TenantDetailPage() {
                   }}
                 >
                   Publish Invoice
+                </Button>
+                <Button
+                  type="default"
+                  icon={<MailOutlined />}
+                  onClick={() => router.push(`/contacts/email/send?category=tenantLeases&id=${tenantId}&leaseId=${lease.id}`)}
+                  style={{ height: 36 }}
+                >
+                  Send Email
                 </Button>
               </div>
             )}
