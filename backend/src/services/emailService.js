@@ -1,5 +1,44 @@
 const pool = require('../config/database');
-const { sendMail } = require('../config/mailer');
+const { sendMail, sendMailWithAccount } = require('../config/mailer');
+
+// ---------------------------------------------------------------------------
+// SMTP account lookup — match "from" address to smtp_account table
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract raw email from a "from" field that may include a display name.
+ * e.g. "Tane Residence <bookings@taneresidence.com>" → "bookings@taneresidence.com"
+ */
+function extractEmail(fromStr) {
+  if (!fromStr) return null;
+  const match = fromStr.match(/<([^>]+)>/);
+  if (match) return match[1].trim().toLowerCase();
+  return fromStr.trim().toLowerCase();
+}
+
+/**
+ * Find matching SMTP account for a "from" address, or fall back to default account.
+ * @param {string} orgId
+ * @param {string} fromAddress - template.from value (may include display name)
+ * @returns {object|null} smtp_account row or null
+ */
+async function findSmtpAccount(orgId, fromAddress) {
+  const email = extractEmail(fromAddress);
+  if (email) {
+    const [rows] = await pool.execute(
+      'SELECT * FROM smtp_account WHERE org_id = ? AND email = ? AND status = 1 LIMIT 1',
+      [orgId, email]
+    );
+    if (rows.length > 0) return rows[0];
+  }
+
+  // Fall back to default account for this org
+  const [defaults] = await pool.execute(
+    'SELECT * FROM smtp_account WHERE org_id = ? AND is_default = 1 AND status = 1 LIMIT 1',
+    [orgId]
+  );
+  return defaults.length > 0 ? defaults[0] : null;
+}
 
 // ---------------------------------------------------------------------------
 // Template types and their corresponding leasing toggle columns
@@ -517,12 +556,17 @@ async function sendTemplateEmail(orgId, {
   if (template.bcc) mailOpts.bcc = template.bcc;
   if (template.reply_to) mailOpts.replyTo = template.reply_to;
 
-  // 6. Send
+  // 6. Send — try matching SMTP account first, fall back to .env credentials
   let result;
   let status = 'sent';
   let error = null;
   try {
-    result = await sendMail(mailOpts);
+    const smtpAccount = await findSmtpAccount(orgId, mailOpts.from);
+    if (smtpAccount) {
+      result = await sendMailWithAccount(smtpAccount, mailOpts);
+    } else {
+      result = await sendMail(mailOpts);
+    }
   } catch (err) {
     status = 'failed';
     error = err.message;
@@ -681,6 +725,8 @@ module.exports = {
   TOGGLE_MAP,
 
   // Core functions
+  findSmtpAccount,
+  extractEmail,
   loadTemplate,
   resolveVariables,
   substituteVariables,

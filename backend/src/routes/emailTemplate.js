@@ -7,6 +7,7 @@ const {
   TEMPLATE_VARIABLES,
   sendTemplateEmail,
   previewTemplate,
+  findSmtpAccount,
 } = require('../services/emailService');
 
 // POST /api/email-template/list - List email templates with paging
@@ -111,7 +112,7 @@ router.post('/send', authenticate, async (req, res) => {
 
     // If manual subject/body provided, send directly without template lookup
     if (manualSubject && manualBody && recipients.length > 0) {
-      const { sendMail } = require('../config/mailer');
+      const { sendMail, sendMailWithAccount } = require('../config/mailer');
       const { resolveVariables, substituteVariables, getSampleVariables } = require('../services/emailService');
 
       let variables = getSampleVariables();
@@ -127,16 +128,22 @@ router.post('/send', authenticate, async (req, res) => {
         try {
           const renderedSubject = substituteVariables(manualSubject, variables);
           const renderedBody = substituteVariables(manualBody, variables);
+          const { from: manualFrom } = req.body;
           const mailOpts = {
             to: recipient,
             subject: renderedSubject,
             html: renderedBody,
+            from: manualFrom || undefined,
           };
           if (cc) mailOpts.cc = cc;
           if (bcc) mailOpts.bcc = bcc;
           if (replyTo) mailOpts.replyTo = replyTo;
 
-          const result = await sendMail(mailOpts);
+          // Use matching SMTP account if available
+          const smtpAccount = await findSmtpAccount(orgId, mailOpts.from);
+          const result = smtpAccount
+            ? await sendMailWithAccount(smtpAccount, mailOpts)
+            : await sendMail(mailOpts);
           results.push({ email: recipient, status: 'sent', messageId: result.messageId });
 
           // Log

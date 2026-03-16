@@ -2,10 +2,10 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination } from 'antd';
+import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../components/Layout';
-import { settings, user, amenity, role, emailTemplate } from '../../lib/api';
+import { settings, user, amenity, role, emailTemplate, smtpAccount } from '../../lib/api';
 import { useCallback } from 'react';
 
 export default function SettingsPageWrapper() {
@@ -177,6 +177,7 @@ function SettingsPage() {
         <Table columns={templateColumns} dataSource={emailTemplates} rowKey="id" loading={loading} pagination={false} />
       </Card>
     )},
+    { key: 'smtpAccounts', label: 'SMTP Accounts', children: <SmtpAccountSettings /> },
     { key: 'emailSettings', label: 'Settings', children: <EmailWhitelistSettings /> },
   ];
 
@@ -199,7 +200,7 @@ function SettingsPage() {
   const accountKeys = ['personal', 'landlord'];
   const accountingKeys = ['categories', 'payment', 'sequences'];
   const amenityKeys = ['amenities'];
-  const emailKeys = ['emailTemplates', 'emailSettings'];
+  const emailKeys = ['emailTemplates', 'smtpAccounts', 'emailSettings'];
   const userKeys = ['users', 'roles'];
 
   let tabItems, pageTitle;
@@ -554,6 +555,187 @@ function AmenitySettings() {
             onChange={(p) => setPage(p)} showSizeChanger={false} />
         </div>
       )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SMTP Account Settings
+// ---------------------------------------------------------------------------
+
+function SmtpAccountSettings() {
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingAccount, setEditingAccount] = useState(null);
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  const loadAccounts = async () => {
+    setLoading(true);
+    try {
+      const r = await smtpAccount.list();
+      if (r.data.code === 200) setAccounts(r.data.data || []);
+    } catch (err) {
+      console.error('Load SMTP accounts error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadAccounts(); }, []);
+
+  const openCreate = () => {
+    setEditingAccount(null);
+    form.resetFields();
+    form.setFieldsValue({ host: 'smtp.titan.email', port: 465, is_secure: true, is_default: false });
+    setModalOpen(true);
+  };
+
+  const openEdit = (record) => {
+    setEditingAccount(record);
+    form.setFieldsValue({
+      email: record.email,
+      password: '', // don't pre-fill password
+      display_name: record.display_name || '',
+      host: record.host || 'smtp.titan.email',
+      port: Number(record.port) || 465,
+      is_secure: record.is_secure,
+      is_default: record.is_default,
+    });
+    setModalOpen(true);
+  };
+
+  const handleTest = async () => {
+    try {
+      const values = form.getFieldsValue();
+      if (!values.email || !values.password) {
+        message.warning('Email and password are required to test');
+        return;
+      }
+      setTesting(true);
+      const r = await smtpAccount.test(values);
+      if (r.data.code === 200) {
+        message.success('Connection successful!');
+      }
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Connection failed');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleSave = async () => {
+    try {
+      const values = await form.validateFields();
+      setSaving(true);
+      if (editingAccount) {
+        // Don't send empty password on update
+        if (!values.password) delete values.password;
+        await smtpAccount.update(editingAccount.id, values);
+        message.success('SMTP account updated');
+      } else {
+        await smtpAccount.create(values);
+        message.success('SMTP account created');
+      }
+      setModalOpen(false);
+      loadAccounts();
+    } catch (err) {
+      if (err.errorFields) return; // validation error
+      message.error('Failed to save SMTP account');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await smtpAccount.delete(id);
+      message.success('SMTP account deleted');
+      loadAccounts();
+    } catch (err) {
+      message.error('Failed to delete');
+    }
+  };
+
+  const columns = [
+    { title: 'Email', dataIndex: 'email', key: 'email' },
+    { title: 'Display Name', dataIndex: 'display_name', key: 'display_name', render: (v) => v || '-' },
+    { title: 'Host', dataIndex: 'host', key: 'host', width: 160 },
+    { title: 'Port', dataIndex: 'port', key: 'port', width: 70 },
+    { title: 'Default', dataIndex: 'is_default', key: 'is_default', width: 80,
+      render: (v) => v ? <Tag color="blue">Default</Tag> : null },
+    { title: 'Actions', key: 'actions', width: 150, render: (_, r) => (
+      <Space>
+        <Button type="link" style={{ padding: 0 }} onClick={() => openEdit(r)}>Edit</Button>
+        <Popconfirm title="Delete this SMTP account?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+          <Button type="link" danger style={{ padding: 0 }}>Delete</Button>
+        </Popconfirm>
+      </Space>
+    )},
+  ];
+
+  return (
+    <>
+      <Card>
+        <h3 style={{ marginBottom: 4 }}>SMTP Accounts</h3>
+        <p style={{ color: '#666', marginBottom: 16, fontSize: 13 }}>
+          Add SMTP accounts for each email address you send from. When a template uses a specific &quot;From&quot; address, the matching SMTP credentials will be used automatically.
+        </p>
+        <div style={{ marginBottom: 16 }}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>Add SMTP Account</Button>
+        </div>
+        <Table columns={columns} dataSource={accounts} rowKey="id" loading={loading} pagination={false} size="middle" />
+      </Card>
+
+      <Modal
+        title={editingAccount ? 'Edit SMTP Account' : 'Add SMTP Account'}
+        open={modalOpen}
+        onCancel={() => setModalOpen(false)}
+        footer={[
+          <Button key="test" onClick={handleTest} loading={testing}>Test Connection</Button>,
+          <Button key="cancel" onClick={() => setModalOpen(false)}>Cancel</Button>,
+          <Button key="save" type="primary" onClick={handleSave} loading={saving}>Save</Button>,
+        ]}
+        width={520}
+      >
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="email" label="Email Address" rules={[{ required: true, type: 'email', message: 'Valid email required' }]}>
+            <Input placeholder="payments@yourdomain.com" />
+          </Form.Item>
+          <Form.Item name="password" label="Password" rules={editingAccount ? [] : [{ required: true, message: 'Password required' }]}>
+            <Input.Password placeholder={editingAccount ? 'Leave blank to keep current' : 'SMTP password'} />
+          </Form.Item>
+          <Form.Item name="display_name" label="Display Name">
+            <Input placeholder="e.g. Tane Residence" />
+          </Form.Item>
+          <Row gutter={16}>
+            <Col span={16}>
+              <Form.Item name="host" label="SMTP Host">
+                <Input placeholder="smtp.titan.email" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="port" label="Port">
+                <InputNumber style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="is_secure" label="SSL/TLS" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="is_default" label="Default Account" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+      </Modal>
     </>
   );
 }

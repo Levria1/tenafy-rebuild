@@ -252,6 +252,14 @@ export const amenity = {
   delete: (id) => api.delete(`/api/amenity/${id}`),
 };
 
+export const smtpAccount = {
+  list: () => api.post('/api/smtp-account/list'),
+  create: (data) => api.post('/api/smtp-account', data),
+  update: (id, data) => api.put(`/api/smtp-account/${id}`, data),
+  delete: (id) => api.delete(`/api/smtp-account/${id}`),
+  test: (data) => api.post('/api/smtp-account/test', data),
+};
+
 export const emailTemplate = {
   list: (data, params) => api.post('/api/email-template/list', data, { params }),
   getAll: (params) => api.get('/api/email-template/all', { params }),
