@@ -133,10 +133,18 @@ function buildMenuItems(hasPermission) {
 
 export function AuthProvider({ children }) {
   const router = useRouter();
+  const currentPathname = usePathname();
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Skip auth for master pages, login page, and tenant portal
+  const isPublicPage = currentPathname === '/login' || currentPathname.startsWith('/master') || currentPathname.startsWith('/tenant-portal');
+
   useEffect(() => {
+    if (isPublicPage) {
+      setLoading(false);
+      return;
+    }
     const token = Cookies.get('__s_t');
     if (!token) {
       router.push('/login');
@@ -157,7 +165,7 @@ export function AuthProvider({ children }) {
         }).finally(() => setLoading(false));
       });
     }
-  }, [router]);
+  }, [router, isPublicPage]);
 
   const isSuperAdmin = Number(user?.orgType) === 6;
 

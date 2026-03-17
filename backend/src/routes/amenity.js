@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // POST /api/amenity/list - List amenities with filtering + pagination
 router.post('/list', authenticate, async (req, res) => {
@@ -28,7 +28,7 @@ router.post('/list', authenticate, async (req, res) => {
       params.push(Number(type));
     }
 
-    const [amenities] = await pool.execute(
+    const [amenities] = await req.pool.execute(
       `SELECT id, org_id, display_name, category, type, enabled, order_id
        FROM amenity WHERE ${whereClause}
        ORDER BY category, type, order_id
@@ -36,7 +36,7 @@ router.post('/list', authenticate, async (req, res) => {
       params
     );
 
-    const [countResult] = await pool.execute(
+    const [countResult] = await req.pool.execute(
       `SELECT COUNT(*) as total FROM amenity WHERE ${whereClause}`,
       params
     );
@@ -54,7 +54,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
-    const [[amenityRow]] = await pool.execute(
+    const [[amenityRow]] = await req.pool.execute(
       'SELECT id, org_id, display_name, category, type, enabled, order_id FROM amenity WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
@@ -81,7 +81,7 @@ router.post('/', authenticate, async (req, res) => {
     }
 
     // Auto-generate order_id: max + 1 for this category
-    const [[maxOrder]] = await pool.execute(
+    const [[maxOrder]] = await req.pool.execute(
       'SELECT MAX(order_id) as max_order FROM amenity WHERE org_id = ? AND category = ?',
       [orgId, category ?? 0]
     );
@@ -89,7 +89,7 @@ router.post('/', authenticate, async (req, res) => {
 
     const id = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-    await pool.execute(
+    await req.pool.execute(
       'INSERT INTO amenity (id, org_id, display_name, category, type, enabled, order_id) VALUES (?, ?, ?, ?, ?, 1, ?)',
       [id, orgId, display_name, category ?? 0, type ?? 1, nextOrder]
     );
@@ -109,7 +109,7 @@ router.put('/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     // Check exists
-    const [[existing]] = await pool.execute(
+    const [[existing]] = await req.pool.execute(
       'SELECT id, category FROM amenity WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
@@ -121,7 +121,7 @@ router.put('/:id', authenticate, async (req, res) => {
     let orderUpdate = '';
     const updateParams = [];
     if (category !== undefined && Number(category) !== Number(existing.category)) {
-      const [[maxOrder]] = await pool.execute(
+      const [[maxOrder]] = await req.pool.execute(
         'SELECT MAX(order_id) as max_order FROM amenity WHERE org_id = ? AND category = ?',
         [orgId, category]
       );
@@ -130,7 +130,7 @@ router.put('/:id', authenticate, async (req, res) => {
       updateParams.push(nextOrder);
     }
 
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE amenity SET display_name = ?, category = ?, type = ?${orderUpdate} WHERE id = ? AND org_id = ?`,
       [display_name, category ?? existing.category, type ?? 1, ...updateParams, id, orgId]
     );
@@ -147,7 +147,7 @@ router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('UPDATE amenity SET enabled = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
+    await req.pool.execute('UPDATE amenity SET enabled = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
     res.json({ code: 200, message: 'Amenity deleted' });
   } catch (error) {
     console.error('Delete amenity error:', error);

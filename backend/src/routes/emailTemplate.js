@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+const { authenticate, requirePermission } = require('../middleware/auth');
+
 const {
   TEMPLATE_TYPES,
   TEMPLATE_VARIABLES,
@@ -31,11 +31,11 @@ router.post('/list', authenticate, async (req, res) => {
       params.push(type);
     }
 
-    const [templates] = await pool.execute(
+    const [templates] = await req.pool.execute(
       'SELECT id, template_name as name, subject, template_type as type, template_content as body, status, bcc, cc, reply_to, `from`, is_default_template, created_time FROM email_template WHERE ' + whereClause + ' ORDER BY template_name LIMIT ' + limit + ' OFFSET ' + offset,
       params
     );
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       'SELECT COUNT(*) as total FROM email_template WHERE ' + whereClause,
       params
     );
@@ -61,7 +61,7 @@ router.get('/all', authenticate, async (req, res) => {
       params.push(type);
     }
 
-    const [templates] = await pool.execute(
+    const [templates] = await req.pool.execute(
       'SELECT id, template_name as name, subject, template_type as type, is_default_template FROM email_template WHERE ' + whereClause + ' ORDER BY template_name',
       params
     );
@@ -140,7 +140,7 @@ router.post('/send', authenticate, async (req, res) => {
           if (replyTo) mailOpts.replyTo = replyTo;
 
           // Use matching SMTP account if available
-          const smtpAccount = await findSmtpAccount(orgId, mailOpts.from);
+          const smtpAccount = await findSmtpAccount(req.pool, orgId, mailOpts.from);
           const result = smtpAccount
             ? await sendMailWithAccount(smtpAccount, mailOpts)
             : await sendMail(mailOpts);
@@ -148,7 +148,7 @@ router.post('/send', authenticate, async (req, res) => {
 
           // Log
           try {
-            await pool.execute(
+            await req.pool.execute(
               `INSERT INTO email_log (org_id, to_email, subject, type, template_id, lease_id, status, sent_at, created_at)
                VALUES (?, ?, ?, ?, ?, ?, 'sent', NOW(), NOW())`,
               [orgId, recipient, renderedSubject, templateType || 'manual', templateId || null, leaseId || null]
@@ -168,7 +168,7 @@ router.post('/send', authenticate, async (req, res) => {
       const results = [];
       for (const email of recipients) {
         try {
-          const result = await sendTemplateEmail(orgId, {
+          const result = await sendTemplateEmail(req.pool, orgId, {
             templateType, templateId, leaseId, category,
             dueDate: dueDate ? new Date(dueDate) : undefined,
             invoiceCode, invoiceId,
@@ -183,7 +183,7 @@ router.post('/send', authenticate, async (req, res) => {
     }
 
     // Single recipient (or auto-resolve from lease)
-    const result = await sendTemplateEmail(orgId, {
+    const result = await sendTemplateEmail(req.pool, orgId, {
       templateType, templateId, leaseId, category,
       dueDate: dueDate ? new Date(dueDate) : undefined,
       invoiceCode, invoiceId,
@@ -207,7 +207,7 @@ router.post('/preview', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { templateId, templateType, leaseId, category, dueDate } = req.body;
 
-    const result = await previewTemplate(orgId, {
+    const result = await previewTemplate(req.pool, orgId, {
       templateId,
       templateType,
       leaseId,
@@ -228,7 +228,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
-    const [templates] = await pool.execute(
+    const [templates] = await req.pool.execute(
       'SELECT id, template_name as name, subject, template_type as type, template_content as body, status, bcc, cc, reply_to, `from`, is_default_template, before_date, date_first, date_second FROM email_template WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
@@ -245,7 +245,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // POST /api/email-template - Create email template
-router.post('/', authenticate, async (req, res) => {
+router.post('/', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_CREATE'), async (req, res) => {
   try {
     const {
       name, subject, body, type,
@@ -257,7 +257,7 @@ router.post('/', authenticate, async (req, res) => {
 
     // If marking as default, unset other defaults for this type
     if (is_default_template === 1 || is_default_template === true) {
-      await pool.execute(
+      await req.pool.execute(
         'UPDATE email_template SET is_default_template = 2 WHERE org_id = ? AND template_type = ? AND is_default_template = 1',
         [orgId, type]
       );
@@ -265,7 +265,7 @@ router.post('/', authenticate, async (req, res) => {
 
     const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
-    await pool.execute(
+    await req.pool.execute(
       `INSERT INTO email_template
        (id, org_id, template_name, subject, template_content, template_type, status,
         bcc, cc, reply_to, \`from\`, is_default_template, before_date, date_first, date_second, created_time)
@@ -287,7 +287,7 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // PUT /api/email-template/:id - Update email template
-router.put('/:id', authenticate, async (req, res) => {
+router.put('/:id', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const {
@@ -300,13 +300,13 @@ router.put('/:id', authenticate, async (req, res) => {
 
     // If marking as default, unset other defaults for this type
     if (is_default_template === 1 || is_default_template === true) {
-      await pool.execute(
+      await req.pool.execute(
         'UPDATE email_template SET is_default_template = 2 WHERE org_id = ? AND template_type = ? AND is_default_template = 1 AND id != ?',
         [orgId, type, id]
       );
     }
 
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE email_template SET
          template_name = ?, subject = ?, template_content = ?, template_type = ?, status = ?,
          bcc = ?, cc = ?, reply_to = ?, \`from\` = ?,
@@ -332,11 +332,11 @@ router.put('/:id', authenticate, async (req, res) => {
 });
 
 // DELETE /api/email-template/:id - Delete email template
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_DELETE'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('UPDATE email_template SET status = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
+    await req.pool.execute('UPDATE email_template SET status = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
     res.json({ code: 200, message: 'Email template deleted' });
   } catch (error) {
     console.error('Delete email template error:', error);

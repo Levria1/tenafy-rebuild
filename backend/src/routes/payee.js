@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // Payees are stored in the tenant table with category = 2
 
@@ -11,7 +11,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
-    const [payees] = await pool.execute(
+    const [payees] = await req.pool.execute(
       'SELECT * FROM tenant WHERE id = ? AND org_id = ? AND category = 2',
       [id, orgId]
     );
@@ -34,7 +34,7 @@ router.post('/', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
-    await pool.execute(
+    await req.pool.execute(
       'INSERT INTO tenant (id, org_id, first_name, last_name, email, phone, company_name, notes, category, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, 1, NOW())',
       [id.toString(), orgId, first_name, last_name, email, phone, company_name || null, notes || null]
     );
@@ -53,7 +53,7 @@ router.put('/:id/update', authenticate, async (req, res) => {
     const { first_name, last_name, email, phone, company_name, notes, status } = req.body;
     const orgId = req.user.orgId;
 
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE tenant SET first_name = ?, last_name = ?, email = ?, phone = ?, company_name = ?, notes = ?, status = ?, updated_at = NOW() WHERE id = ? AND org_id = ? AND category = 2',
       [first_name, last_name, email, phone, company_name, notes, status ?? 1, id, orgId]
     );
@@ -70,7 +70,7 @@ router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('UPDATE tenant SET status = 0, updated_at = NOW() WHERE id = ? AND org_id = ? AND category = 2', [id, orgId]);
+    await req.pool.execute('UPDATE tenant SET status = 0, updated_at = NOW() WHERE id = ? AND org_id = ? AND category = 2', [id, orgId]);
     res.json({ code: 200, message: 'Payee deleted' });
   } catch (error) {
     console.error('Delete payee error:', error);

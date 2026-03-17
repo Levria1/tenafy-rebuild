@@ -5,7 +5,7 @@ import { Table, Button, Space, Tag, Card, Input, Select, DatePicker, Row, Col, T
 import { PlusOutlined, FilterOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, CloseOutlined } from '@ant-design/icons';
 import { useRouter, useSearchParams } from 'next/navigation';
 import dayjs from 'dayjs';
-import MainLayout from '../../components/Layout';
+import MainLayout, { useAuth } from '../../components/Layout';
 import { accounting, accountingApi } from '../../lib/api';
 
 const { RangePicker } = DatePicker;
@@ -15,6 +15,10 @@ export default function AccountingPageWrapper() {
 }
 
 function AccountingPage() {
+  const { hasPermission } = useAuth();
+  const canCreate = hasPermission('LANDLORD/ACCOUNTING_CREATE');
+  const canEdit = hasPermission('LANDLORD/ACCOUNTING_EDIT');
+  const canDelete = hasPermission('LANDLORD/ACCOUNTING_DELETE');
   const [activeTab, setActiveTab] = useState('accounts');
   const [transactions, setTransactions] = useState([]);
   const [lines, setLines] = useState([]);
@@ -451,9 +455,11 @@ function AccountingPage() {
                 onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
                 placeholder={['Start date', 'End date']}
               />
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')}>
-                Add Inflow / Outflow
-              </Button>
+              {canCreate && (
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')}>
+                  Add Inflow / Outflow
+                </Button>
+              )}
             </div>
           </div>
 
@@ -553,9 +559,11 @@ function AccountingPage() {
                 onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
                 placeholder={['Start date', 'End date']}
               />
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')}>
-                Add Inflow / Outflow
-              </Button>
+              {canCreate && (
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')}>
+                  Add Inflow / Outflow
+                </Button>
+              )}
             </div>
           </div>
 
@@ -630,8 +638,8 @@ function AccountingPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <Space>
                 <Button icon={<PrinterOutlined />} onClick={() => window.print()}>Print</Button>
-                <Button icon={<EditOutlined />} onClick={() => router.push(`/accounting/accounts/${selectedTransaction.id}/edit`)}>Edit</Button>
-                <Button danger icon={<DeleteOutlined />} onClick={handleDeleteTransaction}>Delete</Button>
+                {canEdit && <Button icon={<EditOutlined />} onClick={() => router.push(`/accounting/accounts/${selectedTransaction.id}/edit`)}>Edit</Button>}
+                {canDelete && <Button danger icon={<DeleteOutlined />} onClick={handleDeleteTransaction}>Delete</Button>}
               </Space>
               <Button onClick={closeDrawer}>Close</Button>
             </div>

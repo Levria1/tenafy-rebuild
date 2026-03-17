@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // POST /api/property/list - List properties with paging
 // Filters: search, propertyType (residential=0/commercial=1), propertyStatus (active=1/inactive=0), unitStatus (vacant/occupied)
@@ -43,7 +43,7 @@ router.post('/list', authenticate, async (req, res) => {
       havingClause = ' HAVING occupied_units > 0';
     }
 
-    const [properties] = await pool.execute(
+    const [properties] = await req.pool.execute(
       `SELECT p.*,
               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units,
               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units
@@ -68,7 +68,7 @@ router.post('/list', authenticate, async (req, res) => {
       countQuery = `SELECT COUNT(*) as total FROM property p WHERE ${whereClause}`;
     }
 
-    const [[{ total }]] = await pool.execute(countQuery, params);
+    const [[{ total }]] = await req.pool.execute(countQuery, params);
 
     res.json({ code: 200, data: { content: properties, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page } });
   } catch (error) {
@@ -81,7 +81,7 @@ router.post('/list', authenticate, async (req, res) => {
 router.get('/all', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [properties] = await pool.execute(
+    const [properties] = await req.pool.execute(
       'SELECT id, display_name, street_address, city, status FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
       [orgId]
     );
@@ -96,13 +96,13 @@ router.get('/all', authenticate, async (req, res) => {
 router.get('/all/with_units', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [properties] = await pool.execute(
+    const [properties] = await req.pool.execute(
       'SELECT id, display_name, street_address, city FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
       [orgId]
     );
 
     for (const property of properties) {
-      const [units] = await pool.execute(
+      const [units] = await req.pool.execute(
         'SELECT id, name, rent_price_min, status FROM unit WHERE property_id = ? AND active_status = 1 ORDER BY name',
         [property.id]
       );
@@ -120,7 +120,7 @@ router.get('/all/with_units', authenticate, async (req, res) => {
 router.get('/unit/unoccupied', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       'SELECT u.*, p.display_name as property_name FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1 AND u.status = 0 ORDER BY p.display_name, u.name',
       [orgId]
     );
@@ -135,7 +135,7 @@ router.get('/unit/unoccupied', authenticate, async (req, res) => {
 router.get('/unit/active/occupancy/rate', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       'SELECT COUNT(*) as total, SUM(CASE WHEN u.status = 1 THEN 1 ELSE 0 END) as occupied FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1',
       [orgId]
     );
@@ -154,7 +154,7 @@ router.get('/unit/nolease/within5days', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const status = parseInt(req.query.status) || -1;
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       `SELECT u.*, p.display_name as property_name,
         (SELECT l.end_date FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL ORDER BY l.end_date DESC LIMIT 1) as lease_end_date
        FROM unit u
@@ -176,7 +176,7 @@ router.get('/unit/:unit_id/basic', authenticate, async (req, res) => {
   try {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       'SELECT u.id, u.name, u.rent_price_min, u.status, u.property_id, p.display_name as property_name FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ? AND u.active_status = 1',
       [unit_id, orgId]
     );
@@ -195,7 +195,7 @@ router.get('/unit/:unit_id/clone', authenticate, async (req, res) => {
   try {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       'SELECT u.* FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ?',
       [unit_id, orgId]
     );
@@ -203,7 +203,7 @@ router.get('/unit/:unit_id/clone', authenticate, async (req, res) => {
       return res.status(404).json({ code: 404, message: 'Unit not found' });
     }
     const original = units[0];
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       'INSERT INTO unit (property_id, name, internal_note, rent_price_min, deposit_price, status, beds, baths, size, active_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())',
       [original.property_id, original.name + ' (Copy)', original.internal_note, original.rent_price_min, original.deposit_price, 0, original.beds, original.baths, original.size]
     );
@@ -219,7 +219,7 @@ router.get('/unit/:unit_id', authenticate, async (req, res) => {
   try {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       'SELECT u.*, p.display_name as property_name, p.street_address as property_address FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ? AND u.active_status = 1',
       [unit_id, orgId]
     );
@@ -238,7 +238,7 @@ router.get('/unit/tenant/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       `SELECT u.*, p.display_name as property_name
        FROM unit u
        LEFT JOIN property p ON u.property_id = p.id
@@ -260,7 +260,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
     const { name, internal_note, rent_price_min, deposit_price, beds, baths, size } = req.body;
     const orgId = req.user.orgId;
 
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE unit u LEFT JOIN property p ON u.property_id = p.id SET u.name = ?, u.internal_note = ?, u.rent_price_min = ?, u.deposit_price = ?, u.beds = ?, u.baths = ?, u.size = ?, u.updated_at = NOW() WHERE u.id = ? AND p.org_id = ?',
       [name, internal_note, rent_price_min, deposit_price, beds, baths, size, unit_id, orgId]
     );
@@ -276,7 +276,7 @@ router.delete('/unit/:unit_id', authenticate, async (req, res) => {
   try {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE unit u LEFT JOIN property p ON u.property_id = p.id SET u.active_status = 0, u.deleted_at = NOW() WHERE u.id = ? AND p.org_id = ?',
       [unit_id, orgId]
     );
@@ -305,11 +305,11 @@ router.get('/unit/:unit_id/inventory', authenticate, async (req, res) => {
       params.push('%' + search + '%');
     }
 
-    const [inventory] = await pool.execute(
+    const [inventory] = await req.pool.execute(
       'SELECT * FROM unit_inventory WHERE ' + whereClause + ' ORDER BY name LIMIT ' + limit + ' OFFSET ' + offset,
       params
     );
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       'SELECT COUNT(*) as total FROM unit_inventory WHERE ' + whereClause,
       params
     );
@@ -327,7 +327,7 @@ router.post('/unit/:unit_id/inventory', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { name, description, quantity, condition_status, value, purchase_date } = req.body;
 
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       'INSERT INTO unit_inventory (org_id, unit_id, name, description, quantity, condition_status, value, purchase_date, active_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())',
       [orgId, unit_id, name, description, quantity || 1, condition_status, value, purchase_date]
     );
@@ -342,7 +342,7 @@ router.post('/unit/:unit_id/inventory', authenticate, async (req, res) => {
 router.get('/unit/inventory/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const [items] = await pool.execute('SELECT * FROM unit_inventory WHERE id = ?', [id]);
+    const [items] = await req.pool.execute('SELECT * FROM unit_inventory WHERE id = ?', [id]);
     if (items.length === 0) {
       return res.status(404).json({ code: 404, message: 'Inventory item not found' });
     }
@@ -359,7 +359,7 @@ router.put('/unit/inventory/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const { name, description, quantity, condition_status, value, purchase_date } = req.body;
 
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE unit_inventory SET name = ?, description = ?, quantity = ?, condition_status = ?, value = ?, purchase_date = ?, updated_at = NOW() WHERE id = ?',
       [name, description, quantity, condition_status, value, purchase_date, id]
     );
@@ -374,7 +374,7 @@ router.put('/unit/inventory/:id', authenticate, async (req, res) => {
 router.delete('/unit/inventory/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.execute('UPDATE unit_inventory SET active_status = 0 WHERE id = ?', [id]);
+    await req.pool.execute('UPDATE unit_inventory SET active_status = 0 WHERE id = ?', [id]);
     res.json({ code: 200, message: 'Inventory deleted' });
   } catch (error) {
     console.error('Delete inventory error:', error);
@@ -389,7 +389,7 @@ router.get('/amenities/list', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const propertyType = parseInt(req.query.type) || 1;
     const category = parseInt(req.query.category) || 0;
-    const [amenities] = await pool.execute(
+    const [amenities] = await req.pool.execute(
       'SELECT id, display_name, category, type FROM amenity WHERE org_id = ? AND enabled = 1 AND category = ? AND type = ? ORDER BY order_id, display_name',
       [orgId, category, propertyType]
     );
@@ -405,7 +405,7 @@ router.get('/:id/base', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [properties] = await pool.execute(
+    const [properties] = await req.pool.execute(
       'SELECT id, display_name, street_address, city, state, country, zip_code, type FROM property WHERE id = ? AND org_id = ? AND status = 1',
       [id, orgId]
     );
@@ -424,7 +424,7 @@ router.get('/:id/clone', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [properties] = await pool.execute(
+    const [properties] = await req.pool.execute(
       'SELECT * FROM property WHERE id = ? AND org_id = ? AND status = 1',
       [id, orgId]
     );
@@ -432,7 +432,7 @@ router.get('/:id/clone', authenticate, async (req, res) => {
       return res.status(404).json({ code: 404, message: 'Property not found' });
     }
     const original = properties[0];
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       'INSERT INTO property (org_id, display_name, street_address, city, state, country, zip_code, type, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())',
       [orgId, original.display_name + ' (Copy)', original.street_address, original.city, original.state, original.country, original.zip_code, original.type]
     );
@@ -449,7 +449,7 @@ router.get('/:id/amenities', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [amenities] = await pool.execute(
+    const [amenities] = await req.pool.execute(
       `SELECT a.id, a.display_name, a.category, a.type,
               CASE WHEN pa.property_id IS NOT NULL THEN 1 ELSE 0 END AS selected
        FROM amenity a
@@ -471,9 +471,9 @@ router.put('/:id/amenities', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { amenityIds } = req.body;
-    await pool.execute('DELETE FROM property_amenity WHERE property_id = ?', [id]);
+    await req.pool.execute('DELETE FROM property_amenity WHERE property_id = ?', [id]);
     if (amenityIds && amenityIds.length > 0) {
-      await pool.execute(
+      await req.pool.execute(
         `INSERT INTO property_amenity (property_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
         amenityIds.flatMap(aid => [id, aid])
       );
@@ -490,7 +490,7 @@ router.get('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [properties] = await pool.execute(
+    const [properties] = await req.pool.execute(
       'SELECT p.*, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units FROM property p WHERE p.id = ? AND p.org_id = ?',
       [id, orgId]
     );
@@ -498,7 +498,7 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ code: 404, message: 'Property not found' });
     }
     // Attach selected amenity IDs
-    const [amenityRows] = await pool.execute(
+    const [amenityRows] = await req.pool.execute(
       'SELECT amenity_id FROM property_amenity WHERE property_id = ?', [id]
     );
     const data = { ...properties[0], amenity_ids: amenityRows.map(r => r.amenity_id) };
@@ -518,7 +518,7 @@ router.post('/', authenticate, async (req, res) => {
 
     const propertyId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-    await pool.execute(
+    await req.pool.execute(
       `INSERT INTO property (id, org_id, display_name, street_address, city, state, country,
        zip_code, district, type, status, currency, year_of_built, notes, payment_instructions, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
@@ -529,7 +529,7 @@ router.post('/', authenticate, async (req, res) => {
 
     // Save amenities if provided
     if (amenityIds && amenityIds.length > 0) {
-      await pool.execute(
+      await req.pool.execute(
         `INSERT INTO property_amenity (property_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
         amenityIds.flatMap(aid => [propertyId, aid])
       );
@@ -550,7 +550,7 @@ router.put('/:id', authenticate, async (req, res) => {
             type, status, currency, year_of_built, mls, notes, payment_instructions, amenityIds } = req.body;
     const orgId = req.user.orgId;
 
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE property SET display_name = ?, street_address = ?, city = ?, state = ?,
        country = ?, zip_code = ?, district = ?, type = ?, status = ?, currency = ?,
        year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, updated_at = NOW()
@@ -563,9 +563,9 @@ router.put('/:id', authenticate, async (req, res) => {
 
     // Update amenities if provided
     if (amenityIds !== undefined) {
-      await pool.execute('DELETE FROM property_amenity WHERE property_id = ?', [id]);
+      await req.pool.execute('DELETE FROM property_amenity WHERE property_id = ?', [id]);
       if (amenityIds && amenityIds.length > 0) {
-        await pool.execute(
+        await req.pool.execute(
           `INSERT INTO property_amenity (property_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
           amenityIds.flatMap(aid => [id, aid])
         );
@@ -586,7 +586,7 @@ router.delete('/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     // Block deletion if any unit in this property has an active lease
-    const [[{ active_count }]] = await pool.execute(
+    const [[{ active_count }]] = await req.pool.execute(
       `SELECT COUNT(*) as active_count FROM leasing l
        JOIN unit u ON l.unit_id = u.id
        WHERE u.property_id = ? AND l.status = 1`,
@@ -599,7 +599,7 @@ router.delete('/:id', authenticate, async (req, res) => {
       });
     }
 
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE property SET status = 0, deleted_at = NOW() WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
@@ -615,7 +615,7 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
   try {
     const { property_id } = req.params;
     const orgId = req.user.orgId;
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       `SELECT u.*,
               t.id AS tenant_id,
               t.first_name AS tenant_first_name,
@@ -649,14 +649,14 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     // Verify property belongs to org
-    const [props] = await pool.execute('SELECT id FROM property WHERE id = ? AND org_id = ?', [property_id, orgId]);
+    const [props] = await req.pool.execute('SELECT id FROM property WHERE id = ? AND org_id = ?', [property_id, orgId]);
     if (props.length === 0) {
       return res.status(404).json({ code: 404, message: 'Property not found' });
     }
 
     const unitId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-    await pool.execute(
+    await req.pool.execute(
       `INSERT INTO unit (id, property_id, name, type, amenity_type, beds, baths, size, size_unit,
        parking, smoking, laundry, amenity_detail, access_information, key_code,
        wifi_information, payment_information, internal_note,
@@ -674,7 +674,7 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
 
     // Save unit amenities if provided
     if (amenityIds && amenityIds.length > 0) {
-      await pool.execute(
+      await req.pool.execute(
         `INSERT INTO unit_amenity (unit_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
         amenityIds.flatMap(aid => [unitId, aid])
       );
@@ -694,7 +694,7 @@ router.get('/unit/:id/maintenance/sum', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [[sum]] = await pool.execute(
+    const [[sum]] = await req.pool.execute(
       'SELECT COALESCE(SUM(cost), 0) as total, COUNT(*) as count FROM unit_maintenance WHERE unit_id = ? AND org_id = ? AND status = 1',
       [id, orgId]
     );
@@ -710,7 +710,7 @@ router.get('/unit/maintenance/:id/detail', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [rows] = await pool.execute(
+    const [rows] = await req.pool.execute(
       'SELECT * FROM unit_maintenance WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
@@ -728,7 +728,7 @@ router.put('/unit/maintenance/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const { title, description, cost, category, vendor_name, maintenance_date } = req.body;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE unit_maintenance SET title = ?, description = ?, cost = ?, category = ?, vendor_name = ?, maintenance_date = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
       [title, description, cost, category, vendor_name, maintenance_date, id, orgId]
     );
@@ -744,7 +744,7 @@ router.delete('/unit/maintenance/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('UPDATE unit_maintenance SET status = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
+    await req.pool.execute('UPDATE unit_maintenance SET status = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
     res.json({ code: 200, message: 'Maintenance record deleted' });
   } catch (error) {
     console.error('Delete maintenance error:', error);
@@ -757,7 +757,7 @@ router.get('/unit/:id/maintenance', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [rows] = await pool.execute(
+    const [rows] = await req.pool.execute(
       'SELECT * FROM unit_maintenance WHERE unit_id = ? AND org_id = ? AND status = 1 ORDER BY maintenance_date DESC, created_at DESC',
       [id, orgId]
     );
@@ -774,7 +774,7 @@ router.post('/unit/:id/maintenance', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const { title, description, cost, category, vendor_name, maintenance_date } = req.body;
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       'INSERT INTO unit_maintenance (org_id, unit_id, title, description, cost, category, vendor_name, maintenance_date, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())',
       [orgId, id, title, description || null, cost || 0, category || 'GENERAL', vendor_name || null, maintenance_date || null]
     );
@@ -792,7 +792,7 @@ router.get('/unit/:id/inventory/sum', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [[sum]] = await pool.execute(
+    const [[sum]] = await req.pool.execute(
       'SELECT COALESCE(SUM(CASE WHEN value IS NOT NULL THEN value * COALESCE(quantity, 1) ELSE 0 END), 0) as total, COUNT(*) as count FROM unit_inventory WHERE unit_id = ? AND org_id = ? AND active_status = 1',
       [id, orgId]
     );
@@ -817,13 +817,13 @@ router.post('/unit/:id/inventory/history', authenticate, async (req, res) => {
     const params = [id, orgId];
     if (action) { whereClause += ' AND h.action = ?'; params.push(action); }
 
-    const [rows] = await pool.execute(
+    const [rows] = await req.pool.execute(
       `SELECT h.*, inv.name as item_name FROM unit_inventory_history h
        LEFT JOIN unit_inventory inv ON h.inventory_id = inv.id
        WHERE ` + whereClause + ` ORDER BY h.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       params
     );
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       'SELECT COUNT(*) as total FROM unit_inventory_history h WHERE ' + whereClause,
       params
     );
@@ -841,7 +841,7 @@ router.get('/unit/:unit_id/amenities', authenticate, async (req, res) => {
     const unitId = req.params.unit_id;
     // Get all amenities for the org, mark which ones this unit has
     const orgId = req.user.orgId;
-    const [amenities] = await pool.execute(
+    const [amenities] = await req.pool.execute(
       `SELECT a.id, a.display_name, a.category, a.type,
               CASE WHEN ua.unit_id IS NOT NULL THEN 1 ELSE 0 END AS selected
        FROM amenity a
@@ -863,11 +863,11 @@ router.put('/unit/:unit_id/amenities', authenticate, async (req, res) => {
     const unitId = req.params.unit_id;
     const { amenityIds } = req.body; // array of amenity IDs
     // Clear existing
-    await pool.execute('DELETE FROM unit_amenity WHERE unit_id = ?', [unitId]);
+    await req.pool.execute('DELETE FROM unit_amenity WHERE unit_id = ?', [unitId]);
     // Insert new
     if (amenityIds && amenityIds.length > 0) {
       const values = amenityIds.map(aid => `(${pool.escape(unitId)}, ${pool.escape(aid)})`).join(',');
-      await pool.execute(`INSERT INTO unit_amenity (unit_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
+      await req.pool.execute(`INSERT INTO unit_amenity (unit_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
         amenityIds.flatMap(aid => [unitId, aid])
       );
     }
@@ -889,12 +889,12 @@ router.get('/unit/:unit_id/furnishing', authenticate, async (req, res) => {
       whereClause += ' AND item_name LIKE ?';
       params.push('%' + search + '%');
     }
-    const [items] = await pool.execute(
+    const [items] = await req.pool.execute(
       `SELECT * FROM unit_furnishing WHERE ${whereClause} ORDER BY item_name`,
       params
     );
     // Sum
-    const [[{ total_sum }]] = await pool.execute(
+    const [[{ total_sum }]] = await req.pool.execute(
       'SELECT COALESCE(SUM(item_price * quantity), 0) as total_sum FROM unit_furnishing WHERE unit_id = ? AND deleted_at IS NULL',
       [unitId]
     );
@@ -911,7 +911,7 @@ router.post('/unit/:unit_id/furnishing', authenticate, async (req, res) => {
     const unitId = req.params.unit_id;
     const { item_name, quantity, item_price, note, currency_id } = req.body;
     const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
-    await pool.execute(
+    await req.pool.execute(
       'INSERT INTO unit_furnishing (id, unit_id, item_name, quantity, item_price, note, currency_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())',
       [id.toString(), unitId, item_name, quantity || 1, item_price || 0, note || null, currency_id || null]
     );
@@ -926,7 +926,7 @@ router.post('/unit/:unit_id/furnishing', authenticate, async (req, res) => {
 router.put('/unit/furnishing/:id', authenticate, async (req, res) => {
   try {
     const { item_name, quantity, item_price, note } = req.body;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE unit_furnishing SET item_name = ?, quantity = ?, item_price = ?, note = ?, updated_at = NOW() WHERE id = ?',
       [item_name, quantity || 1, item_price || 0, note || null, req.params.id]
     );
@@ -940,7 +940,7 @@ router.put('/unit/furnishing/:id', authenticate, async (req, res) => {
 // DELETE /api/property/unit/furnishing/:id - Soft-delete furnishing item
 router.delete('/unit/furnishing/:id', authenticate, async (req, res) => {
   try {
-    await pool.execute('UPDATE unit_furnishing SET deleted_at = NOW() WHERE id = ?', [req.params.id]);
+    await req.pool.execute('UPDATE unit_furnishing SET deleted_at = NOW() WHERE id = ?', [req.params.id]);
     res.json({ code: 200, message: 'Furnishing deleted' });
   } catch (error) {
     console.error('Delete furnishing error:', error);
@@ -952,7 +952,7 @@ router.delete('/unit/furnishing/:id', authenticate, async (req, res) => {
 router.get('/unit/:unit_id/current-lease', authenticate, async (req, res) => {
   try {
     const unitId = req.params.unit_id;
-    const [leases] = await pool.execute(
+    const [leases] = await req.pool.execute(
       `SELECT l.*, t.first_name, t.last_name, t.email, t.phone,
               p.currency AS currency_code
        FROM leasing l
@@ -964,7 +964,7 @@ router.get('/unit/:unit_id/current-lease', authenticate, async (req, res) => {
       [unitId]
     );
     // Also get next lease (future start_date, status = 1)
-    const [nextLeases] = await pool.execute(
+    const [nextLeases] = await req.pool.execute(
       `SELECT l.*, t.first_name, t.last_name
        FROM leasing l
        LEFT JOIN tenant t ON l.tenant_id = t.id
@@ -990,7 +990,7 @@ router.get('/unit/:unit_id/services', authenticate, async (req, res) => {
       whereClause += ' AND s.status = ?';
       params.push(status);
     }
-    const [services] = await pool.execute(
+    const [services] = await req.pool.execute(
       `SELECT s.*, t.first_name AS tenant_first, t.last_name AS tenant_last, t.phone AS tenant_phone
        FROM service s
        LEFT JOIN leasing l ON l.unit_id = s.unit_id AND l.status = 1 AND l.deleted_at IS NULL
@@ -1032,7 +1032,7 @@ router.post('/unit/:unit_id/service-costs', authenticate, async (req, res) => {
       params.push(endDate);
     }
 
-    const [rows] = await pool.execute(
+    const [rows] = await req.pool.execute(
       `SELECT a.id, a.payment_date, a.note, a.type,
               al.amount AS line_amount, a.type AS line_type,
               al.invoice_code,
@@ -1052,13 +1052,13 @@ router.post('/unit/:unit_id/service-costs', authenticate, async (req, res) => {
       params
     );
 
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       `SELECT COUNT(*) as total FROM accounting_line al JOIN accounting a ON a.id = al.accounting_id WHERE ${whereClause}`,
       params
     );
 
     // Inflow/outflow summary — type is on accounting table (0=outflow, 1=inflow)
-    const [[summary]] = await pool.execute(
+    const [[summary]] = await req.pool.execute(
       `SELECT
         COALESCE(SUM(CASE WHEN a.type = 1 THEN al.amount ELSE 0 END), 0) AS inflow,
         COALESCE(SUM(CASE WHEN a.type = 0 THEN al.amount ELSE 0 END), 0) AS outflow
@@ -1088,7 +1088,7 @@ router.post('/unit/:unit_id/service-costs', authenticate, async (req, res) => {
 router.get('/unit/:unit_id/property-info', authenticate, async (req, res) => {
   try {
     const unitId = req.params.unit_id;
-    const [[propInfo]] = await pool.execute(
+    const [[propInfo]] = await req.pool.execute(
       `SELECT p.id, p.display_name, p.street_address, p.city, p.state, p.zip_code, p.country,
               p.year_of_built, p.district, p.currency
        FROM property p

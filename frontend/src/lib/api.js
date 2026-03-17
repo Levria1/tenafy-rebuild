@@ -24,7 +24,9 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       Cookies.remove('__s_t');
       if (typeof window !== 'undefined') {
-        window.location.href = '/login';
+        // Redirect master admin to master login, org users to normal login
+        const isMasterPage = window.location.pathname.startsWith('/master');
+        window.location.href = isMasterPage ? '/master/login' : '/login';
       }
     }
     return Promise.reject(error);
@@ -343,6 +345,15 @@ export const notification = {
 export const storageMonitoring = {
   getUsage: () => api.get('/api/storage/usage'),
   getEmailUsage: () => api.get('/api/storage/email/usage'),
+};
+
+export const master = {
+  login: (data) => api.post('/api/master/login', data),
+  getProfile: () => api.get('/api/master/profile'),
+  listOrganizations: () => api.get('/api/master/organizations'),
+  createOrganization: (data) => api.post('/api/master/organizations', data),
+  updateOrganization: (id, data) => api.put(`/api/master/organizations/${id}`, data),
+  getOrgStats: (id) => api.get(`/api/master/organizations/${id}/stats`),
 };
 
 export default api;

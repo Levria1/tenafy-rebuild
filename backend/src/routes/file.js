@@ -4,7 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 const { v4: uuidv4 } = require('uuid');
 
 // Storage directories — check both local uploads and legacy AWS backup storage
@@ -45,7 +45,7 @@ router.get('/preview/:identifier', async (req, res) => {
 
     // Check if identifier is a numeric file ID
     if (/^\d+$/.test(identifier)) {
-      const [files] = await pool.execute('SELECT item_name, mime_type, extension FROM file WHERE id = ?', [identifier]);
+      const [files] = await req.pool.execute('SELECT item_name, mime_type, extension FROM file WHERE id = ?', [identifier]);
       if (files.length > 0) {
         filename = files[0].item_name;
         mimeType = files[0].mime_type;
@@ -103,7 +103,7 @@ router.get('/download/:identifier', async (req, res) => {
     let originalName = null;
 
     if (/^\d+$/.test(identifier)) {
-      const [files] = await pool.execute('SELECT item_name, filename AS original_name FROM file WHERE id = ?', [identifier]);
+      const [files] = await req.pool.execute('SELECT item_name, filename AS original_name FROM file WHERE id = ?', [identifier]);
       if (files.length > 0) {
         filename = files[0].item_name;
         originalName = files[0].original_name || filename;
@@ -156,7 +156,7 @@ router.post('/image/upload', upload.single('file'), async (req, res) => {
     const fileSize = req.file.size;
     const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
-    await pool.execute(
+    await req.pool.execute(
       'INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())',
       [id.toString(), savedFilename, originalName, ext.replace('.', ''), mimeType.toUpperCase(), fileSize, 'local', orgId]
     );
@@ -192,7 +192,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const fileSize = req.file.size;
     const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
-    await pool.execute(
+    await req.pool.execute(
       'INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())',
       [id.toString(), savedFilename, originalName, ext.replace('.', ''), mimeType.toUpperCase(), fileSize, 'local', orgId]
     );

@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
-const pool = require('../config/database');
+const { getOrgPool } = require('../config/poolRegistry');
 
 const authenticate = async (req, res, next) => {
   try {
@@ -12,6 +12,23 @@ const authenticate = async (req, res, next) => {
 
     const decoded = jwt.verify(token, config.jwtSecret);
     req.user = decoded;
+
+    // Attach org pool for non-master-admin users
+    if (decoded.orgId && !decoded.isMasterAdmin) {
+      try {
+        req.pool = await getOrgPool(decoded.orgId);
+      } catch (poolErr) {
+        if (poolErr.message.includes('not found')) {
+          return res.status(403).json({ code: 403, message: 'Organization not found' });
+        }
+        if (poolErr.message.includes('disabled')) {
+          return res.status(403).json({ code: 403, message: 'Organization is currently disabled' });
+        }
+        console.error('Org pool error:', poolErr);
+        return res.status(500).json({ code: 500, message: 'Database connection error' });
+      }
+    }
+
     next();
   } catch (error) {
     return res.status(401).json({ code: 401, message: 'Invalid or expired token' });
@@ -49,6 +66,7 @@ const requireSuperAdmin = (req, res, next) => {
 };
 
 // Load user permissions from role_permission via user_role
+// Uses req.pool (set by orgPool middleware)
 const loadPermissions = async (req, res, next) => {
   try {
     if (isSuperAdmin(req)) {
@@ -56,7 +74,7 @@ const loadPermissions = async (req, res, next) => {
       return next();
     }
 
-    const [perms] = await pool.execute(
+    const [perms] = await req.pool.execute(
       `SELECT rp.permission_code
        FROM role_permission rp
        JOIN user_role ur ON rp.role_id = ur.role_id
@@ -73,6 +91,7 @@ const loadPermissions = async (req, res, next) => {
 };
 
 // Check if user has a specific permission
+// Uses req.pool (set by orgPool middleware)
 const requirePermission = (...permissions) => {
   return async (req, res, next) => {
     if (!req.user) {
@@ -84,7 +103,7 @@ const requirePermission = (...permissions) => {
     }
     // Load permissions if not already loaded
     if (!req.user.permissions) {
-      const [perms] = await pool.execute(
+      const [perms] = await req.pool.execute(
         `SELECT rp.permission_code
          FROM role_permission rp
          JOIN user_role ur ON rp.role_id = ur.role_id

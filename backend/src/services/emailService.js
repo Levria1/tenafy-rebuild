@@ -1,4 +1,4 @@
-const pool = require('../config/database');
+
 const { sendMail, sendMailWithAccount } = require('../config/mailer');
 
 // ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@ function extractEmail(fromStr) {
  * @param {string} fromAddress - template.from value (may include display name)
  * @returns {object|null} smtp_account row or null
  */
-async function findSmtpAccount(orgId, fromAddress) {
+async function findSmtpAccount(pool, orgId, fromAddress) {
   const email = extractEmail(fromAddress);
   if (email) {
     const [rows] = await pool.execute(
@@ -160,7 +160,7 @@ function formatAmount(symbol, amount) {
 /**
  * Load an email template by ID or by type (default template for that type+org).
  */
-async function loadTemplate(orgId, templateType, templateId = null) {
+async function loadTemplate(pool, orgId, templateType, templateId = null) {
   if (templateId) {
     const [rows] = await pool.execute(
       `SELECT * FROM email_template WHERE id = ? AND org_id = ? AND status = 1`,
@@ -199,7 +199,7 @@ async function loadTemplate(orgId, templateType, templateId = null) {
  * @param {object} opts - { category, dueDate, overdueAmount }
  * @returns {object} map of variable key → resolved string
  */
-async function resolveVariables(orgId, leaseId, { category, dueDate, overdueAmount, invoiceCode, invoiceId } = {}) {
+async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overdueAmount, invoiceCode, invoiceId } = {}) {
   // 1. Load lease + tenant + unit + property
   const [rows] = await pool.execute(
     `SELECT
@@ -396,7 +396,7 @@ function substituteVariables(content, variablesMap) {
  * @param {string} toggleColumn - one of the toggle column names
  * @returns {boolean}
  */
-async function shouldSendEmail(leaseId, toggleColumn) {
+async function shouldSendEmail(pool, leaseId, toggleColumn) {
   if (!leaseId || !toggleColumn) return true; // No lease context = send anyway
   if (!TOGGLE_MAP[toggleColumn] && !Object.values(TOGGLE_MAP).includes(toggleColumn)) return true;
 
@@ -422,7 +422,7 @@ async function shouldSendEmail(leaseId, toggleColumn) {
 // Get recipient email — tenant or landlord
 // ---------------------------------------------------------------------------
 
-async function getTenantEmail(leaseId) {
+async function getTenantEmail(pool, leaseId) {
   const [rows] = await pool.execute(
     `SELECT t.email FROM tenant t
      JOIN leasing l ON l.tenant_id = t.id
@@ -432,7 +432,7 @@ async function getTenantEmail(leaseId) {
   return rows[0] ? rows[0].email : null;
 }
 
-async function getLandlordEmail(orgId) {
+async function getLandlordEmail(pool, orgId) {
   const [rows] = await pool.execute(
     `SELECT email FROM user WHERE org_id = ? AND status = 1 AND origin_id IS NULL AND email IS NOT NULL LIMIT 1`,
     [orgId]
@@ -457,7 +457,7 @@ async function getLandlordEmail(orgId) {
  *   - toOverride: override recipient email (e.g. for test sends)
  * @returns {{ messageId, previewUrl } | null}
  */
-async function sendTemplateEmail(orgId, {
+async function sendTemplateEmail(pool, orgId, {
   templateType,
   templateId = null,
   leaseId,
@@ -469,7 +469,7 @@ async function sendTemplateEmail(orgId, {
   toOverride,
 } = {}) {
   // 1. Load template
-  const template = await loadTemplate(orgId, templateType, templateId);
+  const template = await loadTemplate(pool, orgId, templateType, templateId);
   if (!template) {
     console.warn(`[EmailService] No template found for type=${templateType}, org=${orgId}. Skipping.`);
     return null;
@@ -478,7 +478,7 @@ async function sendTemplateEmail(orgId, {
   // 2. Resolve variables
   let variables;
   if (leaseId) {
-    variables = await resolveVariables(orgId, leaseId, { category, dueDate, overdueAmount, invoiceCode, invoiceId });
+    variables = await resolveVariables(pool, orgId, leaseId, { category, dueDate, overdueAmount, invoiceCode, invoiceId });
   } else {
     variables = getSampleVariables();
   }
@@ -491,9 +491,9 @@ async function sendTemplateEmail(orgId, {
   let recipient = toOverride;
   if (!recipient) {
     if (templateType && templateType.toLowerCase().includes('landlord')) {
-      recipient = await getLandlordEmail(orgId);
+      recipient = await getLandlordEmail(pool, orgId);
     } else if (leaseId) {
-      recipient = await getTenantEmail(leaseId);
+      recipient = await getTenantEmail(pool, leaseId);
     }
   }
 
@@ -561,7 +561,7 @@ async function sendTemplateEmail(orgId, {
   let status = 'sent';
   let error = null;
   try {
-    const smtpAccount = await findSmtpAccount(orgId, mailOpts.from);
+    const smtpAccount = await findSmtpAccount(pool, orgId, mailOpts.from);
     if (smtpAccount) {
       result = await sendMailWithAccount(smtpAccount, mailOpts);
     } else {
@@ -598,15 +598,15 @@ async function sendTemplateEmail(orgId, {
  * Render a template with variables but do NOT send.
  * @returns {{ subject, body, variables }}
  */
-async function previewTemplate(orgId, { templateId, templateType, leaseId, category, dueDate } = {}) {
-  const template = await loadTemplate(orgId, templateType, templateId);
+async function previewTemplate(pool, orgId, { templateId, templateType, leaseId, category, dueDate } = {}) {
+  const template = await loadTemplate(pool, orgId, templateType, templateId);
   if (!template) {
     return { subject: '', body: '', variables: getSampleVariables() };
   }
 
   let variables;
   if (leaseId) {
-    variables = await resolveVariables(orgId, leaseId, { category, dueDate });
+    variables = await resolveVariables(pool, orgId, leaseId, { category, dueDate });
   } else {
     variables = getSampleVariables();
   }
@@ -621,10 +621,10 @@ async function previewTemplate(orgId, { templateId, templateType, leaseId, categ
 // Convenience send functions (check toggle → resolve → send)
 // ---------------------------------------------------------------------------
 
-async function sendInvoiceToTenant(orgId, leaseId, { invoiceId, invoiceCode, category, dueDate } = {}) {
-  const shouldSend = await shouldSendEmail(leaseId, 'Invoice-Tenant');
+async function sendInvoiceToTenant(pool, orgId, leaseId, { invoiceId, invoiceCode, category, dueDate } = {}) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Invoice-Tenant');
   if (!shouldSend) return null;
-  return sendTemplateEmail(orgId, {
+  return sendTemplateEmail(pool, orgId, {
     templateType: 'Invoice-Tenant',
     leaseId,
     category,
@@ -634,10 +634,10 @@ async function sendInvoiceToTenant(orgId, leaseId, { invoiceId, invoiceCode, cat
   });
 }
 
-async function sendInvoiceToLandlord(orgId, leaseId, { invoiceId, invoiceCode, category, dueDate } = {}) {
-  const shouldSend = await shouldSendEmail(leaseId, 'Invoice-Landlord');
+async function sendInvoiceToLandlord(pool, orgId, leaseId, { invoiceId, invoiceCode, category, dueDate } = {}) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Invoice-Landlord');
   if (!shouldSend) return null;
-  return sendTemplateEmail(orgId, {
+  return sendTemplateEmail(pool, orgId, {
     templateType: 'Invoice-Landlord',
     leaseId,
     category,
@@ -647,10 +647,10 @@ async function sendInvoiceToLandlord(orgId, leaseId, { invoiceId, invoiceCode, c
   });
 }
 
-async function sendOverdueToTenant(orgId, leaseId, { dueDate, overdueAmount } = {}) {
-  const shouldSend = await shouldSendEmail(leaseId, 'Overdue-Tenant');
+async function sendOverdueToTenant(pool, orgId, leaseId, { dueDate, overdueAmount } = {}) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Overdue-Tenant');
   if (!shouldSend) return null;
-  return sendTemplateEmail(orgId, {
+  return sendTemplateEmail(pool, orgId, {
     templateType: 'Overdue-Tenant',
     leaseId,
     dueDate,
@@ -658,10 +658,10 @@ async function sendOverdueToTenant(orgId, leaseId, { dueDate, overdueAmount } = 
   });
 }
 
-async function sendOverdueToLandlord(orgId, leaseId, { dueDate, overdueAmount } = {}) {
-  const shouldSend = await shouldSendEmail(leaseId, 'Overdue-Landlord');
+async function sendOverdueToLandlord(pool, orgId, leaseId, { dueDate, overdueAmount } = {}) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Overdue-Landlord');
   if (!shouldSend) return null;
-  return sendTemplateEmail(orgId, {
+  return sendTemplateEmail(pool, orgId, {
     templateType: 'Overdue-Landlord',
     leaseId,
     dueDate,
@@ -669,46 +669,46 @@ async function sendOverdueToLandlord(orgId, leaseId, { dueDate, overdueAmount } 
   });
 }
 
-async function sendCheckinToTenant(orgId, leaseId) {
-  const shouldSend = await shouldSendEmail(leaseId, 'Checkin-Tenant');
+async function sendCheckinToTenant(pool, orgId, leaseId) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Checkin-Tenant');
   if (!shouldSend) return null;
-  return sendTemplateEmail(orgId, {
+  return sendTemplateEmail(pool, orgId, {
     templateType: 'Checkin-Tenant',
     leaseId,
   });
 }
 
-async function sendCheckoutToTenant(orgId, leaseId) {
-  const shouldSend = await shouldSendEmail(leaseId, 'Checkout-Tenant');
+async function sendCheckoutToTenant(pool, orgId, leaseId) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Checkout-Tenant');
   if (!shouldSend) return null;
-  return sendTemplateEmail(orgId, {
+  return sendTemplateEmail(pool, orgId, {
     templateType: 'Checkout-Tenant',
     leaseId,
   });
 }
 
-async function sendRenewalToTenant(orgId, leaseId) {
-  const shouldSend = await shouldSendEmail(leaseId, 'Renewal-Tenant');
+async function sendRenewalToTenant(pool, orgId, leaseId) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Renewal-Tenant');
   if (!shouldSend) return null;
-  return sendTemplateEmail(orgId, {
+  return sendTemplateEmail(pool, orgId, {
     templateType: 'Renewal-Tenant',
     leaseId,
   });
 }
 
-async function sendLeaseExpiryToLandlord(orgId, leaseId) {
-  const shouldSend = await shouldSendEmail(leaseId, 'Leaseexpiry-Landlord');
+async function sendLeaseExpiryToLandlord(pool, orgId, leaseId) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Leaseexpiry-Landlord');
   if (!shouldSend) return null;
-  return sendTemplateEmail(orgId, {
+  return sendTemplateEmail(pool, orgId, {
     templateType: 'Leaseexpiry-Landlord',
     leaseId,
   });
 }
 
-async function sendDepositToTenant(orgId, leaseId) {
-  const shouldSend = await shouldSendEmail(leaseId, 'Deposit-Tenant');
+async function sendDepositToTenant(pool, orgId, leaseId) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Deposit-Tenant');
   if (!shouldSend) return null;
-  return sendTemplateEmail(orgId, {
+  return sendTemplateEmail(pool, orgId, {
     templateType: 'Deposit-Tenant',
     leaseId,
   });

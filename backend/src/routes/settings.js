@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // ---------------------------------------------------------------------------
 // Email Settings (whitelist)
@@ -11,7 +11,7 @@ const pool = require('../config/database');
 router.get('/setting/email', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [[org]] = await pool.execute(
+    const [[org]] = await req.pool.execute(
       'SELECT email_whitelist_enabled, email_whitelist FROM organization WHERE id = ?',
       [orgId]
     );
@@ -46,7 +46,7 @@ router.put('/setting/email', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { email_whitelist_enabled, email_whitelist } = req.body;
 
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE organization SET email_whitelist_enabled = ?, email_whitelist = ? WHERE id = ?',
       [email_whitelist_enabled ? 1 : 0, email_whitelist || null, orgId]
     );
@@ -62,7 +62,7 @@ router.put('/setting/email', authenticate, async (req, res) => {
 router.get('/setting/category/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [categories] = await pool.execute(
+    const [categories] = await req.pool.execute(
       'SELECT id, name, org_id, CAST(enabled AS UNSIGNED) as enabled, updated_at FROM category_setting WHERE org_id = ? AND enabled = 1 ORDER BY name',
       [orgId]
     );
@@ -78,7 +78,7 @@ router.post('/setting/category/add', authenticate, async (req, res) => {
   try {
     const { name } = req.body;
     const orgId = req.user.orgId;
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       'INSERT INTO category_setting (org_id, name, enabled, updated_at) VALUES (?, ?, 1, NOW())',
       [orgId, name]
     );
@@ -95,7 +95,7 @@ router.put('/setting/category/update/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const { name } = req.body;
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE category_setting SET name = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
       [name, id, orgId]
     );
@@ -111,7 +111,7 @@ router.delete('/setting/category/delete/:id', authenticate, async (req, res) => 
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE category_setting SET enabled = 0 WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
@@ -126,7 +126,7 @@ router.delete('/setting/category/delete/:id', authenticate, async (req, res) => 
 router.get('/setting/payment/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [payments] = await pool.execute(
+    const [payments] = await req.pool.execute(
       'SELECT id, payment_method as name, org_id, enabled, updated_at FROM payment_method_setting WHERE org_id = ? AND enabled = 1 ORDER BY payment_method',
       [orgId]
     );
@@ -142,7 +142,7 @@ router.post('/setting/payment/add', authenticate, async (req, res) => {
   try {
     const { name } = req.body;
     const orgId = req.user.orgId;
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       'INSERT INTO payment_method_setting (org_id, payment_method, enabled, updated_at) VALUES (?, ?, 1, NOW())',
       [orgId, name]
     );
@@ -159,7 +159,7 @@ router.put('/setting/payment/update/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const { name } = req.body;
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE payment_method_setting SET payment_method = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
       [name, id, orgId]
     );
@@ -175,7 +175,7 @@ router.delete('/setting/payment/delete/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE payment_method_setting SET enabled = 0 WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
@@ -202,11 +202,11 @@ router.get('/setting/category/page/list', authenticate, async (req, res) => {
       params.push('%' + search + '%');
     }
 
-    const [categories] = await pool.execute(
+    const [categories] = await req.pool.execute(
       'SELECT * FROM category_setting WHERE ' + whereClause + ' ORDER BY name LIMIT ' + limit + ' OFFSET ' + offset,
       params
     );
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       'SELECT COUNT(*) as total FROM category_setting WHERE ' + whereClause,
       params
     );
@@ -221,7 +221,7 @@ router.get('/setting/category/page/list', authenticate, async (req, res) => {
 router.get('/setting/category/list/tenant', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [categories] = await pool.execute(
+    const [categories] = await req.pool.execute(
       "SELECT * FROM category_setting WHERE org_id = ? AND enabled = 1 AND type = 'tenant' ORDER BY name",
       [orgId]
     );
@@ -238,7 +238,7 @@ router.get('/setting/category/list/tenant', authenticate, async (req, res) => {
 router.get('/setting/landlord', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [orgs] = await pool.execute(
+    const [orgs] = await req.pool.execute(
       'SELECT * FROM organization WHERE id = ?',
       [orgId]
     );
@@ -258,7 +258,7 @@ router.put('/setting/landlord/update', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { display_name, address, city, state, country, zip_code, phone, email, currency, invoice_prefix, tax_id } = req.body;
 
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE organization SET display_name = ?, address = ?, city = ?, state = ?, country = ?,
        zip_code = ?, phone = ?, email = ?, currency = ?, invoice_prefix = ?, tax_id = ?, updated_at = NOW()
        WHERE id = ?`,
@@ -275,7 +275,7 @@ router.put('/setting/landlord/update', authenticate, async (req, res) => {
 router.get('/setting/currency', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [orgs] = await pool.execute('SELECT currency FROM organization WHERE id = ?', [orgId]);
+    const [orgs] = await req.pool.execute('SELECT currency FROM organization WHERE id = ?', [orgId]);
     const currency = orgs.length > 0 ? orgs[0].currency : 'USD';
     res.json({ code: 200, data: { currency } });
   } catch (error) {
@@ -315,7 +315,7 @@ router.get('/setting/country', authenticate, async (req, res) => {
 router.get('/setting/exchange-rate', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [orgs] = await pool.execute('SELECT currency, exchange_rate FROM organization WHERE id = ?', [orgId]);
+    const [orgs] = await req.pool.execute('SELECT currency, exchange_rate FROM organization WHERE id = ?', [orgId]);
     res.json({ code: 200, data: orgs[0] || { currency: 'USD', exchange_rate: 1 } });
   } catch (error) {
     console.error('Get exchange rate error:', error);
@@ -328,7 +328,7 @@ router.put('/setting/landlord/exchange-rate/update', authenticate, async (req, r
   try {
     const orgId = req.user.orgId;
     const { exchange_rate } = req.query;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE organization SET exchange_rate = ?, updated_at = NOW() WHERE id = ?',
       [exchange_rate, orgId]
     );
@@ -357,7 +357,7 @@ router.get('/setting/landlord/exchange-rate/history', authenticate, async (req, 
 router.get('/setting/sequences', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [sequences] = await pool.execute(
+    const [sequences] = await req.pool.execute(
       'SELECT id, org_id, `key`, name, pattern, seq_start, seq_next, seq_reset_cycle, updated_at FROM sequence WHERE org_id = ? ORDER BY name',
       [orgId]
     );
@@ -379,7 +379,7 @@ router.put('/setting/sequence/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const { pattern, seq_next } = req.body;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE sequence SET pattern = ?, seq_next = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
       [pattern, seq_next, id, orgId]
     );
@@ -396,7 +396,7 @@ router.put('/setting/sequence/:id', authenticate, async (req, res) => {
 router.get('/setting/account/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [accounts] = await pool.execute(
+    const [accounts] = await req.pool.execute(
       'SELECT * FROM account_setting WHERE org_id = ? AND enabled = 1 ORDER BY name',
       [orgId]
     );
@@ -415,11 +415,11 @@ router.get('/setting/account/page/list', authenticate, async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    const [accounts] = await pool.execute(
+    const [accounts] = await req.pool.execute(
       'SELECT * FROM account_setting WHERE org_id = ? AND enabled = 1 ORDER BY name LIMIT ' + limit + ' OFFSET ' + offset,
       [orgId]
     );
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       'SELECT COUNT(*) as total FROM account_setting WHERE org_id = ? AND enabled = 1',
       [orgId]
     );
@@ -435,7 +435,7 @@ router.post('/setting/account/add', authenticate, async (req, res) => {
   try {
     const { name } = req.body;
     const orgId = req.user.orgId;
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       'INSERT INTO account_setting (org_id, name, enabled, created_at) VALUES (?, ?, 1, NOW())',
       [orgId, name]
     );
@@ -452,7 +452,7 @@ router.put('/setting/account/update/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const { name } = req.body;
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE account_setting SET name = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
       [name, id, orgId]
     );
@@ -468,7 +468,7 @@ router.delete('/setting/account/delete/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE account_setting SET enabled = 0 WHERE id = ? AND org_id = ?',
       [id, orgId]
     );

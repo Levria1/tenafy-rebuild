@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const PDFDocument = require('pdfkit');
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // Helper: draw a horizontal line
 function hLine(doc, y, margin = 50) {
@@ -32,7 +32,7 @@ router.get('/invoice/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     // Fetch invoice + related data
-    const [invoices] = await pool.execute(
+    const [invoices] = await req.pool.execute(
       `SELECT i.*,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               t.email as tenant_email, t.phone as tenant_phone,
@@ -51,7 +51,7 @@ router.get('/invoice/:id', authenticate, async (req, res) => {
     }
 
     // Fetch landlord/org settings
-    const [orgRows] = await pool.execute(
+    const [orgRows] = await req.pool.execute(
       'SELECT * FROM org_setting WHERE org_id = ? LIMIT 1',
       [orgId]
     ).catch(() => [[]]);
@@ -155,7 +155,7 @@ router.get('/lease/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
-    const [leases] = await pool.execute(
+    const [leases] = await req.pool.execute(
       `SELECT l.*,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               t.email as tenant_email, t.phone as tenant_phone, t.id_card,
@@ -173,7 +173,7 @@ router.get('/lease/:id', authenticate, async (req, res) => {
       return res.status(404).json({ code: 404, message: 'Lease not found' });
     }
 
-    const [orgRows] = await pool.execute('SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]).catch(() => [[]]);
+    const [orgRows] = await req.pool.execute('SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]).catch(() => [[]]);
     const lease = leases[0];
     const org = orgRows?.[0] || {};
     const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';

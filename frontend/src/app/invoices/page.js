@@ -36,6 +36,8 @@ export default function InvoicesPage() {
   const router = useRouter();
   const { hasPermission } = useAuth();
   const canDelete = hasPermission('LANDLORD/INVOICE_DELETE');
+  const canEdit = hasPermission('LANDLORD/INVOICE_EDIT');
+  const canCreate = hasPermission('LANDLORD/INVOICE_CREATE');
 
   const handleDeleteInvoice = (inv) => {
     confirm({
@@ -470,9 +472,11 @@ export default function InvoicesPage() {
           <Popover content={filterContent} title="Filters" trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
             <Button icon={<FilterOutlined />}>Filter {activeFilterCount > 0 ? activeFilterCount : '0'}</Button>
           </Popover>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/invoices/create')}>
-            Create Invoice
-          </Button>
+          {canCreate && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/invoices/create')}>
+              Create Invoice
+            </Button>
+          )}
         </div>
       </div>
 
@@ -556,10 +560,12 @@ export default function InvoicesPage() {
             <Button type="primary" icon={<PrinterOutlined />} block onClick={() => window.print()}>
               Print
             </Button>
-            <Button type="primary" icon={<EditOutlined />} block style={{ background: '#52c41a', borderColor: '#52c41a' }}
-              onClick={() => { closeDrawer(); router.push(`/invoices/${selectedInvoice.id}/edit`); }}>
-              Edit
-            </Button>
+            {canEdit && (
+              <Button type="primary" icon={<EditOutlined />} block style={{ background: '#52c41a', borderColor: '#52c41a' }}
+                onClick={() => { closeDrawer(); router.push(`/invoices/${selectedInvoice.id}/edit`); }}>
+                Edit
+              </Button>
+            )}
             {canDelete && (
               <Button danger type="primary" icon={<DeleteOutlined />} block onClick={() => handleDeleteInvoice(selectedInvoice)}>
                 Delete

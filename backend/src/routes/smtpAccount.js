@@ -1,14 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 const nodemailer = require('nodemailer');
 
 // POST /api/smtp-account/list - List SMTP accounts (passwords masked)
 router.post('/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [rows] = await pool.execute(
+    const [rows] = await req.pool.execute(
       `SELECT id, email, display_name, host, port, is_secure, is_default, status, created_at
        FROM smtp_account WHERE org_id = ? ORDER BY is_default DESC, created_at ASC`,
       [orgId]
@@ -42,13 +42,13 @@ router.post('/', authenticate, async (req, res) => {
 
     // If setting as default, unset other defaults
     if (is_default) {
-      await pool.execute(
+      await req.pool.execute(
         'UPDATE smtp_account SET is_default = 0 WHERE org_id = ?',
         [orgId]
       );
     }
 
-    await pool.execute(
+    await req.pool.execute(
       `INSERT INTO smtp_account (id, org_id, email, password, display_name, host, port, is_secure, is_default, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
@@ -77,7 +77,7 @@ router.put('/:id', authenticate, async (req, res) => {
 
     // If setting as default, unset other defaults
     if (is_default) {
-      await pool.execute(
+      await req.pool.execute(
         'UPDATE smtp_account SET is_default = 0 WHERE org_id = ? AND id != ?',
         [orgId, id]
       );
@@ -100,7 +100,7 @@ router.put('/:id', authenticate, async (req, res) => {
     }
 
     params.push(id, orgId);
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE smtp_account SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`,
       params
     );
@@ -118,7 +118,7 @@ router.delete('/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { id } = req.params;
 
-    await pool.execute(
+    await req.pool.execute(
       'DELETE FROM smtp_account WHERE id = ? AND org_id = ?',
       [id, orgId]
     );

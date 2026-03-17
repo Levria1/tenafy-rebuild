@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+const { getMasterPool } = require('../config/poolRegistry');
+
 const bcrypt = require('bcryptjs');
 
 // GET /api/user/profile - Get current user profile with permissions
@@ -9,7 +10,7 @@ router.get('/profile', authenticate, async (req, res) => {
   try {
     const userId = req.user.id;
     const orgType = req.user.orgType;
-    const [users] = await pool.execute(
+    const [users] = await req.pool.execute(
       `SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.status, u.created_at,
               ur.role_id, r.display_name as role_name
        FROM user u
@@ -27,7 +28,7 @@ router.get('/profile', authenticate, async (req, res) => {
     if (Number(orgType) === 6) {
       permissions = ['*'];
     } else {
-      const [perms] = await pool.execute(
+      const [perms] = await req.pool.execute(
         `SELECT rp.permission_code FROM role_permission rp
          JOIN user_role ur ON rp.role_id = ur.role_id
          WHERE ur.user_id = ?`,
@@ -48,7 +49,7 @@ router.put('/personal', authenticate, async (req, res) => {
   try {
     const userId = req.user.id;
     const { first_name, last_name, email } = req.body;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE user SET first_name = ?, last_name = ?, email = ?, updated_at = NOW() WHERE id = ?',
       [first_name, last_name, email, userId]
     );
@@ -63,7 +64,7 @@ router.put('/personal', authenticate, async (req, res) => {
 router.get('/setting', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [orgs] = await pool.execute('SELECT * FROM organization WHERE id = ?', [orgId]);
+    const [orgs] = await req.pool.execute('SELECT * FROM organization WHERE id = ?', [orgId]);
     if (orgs.length === 0) {
       return res.status(404).json({ code: 404, message: 'Organization not found' });
     }
@@ -82,11 +83,11 @@ router.get('/dashboard', authenticate, async (req, res) => {
     const vacantDays = parseInt(req.query.vacantDays) || 30;
 
     // --- Occupancy Rate ---
-    const [[{ totalUnits }]] = await pool.execute(
+    const [[{ totalUnits }]] = await req.pool.execute(
       'SELECT COUNT(*) as totalUnits FROM unit u JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1',
       [orgId]
     );
-    const [[{ occupiedUnits }]] = await pool.execute(
+    const [[{ occupiedUnits }]] = await req.pool.execute(
       'SELECT COUNT(*) as occupiedUnits FROM unit u JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1 AND u.status = 1',
       [orgId]
     );
@@ -94,7 +95,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     const occupancyRate = totalUnits > 0 ? Math.round((occupiedUnits / totalUnits) * 10000) / 100 : 0;
 
     // --- Vacant Units (no active lease) ---
-    const [vacantUnits] = await pool.execute(
+    const [vacantUnits] = await req.pool.execute(
       `SELECT u.id AS unit_id, p.display_name AS property, u.name AS unit_name, u.type AS unit_type,
               u.rent_price_min, u.rent_price_max, p.id AS property_id
        FROM unit u
@@ -108,7 +109,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
 
     // --- Overdue Rental Amount (rent invoices that are overdue, status=2) ---
     // Find rent category IDs (categories with 'rental' in the name)
-    const [rentCategories] = await pool.execute(
+    const [rentCategories] = await req.pool.execute(
       "SELECT id FROM category_setting WHERE org_id = ? AND LOWER(name) LIKE '%rental%'",
       [orgId]
     );
@@ -127,7 +128,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
       ? `AND category NOT IN (${rentCatIds.map(() => '?').join(',')})`
       : '';
 
-    const [overdueRentals] = await pool.execute(
+    const [overdueRentals] = await req.pool.execute(
       `SELECT i.id, p.display_name AS property, u.name AS unit_name,
               i.due_on, i.amount AS outstanding,
               GREATEST(DATEDIFF(CURDATE(), i.due_on), 0) AS days_late,
@@ -141,17 +142,17 @@ router.get('/dashboard', authenticate, async (req, res) => {
        LIMIT 20`,
       [orgId, ...rentCatIds]
     );
-    const [[{ overdueRentalTotal }]] = await pool.execute(
+    const [[{ overdueRentalTotal }]] = await req.pool.execute(
       `SELECT COALESCE(SUM(amount), 0) AS overdueRentalTotal FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL ${rentConditionSimple}`,
       [orgId, ...rentCatIds]
     );
-    const [[{ overdueRentalCount }]] = await pool.execute(
+    const [[{ overdueRentalCount }]] = await req.pool.execute(
       `SELECT COUNT(*) AS overdueRentalCount FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL ${rentConditionSimple}`,
       [orgId, ...rentCatIds]
     );
 
     // --- Overdue Payments (non-rent overdue invoices, status=2, EXCLUDING rent category) ---
-    const [overduePayments] = await pool.execute(
+    const [overduePayments] = await req.pool.execute(
       `SELECT i.id, p.display_name AS property, u.name AS unit_name,
               i.due_on AS due_date, i.amount AS outstanding,
               GREATEST(DATEDIFF(CURDATE(), i.due_on), 0) AS days_late,
@@ -165,17 +166,17 @@ router.get('/dashboard', authenticate, async (req, res) => {
        LIMIT 20`,
       [orgId, ...rentCatIds]
     );
-    const [[{ overduePaymentTotal }]] = await pool.execute(
+    const [[{ overduePaymentTotal }]] = await req.pool.execute(
       `SELECT COALESCE(SUM(amount), 0) AS overduePaymentTotal FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL ${nonRentConditionSimple}`,
       [orgId, ...rentCatIds]
     );
-    const [[{ overduePaymentCount }]] = await pool.execute(
+    const [[{ overduePaymentCount }]] = await req.pool.execute(
       `SELECT COUNT(*) AS overduePaymentCount FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL ${nonRentConditionSimple}`,
       [orgId, ...rentCatIds]
     );
 
     // --- Outstanding Balance (per tenant - ALL overdue invoices status=2, all categories) ---
-    const [outstandingBalance] = await pool.execute(
+    const [outstandingBalance] = await req.pool.execute(
       `SELECT t.id AS tenant_id, t.first_name, t.last_name,
               SUM(i.amount) AS outstanding,
               GREATEST(DATEDIFF(CURDATE(), MIN(i.due_on)), 0) AS days_late
@@ -188,13 +189,13 @@ router.get('/dashboard', authenticate, async (req, res) => {
        LIMIT 20`,
       [orgId]
     );
-    const [[{ outstandingTotal }]] = await pool.execute(
+    const [[{ outstandingTotal }]] = await req.pool.execute(
       'SELECT COALESCE(SUM(amount), 0) AS outstandingTotal FROM invoice WHERE org_id = ? AND status = 2 AND deleted_at IS NULL',
       [orgId]
     );
 
     // --- Expiring Leases ---
-    const [expiringLeases] = await pool.execute(
+    const [expiringLeases] = await req.pool.execute(
       `SELECT l.id AS lease_id, p.display_name AS property, p.id AS property_id,
               u.name AS unit_name,
               t.first_name, t.last_name,
@@ -210,7 +211,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        LIMIT 20`,
       [orgId, expiringDays]
     );
-    const [[{ expiringCount }]] = await pool.execute(
+    const [[{ expiringCount }]] = await req.pool.execute(
       `SELECT COUNT(*) AS expiringCount FROM leasing l
        JOIN unit u ON l.unit_id = u.id
        JOIN property p ON u.property_id = p.id
@@ -221,7 +222,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     );
 
     // --- Upcoming Vacant Units (leases ending soon) ---
-    const [upcomingVacant] = await pool.execute(
+    const [upcomingVacant] = await req.pool.execute(
       `SELECT p.display_name AS property, p.id AS property_id,
               u.name AS unit_name, u.type AS unit_type,
               l.end_date AS lease_end_date
@@ -239,7 +240,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        LIMIT 20`,
       [orgId, vacantDays]
     );
-    const [[{ upcomingVacantCount }]] = await pool.execute(
+    const [[{ upcomingVacantCount }]] = await req.pool.execute(
       `SELECT COUNT(*) AS upcomingVacantCount FROM leasing l
        JOIN unit u ON l.unit_id = u.id
        JOIN property p ON u.property_id = p.id
@@ -254,7 +255,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     );
 
     // --- Recent Service Requests ---
-    const [serviceRequests] = await pool.execute(
+    const [serviceRequests] = await req.pool.execute(
       `SELECT s.id, s.code, s.category, s.sub_category, s.status, s.created_at,
               s.preferred_date_first_start,
               p.display_name AS property, u.name AS unit_name
@@ -296,7 +297,7 @@ router.put('/status/update', authenticate, async (req, res) => {
   try {
     const userId = req.user.id;
     const { status } = req.query;
-    await pool.execute('UPDATE user SET status = ?, updated_at = NOW() WHERE id = ?', [status, userId]);
+    await req.pool.execute('UPDATE user SET status = ?, updated_at = NOW() WHERE id = ?', [status, userId]);
     res.json({ code: 200, message: 'Status updated' });
   } catch (error) {
     console.error('Update status error:', error);
@@ -326,7 +327,7 @@ router.post('/list', authenticate, async (req, res) => {
       params.push(status);
     }
 
-    const [users] = await pool.execute(
+    const [users] = await req.pool.execute(
       `SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.status, u.created_at,
               ur.role_id, r.display_name as role_name
        FROM user u
@@ -336,7 +337,7 @@ router.post('/list', authenticate, async (req, res) => {
        ORDER BY u.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       params
     );
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       'SELECT COUNT(*) as total FROM user u WHERE ' + whereClause,
       params
     );
@@ -356,18 +357,30 @@ router.post('/', authenticate, async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const userId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
-    await pool.execute(
+    await req.pool.execute(
       'INSERT INTO user (id, org_id, username, password, email, first_name, last_name, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW())',
       [userId.toString(), orgId, username, '{bcrypt}' + hashedPassword, email || null, first_name || null, last_name || null]
     );
 
     // Assign role via user_role junction table
     if (role_id) {
-      await pool.execute(
+      await req.pool.execute(
         'INSERT INTO user_role (user_id, role_id) VALUES (?, ?)',
         [userId.toString(), role_id]
       );
     }
+
+    // Sync org_user_map in master DB
+    try {
+      const masterPool = getMasterPool();
+      const [orgRows] = await masterPool.execute('SELECT db_name FROM organizations WHERE id = ?', [orgId]);
+      if (orgRows.length) {
+        await masterPool.execute(
+          'INSERT INTO org_user_map (username, email, org_id, db_name) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email)',
+          [username, email || null, orgId, orgRows[0].db_name]
+        );
+      }
+    } catch (e) { console.error('org_user_map sync error:', e); }
 
     res.json({ code: 200, message: 'User created', data: { id: userId.toString() } });
   } catch (error) {
@@ -383,16 +396,16 @@ router.put('/:id', authenticate, async (req, res) => {
     const { email, first_name, last_name, role_id, status } = req.body;
     const orgId = req.user.orgId;
 
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE user SET email = ?, first_name = ?, last_name = ?, status = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
       [email || null, first_name || null, last_name || null, status ?? 1, id, orgId]
     );
 
     // Update role assignment via user_role junction table
     if (role_id !== undefined) {
-      await pool.execute('DELETE FROM user_role WHERE user_id = ?', [id]);
+      await req.pool.execute('DELETE FROM user_role WHERE user_id = ?', [id]);
       if (role_id) {
-        await pool.execute('INSERT INTO user_role (user_id, role_id) VALUES (?, ?)', [id, role_id]);
+        await req.pool.execute('INSERT INTO user_role (user_id, role_id) VALUES (?, ?)', [id, role_id]);
       }
     }
 
@@ -408,8 +421,14 @@ router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('DELETE FROM user_role WHERE user_id = ?', [id]);
-    await pool.execute('UPDATE user SET status = 0, updated_at = NOW() WHERE id = ? AND org_id = ?', [id, orgId]);
+    // Get username before deleting for org_user_map cleanup
+    const [[delUser]] = await req.pool.execute('SELECT username FROM user WHERE id = ? AND org_id = ?', [id, orgId]);
+    await req.pool.execute('DELETE FROM user_role WHERE user_id = ?', [id]);
+    await req.pool.execute('UPDATE user SET status = 0, updated_at = NOW() WHERE id = ? AND org_id = ?', [id, orgId]);
+    // Remove from org_user_map
+    if (delUser) {
+      try { await getMasterPool().execute('DELETE FROM org_user_map WHERE username = ?', [delUser.username]); } catch (e) {}
+    }
     res.json({ code: 200, message: 'User deleted' });
   } catch (error) {
     console.error('Delete user error:', error);
@@ -422,7 +441,7 @@ router.get('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [users] = await pool.execute(
+    const [users] = await req.pool.execute(
       `SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.status, u.created_at,
               ur.role_id, r.display_name as role_name
        FROM user u

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 const { generateSequenceCode } = require('../utils/sequenceCode');
 
 // POST /api/service/list - List services with paging
@@ -81,7 +81,7 @@ router.post('/list', authenticate, async (req, res) => {
        LEFT JOIN service_vendor sv2 ON s.assignee_2 = sv2.id
        LEFT JOIN tenant rb ON s.reported_by = rb.id`;
 
-    const [services] = await pool.execute(
+    const [services] = await req.pool.execute(
       `SELECT s.*, u.name as unit_name, p.display_name as property_name,
               CASE WHEN t.type = 1 THEN t.company_name
                    ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
@@ -97,7 +97,7 @@ router.post('/list', authenticate, async (req, res) => {
       [...params]
     );
 
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       `SELECT COUNT(*) as total ${joinClause} WHERE ${whereClause}`,
       [...params]
     );
@@ -124,7 +124,7 @@ router.post('/list/status', authenticate, async (req, res) => {
       params.push(sv, sv);
     }
 
-    const [services] = await pool.execute(
+    const [services] = await req.pool.execute(
       'SELECT * FROM service WHERE ' + whereClause + ' ORDER BY status, created_at DESC',
       params
     );
@@ -155,13 +155,13 @@ router.post('/create', authenticate, async (req, res) => {
     // Generate service code from sequence (uses MAX of existing codes)
     let code;
     try {
-      code = await generateSequenceCode(orgId, 'service_code');
+      code = await generateSequenceCode(req.pool, orgId, 'service_code');
     } catch (seqErr) {
       console.error('Sequence lookup failed, using fallback code:', seqErr.message);
       code = 'S' + Date.now();
     }
 
-    await pool.execute(
+    await req.pool.execute(
       `INSERT INTO service (id, org_id, code, unit_id, category, sub_category,
         note, additional_info, status, assignee, assignee_2, priority, created_by,
         reported_by, contact_phone,
@@ -182,7 +182,7 @@ router.post('/create', authenticate, async (req, res) => {
     if (Array.isArray(file_ids) && file_ids.length > 0) {
       const fileValues = file_ids.map(fid => [serviceId, fid.toString()]);
       for (const [objId, fId] of fileValues) {
-        await pool.execute('INSERT INTO object_file (object_id, file_id) VALUES (?, ?)', [objId, fId]);
+        await req.pool.execute('INSERT INTO object_file (object_id, file_id) VALUES (?, ?)', [objId, fId]);
       }
     }
 
@@ -197,7 +197,7 @@ router.post('/create', authenticate, async (req, res) => {
 router.get('/category', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [categories] = await pool.execute(
+    const [categories] = await req.pool.execute(
       'SELECT DISTINCT category FROM service WHERE org_id = ? AND category IS NOT NULL AND deleted_at IS NULL ORDER BY category',
       [orgId]
     );
@@ -212,7 +212,7 @@ router.get('/category', authenticate, async (req, res) => {
 router.get('/vendor/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [vendors] = await pool.execute(
+    const [vendors] = await req.pool.execute(
       'SELECT id, first_name, last_name, email, phone FROM service_vendor WHERE org_id = ? AND status = 1 AND deleted_at IS NULL ORDER BY first_name, last_name',
       [orgId]
     );
@@ -227,12 +227,12 @@ router.get('/vendor/list', authenticate, async (req, res) => {
 router.get('/contacts', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [tenants] = await pool.execute(
+    const [tenants] = await req.pool.execute(
       `SELECT id, first_name, last_name, company_name, type, phone, 'tenant' as contact_type
        FROM tenant WHERE org_id = ? AND status = 1 AND category = 1 ORDER BY first_name, last_name`,
       [orgId]
     );
-    const [vendors] = await pool.execute(
+    const [vendors] = await req.pool.execute(
       `SELECT id, first_name, last_name, NULL as company_name, 0 as type, phone, 'vendor' as contact_type
        FROM service_vendor WHERE org_id = ? AND status = 1 AND deleted_at IS NULL ORDER BY first_name, last_name`,
       [orgId]
@@ -248,7 +248,7 @@ router.get('/contacts', authenticate, async (req, res) => {
 router.get('/property/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [properties] = await pool.execute(
+    const [properties] = await req.pool.execute(
       'SELECT id, display_name FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
       [orgId]
     );
@@ -264,7 +264,7 @@ router.get('/property/:id/unit', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       'SELECT u.id, u.name FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.property_id = ? AND p.org_id = ? AND u.active_status = 1 ORDER BY u.name',
       [id, orgId]
     );
@@ -280,7 +280,7 @@ router.get('/property/unit/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       'SELECT u.id, u.name, u.property_id, p.display_name as property_name FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ?',
       [id, orgId]
     );
@@ -302,7 +302,7 @@ router.get('/invoice/list', authenticate, async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    const [invoices] = await pool.execute(
+    const [invoices] = await req.pool.execute(
       'SELECT i.* FROM invoice i WHERE i.unit_id IN (SELECT unit_id FROM service WHERE id = ?) LIMIT ' + limit + ' OFFSET ' + offset + '',
       [id]
     );
@@ -318,7 +318,7 @@ router.get('/detail/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [services] = await pool.execute(
+    const [services] = await req.pool.execute(
       `SELECT s.*, u.name as unit_name, p.display_name as property_name, p.id as property_id,
               sv.first_name as assignee_first_name, sv.last_name as assignee_last_name,
               sv2.first_name as assignee_2_first_name, sv2.last_name as assignee_2_last_name,
@@ -345,7 +345,7 @@ router.get('/detail/:id', authenticate, async (req, res) => {
     }
 
     // Fetch linked files
-    const [files] = await pool.execute(
+    const [files] = await req.pool.execute(
       `SELECT f.id, f.filename, f.item_name, f.extension, f.mime_type, f.file_size
        FROM object_file of2
        JOIN file f ON of2.file_id = f.id
@@ -375,14 +375,14 @@ router.put('/update/:id', authenticate, async (req, res) => {
     } = req.body;
 
     // Verify exists
-    const [existing] = await pool.execute(
+    const [existing] = await req.pool.execute(
       'SELECT id FROM service WHERE id = ? AND org_id = ? AND deleted_at IS NULL', [id, orgId]
     );
     if (existing.length === 0) {
       return res.status(404).json({ code: 404, message: 'Service not found' });
     }
 
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE service SET
         unit_id = ?, category = ?, sub_category = ?, note = ?, additional_info = ?,
         status = ?, assignee = ?, assignee_2 = ?, priority = ?,
@@ -405,10 +405,10 @@ router.put('/update/:id', authenticate, async (req, res) => {
     const { file_ids } = req.body;
     if (Array.isArray(file_ids)) {
       // Soft-delete existing links
-      await pool.execute('UPDATE object_file SET deleted_at = NOW() WHERE object_id = ? AND deleted_at IS NULL', [id]);
+      await req.pool.execute('UPDATE object_file SET deleted_at = NOW() WHERE object_id = ? AND deleted_at IS NULL', [id]);
       // Insert new links
       for (const fId of file_ids) {
-        await pool.execute(
+        await req.pool.execute(
           'INSERT INTO object_file (object_id, file_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE deleted_at = NULL',
           [id, fId.toString()]
         );
@@ -451,7 +451,7 @@ router.patch('/patch/:id', authenticate, async (req, res) => {
     setClauses.push('updated_at = NOW()');
     values.push(id, orgId);
 
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       `UPDATE service SET ${setClauses.join(', ')} WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
       values
     );
@@ -472,7 +472,7 @@ router.delete('/delete/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('UPDATE service SET deleted_at = NOW() WHERE id = ? AND org_id = ?', [id, orgId]);
+    await req.pool.execute('UPDATE service SET deleted_at = NOW() WHERE id = ? AND org_id = ?', [id, orgId]);
     res.json({ code: 200, message: 'Service deleted' });
   } catch (error) {
     console.error('Delete service error:', error);

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // GET /api/property-owner/:id - Get property owner
 router.get('/:id', authenticate, async (req, res) => {
@@ -9,7 +9,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
-    const [owners] = await pool.execute(
+    const [owners] = await req.pool.execute(
       'SELECT * FROM property_owner WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
       [id, orgId]
     );
@@ -31,7 +31,7 @@ router.post('/', authenticate, async (req, res) => {
     const { first_name, last_name, email, phone, id_card, birth_date, sex, notes } = req.body;
     const orgId = req.user.orgId;
 
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       `INSERT INTO property_owner (org_id, first_name, last_name, email, phone, id_card, birth_date, sex, notes, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
       [orgId, first_name, last_name, email, phone || null, id_card || null, birth_date || null, sex || null, notes || null]
@@ -51,7 +51,7 @@ router.put('/:id/update', authenticate, async (req, res) => {
     const { first_name, last_name, email, phone, id_card, birth_date, sex, notes, status } = req.body;
     const orgId = req.user.orgId;
 
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE property_owner SET
         first_name = ?, last_name = ?, email = ?, phone = ?,
         id_card = ?, birth_date = ?, sex = ?, notes = ?, status = ?,
@@ -74,7 +74,7 @@ router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('UPDATE property_owner SET deleted_at = NOW() WHERE id = ? AND org_id = ?', [id, orgId]);
+    await req.pool.execute('UPDATE property_owner SET deleted_at = NOW() WHERE id = ? AND org_id = ?', [id, orgId]);
     res.json({ code: 200, message: 'Property owner deleted' });
   } catch (error) {
     console.error('Delete property owner error:', error);

@@ -1,7 +1,7 @@
 const cron = require('node-cron');
-const pool = require('../config/database');
 const { sendMail } = require('../config/mailer');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
+const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -12,15 +12,16 @@ const {
 } = require('./emailService');
 
 // ---------------------------------------------------------------------------
-// Notification helper — creates in-app notification + optional email alert
+// Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Create an in-app notification in the database.
- * @param {object} opts - { orgId, type, title, message, link }
- *   type: 'error' | 'warning' | 'success' | 'info'
- */
-async function createNotification({ orgId, type, title, message, link }) {
+async function getAllActiveOrgs() {
+  const masterPool = getMasterPool();
+  const [orgs] = await masterPool.execute('SELECT id, db_name FROM organizations WHERE status = 1');
+  return orgs;
+}
+
+async function createNotification(pool, { orgId, type, title, message, link }) {
   try {
     const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
     await pool.execute(
@@ -33,37 +34,21 @@ async function createNotification({ orgId, type, title, message, link }) {
   }
 }
 
-/**
- * Send an email alert to org admin(s) about a scheduler event.
- * Looks up the org's admin email from the user table.
- */
-async function sendAdminAlert({ orgId, subject, html }) {
+async function sendAdminAlert(pool, { orgId, subject, html }) {
   try {
-    // Get admin email(s) for this org
     const [admins] = await pool.execute(
-      `SELECT email FROM user WHERE org_id = ? AND status = 1 AND role_type = 0 AND email IS NOT NULL LIMIT 3`,
+      `SELECT email FROM user WHERE org_id = ? AND status = 1 AND email IS NOT NULL LIMIT 3`,
       [orgId]
     );
     if (admins.length === 0) return;
-
     const emails = admins.map(a => a.email).filter(Boolean);
     if (emails.length === 0) return;
-
-    await sendMail({
-      to: emails,
-      subject: `[Tenafy] ${subject}`,
-      html,
-    });
+    await sendMail({ to: emails, subject: `[Tenafy] ${subject}`, html });
     console.log(`[Scheduler] Admin alert sent to ${emails.join(', ')}: ${subject}`);
   } catch (err) {
-    // Don't let email failures break the scheduler
     console.error('[Scheduler] Failed to send admin alert email:', err.message);
   }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function toDateString(date) {
   const y = date.getFullYear();
@@ -72,50 +57,30 @@ function toDateString(date) {
   return `${y}-${m}-${d}`;
 }
 
-// Advance a date by one invoice period (same as leasing.js)
 function advanceInvoiceDate(date, schedule, dueDay) {
   const inv = String(schedule).toLowerCase();
   const next = new Date(date);
-  if (inv === '1' || inv === 'daily') {
-    next.setDate(next.getDate() + 1);
-  } else if (inv === '7' || inv === 'weekly') {
-    next.setDate(next.getDate() + 7);
-  } else if (inv === '14' || inv === 'bi-weekly') {
-    next.setDate(next.getDate() + 14);
-  } else if (inv === '28') {
-    next.setDate(next.getDate() + 28);
-  } else if (inv === '30' || inv === 'monthly') {
+  if (inv === '1' || inv === 'daily') { next.setDate(next.getDate() + 1); }
+  else if (inv === '7' || inv === 'weekly') { next.setDate(next.getDate() + 7); }
+  else if (inv === '14' || inv === 'bi-weekly') { next.setDate(next.getDate() + 14); }
+  else if (inv === '28') { next.setDate(next.getDate() + 28); }
+  else if (inv === '30' || inv === 'monthly') {
     next.setMonth(next.getMonth() + 1);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
+    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
   } else if (inv === '60' || inv === 'bi-monthly') {
     next.setMonth(next.getMonth() + 2);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
+    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
   } else if (inv === '90' || inv === 'quarterly') {
     next.setMonth(next.getMonth() + 3);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
+    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
   } else if (inv === '180' || inv === 'bi-annually') {
     next.setMonth(next.getMonth() + 6);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
+    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
   } else if (inv === '365' || inv === 'annually') {
     next.setFullYear(next.getFullYear() + 1);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
+    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
   } else {
-    next.setMonth(next.getMonth() + 1); // default monthly
+    next.setMonth(next.getMonth() + 1);
   }
   return next;
 }
@@ -127,167 +92,98 @@ function daysDiff(date1, date2) {
 }
 
 // ---------------------------------------------------------------------------
-// Job 1: Auto-generate recurring invoices
+// Job 1: Auto-generate recurring invoices (per org)
 // ---------------------------------------------------------------------------
 
-async function generateRecurringInvoices() {
-  // Match original Tenafy behavior (LeasingServiceImpl.java):
-  // - Only process leases with share_lease=1 (recurring enabled)
-  // - Find the latest rent invoice for each lease
-  // - 1 day after that invoice's due date → create the next invoice
-  // - Handles catch-up if scheduler missed days (creates all missing invoices)
+async function generateRecurringInvoicesForOrg(pool, orgId) {
   const [leases] = await pool.execute(
     `SELECT
-       l.id,
-       l.tenant_id,
-       l.unit_id,
-       l.amount AS price,
-       l.invoicing,
-       l.due_date,
-       l.first_invoice_date,
-       l.start_date,
-       l.end_date,
-       l.all_past,
-       l.currency_id,
-       p.org_id   AS org_id,
-       p.display_name AS property_name,
-       u.name AS unit_name,
-       u.property_id
+       l.id, l.tenant_id, l.unit_id, l.amount AS price, l.invoicing, l.due_date,
+       l.first_invoice_date, l.start_date, l.end_date, l.all_past, l.currency_id,
+       p.org_id AS org_id, p.display_name AS property_name, u.name AS unit_name, u.property_id
      FROM leasing l
-     JOIN unit u    ON l.unit_id = u.id
+     JOIN unit u ON l.unit_id = u.id
      JOIN property p ON u.property_id = p.id
-     WHERE l.status = 1
-       AND l.deleted_at IS NULL
-       AND l.share_lease = 1
-       AND l.invoicing IS NOT NULL
-       AND l.invoicing != ''
-       AND l.amount IS NOT NULL
-       AND l.amount > 0`
+     WHERE l.status = 1 AND l.deleted_at IS NULL AND l.share_lease = 1
+       AND l.invoicing IS NOT NULL AND l.invoicing != ''
+       AND l.amount IS NOT NULL AND l.amount > 0 AND p.org_id = ?`,
+    [orgId]
   );
 
-  if (leases.length === 0) {
-    console.log('[Scheduler] No active recurring leases found.');
-    return;
-  }
+  if (leases.length === 0) return;
+  console.log(`[Scheduler][org:${orgId}] Found ${leases.length} recurring lease(s).`);
 
-  console.log(`[Scheduler] Found ${leases.length} recurring lease(s) to evaluate.`);
-
-  const orgResults = {}; // orgId -> { created, skipped, errors, errorDetails[] }
-  const orgRentalCategory = {}; // orgId -> category_setting.id for "Rental Income"
-  const orgCurrency = {}; // orgId -> currency.id
+  const result = { created: 0, skipped: 0, errors: 0, errorDetails: [] };
+  const orgRentalCategory = {};
+  const orgCurrency = {};
   const today = new Date(toDateString(new Date()));
 
   for (const lease of leases) {
-    if (!orgResults[lease.org_id]) {
-      orgResults[lease.org_id] = { created: 0, skipped: 0, errors: 0, errorDetails: [] };
-    }
-    const result = orgResults[lease.org_id];
-
     try {
-      // Find the latest invoice for this lease (by due_on)
       const [[latestInvoice]] = await pool.execute(
-        `SELECT due_on FROM invoice
-         WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL
-         ORDER BY due_on DESC LIMIT 1`,
-        [lease.id, lease.org_id]
+        `SELECT due_on FROM invoice WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1`,
+        [lease.id, orgId]
       );
-
-      if (!latestInvoice) {
-        result.skipped++;
-        continue;
-      }
+      if (!latestInvoice) { result.skipped++; continue; }
 
       const lastDueDate = new Date(latestInvoice.due_on);
-      const diff = daysDiff(today, lastDueDate);
+      if (daysDiff(today, lastDueDate) < 1) { result.skipped++; continue; }
 
-      // Original behavior: only trigger when today >= 1 day after last due date
-      if (diff < 1) {
-        result.skipped++;
-        continue;
-      }
-
-      // Resolve Rental Income category (cached per org)
-      if (!orgRentalCategory[lease.org_id]) {
+      if (!orgRentalCategory[orgId]) {
         const [[rentalCat]] = await pool.execute(
-          "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1",
-          [lease.org_id]
+          "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1", [orgId]
         );
-        orgRentalCategory[lease.org_id] = rentalCat ? rentalCat.id : null;
+        orgRentalCategory[orgId] = rentalCat ? rentalCat.id : null;
       }
-      const catId = orgRentalCategory[lease.org_id];
-      if (!catId) {
-        result.errors++;
-        result.errorDetails.push(`${lease.property_name} / ${lease.unit_name}: No 'Rental Income' category found`);
-        continue;
-      }
+      const catId = orgRentalCategory[orgId];
+      if (!catId) { result.errors++; result.errorDetails.push(`${lease.property_name} / ${lease.unit_name}: No 'Rental Income' category`); continue; }
 
-      // Resolve currency (cached per org)
       let currId = lease.currency_id;
       if (!currId) {
-        if (!orgCurrency[lease.org_id]) {
-          const [[cur]] = await pool.execute('SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [lease.org_id]);
-          orgCurrency[lease.org_id] = cur ? cur.id : null;
+        if (!orgCurrency[orgId]) {
+          const [[cur]] = await pool.execute('SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [orgId]);
+          orgCurrency[orgId] = cur ? cur.id : null;
         }
-        currId = orgCurrency[lease.org_id];
+        currId = orgCurrency[orgId];
       }
 
       let invoicesCreated = 0;
-
-      // Generate missing invoices (handles catch-up if scheduler missed days)
-      // Keep creating until we have one upcoming (future) invoice
       let cursor = lastDueDate;
-      const MAX = 50;
       let iterations = 0;
 
-      while (iterations < MAX) {
+      while (iterations < 50) {
         const nextDueDate = advanceInvoiceDate(cursor, lease.invoicing, lease.due_date);
         const nextDueDateStr = toDateString(nextDueDate);
-
-        // Don't go past lease end date
         if (lease.end_date && nextDueDate > new Date(lease.end_date)) break;
 
-        // Check for duplicate
         const [[existing]] = await pool.execute(
-          `SELECT id FROM invoice WHERE leasing_id = ? AND due_on = ? AND deleted_at IS NULL`,
-          [lease.id, nextDueDateStr]
+          `SELECT id FROM invoice WHERE leasing_id = ? AND due_on = ? AND deleted_at IS NULL`, [lease.id, nextDueDateStr]
         );
 
         if (!existing) {
-          // Generate invoice code using unified sequence helper (checks MAX existing, skips orphans)
-          const invoiceCode = await generateInvoiceCode(lease.org_id);
-
+          const invoiceCode = await generateInvoiceCode(pool, orgId);
           const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
           await pool.execute(
             `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
               invoice_code, amount, due_on, status, category, currency_id, type, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, NOW())`,
-            [invoiceId, lease.org_id, lease.tenant_id, lease.unit_id, lease.id, lease.property_id,
+            [invoiceId, orgId, lease.tenant_id, lease.unit_id, lease.id, lease.property_id,
              invoiceCode, lease.price, nextDueDateStr, catId, currId]
           );
 
           invoicesCreated++;
-          console.log(
-            `[Scheduler] Created invoice ${invoiceCode} for lease ${lease.id} ` +
-            `(${lease.property_name} / ${lease.unit_name}, due ${nextDueDateStr})`
-          );
+          console.log(`[Scheduler] Created invoice ${invoiceCode} for lease ${lease.id} (due ${nextDueDateStr})`);
 
-          // Send invoice emails if toggles are enabled
           try {
-            await sendInvoiceToTenant(lease.org_id, lease.id, {
-              invoiceId, invoiceCode, category: catId, dueDate: nextDueDate,
-            });
-            await sendInvoiceToLandlord(lease.org_id, lease.id, {
-              invoiceId, invoiceCode, category: catId, dueDate: nextDueDate,
-            });
+            await sendInvoiceToTenant(pool, orgId, lease.id, { invoiceId, invoiceCode, category: catId, dueDate: nextDueDate });
+            await sendInvoiceToLandlord(pool, orgId, lease.id, { invoiceId, invoiceCode, category: catId, dueDate: nextDueDate });
           } catch (emailErr) {
             console.error(`[Scheduler] Invoice email error for ${invoiceCode}:`, emailErr.message);
           }
         }
 
-        // If this invoice is in the future → we've created the next upcoming one, stop
         if (nextDueDate > today) break;
-
         cursor = nextDueDate;
         iterations++;
       }
@@ -301,325 +197,153 @@ async function generateRecurringInvoices() {
     }
   }
 
-  // Send notifications per org
-  for (const [orgId, result] of Object.entries(orgResults)) {
-    const { created, skipped, errors, errorDetails } = result;
-
-    if (created > 0) {
-      await createNotification({
-        orgId,
-        type: 'success',
-        title: `${created} recurring invoice${created > 1 ? 's' : ''} generated`,
-        message: `${created} created, ${skipped} already up to date. ${errors > 0 ? `${errors} failed.` : ''}`,
-        link: '/invoices',
-      });
-    }
-
-    if (errors > 0) {
-      const errorMsg = errorDetails.slice(0, 5).join('\n');
-      const suffix = errorDetails.length > 5 ? `\n...and ${errorDetails.length - 5} more` : '';
-
-      await createNotification({
-        orgId,
-        type: 'error',
-        title: `${errors} invoice${errors > 1 ? 's' : ''} failed to generate`,
-        message: `${errorMsg}${suffix}`,
-        link: '/leasing',
-      });
-
-      await sendAdminAlert({
-        orgId,
-        subject: `${errors} recurring invoice(s) failed to generate`,
-        html: `
-          <h3>Recurring Invoice Generation Alert</h3>
-          <p>The automatic invoice scheduler encountered errors:</p>
-          <ul>
-            <li><strong>Created:</strong> ${created}</li>
-            <li><strong>Skipped (already exists):</strong> ${skipped}</li>
-            <li style="color: red;"><strong>Failed:</strong> ${errors}</li>
-          </ul>
-          <h4>Error details:</h4>
-          <ul>
-            ${errorDetails.map(d => `<li>${d}</li>`).join('')}
-          </ul>
-          <p>Please review the affected leases in the <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/leasing">Leasing section</a>.</p>
-          <p style="color: #999;">— Tenafy Scheduler</p>
-        `,
-      });
-    }
+  if (result.created > 0) {
+    await createNotification(pool, { orgId, type: 'success', title: `${result.created} recurring invoice(s) generated`, message: `${result.created} created, ${result.skipped} up to date.`, link: '/invoices' });
+  }
+  if (result.errors > 0) {
+    await createNotification(pool, { orgId, type: 'error', title: `${result.errors} invoice(s) failed to generate`, message: result.errorDetails.slice(0, 5).join('\n'), link: '/leasing' });
+    await sendAdminAlert(pool, { orgId, subject: `${result.errors} recurring invoice(s) failed`, html: `<p>Errors:</p><ul>${result.errorDetails.map(d => `<li>${d}</li>`).join('')}</ul>` });
   }
 
-  const totalCreated = Object.values(orgResults).reduce((s, r) => s + r.created, 0);
-  const totalSkipped = Object.values(orgResults).reduce((s, r) => s + r.skipped, 0);
-  const totalErrors = Object.values(orgResults).reduce((s, r) => s + r.errors, 0);
-  console.log(
-    `[Scheduler] Recurring invoice run complete — created: ${totalCreated}, skipped: ${totalSkipped}, errors: ${totalErrors}`
-  );
+  return result;
 }
 
 // ---------------------------------------------------------------------------
-// Job 2: Lease expiry notifications
+// Job 2: Lease expiry notifications (per org)
 // ---------------------------------------------------------------------------
 
-async function sendLeaseExpiryNotifications() {
+async function sendLeaseExpiryForOrg(pool, orgId) {
   const [leases] = await pool.execute(
-    `SELECT
-       l.id,
-       l.end_date,
-       l.tenant_id,
-       t.email          AS tenant_email,
-       t.first_name     AS tenant_first_name,
-       t.last_name      AS tenant_last_name,
-       p.display_name   AS property_name,
-       p.org_id         AS org_id,
-       u.name           AS unit_name,
-       DATEDIFF(l.end_date, CURDATE()) AS days_remaining
-     FROM leasing l
-     JOIN unit u     ON l.unit_id = u.id
-     JOIN property p ON u.property_id = p.id
-     JOIN tenant t   ON l.tenant_id = t.id
-     WHERE l.status = 1
-       AND l.deleted_at IS NULL
-       AND l.end_date >= CURDATE()
-       AND l.end_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
-       AND t.email IS NOT NULL
-       AND t.email != ''`
+    `SELECT l.id, l.end_date, l.tenant_id, t.email AS tenant_email, t.first_name AS tenant_first_name,
+       t.last_name AS tenant_last_name, p.display_name AS property_name, p.org_id AS org_id,
+       u.name AS unit_name, DATEDIFF(l.end_date, CURDATE()) AS days_remaining
+     FROM leasing l JOIN unit u ON l.unit_id = u.id JOIN property p ON u.property_id = p.id JOIN tenant t ON l.tenant_id = t.id
+     WHERE l.status = 1 AND l.deleted_at IS NULL AND l.end_date >= CURDATE()
+       AND l.end_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) AND t.email IS NOT NULL AND t.email != '' AND p.org_id = ?`,
+    [orgId]
   );
 
-  if (leases.length === 0) {
-    console.log('[Scheduler] No expiring leases found within the next 30 days.');
-    return;
-  }
-
-  console.log(`[Scheduler] Found ${leases.length} expiring lease(s). Sending notifications...`);
-
-  // Track per org
-  const orgResults = {}; // orgId -> { sent, failures, details[] }
+  if (leases.length === 0) return;
+  let sent = 0, failures = 0;
+  const details = [];
 
   for (const lease of leases) {
-    if (!orgResults[lease.org_id]) {
-      orgResults[lease.org_id] = { sent: 0, failures: 0, details: [] };
-    }
-    const result = orgResults[lease.org_id];
-
     try {
-      // Try template-based email first (checks landlord_expired toggle internally)
-      const templateResult = await sendLeaseExpiryToLandlord(lease.org_id, lease.id);
-
+      const templateResult = await sendLeaseExpiryToLandlord(pool, orgId, lease.id);
       if (!templateResult) {
-        // Fallback: send hardcoded email directly
-        const endDateFormatted = new Date(lease.end_date).toLocaleDateString('en-US', {
-          year: 'numeric', month: 'long', day: 'numeric',
+        const endDateFormatted = new Date(lease.end_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        await sendMail({
+          to: lease.tenant_email,
+          subject: `Lease Expiry Notice — ${lease.property_name}`,
+          html: `<p>Dear ${lease.tenant_first_name} ${lease.tenant_last_name},</p><p>Your lease at <strong>${lease.property_name}</strong>${lease.unit_name ? `, Unit ${lease.unit_name}` : ''} expires on <strong>${endDateFormatted}</strong> (${lease.days_remaining} day(s) remaining).</p>`
         });
-
-        const subject = `Lease Expiry Notice — ${lease.property_name}`;
-        const html = `
-          <p>Dear ${lease.tenant_first_name} ${lease.tenant_last_name},</p>
-          <p>
-            This is a reminder that your lease at
-            <strong>${lease.property_name}</strong>${lease.unit_name ? `, Unit ${lease.unit_name}` : ''}
-            will expire on <strong>${endDateFormatted}</strong>
-            (${lease.days_remaining} day${lease.days_remaining === 1 ? '' : 's'} remaining).
-          </p>
-          <p>Please contact your property manager if you would like to discuss renewal options.</p>
-          <p>— The Tenafy Team</p>
-        `;
-
-        await sendMail({ to: lease.tenant_email, subject, html });
       }
-      result.sent++;
-      result.details.push(`${lease.tenant_first_name} ${lease.tenant_last_name} @ ${lease.property_name} ${lease.unit_name || ''} (${lease.days_remaining}d)`);
+      sent++;
+      details.push(`${lease.tenant_first_name} ${lease.tenant_last_name} @ ${lease.property_name}`);
     } catch (err) {
-      result.failures++;
-      console.error(`[Scheduler] Failed to send lease expiry for lease ${lease.id}:`, err.message);
+      failures++;
+      console.error(`[Scheduler] Lease expiry error for lease ${lease.id}:`, err.message);
     }
   }
 
-  // Send in-app notifications per org
-  for (const [orgId, result] of Object.entries(orgResults)) {
-    if (result.sent > 0) {
-      await createNotification({
-        orgId,
-        type: 'info',
-        title: `${result.sent} lease expiry notice${result.sent > 1 ? 's' : ''} sent`,
-        message: result.details.slice(0, 3).join(', ') + (result.details.length > 3 ? ` +${result.details.length - 3} more` : ''),
-        link: '/leasing',
-      });
-    }
-    if (result.failures > 0) {
-      await createNotification({
-        orgId,
-        type: 'warning',
-        title: `${result.failures} lease expiry email${result.failures > 1 ? 's' : ''} failed to send`,
-        message: 'Check that tenant email addresses are valid and SMTP is configured.',
-        link: '/leasing',
-      });
-    }
-  }
-
-  const totalSent = Object.values(orgResults).reduce((s, r) => s + r.sent, 0);
-  const totalFail = Object.values(orgResults).reduce((s, r) => s + r.failures, 0);
-  console.log(`[Scheduler] Lease expiry run complete — sent: ${totalSent}, failures: ${totalFail}`);
+  if (sent > 0) await createNotification(pool, { orgId, type: 'info', title: `${sent} lease expiry notice(s) sent`, message: details.slice(0, 3).join(', '), link: '/leasing' });
+  if (failures > 0) await createNotification(pool, { orgId, type: 'warning', title: `${failures} expiry email(s) failed`, message: 'Check tenant emails and SMTP config.', link: '/leasing' });
 }
 
 // ---------------------------------------------------------------------------
-// Job 3: Overdue invoice reminders
+// Job 3: Overdue invoice reminders (per org)
 // ---------------------------------------------------------------------------
 
-async function sendOverdueReminders() {
-  const MAX_PER_RUN = 50;
-
+async function sendOverdueRemindersForOrg(pool, orgId) {
   const [invoices] = await pool.execute(
-    `SELECT
-       i.id,
-       i.invoice_code,
-       i.amount,
-       i.due_on,
-       i.org_id,
-       i.leasing_id,
-       t.email        AS tenant_email,
-       t.first_name   AS tenant_first_name,
-       t.last_name    AS tenant_last_name,
-       p.display_name AS property_name,
-       u.name         AS unit_name,
-       DATEDIFF(CURDATE(), i.due_on) AS days_overdue
-     FROM invoice i
-     JOIN tenant t   ON i.tenant_id = t.id
-     JOIN unit u     ON i.unit_id = u.id
-     JOIN property p ON u.property_id = p.id
-     WHERE i.status = 0
-       AND i.due_on < CURDATE()
-       AND t.email IS NOT NULL
-       AND t.email != ''
-     ORDER BY i.due_on ASC
-     LIMIT ?`,
-    [MAX_PER_RUN]
+    `SELECT i.id, i.invoice_code, i.amount, i.due_on, i.org_id, i.leasing_id,
+       t.email AS tenant_email, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+       p.display_name AS property_name, u.name AS unit_name, DATEDIFF(CURDATE(), i.due_on) AS days_overdue
+     FROM invoice i JOIN tenant t ON i.tenant_id = t.id JOIN unit u ON i.unit_id = u.id JOIN property p ON u.property_id = p.id
+     WHERE i.status = 0 AND i.due_on < CURDATE() AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
+     ORDER BY i.due_on ASC LIMIT 50`,
+    [orgId]
   );
 
-  if (invoices.length === 0) {
-    console.log('[Scheduler] No overdue invoices found.');
-    return;
-  }
-
-  console.log(`[Scheduler] Found ${invoices.length} overdue invoice(s). Sending reminders...`);
-
-  const orgResults = {};
+  if (invoices.length === 0) return;
+  let sent = 0, failures = 0;
 
   for (const inv of invoices) {
-    if (!orgResults[inv.org_id]) {
-      orgResults[inv.org_id] = { sent: 0, failures: 0, totalOverdue: 0 };
-    }
-    const result = orgResults[inv.org_id];
-    result.totalOverdue++;
-
     try {
-      // Try template-based email if invoice has a lease
-      let sent = false;
+      let emailSent = false;
       if (inv.leasing_id) {
-        const templateResult = await sendOverdueToTenant(inv.org_id, inv.leasing_id, {
-          dueDate: inv.due_on,
-          overdueAmount: inv.amount,
-        });
-        if (templateResult) sent = true;
+        const templateResult = await sendOverdueToTenant(pool, orgId, inv.leasing_id, { dueDate: inv.due_on, overdueAmount: inv.amount });
+        if (templateResult) emailSent = true;
       }
-
-      if (!sent) {
-        // Fallback: send hardcoded email directly
-        const dueDateFormatted = new Date(inv.due_on).toLocaleDateString('en-US', {
-          year: 'numeric', month: 'long', day: 'numeric',
+      if (!emailSent) {
+        const dueDateFormatted = new Date(inv.due_on).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        await sendMail({
+          to: inv.tenant_email,
+          subject: `Payment Reminder — Invoice ${inv.invoice_code} is Overdue`,
+          html: `<p>Dear ${inv.tenant_first_name} ${inv.tenant_last_name},</p><p>Invoice <strong>${inv.invoice_code}</strong> for <strong>$${Number(inv.amount).toFixed(2)}</strong> was due on <strong>${dueDateFormatted}</strong> and is now <strong>${inv.days_overdue} day(s) overdue</strong>.</p>`
         });
-
-        const amountFormatted = Number(inv.amount).toFixed(2);
-        const subject = `Payment Reminder — Invoice ${inv.invoice_code} is Overdue`;
-        const html = `
-          <p>Dear ${inv.tenant_first_name} ${inv.tenant_last_name},</p>
-          <p>
-            This is a reminder that invoice <strong>${inv.invoice_code}</strong>
-            for <strong>$${amountFormatted}</strong> at
-            <strong>${inv.property_name}</strong>${inv.unit_name ? `, Unit ${inv.unit_name}` : ''}
-            was due on <strong>${dueDateFormatted}</strong>
-            and is now <strong>${inv.days_overdue} day${inv.days_overdue === 1 ? '' : 's'} overdue</strong>.
-          </p>
-          <p>Please arrange payment at your earliest convenience or contact your property manager.</p>
-          <p>— The Tenafy Team</p>
-        `;
-
-        await sendMail({ to: inv.tenant_email, subject, html });
       }
-      result.sent++;
+      sent++;
     } catch (err) {
-      result.failures++;
-      console.error(`[Scheduler] Failed to send overdue reminder for ${inv.invoice_code}:`, err.message);
+      failures++;
+      console.error(`[Scheduler] Overdue reminder error for ${inv.invoice_code}:`, err.message);
     }
   }
 
-  // Send in-app notifications per org
-  for (const [orgId, result] of Object.entries(orgResults)) {
-    if (result.sent > 0) {
-      await createNotification({
-        orgId,
-        type: 'warning',
-        title: `${result.sent} overdue reminder${result.sent > 1 ? 's' : ''} sent`,
-        message: `Sent payment reminders for ${result.sent} overdue invoice${result.sent > 1 ? 's' : ''}.`,
-        link: '/invoices',
-      });
-    }
-    if (result.failures > 0) {
-      await createNotification({
-        orgId,
-        type: 'error',
-        title: `${result.failures} overdue reminder${result.failures > 1 ? 's' : ''} failed to send`,
-        message: 'Some overdue payment reminders could not be emailed. Check tenant email addresses.',
-        link: '/invoices',
-      });
-    }
-  }
-
-  const totalSent = Object.values(orgResults).reduce((s, r) => s + r.sent, 0);
-  const totalFail = Object.values(orgResults).reduce((s, r) => s + r.failures, 0);
-  console.log(`[Scheduler] Overdue reminder run complete — sent: ${totalSent}, failures: ${totalFail}`);
+  if (sent > 0) await createNotification(pool, { orgId, type: 'warning', title: `${sent} overdue reminder(s) sent`, message: `Sent reminders for ${sent} overdue invoice(s).`, link: '/invoices' });
+  if (failures > 0) await createNotification(pool, { orgId, type: 'error', title: `${failures} overdue reminder(s) failed`, message: 'Check tenant email addresses.', link: '/invoices' });
 }
 
 // ---------------------------------------------------------------------------
-// Job 4: Mark overdue invoices (daily status update)
+// Job 4: Mark overdue invoices (per org)
 // ---------------------------------------------------------------------------
 
-async function markOverdueInvoices() {
-  // Mark all OPEN invoices (status=0) that are past their due date as OVERDUE (status=2)
-  // But skip invoices that are fully paid (check actual payments from accounting_line)
+async function markOverdueInvoicesForOrg(pool, orgId) {
   const [result] = await pool.execute(
-    `UPDATE invoice i
-     SET i.status = 2
-     WHERE i.status = 0
-       AND i.due_on < CURDATE()
-       AND i.deleted_at IS NULL
+    `UPDATE invoice i SET i.status = 2
+     WHERE i.status = 0 AND i.due_on < CURDATE() AND i.deleted_at IS NULL AND i.org_id = ?
        AND i.amount > COALESCE(
-         (SELECT SUM(al.amount)
-          FROM accounting_line al
-          JOIN accounting a ON al.accounting_id = a.id
-          WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL),
-         0
-       )`
+         (SELECT SUM(al.amount) FROM accounting_line al JOIN accounting a ON al.accounting_id = a.id
+          WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL), 0)`,
+    [orgId]
   );
-  console.log(`[Scheduler] Marked ${result.affectedRows} invoice(s) as overdue.`);
+  if (result.affectedRows > 0) console.log(`[Scheduler][org:${orgId}] Marked ${result.affectedRows} invoice(s) as overdue.`);
 
-  // Also fix any invoices marked OVERDUE that are actually fully paid
   const [fixResult] = await pool.execute(
-    `UPDATE invoice i
-     SET i.status = 1
-     WHERE i.status IN (0, 2)
-       AND i.deleted_at IS NULL
-       AND i.amount > 0
+    `UPDATE invoice i SET i.status = 1
+     WHERE i.status IN (0, 2) AND i.deleted_at IS NULL AND i.org_id = ? AND i.amount > 0
        AND i.amount <= COALESCE(
-         (SELECT SUM(al.amount)
-          FROM accounting_line al
-          JOIN accounting a ON al.accounting_id = a.id
-          WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL),
-         0
-       )`
+         (SELECT SUM(al.amount) FROM accounting_line al JOIN accounting a ON al.accounting_id = a.id
+          WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL), 0)`,
+    [orgId]
   );
-  if (fixResult.affectedRows > 0) {
-    console.log(`[Scheduler] Fixed ${fixResult.affectedRows} invoice(s) that were actually fully paid.`);
+  if (fixResult.affectedRows > 0) console.log(`[Scheduler][org:${orgId}] Fixed ${fixResult.affectedRows} invoice(s) that were actually paid.`);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-org job runner — runs a job against ALL active orgs
+// ---------------------------------------------------------------------------
+
+async function runForAllOrgs(jobName, jobFn) {
+  try {
+    const orgs = await getAllActiveOrgs();
+    if (orgs.length === 0) { console.log(`[Scheduler] No active orgs found for ${jobName}.`); return; }
+
+    const results = await Promise.allSettled(
+      orgs.map(async (org) => {
+        try {
+          const pool = await getOrgPool(org.id);
+          await jobFn(pool, String(org.id));
+        } catch (err) {
+          console.error(`[Scheduler][${jobName}] Error for org ${org.id}:`, err.message);
+        }
+      })
+    );
+
+    const failed = results.filter(r => r.status === 'rejected').length;
+    if (failed > 0) console.error(`[Scheduler][${jobName}] ${failed} org(s) had errors.`);
+  } catch (err) {
+    console.error(`[Scheduler][${jobName}] Fatal error:`, err);
   }
 }
 
@@ -630,48 +354,32 @@ async function markOverdueInvoices() {
 function startScheduler() {
   console.log('[Scheduler] Starting background jobs...');
 
-  // Daily at 00:05 AM - mark overdue invoices & fix paid statuses
-  cron.schedule('5 0 * * *', async () => {
+  // Daily at 00:05 AM - mark overdue invoices
+  cron.schedule('5 0 * * *', () => {
     console.log('[Scheduler] Updating invoice statuses...');
-    try {
-      await markOverdueInvoices();
-    } catch (err) {
-      console.error('[Scheduler] Invoice status update error:', err);
-    }
+    runForAllOrgs('markOverdue', markOverdueInvoicesForOrg);
   });
 
-  // Daily at 10:00 AM - generate recurring invoices (matches original Tenafy)
-  cron.schedule('0 10 * * *', async () => {
+  // Daily at 10:00 AM - generate recurring invoices
+  cron.schedule('0 10 * * *', () => {
     console.log('[Scheduler] Running recurring invoice generation...');
-    try {
-      await generateRecurringInvoices();
-    } catch (err) {
-      console.error('[Scheduler] Invoice generation error:', err);
-    }
+    runForAllOrgs('recurringInvoices', generateRecurringInvoicesForOrg);
   });
 
   // Daily at 08:00 - lease expiry notifications
-  cron.schedule('0 8 * * *', async () => {
+  cron.schedule('0 8 * * *', () => {
     console.log('[Scheduler] Checking for expiring leases...');
-    try {
-      await sendLeaseExpiryNotifications();
-    } catch (err) {
-      console.error('[Scheduler] Lease expiry notification error:', err);
-    }
+    runForAllOrgs('leaseExpiry', sendLeaseExpiryForOrg);
   });
 
-  // Every Monday at 09:00 - overdue invoice reminders
-  cron.schedule('0 9 * * 1', async () => {
+  // Every Monday at 09:00 - overdue reminders
+  cron.schedule('0 9 * * 1', () => {
     console.log('[Scheduler] Sending overdue invoice reminders...');
-    try {
-      await sendOverdueReminders();
-    } catch (err) {
-      console.error('[Scheduler] Overdue reminder error:', err);
-    }
+    runForAllOrgs('overdueReminders', sendOverdueRemindersForOrg);
   });
 
-  // Run once at startup to fix any stale statuses
-  markOverdueInvoices().catch(err => console.error('[Scheduler] Startup status fix error:', err));
+  // Run once at startup to fix stale statuses
+  runForAllOrgs('startupFix', markOverdueInvoicesForOrg);
 
   console.log('[Scheduler] All jobs scheduled.');
 }

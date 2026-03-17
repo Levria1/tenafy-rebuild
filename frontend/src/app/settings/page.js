@@ -104,11 +104,11 @@ function SettingsPage() {
     { title: 'Type', dataIndex: 'type', key: 'type' },
     { title: 'Actions', key: 'actions', render: (_, r) => (
       <Space>
-        <Button type="link" onClick={() => router.push(`/settings/email-templates/${r.id}/edit`)}>Edit</Button>
-        <Button type="link" danger onClick={async () => {
-          try { await emailTemplate.delete(r.id); message.success('Deleted'); loadData(); } 
+        {canEditTemplate && <Button type="link" onClick={() => router.push(`/settings/email-templates/${r.id}/edit`)}>Edit</Button>}
+        {canDeleteTemplate && <Button type="link" danger onClick={async () => {
+          try { await emailTemplate.delete(r.id); message.success('Deleted'); loadData(); }
           catch (error) { message.error('Failed to delete'); }
-        }}>Delete</Button>
+        }}>Delete</Button>}
       </Space>
     )},
   ];
@@ -127,6 +127,9 @@ function SettingsPage() {
 
   const canSeeUsers = hasPermission ? hasPermission('LANDLORD/USER_LIST') : false;
   const canSeeRoles = hasPermission ? hasPermission('LANDLORD/ROLE_LIST') : false;
+  const canCreateTemplate = hasPermission ? hasPermission('LANDLORD/EMAIL_TEMPLATE_CREATE') : false;
+  const canEditTemplate = hasPermission ? hasPermission('LANDLORD/EMAIL_TEMPLATE_EDIT') : false;
+  const canDeleteTemplate = hasPermission ? hasPermission('LANDLORD/EMAIL_TEMPLATE_DELETE') : false;
 
   // Group tabs by section — each sidebar link only shows its own tabs
   const accountTabs = [
@@ -173,7 +176,7 @@ function SettingsPage() {
   const emailTabs = [
     { key: 'emailTemplates', label: 'Email Templates', children: (
       <Card>
-        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/email-templates/create')}>Add Template</Button></div>
+        {canCreateTemplate && <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/email-templates/create')}>Add Template</Button></div>}
         <Table columns={templateColumns} dataSource={emailTemplates} rowKey="id" loading={loading} pagination={false} />
       </Card>
     )},

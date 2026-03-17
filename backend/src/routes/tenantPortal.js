@@ -3,7 +3,7 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 const config = require('../config');
 
 // POST /api/tenant-portal/login
@@ -16,7 +16,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Look up user by email
-    const [users] = await pool.execute(
+    const [users] = await req.pool.execute(
       'SELECT id, username, password, email, org_id, first_name, last_name, status FROM user WHERE email = ?',
       [email]
     );
@@ -46,7 +46,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Find associated tenant record by user email
-    const [tenants] = await pool.execute(
+    const [tenants] = await req.pool.execute(
       'SELECT id, org_id FROM tenant WHERE email = ? AND org_id = ? LIMIT 1',
       [email, user.org_id]
     );
@@ -96,7 +96,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     }
 
     // Active leases count - JOIN through unit→property for org scoping
-    const [[{ activeLeases }]] = await pool.execute(
+    const [[{ activeLeases }]] = await req.pool.execute(
       `SELECT COUNT(*) as activeLeases
        FROM leasing l
        JOIN unit u ON l.unit_id = u.id
@@ -106,7 +106,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     );
 
     // Unpaid invoices count + outstanding amount + next due date
-    const [[invoiceSummary]] = await pool.execute(
+    const [[invoiceSummary]] = await req.pool.execute(
       `SELECT
          COUNT(*) as unpaidInvoices,
          COALESCE(SUM(amount), 0) as outstandingAmount,
@@ -119,7 +119,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     // Next due invoice amount
     let nextDueAmount = null;
     if (invoiceSummary.nextDueDate) {
-      const [[nextInvoice]] = await pool.execute(
+      const [[nextInvoice]] = await req.pool.execute(
         `SELECT amount FROM invoice
          WHERE tenant_id = ? AND org_id = ? AND status = 0 AND due_on = ?
          LIMIT 1`,
@@ -154,7 +154,7 @@ router.get('/leases', authenticate, async (req, res) => {
       return res.status(403).json({ code: 403, message: 'Tenant access required' });
     }
 
-    const [leases] = await pool.execute(
+    const [leases] = await req.pool.execute(
       `SELECT
          l.id,
          l.start_date,
@@ -192,7 +192,7 @@ router.get('/invoices', authenticate, async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    const [invoices] = await pool.execute(
+    const [invoices] = await req.pool.execute(
       `SELECT id, invoice_code, note, amount, due_on, status, created_at
        FROM invoice
        WHERE tenant_id = ? AND org_id = ?
@@ -201,7 +201,7 @@ router.get('/invoices', authenticate, async (req, res) => {
       [tenantId, orgId]
     );
 
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       'SELECT COUNT(*) as total FROM invoice WHERE tenant_id = ? AND org_id = ?',
       [tenantId, orgId]
     );
@@ -231,7 +231,7 @@ router.get('/profile', authenticate, async (req, res) => {
       return res.status(403).json({ code: 403, message: 'Tenant access required' });
     }
 
-    const [tenants] = await pool.execute(
+    const [tenants] = await req.pool.execute(
       `SELECT id, first_name, last_name, email, phone, status, created_at
        FROM tenant
        WHERE id = ? AND org_id = ?`,
@@ -261,7 +261,7 @@ router.put('/profile', authenticate, async (req, res) => {
 
     const { phone } = req.body;
 
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE tenant SET phone = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
       [phone || null, tenantId, orgId]
     );

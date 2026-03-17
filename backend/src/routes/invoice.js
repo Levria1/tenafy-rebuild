@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
-const pool = require('../config/database');
+
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 
 // POST /api/invoice/invoices - List invoices with paging
@@ -109,7 +109,7 @@ router.post('/invoices', authenticate, async (req, res) => {
       params.push(endDate);
     }
 
-    const [invoices] = await pool.execute(
+    const [invoices] = await req.pool.execute(
       `SELECT i.*, t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               p.display_name as property_name, u.name as unit_name, cs.name as category_name,
               COALESCE((SELECT SUM(al.amount)
@@ -139,7 +139,7 @@ router.post('/invoices', authenticate, async (req, res) => {
       params
     );
 
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       `SELECT COUNT(*) as total FROM invoice i LEFT JOIN tenant t ON i.tenant_id = t.id LEFT JOIN unit u ON i.unit_id = u.id LEFT JOIN property p ON u.property_id = p.id WHERE ${whereClause}`,
       params
     );
@@ -150,7 +150,7 @@ router.post('/invoices', authenticate, async (req, res) => {
       // Remove the status param if it was added
       return true;
     });
-    const [[sums]] = await pool.execute(
+    const [[sums]] = await req.pool.execute(
       `SELECT
          COALESCE(SUM(CASE WHEN i.status IN (0,2) AND i.type = 1 THEN i.amount ELSE 0 END), 0) as outstanding_outflow,
          COALESCE(SUM(CASE WHEN i.status IN (0,2) AND i.type != 1 THEN i.amount ELSE 0 END), 0) as outstanding_inflow,
@@ -180,7 +180,7 @@ router.post('/invoices', authenticate, async (req, res) => {
 });
 
 // POST /api/invoice - Create invoice
-router.post('/', authenticate, async (req, res) => {
+router.post('/', authenticate, requirePermission('LANDLORD/INVOICE_CREATE'), async (req, res) => {
   try {
     const { tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_date, status, category, currency_id, type, tag_id } = req.body;
     const orgId = req.user.orgId;
@@ -192,13 +192,13 @@ router.post('/', authenticate, async (req, res) => {
     // Uses helper that skips codes with orphaned accounting_line records
     let code = invoice_code;
     if (!code) {
-      code = await generateInvoiceCode(orgId);
+      code = await generateInvoiceCode(req.pool, orgId);
     }
 
     // Look up default category if not provided (use first enabled category)
     let catId = category;
     if (!catId) {
-      const [[defCat]] = await pool.execute(
+      const [[defCat]] = await req.pool.execute(
         "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
         [orgId]
       );
@@ -208,11 +208,11 @@ router.post('/', authenticate, async (req, res) => {
     // Get default currency_id if not provided
     let currId = currency_id;
     if (!currId) {
-      const [[cur]] = await pool.execute('SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [orgId]);
+      const [[cur]] = await req.pool.execute('SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [orgId]);
       currId = cur ? cur.id : null;
     }
 
-    await pool.execute(
+    await req.pool.execute(
       'INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_on, status, category, currency_id, type, tag_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())',
       [invoiceId, orgId, tenant_id, unit_id || null, leasing_id || null, property_id || null, code, amount, note || null, due_date, status || 0, catId, currId, type || 0, tag_id || null]
     );
@@ -225,7 +225,7 @@ router.post('/', authenticate, async (req, res) => {
 
 // POST /api/invoice/publish - Publish next invoice for a lease
 // Creates the next invoice based on the lease's schedule and next_invoice_date
-router.post('/publish', authenticate, async (req, res) => {
+router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE'), async (req, res) => {
   try {
     const { tenant_id, unit_id, leasing_id, property_id, amount, due_date, category, currency_id, type, tag_id } = req.body;
     const orgId = req.user.orgId;
@@ -235,7 +235,7 @@ router.post('/publish', authenticate, async (req, res) => {
     }
 
     // Check for duplicate: don't create if invoice already exists for this lease + due date
-    const [[existing]] = await pool.execute(
+    const [[existing]] = await req.pool.execute(
       'SELECT id FROM invoice WHERE leasing_id = ? AND due_on = ? AND org_id = ? AND deleted_at IS NULL',
       [leasing_id, due_date, orgId]
     );
@@ -247,13 +247,13 @@ router.post('/publish', authenticate, async (req, res) => {
     const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
     // Auto-generate invoice_code — skips codes with orphaned accounting_line records
-    const code = await generateInvoiceCode(orgId);
+    const code = await generateInvoiceCode(req.pool, orgId);
 
     // Resolve category: if not provided, copy from the most recent invoice for the same lease,
     // or fall back to the first "Rental Income" category for the org
     let catId = category || null;
     if (!catId) {
-      const [[prevInv]] = await pool.execute(
+      const [[prevInv]] = await req.pool.execute(
         'SELECT category FROM invoice WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
         [leasing_id, orgId]
       );
@@ -261,7 +261,7 @@ router.post('/publish', authenticate, async (req, res) => {
         catId = prevInv.category;
       } else {
         // Fall back to "Rental Income" category
-        const [[rentalCat]] = await pool.execute(
+        const [[rentalCat]] = await req.pool.execute(
           "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1",
           [orgId]
         );
@@ -272,18 +272,18 @@ router.post('/publish', authenticate, async (req, res) => {
     // Resolve currency
     let currId = currency_id;
     if (!currId) {
-      const [[cur]] = await pool.execute('SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [orgId]);
+      const [[cur]] = await req.pool.execute('SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [orgId]);
       currId = cur ? cur.id : null;
     }
 
     // Resolve property_id from unit if not provided
     let propId = property_id || null;
     if (!propId && unit_id) {
-      const [[unitRow]] = await pool.execute('SELECT property_id FROM unit WHERE id = ?', [unit_id]);
+      const [[unitRow]] = await req.pool.execute('SELECT property_id FROM unit WHERE id = ?', [unit_id]);
       if (unitRow) propId = unitRow.property_id;
     }
 
-    await pool.execute(
+    await req.pool.execute(
       `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
         invoice_code, amount, due_on, status, category, currency_id, type, tag_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, NOW())`,
@@ -320,11 +320,11 @@ router.post('/paid-outstanding', authenticate, async (req, res) => {
       params.push(endDate);
     }
 
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       'SELECT SUM(amount) as total FROM invoice i WHERE ' + whereClause + ' AND i.status = 1',
       params
     );
-    const [[{ outstanding }]] = await pool.execute(
+    const [[{ outstanding }]] = await req.pool.execute(
       'SELECT SUM(amount) as outstanding FROM invoice i WHERE ' + whereClause + ' AND i.status = 0',
       params
     );
@@ -354,7 +354,7 @@ router.get('/initialization-payer', authenticate, async (req, res) => {
       params.push(leaseId);
     }
 
-    const [tenants] = await pool.execute(
+    const [tenants] = await req.pool.execute(
       'SELECT id, first_name, last_name, company_name, type, email FROM tenant t WHERE ' + whereClause + ' ORDER BY COALESCE(first_name, company_name, \'\') ASC, last_name ASC',
       params
     );
@@ -371,7 +371,7 @@ router.get('/initialization-property', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
 
-    const [properties] = await pool.execute(
+    const [properties] = await req.pool.execute(
       'SELECT id, display_name, street_address FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
       [orgId]
     );
@@ -405,7 +405,7 @@ router.get('/initialization-leasing', authenticate, async (req, res) => {
       params.push(propertyId);
     }
 
-    const [leases] = await pool.execute(
+    const [leases] = await req.pool.execute(
       `SELECT l.id, l.lease_no, l.start_date, l.end_date, l.price,
               u.name as unit_name, p.display_name as property_name,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name
@@ -442,7 +442,7 @@ router.get('/initialization-unit', authenticate, async (req, res) => {
       params.push(tenantId);
     }
 
-    const [units] = await pool.execute(
+    const [units] = await req.pool.execute(
       `SELECT u.id, u.name, u.rent_price_min, u.property_id, p.display_name as property_name
        FROM unit u LEFT JOIN property p ON u.property_id = p.id
        WHERE ` + whereClause + ` ORDER BY p.display_name, u.name`,
@@ -462,7 +462,7 @@ router.get('/code', authenticate, async (req, res) => {
     const { invoiceCode } = req.query;
     const orgId = req.user.orgId;
 
-    const [invoices] = await pool.execute(
+    const [invoices] = await req.pool.execute(
       `SELECT i.*, t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               p.display_name as property_name, u.name as unit_name
        FROM invoice i
@@ -490,7 +490,7 @@ router.get('/property/:unit_id', authenticate, async (req, res) => {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
 
-    const [result] = await pool.execute(
+    const [result] = await req.pool.execute(
       `SELECT p.* FROM property p
        JOIN unit u ON u.property_id = p.id
        WHERE u.id = ? AND p.org_id = ?`,
@@ -509,7 +509,7 @@ router.get('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const [invoices] = await pool.execute(
+    const [invoices] = await req.pool.execute(
       `SELECT i.*, t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               t.company_name as tenant_company_name, t.type as tenant_type, t.email as tenant_email,
               p.display_name as property_name, p.id as property_id_resolved, p.currency as property_currency,
@@ -531,7 +531,7 @@ router.get('/:id', authenticate, async (req, res) => {
 
     // Get payment activity — find accounting records via accounting_line.invoice_code
     const inv = invoices[0];
-    const [payments] = await pool.execute(
+    const [payments] = await req.pool.execute(
       `SELECT DISTINCT a.id, a.transaction_code, a.payment_date, a.amount as header_amount, a.type, a.note, a.tenant_id,
               a.payment_setting_id, a.category as header_category,
               al.amount, al.invoice_code as line_invoice_code,
@@ -566,14 +566,14 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // PUT /api/invoice/:id - Update invoice
-router.put('/:id', authenticate, async (req, res) => {
+router.put('/:id', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const { amount, note, due_date, status, type, category, tenant_id, property_id, unit_id, leasing_id, tag_id } = req.body;
     const orgId = req.user.orgId;
 
     // Verify invoice exists
-    const [[existing]] = await pool.execute('SELECT id FROM invoice WHERE id = ? AND org_id = ?', [id, orgId]);
+    const [[existing]] = await req.pool.execute('SELECT id FROM invoice WHERE id = ? AND org_id = ?', [id, orgId]);
     if (!existing) {
       return res.status(404).json({ code: 404, message: 'Invoice not found' });
     }
@@ -599,19 +599,19 @@ router.put('/:id', authenticate, async (req, res) => {
     fields.push('updated_at = NOW()');
     params.push(id, orgId);
 
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE invoice SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`,
       params
     );
 
     // Recalculate status based on actual payments whenever amount or due_date changes
     if (amount !== undefined || due_date !== undefined) {
-      const [[inv]] = await pool.execute(
+      const [[inv]] = await req.pool.execute(
         'SELECT invoice_code, amount, due_on, status FROM invoice WHERE id = ? AND org_id = ?',
         [id, orgId]
       );
       if (inv && inv.invoice_code) {
-        const [[{ total_paid }]] = await pool.execute(
+        const [[{ total_paid }]] = await req.pool.execute(
           `SELECT COALESCE(SUM(al.amount), 0) as total_paid
            FROM accounting_line al
            JOIN accounting a ON al.accounting_id = a.id
@@ -635,7 +635,7 @@ router.put('/:id', authenticate, async (req, res) => {
           newStatus = 0; // Open (includes partial — frontend handles display)
         }
         if (newStatus !== Number(inv.status)) {
-          await pool.execute('UPDATE invoice SET status = ? WHERE id = ? AND org_id = ?', [newStatus, id, orgId]);
+          await req.pool.execute('UPDATE invoice SET status = ? WHERE id = ? AND org_id = ?', [newStatus, id, orgId]);
         }
       }
     }
@@ -654,7 +654,7 @@ router.delete('/:id', authenticate, requirePermission('LANDLORD/INVOICE_DELETE')
     const orgId = req.user.orgId;
 
     // Get invoice to find invoice_code for cascade
-    const [rows] = await pool.execute(
+    const [rows] = await req.pool.execute(
       'SELECT id, invoice_code FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
       [id, orgId]
     );
@@ -664,21 +664,21 @@ router.delete('/:id', authenticate, requirePermission('LANDLORD/INVOICE_DELETE')
     const invoiceCode = rows[0].invoice_code;
 
     // Soft delete invoice
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE invoice SET deleted_at = CURRENT_TIMESTAMP() WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
 
     // Cascade soft delete: accounting records linked by invoice_code
     if (invoiceCode) {
-      await pool.execute(
+      await req.pool.execute(
         `UPDATE accounting SET deleted_at = CURRENT_TIMESTAMP()
          WHERE org_id = ? AND id IN (
            SELECT accounting_id FROM accounting_line WHERE invoice_code = ?
          )`,
         [orgId, invoiceCode]
       );
-      await pool.execute(
+      await req.pool.execute(
         `UPDATE accounting_line SET deleted_at = CURRENT_TIMESTAMP()
          WHERE accounting_id IN (
            SELECT id FROM accounting WHERE org_id = ?

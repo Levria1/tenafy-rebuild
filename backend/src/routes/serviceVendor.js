@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // POST /api/service-vendor/services/:id - Get services assigned to a vendor (via service.assignee)
 router.post('/services/:id', authenticate, async (req, res) => {
@@ -21,7 +21,7 @@ router.post('/services/:id', authenticate, async (req, res) => {
       params.push(status);
     }
 
-    const [services] = await pool.execute(
+    const [services] = await req.pool.execute(
       `SELECT s.*, u.name AS unit_name, p.display_name AS property_name,
               CASE WHEN t.type = 1 THEN t.company_name
                    ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
@@ -36,7 +36,7 @@ router.post('/services/:id', authenticate, async (req, res) => {
        LIMIT ${limit} OFFSET ${offset}`,
       [...params]
     );
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       `SELECT COUNT(*) AS total FROM service s WHERE ${whereClause}`,
       [...params]
     );
@@ -54,7 +54,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
-    const [vendors] = await pool.execute(
+    const [vendors] = await req.pool.execute(
       'SELECT * FROM service_vendor WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
       [id, orgId]
     );
@@ -77,7 +77,7 @@ router.post('/', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const vendorId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-    await pool.execute(
+    await req.pool.execute(
       `INSERT INTO service_vendor (id, org_id, first_name, last_name, email, phone, id_card, birth_date, sex, notes, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [vendorId, orgId, first_name || null, last_name || null, email || null,
@@ -99,7 +99,7 @@ router.put('/:id/update', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     // Verify it exists
-    const [existing] = await pool.execute(
+    const [existing] = await req.pool.execute(
       'SELECT id FROM service_vendor WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
       [id, orgId]
     );
@@ -107,7 +107,7 @@ router.put('/:id/update', authenticate, async (req, res) => {
       return res.status(404).json({ code: 404, message: 'Service vendor not found' });
     }
 
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE service_vendor SET
         first_name = ?, last_name = ?, email = ?, phone = ?,
         id_card = ?, birth_date = ?, sex = ?, notes = ?, status = ?,
@@ -130,7 +130,7 @@ router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute('UPDATE service_vendor SET deleted_at = NOW() WHERE id = ? AND org_id = ?', [id, orgId]);
+    await req.pool.execute('UPDATE service_vendor SET deleted_at = NOW() WHERE id = ? AND org_id = ?', [id, orgId]);
     res.json({ code: 200, message: 'Service vendor deleted' });
   } catch (error) {
     console.error('Delete service vendor error:', error);

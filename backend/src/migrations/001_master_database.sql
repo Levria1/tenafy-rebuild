@@ -1,0 +1,36 @@
+CREATE DATABASE IF NOT EXISTS tena_master;
+USE tena_master;
+
+CREATE TABLE IF NOT EXISTS master_admin (
+  id BIGINT PRIMARY KEY,
+  username VARCHAR(255) NOT NULL UNIQUE,
+  password VARCHAR(255) NOT NULL,
+  email VARCHAR(255),
+  first_name VARCHAR(100),
+  last_name VARCHAR(100),
+  status TINYINT DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS organizations (
+  id BIGINT PRIMARY KEY,
+  display_name VARCHAR(255) NOT NULL,
+  db_name VARCHAR(100) NOT NULL UNIQUE,
+  db_host VARCHAR(255) DEFAULT 'localhost',
+  db_port INT DEFAULT 3306,
+  db_user VARCHAR(100),
+  db_password VARCHAR(255),
+  status TINYINT DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS org_user_map (
+  username VARCHAR(255) PRIMARY KEY,
+  email VARCHAR(255),
+  org_id BIGINT NOT NULL,
+  db_name VARCHAR(100) NOT NULL,
+  INDEX idx_org_id (org_id),
+  INDEX idx_email (email)
+);

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // Full permission list matching original Tenafy
 const LANDLORD_PERMISSIONS = [
@@ -43,6 +43,7 @@ const LANDLORD_PERMISSIONS = [
   { key: 'LANDLORD/ACCOUNTING_CREATE', label: 'Accounting Create', group: 'Accounting' },
   { key: 'LANDLORD/ACCOUNTING_EDIT', label: 'Accounting Edit', group: 'Accounting' },
   { key: 'LANDLORD/ACCOUNTING_DETAIL', label: 'Accounting Detail', group: 'Accounting' },
+  { key: 'LANDLORD/ACCOUNTING_DELETE', label: 'Accounting Delete', group: 'Accounting' },
   // Invoices
   { key: 'LANDLORD/INVOICE_LIST', label: 'Invoice List', group: 'Invoices' },
   { key: 'LANDLORD/INVOICE_CREATE', label: 'Invoice Create', group: 'Invoices' },
@@ -123,12 +124,12 @@ router.post('/list', authenticate, async (req, res) => {
       params.push('%' + search + '%', '%' + search + '%');
     }
 
-    const [roles] = await pool.execute(
+    const [roles] = await req.pool.execute(
       'SELECT * FROM role WHERE ' + whereClause + ' ORDER BY display_name LIMIT ' + limit + ' OFFSET ' + offset,
       params
     );
 
-    const [countResult] = await pool.execute(
+    const [countResult] = await req.pool.execute(
       'SELECT COUNT(*) as total FROM role WHERE ' + whereClause,
       params
     );
@@ -144,7 +145,7 @@ router.post('/list', authenticate, async (req, res) => {
 router.get('/all', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [roles] = await pool.execute(
+    const [roles] = await req.pool.execute(
       'SELECT * FROM role WHERE org_id = ? AND status = 1 ORDER BY display_name',
       [orgId]
     );
@@ -166,7 +167,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
-    const [roles] = await pool.execute(
+    const [roles] = await req.pool.execute(
       `SELECT r.*, GROUP_CONCAT(rp.permission_code) as permissions
        FROM role r
        LEFT JOIN role_permission rp ON r.id = rp.role_id
@@ -196,7 +197,7 @@ router.post('/', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const roleId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
-    await pool.execute(
+    await req.pool.execute(
       'INSERT INTO role (id, org_id, display_name, description, type, status) VALUES (?, ?, ?, ?, 0, ?)',
       [roleId.toString(), orgId, display_name, description || null, status ?? 1]
     );
@@ -204,7 +205,7 @@ router.post('/', authenticate, async (req, res) => {
     // Insert permissions
     const permList = Array.isArray(permissions) ? permissions : (permissions ? permissions.split(',').filter(Boolean) : []);
     for (const perm of permList) {
-      await pool.execute(
+      await req.pool.execute(
         'INSERT INTO role_permission (role_id, permission_code) VALUES (?, ?)',
         [roleId.toString(), perm.trim()]
       );
@@ -224,16 +225,16 @@ router.put('/:id', authenticate, async (req, res) => {
     const { display_name, description, permissions, status } = req.body;
     const orgId = req.user.orgId;
 
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE role SET display_name = ?, description = ?, status = ? WHERE id = ? AND org_id = ?',
       [display_name, description, status ?? 1, id, orgId]
     );
 
     if (permissions !== undefined) {
-      await pool.execute('DELETE FROM role_permission WHERE role_id = ?', [id]);
+      await req.pool.execute('DELETE FROM role_permission WHERE role_id = ?', [id]);
       const permList = Array.isArray(permissions) ? permissions : (permissions ? permissions.split(',').filter(Boolean) : []);
       for (const perm of permList) {
-        await pool.execute(
+        await req.pool.execute(
           'INSERT INTO role_permission (role_id, permission_code) VALUES (?, ?)',
           [id, perm.trim()]
         );
@@ -253,8 +254,8 @@ router.delete('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
-    await pool.execute('DELETE FROM role_permission WHERE role_id = ?', [id]);
-    await pool.execute('UPDATE role SET status = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
+    await req.pool.execute('DELETE FROM role_permission WHERE role_id = ?', [id]);
+    await req.pool.execute('UPDATE role SET status = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
 
     res.json({ code: 200, message: 'Role deleted' });
   } catch (error) {

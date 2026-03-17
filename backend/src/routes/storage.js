@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 const fs = require('fs');
 const path = require('path');
 
@@ -37,13 +37,13 @@ router.get('/usage', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     // File count from DB
-    const [[fileCount]] = await pool.execute(
+    const [[fileCount]] = await req.pool.execute(
       'SELECT COUNT(*) as count FROM file WHERE org_id = ?',
       [orgId]
     ).catch(() => [[{ count: 0 }]]);
 
     // Count images specifically
-    const [[imageCount]] = await pool.execute(
+    const [[imageCount]] = await req.pool.execute(
       "SELECT COUNT(*) as count FROM file WHERE org_id = ? AND (file_type LIKE 'image%' OR name LIKE '%.jpg' OR name LIKE '%.png' OR name LIKE '%.jpeg')",
       [orgId]
     ).catch(() => [[{ count: 0 }]]);
@@ -54,16 +54,16 @@ router.get('/usage', authenticate, async (req, res) => {
     const dirSize = getDirSize(fs.existsSync(orgUploadsDir) ? orgUploadsDir : uploadsDir);
 
     // Count invoices this month
-    const [[invoiceCount]] = await pool.execute(
+    const [[invoiceCount]] = await req.pool.execute(
       "SELECT COUNT(*) as count FROM invoice WHERE org_id = ? AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW())",
       [orgId]
     ).catch(() => [[{ count: 0 }]]);
 
     // Count total records by type
-    const [[propertyCount]] = await pool.execute('SELECT COUNT(*) as count FROM property WHERE org_id = ? AND status = 1', [orgId]).catch(() => [[{ count: 0 }]]);
-    const [[tenantCount]] = await pool.execute('SELECT COUNT(*) as count FROM tenant WHERE org_id = ? AND status = 1', [orgId]).catch(() => [[{ count: 0 }]]);
-    const [[leasingCount]] = await pool.execute('SELECT COUNT(*) as count FROM leasing l JOIN unit u ON l.unit_id = u.id JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND l.status = 1 AND l.deleted_at IS NULL', [orgId]).catch(() => [[{ count: 0 }]]);
-    const [[totalInvoiceCount]] = await pool.execute('SELECT COUNT(*) as count FROM invoice WHERE org_id = ?', [orgId]).catch(() => [[{ count: 0 }]]);
+    const [[propertyCount]] = await req.pool.execute('SELECT COUNT(*) as count FROM property WHERE org_id = ? AND status = 1', [orgId]).catch(() => [[{ count: 0 }]]);
+    const [[tenantCount]] = await req.pool.execute('SELECT COUNT(*) as count FROM tenant WHERE org_id = ? AND status = 1', [orgId]).catch(() => [[{ count: 0 }]]);
+    const [[leasingCount]] = await req.pool.execute('SELECT COUNT(*) as count FROM leasing l JOIN unit u ON l.unit_id = u.id JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND l.status = 1 AND l.deleted_at IS NULL', [orgId]).catch(() => [[{ count: 0 }]]);
+    const [[totalInvoiceCount]] = await req.pool.execute('SELECT COUNT(*) as count FROM invoice WHERE org_id = ?', [orgId]).catch(() => [[{ count: 0 }]]);
 
     res.json({
       code: 200,
@@ -99,12 +99,12 @@ router.get('/email/usage', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     // Count email log entries this month (if you have an email_log table)
-    const [[emailCount]] = await pool.execute(
+    const [[emailCount]] = await req.pool.execute(
       "SELECT COUNT(*) as count FROM email_log WHERE org_id = ? AND MONTH(sent_at) = MONTH(NOW()) AND YEAR(sent_at) = YEAR(NOW())",
       [orgId]
     ).catch(() => [[{ count: 0 }]]);
 
-    const [[totalEmailCount]] = await pool.execute(
+    const [[totalEmailCount]] = await req.pool.execute(
       'SELECT COUNT(*) as count FROM email_log WHERE org_id = ?',
       [orgId]
     ).catch(() => [[{ count: 0 }]]);

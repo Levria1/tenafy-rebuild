@@ -21,6 +21,7 @@ app.use(cookieParser());
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/master', require('./routes/master'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/user', require('./routes/settings'));
 app.use('/api/property', require('./routes/property'));
@@ -52,10 +53,18 @@ app.use((err, req, res, next) => {
   res.status(500).json({ code: 500, message: 'Internal server error' });
 });
 
+const { closePools } = require('./config/poolRegistry');
+
 const PORT = config.port;
 app.listen(PORT, () => {
   console.log(`Tenafy API running on port ${PORT}`);
   startScheduler();
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  await closePools();
+  process.exit(0);
 });
 
 module.exports = app;

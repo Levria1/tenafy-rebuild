@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // POST /api/tenant/contacts - List tenants with paging
 // Only returns tenants who have had at least one lease
@@ -98,8 +98,8 @@ router.post('/contacts', authenticate, async (req, res) => {
       WHERE ${whereClause} AND t.category = 1
     `;
 
-    const [tenants] = await pool.execute(query, [...leaseHistoryParams, orgId, ...params]);
-    const [[{ total }]] = await pool.execute(countQuery, [...leaseHistoryParams, ...params]);
+    const [tenants] = await req.pool.execute(query, [...leaseHistoryParams, orgId, ...params]);
+    const [[{ total }]] = await req.pool.execute(countQuery, [...leaseHistoryParams, ...params]);
 
     res.json({ code: 200, data: { content: tenants, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page } });
   } catch (error) {
@@ -126,7 +126,7 @@ router.get('/tenants', authenticate, async (req, res) => {
       params.push(exclude);
     }
 
-    const [tenants] = await pool.execute(
+    const [tenants] = await req.pool.execute(
       'SELECT * FROM tenant WHERE ' + whereClause + ' ORDER BY COALESCE(first_name, company_name, \'\') ASC, COALESCE(last_name, \'\') ASC',
       params
     );
@@ -142,7 +142,7 @@ router.get('/tenants', authenticate, async (req, res) => {
 router.get('/outstanding', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [tenants] = await pool.execute(
+    const [tenants] = await req.pool.execute(
       `SELECT t.*, SUM(i.amount) as outstanding_amount
        FROM tenant t
        JOIN invoice i ON i.tenant_id = t.id
@@ -168,7 +168,7 @@ router.post('/', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const tenantId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-    await pool.execute(
+    await req.pool.execute(
       `INSERT INTO tenant (id, org_id, first_name, last_name, middle_name, email, secondary_email, phone,
        birth_date, company_name, type, sex, id_card, profession, budget, employer, salary,
        emergency_contact, referral, notes, status, category, created_at)
@@ -190,7 +190,7 @@ router.post('/', authenticate, async (req, res) => {
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const [tenants] = await pool.execute(
+    const [tenants] = await req.pool.execute(
       'SELECT * FROM tenant WHERE id = ?',
       [id]
     );
@@ -208,7 +208,7 @@ router.get('/:id', authenticate, async (req, res) => {
 router.get('/:id/profile', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const [tenants] = await pool.execute(
+    const [tenants] = await req.pool.execute(
       'SELECT * FROM tenant WHERE id = ?',
       [id]
     );
@@ -230,7 +230,7 @@ router.put('/:id/profile', authenticate, async (req, res) => {
             company_name, type, sex, id_card, profession, budget, employer, salary,
             emergency_contact, referral, notes, status } = req.body;
 
-    await pool.execute(
+    await req.pool.execute(
       `UPDATE tenant SET first_name = ?, last_name = ?, middle_name = ?, email = ?, secondary_email = ?,
        phone = ?, birth_date = ?, company_name = ?, type = ?, sex = ?, id_card = ?, profession = ?,
        budget = ?, employer = ?, salary = ?, emergency_contact = ?, referral = ?, notes = ?,
@@ -251,7 +251,7 @@ router.put('/:id/profile', authenticate, async (req, res) => {
 router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE tenant SET status = 0 WHERE id = ?',
       [id]
     );
@@ -348,7 +348,7 @@ function calcNextInvoiceDate(lastDueOn, lease) {
 router.get('/:id/leases', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const [leases] = await pool.execute(
+    const [leases] = await req.pool.execute(
       'SELECT l.*, u.name as unit_name, u.type as unit_type, p.id as property_id, p.display_name as property_name, p.street_address as property_address FROM leasing l LEFT JOIN unit u ON l.unit_id = u.id LEFT JOIN property p ON u.property_id = p.id WHERE l.tenant_id = ? AND l.deleted_at IS NULL ORDER BY l.start_date DESC',
       [id]
     );
@@ -356,7 +356,7 @@ router.get('/:id/leases', authenticate, async (req, res) => {
     // For each lease, calculate next_invoice_date and fetch additional tenants
     for (const lease of leases) {
       if (lease.status === 1 && lease.invoicing) {
-        const [[lastInv]] = await pool.execute(
+        const [[lastInv]] = await req.pool.execute(
           'SELECT due_on FROM invoice WHERE leasing_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
           [lease.id]
         );
@@ -365,7 +365,7 @@ router.get('/:id/leases', authenticate, async (req, res) => {
         lease.next_invoice_date = null;
       }
 
-      const [additionalTenants] = await pool.execute(
+      const [additionalTenants] = await req.pool.execute(
         `SELECT t.id, t.first_name, t.last_name, t.company_name, t.type,
           CASE t.type WHEN 1 THEN t.company_name ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) END as display_name
          FROM leasing_additional_tenant lat
@@ -387,7 +387,7 @@ router.get('/:id/leases', authenticate, async (req, res) => {
 router.get('/:id/leases/sum', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const [[sum]] = await pool.execute(
+    const [[sum]] = await req.pool.execute(
       `SELECT COUNT(*) as total,
               SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) as active,
               SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END) as expired
@@ -408,7 +408,7 @@ router.get('/:id/profile/sum', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     // Calculate outstanding and paid using actual payment data from accounting_line
-    const [[invoiceSums]] = await pool.execute(
+    const [[invoiceSums]] = await req.pool.execute(
       `SELECT
          COALESCE(SUM(
            CASE WHEN i.status != 1 THEN
@@ -432,13 +432,13 @@ router.get('/:id/profile/sum', authenticate, async (req, res) => {
       [orgId, id]
     );
 
-    const [[leaseCount]] = await pool.execute(
+    const [[leaseCount]] = await req.pool.execute(
       'SELECT COUNT(*) as total FROM leasing WHERE tenant_id = ? AND deleted_at IS NULL AND status = 1',
       [id]
     );
 
     // Deposit total: sum of invoices with a deposit category
-    const [[depositSum]] = await pool.execute(
+    const [[depositSum]] = await req.pool.execute(
       `SELECT COALESCE(SUM(i.amount), 0) as deposits
        FROM invoice i
        JOIN category_setting cs ON i.category = cs.id
@@ -448,7 +448,7 @@ router.get('/:id/profile/sum', authenticate, async (req, res) => {
     );
 
     // Credits: sum from leasing credits field
-    const [[creditSum]] = await pool.execute(
+    const [[creditSum]] = await req.pool.execute(
       `SELECT COALESCE(SUM(CAST(credits AS DECIMAL(10,2))), 0) as credits
        FROM leasing WHERE tenant_id = ? AND deleted_at IS NULL AND credits IS NOT NULL AND credits != ''`,
       [id]
@@ -492,7 +492,7 @@ router.post('/:id/accounting/list', authenticate, async (req, res) => {
       params.push(endDate);
     }
 
-    const [invoices] = await pool.execute(
+    const [invoices] = await req.pool.execute(
       `SELECT i.*, cs.name as category_name,
               p.display_name as property_name, p.currency as property_currency,
               u.name as unit_name,
@@ -517,7 +517,7 @@ router.post('/:id/accounting/list', authenticate, async (req, res) => {
        LIMIT ${limit} OFFSET ${offset}`,
       params
     );
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       `SELECT COUNT(*) as total FROM invoice i WHERE ${whereClause}`,
       params
     );
@@ -549,7 +549,7 @@ router.post('/:id/accounting/sum', authenticate, async (req, res) => {
     }
 
     // Use actual payment data from accounting_line for accurate outstanding/paid
-    const [[sums]] = await pool.execute(
+    const [[sums]] = await req.pool.execute(
       `SELECT
          COALESCE(SUM(CASE WHEN i.status != 1 AND i.type = 1 THEN
            GREATEST(i.amount - COALESCE((

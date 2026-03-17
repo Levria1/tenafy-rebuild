@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const pool = require('../config/database');
+
 
 // GET /api/notification/list - Get notifications (paginated)
 router.get('/list', authenticate, async (req, res) => {
@@ -18,11 +18,11 @@ router.get('/list', authenticate, async (req, res) => {
       whereClause += ' AND is_read = 0';
     }
 
-    const [notifications] = await pool.execute(
+    const [notifications] = await req.pool.execute(
       `SELECT * FROM notification WHERE ${whereClause} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       params
     );
-    const [[{ total }]] = await pool.execute(
+    const [[{ total }]] = await req.pool.execute(
       `SELECT COUNT(*) as total FROM notification WHERE ${whereClause}`,
       params
     );
@@ -38,7 +38,7 @@ router.get('/list', authenticate, async (req, res) => {
 router.get('/unread-count', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [[{ count }]] = await pool.execute(
+    const [[{ count }]] = await req.pool.execute(
       'SELECT COUNT(*) as count FROM notification WHERE org_id = ? AND is_read = 0',
       [orgId]
     );
@@ -53,11 +53,11 @@ router.get('/unread-count', authenticate, async (req, res) => {
 router.get('/recent', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [notifications] = await pool.execute(
+    const [notifications] = await req.pool.execute(
       'SELECT * FROM notification WHERE org_id = ? ORDER BY created_at DESC LIMIT 5',
       [orgId]
     );
-    const [[{ count }]] = await pool.execute(
+    const [[{ count }]] = await req.pool.execute(
       'SELECT COUNT(*) as count FROM notification WHERE org_id = ? AND is_read = 0',
       [orgId]
     );
@@ -73,7 +73,7 @@ router.put('/:id/read', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE notification SET is_read = 1, read_at = NOW() WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
@@ -88,7 +88,7 @@ router.put('/:id/read', authenticate, async (req, res) => {
 router.put('/read-all', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'UPDATE notification SET is_read = 1, read_at = NOW() WHERE org_id = ? AND is_read = 0',
       [orgId]
     );
@@ -104,7 +104,7 @@ router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    await pool.execute(
+    await req.pool.execute(
       'DELETE FROM notification WHERE id = ? AND org_id = ?',
       [id, orgId]
     );

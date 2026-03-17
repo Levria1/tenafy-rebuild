@@ -1,5 +1,3 @@
-const pool = require('../config/database');
-
 /**
  * Mapping of sequence keys to the table/column where generated codes live.
  * Used to find the highest existing code and ensure we never go backwards.
@@ -39,19 +37,12 @@ function buildCode(pattern, num) {
 /**
  * Generate a unique sequential code for any sequence type.
  *
- * Algorithm:
- * 1. Read seq_next from the sequence table
- * 2. Find the highest existing code number in the target table
- * 3. Also check accounting_line.invoice_code for orphaned references (invoice only)
- * 4. Use MAX(seq_next, highest_existing + 1) as the next number
- * 5. For invoice codes: skip codes that have orphaned accounting_line records
- * 6. Update seq_next to the number we used + 1
- *
+ * @param {object} pool - MySQL pool (req.pool from org middleware)
  * @param {string|number} orgId - Organization ID
  * @param {string} sequenceKey - One of: 'invoice_code', 'leasing_code', 'transaction_code', 'service_code'
  * @returns {Promise<string>} The generated code
  */
-async function generateSequenceCode(orgId, sequenceKey) {
+async function generateSequenceCode(pool, orgId, sequenceKey) {
   const [[seq]] = await pool.execute(
     'SELECT id, seq_next, pattern FROM sequence WHERE org_id = ? AND `key` = ? FOR UPDATE',
     [orgId, sequenceKey]
@@ -90,7 +81,6 @@ async function generateSequenceCode(orgId, sequenceKey) {
   }
 
   // For invoice codes: also check accounting_line for orphaned references
-  // (payments linked to deleted/nonexistent invoices)
   if (sequenceKey === 'invoice_code') {
     try {
       const [[maxOrphan]] = await pool.execute(
@@ -140,8 +130,8 @@ async function generateSequenceCode(orgId, sequenceKey) {
 }
 
 // Convenience wrapper for backward compatibility
-async function generateInvoiceCode(orgId) {
-  return generateSequenceCode(orgId, 'invoice_code');
+async function generateInvoiceCode(pool, orgId) {
+  return generateSequenceCode(pool, orgId, 'invoice_code');
 }
 
 module.exports = { generateSequenceCode, generateInvoiceCode };
