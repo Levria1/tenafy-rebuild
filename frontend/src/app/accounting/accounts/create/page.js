@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Form, Input, InputNumber, Select, DatePicker, Button, message, Row, Col, Tabs, Divider, Upload } from 'antd';
+import { Form, Input, InputNumber, Select, DatePicker, Button, message, Row, Col, Tabs, Divider, Upload, AutoComplete } from 'antd';
 import { PlusOutlined, DeleteOutlined, UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
@@ -19,12 +19,11 @@ export default function AccountCreatePage() {
   const [tenants, setTenants] = useState([]);
   const [tags, setTags] = useState([]);
   const [leases, setLeases] = useState([]);
+  const [selectedPayerId, setSelectedPayerId] = useState(null);
   const router = useRouter();
 
-  // Account lines state
-  const [accountLines, setAccountLines] = useState([
-    { key: Date.now(), amount: '', category: null, invoice_code: '', property_id: null, unit_id: null, lease_id: null, tag_id: null, units: [] }
-  ]);
+  // Account lines state - starts empty, lines added via "+add Line"
+  const [accountLines, setAccountLines] = useState([]);
 
   useEffect(() => {
     loadOptions();
@@ -86,7 +85,7 @@ export default function AccountCreatePage() {
   };
 
   const removeLine = (key) => {
-    setAccountLines(prev => prev.length > 1 ? prev.filter(l => l.key !== key) : prev);
+    setAccountLines(prev => prev.filter(l => l.key !== key));
   };
 
   const updateLine = (key, field, value) => {
@@ -110,11 +109,13 @@ export default function AccountCreatePage() {
   const onFinish = async (values) => {
     try {
       setLoading(true);
+      // If user selected from dropdown, selectedPayerId has the ID; otherwise it's a new name
       const payload = {
         type: values.type,
         account_setting_id: values.account_setting_id,
         payment_setting_id: values.payment_setting_id || null,
-        tenant_id: values.tenant_id || null,
+        tenant_id: selectedPayerId || null,
+        tenant_name: !selectedPayerId ? values.tenant_id : null,
         payment_date: values.payment_date?.format('YYYY-MM-DD') || null,
         amount: values.amount,
         category: values.category || null,
@@ -185,8 +186,28 @@ export default function AccountCreatePage() {
           </Row>
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item name="tenant_id" label={<span style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase' }}><span style={{ color: 'red' }}>* </span>Payee / Payer</span>} rules={[{ required: true, message: 'Please select the payee/payer' }]}>
-                <Select placeholder="Please select the payee/payer" allowClear showSearch optionFilterProp="label" options={tenants.map(t => ({ label: `${t.first_name || ''} ${t.last_name || ''}`.trim(), value: t.id }))} />
+              <Form.Item name="tenant_id" label={<span style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase' }}><span style={{ color: 'red' }}>* </span>Payee / Payer</span>} rules={[{ required: true, message: 'Please select or type the payee/payer' }]}>
+                <AutoComplete
+                  placeholder="Please select or type the payee/payer"
+                  allowClear
+                  filterOption={(input, option) => (option?.label || '').toLowerCase().includes(input.toLowerCase())}
+                  options={tenants.map(t => {
+                    const name = `${t.first_name || ''} ${t.last_name || ''}`.trim();
+                    return { label: name, value: name, tenantId: t.id };
+                  })}
+                  onSelect={(val, option) => setSelectedPayerId(option.tenantId)}
+                  onChange={(val) => {
+                    if (!val) { setSelectedPayerId(null); return; }
+                    // Only reset if user manually changed text away from the selected option
+                    if (selectedPayerId) {
+                      const selectedTenant = tenants.find(t => t.id === selectedPayerId);
+                      if (selectedTenant) {
+                        const selectedName = `${selectedTenant.first_name || ''} ${selectedTenant.last_name || ''}`.trim();
+                        if (val !== selectedName) setSelectedPayerId(null);
+                      }
+                    }
+                  }}
+                />
               </Form.Item>
             </Col>
             <Col span={8}>
@@ -201,21 +222,22 @@ export default function AccountCreatePage() {
         {/* Amount / Category / Invoice */}
         <div style={{ background: '#f8f9fb', border: '1px solid #e8e8e8', borderTop: 'none', padding: '20px 24px', marginBottom: 0 }}>
           <Row gutter={16}>
-            <Col span={8}>
+            <Col span={6}>
               <Form.Item name="amount" label={<span style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase' }}><span style={{ color: 'red' }}>* </span>Amount</span>} rules={[{ required: true, message: 'Please input your amount' }]}>
                 <InputNumber min={0} style={{ width: '100%' }} addonBefore="HK$" placeholder="Please input your amount" />
               </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col span={6}>
               <Form.Item name="category" label={<span style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase' }}><span style={{ color: 'red' }}>* </span>Category</span>} rules={[{ required: true, message: 'Please select the category' }]}>
                 <Select placeholder="Please select the category" allowClear showSearch optionFilterProp="label" options={categories.map(c => ({ label: c.name, value: c.id }))} />
               </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col span={6}>
               <Form.Item name="invoice_code" label={<span style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase' }}>Invoice Number</span>}>
                 <Input />
               </Form.Item>
             </Col>
+            <Col span={6} />
           </Row>
           <Row gutter={16}>
             <Col span={6}>
@@ -242,23 +264,50 @@ export default function AccountCreatePage() {
         </div>
 
         {/* Account Lines */}
-        <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderTop: 'none', padding: '12px 24px' }}>
-          {accountLines.map((line, index) => (
-            <div key={line.key} style={{ marginBottom: 8 }}>
-              {accountLines.length > 1 && (
-                <a onClick={() => removeLine(line.key)} style={{ color: '#1890ff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
-                  <DeleteOutlined /> del Line
-                </a>
-              )}
-              {index === 0 && accountLines.length === 1 && (
-                <a onClick={() => removeLine(line.key)} style={{ color: '#1890ff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
-                  <DeleteOutlined /> del Line
-                </a>
-              )}
-              {index > 0 && <Divider style={{ margin: '8px 0' }} />}
+        <div style={{ background: '#f8f9fb', border: '1px solid #e8e8e8', borderTop: 'none', padding: '12px 24px' }}>
+          {accountLines.map((line) => (
+            <div key={line.key} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid #d9d9d9' }}>
+              <Row gutter={16}>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}><span style={{ color: 'red' }}>* </span>Amount</div>
+                  <InputNumber min={0} style={{ width: '100%' }} addonBefore="HK$" placeholder="Please input your amount" value={line.amount} onChange={v => updateLine(line.key, 'amount', v)} />
+                </Col>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}><span style={{ color: 'red' }}>* </span>Category</div>
+                  <Select placeholder="Please select the category" allowClear showSearch optionFilterProp="label" style={{ width: '100%' }} value={line.category} onChange={v => updateLine(line.key, 'category', v)} options={categories.map(c => ({ label: c.name, value: c.id }))} />
+                </Col>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Invoice Number</div>
+                  <Input placeholder="" value={line.invoice_code} onChange={e => updateLine(line.key, 'invoice_code', e.target.value)} />
+                </Col>
+                <Col span={6} />
+              </Row>
+              <Row gutter={16} style={{ marginTop: 8 }}>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Property</div>
+                  <Select placeholder="Please select the property" allowClear showSearch optionFilterProp="label" style={{ width: '100%' }} value={line.property_id} onChange={v => handleLinePropertyChange(line.key, v)} options={properties.map(p => ({ label: p.display_name, value: p.id }))} />
+                </Col>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Unit</div>
+                  <Select placeholder="Please select the unit" allowClear style={{ width: '100%' }} value={line.unit_id} onChange={v => updateLine(line.key, 'unit_id', v)} options={(line.units || []).map(u => ({ label: u.name, value: u.id }))} />
+                </Col>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Lease</div>
+                  <Select placeholder="Please input your unit lease" allowClear style={{ width: '100%' }} value={line.lease_id} onChange={v => updateLine(line.key, 'lease_id', v)} options={leases.map(l => ({ label: l.lease_code || `Lease #${l.id}`, value: l.id }))} />
+                </Col>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Property Owner Tag</div>
+                  <Select placeholder="Please select the tag" allowClear style={{ width: '100%' }} value={line.tag_id} onChange={v => updateLine(line.key, 'tag_id', v)} options={tags.map(t => ({ label: t.name, value: t.id }))} />
+                </Col>
+              </Row>
             </div>
           ))}
-          <a onClick={addLine} style={{ color: '#1890ff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+          {accountLines.length > 0 && (
+            <a onClick={(e) => { e.preventDefault(); setAccountLines(prev => prev.slice(0, -1)); }} style={{ color: '#1890ff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4, cursor: 'pointer' }}>
+              <DeleteOutlined /> del Line
+            </a>
+          )}
+          <a onClick={(e) => { e.preventDefault(); addLine(); }} style={{ color: '#1890ff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
             <PlusOutlined /> add Line
           </a>
         </div>

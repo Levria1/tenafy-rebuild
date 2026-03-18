@@ -29,8 +29,8 @@ export default function InvoicesPage() {
   const [search, setSearch] = useState('');
   const [searchFields, setSearchFields] = useState(['tenantName']); // default: Contact checked
   const [searchDropdownOpen, setSearchDropdownOpen] = useState(false);
-  const [dateRange, setDateRange] = useState(() => [dayjs().subtract(1, 'month'), dayjs()]);
-  const [activeDateFilter, setActiveDateFilter] = useState('1M');
+  const [dateRange, setDateRange] = useState(() => [dayjs().subtract(2, 'month'), dayjs().add(2, 'month')]);
+  const [activeDateFilter, setActiveDateFilter] = useState('2M');
   const [sortInfo, setSortInfo] = useState({ field: 'due_on', order: 'descend' });
   const [summary, setSummary] = useState({ outstanding_outflow: 0, outstanding_inflow: 0, paid: 0 });
   const router = useRouter();
@@ -143,7 +143,7 @@ export default function InvoicesPage() {
     const now = dayjs();
     switch (period) {
       case 'ALL': setDateRange(null); break;
-      case '1M': setDateRange([now.subtract(1, 'month'), now]); break;
+      case '2M': setDateRange([now.subtract(2, 'month'), now.add(2, 'month')]); break;
       case 'LAST_M': setDateRange([now.subtract(1, 'month').startOf('month'), now.subtract(1, 'month').endOf('month')]); break;
       case '3M': setDateRange([now.subtract(3, 'month'), now]); break;
       case '1Y': setDateRange([now.subtract(1, 'year'), now]); break;
@@ -152,7 +152,7 @@ export default function InvoicesPage() {
   };
 
   const quickDateButtons = [
-    { label: 'ALL', key: 'ALL' }, { label: '1M', key: '1M' }, { label: 'LAST M', key: 'LAST_M' },
+    { label: 'ALL', key: 'ALL' }, { label: '+/- 2M', key: '2M' }, { label: 'LAST M', key: 'LAST_M' },
     { label: '3M', key: '3M' }, { label: '1Y', key: '1Y' }, { label: 'LAST Y', key: 'LAST_Y' },
   ];
 

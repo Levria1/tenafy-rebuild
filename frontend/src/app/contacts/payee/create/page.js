@@ -28,7 +28,10 @@ export default function PayeeCreatePage() {
     <MainLayout>
       <Card title="Add New Payee">
         <Form form={form} layout="vertical" onFinish={onFinish}>
-          <Form.Item name="name" label="Name" rules={[{ required: true }]}>
+          <Form.Item name="first_name" label="First Name" rules={[{ required: true, message: 'Please enter the first name' }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="last_name" label="Last Name">
             <Input />
           </Form.Item>
           <Form.Item name="email" label="Email" rules={[{ type: 'email' }]}>
@@ -37,26 +40,11 @@ export default function PayeeCreatePage() {
           <Form.Item name="phone" label="Phone">
             <Input />
           </Form.Item>
-          <Form.Item name="type" label="Type">
-            <Select options={[
-              { label: 'Contractor', value: 'CONTRACTOR' },
-              { label: 'Supplier', value: 'SUPPLIER' },
-              { label: 'Utility', value: 'UTILITY' },
-              { label: 'Insurance', value: 'INSURANCE' },
-              { label: 'Other', value: 'OTHER' },
-            ]} />
-          </Form.Item>
-          <Form.Item name="address" label="Address">
-            <Input.TextArea rows={2} />
+          <Form.Item name="company_name" label="Company Name">
+            <Input />
           </Form.Item>
           <Form.Item name="notes" label="Notes">
             <Input.TextArea rows={3} />
-          </Form.Item>
-          <Form.Item name="status" label="Status" initialValue={1}>
-            <Select options={[
-              { label: 'Active', value: 1 },
-              { label: 'Inactive', value: 0 },
-            ]} />
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={loading}>Create Payee</Button>

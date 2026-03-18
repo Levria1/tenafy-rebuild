@@ -153,6 +153,7 @@ export const accounting = {
   update: (id, data) => api.put(`/api/accounting/account/${id}`, data),
   delete: (id) => api.delete(`/api/accounting/account/${id}`),
   getInflowOutflow: (data) => api.post('/api/accounting/account/inflow-outflow', data),
+  getBalanceNoFilter: (data) => api.post('/api/accounting/account/balance-no-filter', data),
   getPropertyGraph: (propertyId, params) => api.get(`/api/accounting/invoice/property/graph/${propertyId}`, { params }),
   getOwnerPaidOutstanding: (data) => api.post('/api/accounting/owner/paid-outstanding', data),
   getCategories: () => api.get('/api/accounting/settings/categories'),

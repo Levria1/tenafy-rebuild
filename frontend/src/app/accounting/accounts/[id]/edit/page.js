@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Form, Input, InputNumber, Select, DatePicker, Button, message, Row, Col, Tabs, Divider, Upload, Spin } from 'antd';
+import { Form, Input, InputNumber, Select, DatePicker, Button, message, Row, Col, Tabs, Divider, Upload, Spin, AutoComplete } from 'antd';
 import { PlusOutlined, DeleteOutlined, UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../../components/Layout';
@@ -20,14 +20,13 @@ export default function AccountEditPage() {
   const [tenants, setTenants] = useState([]);
   const [tags, setTags] = useState([]);
   const [leases, setLeases] = useState([]);
+  const [selectedPayerId, setSelectedPayerId] = useState(null);
   const router = useRouter();
   const params = useParams();
   const accountId = params.id;
 
-  // Account lines state
-  const [accountLines, setAccountLines] = useState([
-    { key: Date.now(), amount: '', category: null, invoice_code: '', property_id: null, unit_id: null, lease_id: null, tag_id: null, units: [] }
-  ]);
+  // Account lines state - starts empty, populated from server or via "+add Line"
+  const [accountLines, setAccountLines] = useState([]);
 
   useEffect(() => {
     loadAll();
@@ -47,7 +46,8 @@ export default function AccountEditPage() {
       if (catRes.data.code === 200) setCategories(catRes.data.data || []);
       if (acctRes.data.code === 200) setBankAccounts(acctRes.data.data || []);
       if (pmRes.data.code === 200) setPaymentMethods(pmRes.data.data || []);
-      if (tenantRes.data.code === 200) setTenants(tenantRes.data.data || []);
+      const tenantList = tenantRes.data.code === 200 ? (tenantRes.data.data || []) : [];
+      setTenants(tenantList);
       if (tagRes.data.code === 200) setTags(tagRes.data.data || []);
 
       // Load the transaction data
@@ -74,11 +74,20 @@ export default function AccountEditPage() {
           } catch (e) { /* ignore */ }
         }
 
+        // Resolve tenant ID to display name for AutoComplete
+        if (data.tenant_id) {
+          setSelectedPayerId(data.tenant_id);
+          const matchedTenant = tenantList.find(t => t.id === data.tenant_id);
+          if (matchedTenant) {
+            data._tenantDisplayName = `${matchedTenant.first_name || ''} ${matchedTenant.last_name || ''}`.trim();
+          }
+        }
+
         form.setFieldsValue({
           type: data.type != null ? Number(data.type) : undefined,
           account_setting_id: data.account_setting_id || undefined,
           payment_setting_id: data.payment_setting_id || undefined,
-          tenant_id: data.tenant_id || undefined,
+          tenant_id: data._tenantDisplayName || (data.tenant_name || undefined),
           payment_date: data.payment_date ? dayjs(data.payment_date) : null,
           amount: data.amount ? Number(data.amount) : undefined,
           category: data.category || undefined,
@@ -146,11 +155,25 @@ export default function AccountEditPage() {
   };
 
   const removeLine = (key) => {
-    setAccountLines(prev => prev.length > 1 ? prev.filter(l => l.key !== key) : prev);
+    setAccountLines(prev => prev.filter(l => l.key !== key));
   };
 
   const updateLine = (key, field, value) => {
     setAccountLines(prev => prev.map(l => l.key === key ? { ...l, [field]: value } : l));
+  };
+
+  const handleLinePropertyChange = async (key, propertyId) => {
+    updateLine(key, 'property_id', propertyId);
+    updateLine(key, 'unit_id', null);
+    updateLine(key, 'lease_id', null);
+    updateLine(key, 'units', []);
+    if (!propertyId) return;
+    try {
+      const res = await property.getUnits(propertyId);
+      if (res.data.code === 200) {
+        updateLine(key, 'units', res.data.data || []);
+      }
+    } catch (e) { /* ignore */ }
   };
 
   const onFinish = async (values) => {
@@ -160,7 +183,8 @@ export default function AccountEditPage() {
         type: values.type,
         account_setting_id: values.account_setting_id,
         payment_setting_id: values.payment_setting_id || null,
-        tenant_id: values.tenant_id || null,
+        tenant_id: selectedPayerId || null,
+        tenant_name: !selectedPayerId ? values.tenant_id : null,
         payment_date: values.payment_date?.format('YYYY-MM-DD') || null,
         amount: values.amount,
         category: values.category || null,
@@ -170,6 +194,17 @@ export default function AccountEditPage() {
         lease_id: values.lease_id || null,
         tag_id: values.tag_id || null,
         note: values.note || null,
+        lines: accountLines
+          .filter(l => l.amount || l.category)
+          .map(l => ({
+            amount: l.amount || 0,
+            category: l.category || null,
+            invoice_code: l.invoice_code || null,
+            property_id: l.property_id || null,
+            unit_id: l.unit_id || null,
+            lease_id: l.lease_id || null,
+            tag_id: l.tag_id || null,
+          })),
       };
       const res = await accounting.update(accountId, payload);
       if (res.data.code === 200) {
@@ -233,8 +268,27 @@ export default function AccountEditPage() {
           </Row>
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item name="tenant_id" label={reqLabel('Payee / Payer')} rules={[{ required: true, message: 'Please select the payee/payer' }]}>
-                <Select placeholder="Please select the payee/payer" allowClear showSearch optionFilterProp="label" options={tenants.map(t => ({ label: `${t.first_name || ''} ${t.last_name || ''}`.trim(), value: t.id }))} />
+              <Form.Item name="tenant_id" label={reqLabel('Payee / Payer')} rules={[{ required: true, message: 'Please select or type the payee/payer' }]}>
+                <AutoComplete
+                  placeholder="Please select or type the payee/payer"
+                  allowClear
+                  filterOption={(input, option) => (option?.label || '').toLowerCase().includes(input.toLowerCase())}
+                  options={tenants.map(t => {
+                    const name = `${t.first_name || ''} ${t.last_name || ''}`.trim();
+                    return { label: name, value: name, tenantId: t.id };
+                  })}
+                  onSelect={(val, option) => setSelectedPayerId(option.tenantId)}
+                  onChange={(val) => {
+                    if (!val) { setSelectedPayerId(null); return; }
+                    if (selectedPayerId) {
+                      const selectedTenant = tenants.find(t => t.id === selectedPayerId);
+                      if (selectedTenant) {
+                        const selectedName = `${selectedTenant.first_name || ''} ${selectedTenant.last_name || ''}`.trim();
+                        if (val !== selectedName) setSelectedPayerId(null);
+                      }
+                    }
+                  }}
+                />
               </Form.Item>
             </Col>
             <Col span={8}>
@@ -290,22 +344,48 @@ export default function AccountEditPage() {
         </div>
 
         {/* Account Lines */}
-        <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderTop: 'none', padding: '12px 24px' }}>
-          {accountLines.map((line, index) => (
-            <div key={line.key} style={{ marginBottom: 8 }}>
-              {accountLines.length > 1 && (
-                <a onClick={() => removeLine(line.key)} style={{ color: '#1890ff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
-                  <DeleteOutlined /> del Line
-                </a>
-              )}
-              {index === 0 && accountLines.length === 1 && (
-                <a onClick={() => removeLine(line.key)} style={{ color: '#1890ff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
-                  <DeleteOutlined /> del Line
-                </a>
-              )}
-              {index > 0 && <Divider style={{ margin: '8px 0' }} />}
+        <div style={{ background: '#f8f9fb', border: '1px solid #e8e8e8', borderTop: 'none', padding: '12px 24px' }}>
+          {accountLines.map((line) => (
+            <div key={line.key} style={{ marginBottom: 16 }}>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}><span style={{ color: 'red' }}>* </span>Amount</div>
+                  <InputNumber min={0} style={{ width: '100%' }} addonBefore="HK$" placeholder="Please input your amount" value={line.amount} onChange={v => updateLine(line.key, 'amount', v)} />
+                </Col>
+                <Col span={8}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}><span style={{ color: 'red' }}>* </span>Category</div>
+                  <Select placeholder="Please select the category" allowClear showSearch optionFilterProp="label" style={{ width: '100%' }} value={line.category} onChange={v => updateLine(line.key, 'category', v)} options={categories.map(c => ({ label: c.name, value: c.id }))} />
+                </Col>
+                <Col span={8}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Invoice Number</div>
+                  <Input placeholder="" value={line.invoice_code} onChange={e => updateLine(line.key, 'invoice_code', e.target.value)} />
+                </Col>
+              </Row>
+              <Row gutter={16} style={{ marginTop: 8 }}>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Property</div>
+                  <Select placeholder="Please select the property" allowClear showSearch optionFilterProp="label" style={{ width: '100%' }} value={line.property_id} onChange={v => handleLinePropertyChange(line.key, v)} options={properties.map(p => ({ label: p.display_name, value: p.id }))} />
+                </Col>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Unit</div>
+                  <Select placeholder="Please select the unit" allowClear style={{ width: '100%' }} value={line.unit_id} onChange={v => updateLine(line.key, 'unit_id', v)} options={(line.units || []).map(u => ({ label: u.name, value: u.id }))} />
+                </Col>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Lease</div>
+                  <Select placeholder="Please input your unit lease" allowClear style={{ width: '100%' }} value={line.lease_id} onChange={v => updateLine(line.key, 'lease_id', v)} options={leases.map(l => ({ label: l.lease_no || `Lease #${l.id}`, value: l.id }))} />
+                </Col>
+                <Col span={6}>
+                  <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>Property Owner Tag</div>
+                  <Select placeholder="Please select the tag" allowClear style={{ width: '100%' }} value={line.tag_id} onChange={v => updateLine(line.key, 'tag_id', v)} options={tags.map(t => ({ label: t.name, value: t.id }))} />
+                </Col>
+              </Row>
             </div>
           ))}
+          {accountLines.length > 0 && (
+            <a onClick={() => setAccountLines(prev => prev.slice(0, -1))} style={{ color: '#1890ff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+              <DeleteOutlined /> del Line
+            </a>
+          )}
           <a onClick={addLine} style={{ color: '#1890ff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
             <PlusOutlined /> add Line
           </a>

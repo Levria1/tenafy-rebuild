@@ -139,6 +139,7 @@ router.post('/accounts', authenticate, async (req, res) => {
     const [accounts] = await req.pool.execute(
       `SELECT a.*,
               COALESCE(cs.name, lcs.name) as category_name,
+              ldc.all_cats as line_all_categories,
               ast.name as account_name,
               COALESCE(p.display_name, lp.display_name) as property_name,
               COALESCE(u.name, lu.name) as unit_name,
@@ -151,6 +152,11 @@ router.post('/accounts', authenticate, async (req, res) => {
          GROUP BY accounting_id
        ) fl ON fl.accounting_id = a.id
        LEFT JOIN accounting_line al ON al.id = fl.first_line_id
+       LEFT JOIN (
+         SELECT accounting_id, GROUP_CONCAT(DISTINCT category) as all_cats
+         FROM accounting_line WHERE deleted_at IS NULL
+         GROUP BY accounting_id
+       ) ldc ON ldc.accounting_id = a.id
        LEFT JOIN category_setting cs ON a.category = cs.id
        LEFT JOIN category_setting lcs ON al.category = lcs.id
        LEFT JOIN account_setting ast ON a.account_setting_id = ast.id
@@ -164,6 +170,18 @@ router.post('/accounts', authenticate, async (req, res) => {
        ORDER BY ${sortCol} ${sortDir} LIMIT ${limit} OFFSET ${offset}`,
       params
     );
+
+    // Detect Multi-Category: header category + all line categories
+    for (const acct of accounts) {
+      if (acct.line_all_categories) {
+        const lineCats = acct.line_all_categories.split(',');
+        const allCats = new Set(lineCats);
+        if (acct.category) allCats.add(String(acct.category));
+        if (allCats.size > 1) {
+          acct.category_name = 'Multi-Category';
+        }
+      }
+    }
 
     const [[{ total }]] = await req.pool.execute(
       `SELECT COUNT(*) as total FROM accounting a
@@ -183,13 +201,40 @@ router.post('/accounts', authenticate, async (req, res) => {
 router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CREATE'), async (req, res) => {
   try {
     const {
-      unit_id, property_id, tenant_id, lease_id,
+      unit_id, property_id, tenant_id: rawTenantId, tenant_name, lease_id,
       category, account_setting_id, payment_setting_id,
       currency_id, currency_type,
       amount, note, type, payment_date, invoice_code, tag_id,
       lines
     } = req.body;
     const orgId = req.user.orgId;
+
+    // Resolve tenant: if tenant_name provided (typed new name), find or create payee
+    let tenant_id = rawTenantId || null;
+    if (!tenant_id && tenant_name) {
+      const nameNorm = tenant_name.replace(/\s+/g, '').toLowerCase();
+      // Search all tenants and payees for a case-insensitive name match
+      const [allTenants] = await req.pool.execute(
+        `SELECT id, first_name, last_name, category FROM tenant WHERE org_id = ? AND status = 1`,
+        [orgId]
+      );
+      const match = allTenants.find(t => {
+        const full = `${t.first_name || ''}${t.last_name || ''}`.replace(/\s+/g, '').toLowerCase();
+        return full === nameNorm;
+      });
+      if (match) {
+        tenant_id = match.id;
+      } else {
+        // Auto-create new payee (category=2)
+        const payeeId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+        await req.pool.execute(
+          `INSERT INTO tenant (id, org_id, first_name, type, sex, status, category, created_at)
+           VALUES (?, ?, ?, 0, 0, 1, 2, NOW())`,
+          [payeeId.toString(), orgId, tenant_name]
+        );
+        tenant_id = payeeId.toString();
+      }
+    }
 
     // If currency_id not provided, look up the org's current currency
     let resolvedCurrencyId = currency_id || null;
@@ -214,6 +259,18 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
     // Generate transaction code from sequence (uses MAX of existing codes)
     const transaction_code = await generateSequenceCode(req.pool, orgId, 'transaction_code');
 
+    // Calculate total amount: header amount + sum of line amounts
+    let totalAmount = Number(amount) || 0;
+    const validLines = [];
+    if (lines && Array.isArray(lines) && lines.length > 0) {
+      for (const line of lines) {
+        const lineCategory = line.category || category || null;
+        if (!lineCategory) continue;
+        validLines.push({ ...line, category: lineCategory });
+        totalAmount += Number(line.amount) || 0;
+      }
+    }
+
     await req.pool.execute(
       `INSERT INTO accounting
          (id, org_id, property_id, unit_id, tenant_id, lease_id,
@@ -225,25 +282,32 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
       [accountingId.toString(), orgId, property_id || null, unit_id || null, tenant_id || null, lease_id || null,
        category || null, account_setting_id || null, payment_setting_id || null,
        resolvedCurrencyId, resolvedCurrencyType,
-       amount, note || null, type ?? 0, payment_date || null,
+       totalAmount, note || null, type ?? 0, payment_date || null,
        invoice_code || null, transaction_code, tag_id || null]
     );
 
-    // Insert accounting lines if provided
-    if (lines && Array.isArray(lines) && lines.length > 0) {
-      for (const line of lines) {
-        const lineCategory = line.category || category || null;
-        if (!lineCategory) continue; // skip lines with no category (accounting_line.category is NOT NULL)
-        const lineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
-        await req.pool.execute(
-          `INSERT INTO accounting_line
-             (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-          [lineId.toString(), accountingId.toString(),
-           line.amount || 0, lineCategory, line.invoice_code || null,
-           line.property_id || null, line.unit_id || null, line.lease_id || null, line.tag_id || null]
-        );
-      }
+    // Always insert the header as the first accounting_line (line 1)
+    const headerLineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+    await req.pool.execute(
+      `INSERT INTO accounting_line
+         (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [headerLineId.toString(), accountingId.toString(),
+       Number(amount) || 0, category || null, invoice_code || null,
+       property_id || null, unit_id || null, lease_id || null, tag_id || null]
+    );
+
+    // Insert additional accounting lines if provided
+    for (const line of validLines) {
+      const lineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+      await req.pool.execute(
+        `INSERT INTO accounting_line
+           (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [lineId.toString(), accountingId.toString(),
+         line.amount || 0, line.category, line.invoice_code || null,
+         line.property_id || null, line.unit_id || null, line.lease_id || null, line.tag_id || null]
+      );
     }
 
     // Recalculate invoice statuses for any linked invoices
@@ -324,9 +388,34 @@ router.put('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTING_
     const {
       category, account_setting_id, payment_setting_id,
       amount, note, type, payment_date, invoice_code, tag_id,
-      tenant_id, property_id, unit_id, lease_id
+      tenant_id: rawTenantId, tenant_name, property_id, unit_id, lease_id, lines
     } = req.body;
     const orgId = req.user.orgId;
+
+    // Resolve tenant: if tenant_name provided (typed new name), find or create payee
+    let tenant_id = rawTenantId || null;
+    if (!tenant_id && tenant_name) {
+      const nameNorm = tenant_name.replace(/\s+/g, '').toLowerCase();
+      const [allTenants] = await req.pool.execute(
+        `SELECT id, first_name, last_name, category FROM tenant WHERE org_id = ? AND status = 1`,
+        [orgId]
+      );
+      const match = allTenants.find(t => {
+        const full = `${t.first_name || ''}${t.last_name || ''}`.replace(/\s+/g, '').toLowerCase();
+        return full === nameNorm;
+      });
+      if (match) {
+        tenant_id = match.id;
+      } else {
+        const payeeId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+        await req.pool.execute(
+          `INSERT INTO tenant (id, org_id, first_name, type, sex, status, category, created_at)
+           VALUES (?, ?, ?, 0, 0, 1, 2, NOW())`,
+          [payeeId.toString(), orgId, tenant_name]
+        );
+        tenant_id = payeeId.toString();
+      }
+    }
 
     // Check if record exists
     const [existing] = await req.pool.execute(
@@ -335,6 +424,18 @@ router.put('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTING_
     );
     if (existing.length === 0) {
       return res.status(404).json({ code: 404, message: 'Transaction not found' });
+    }
+
+    // Calculate total amount: header amount + sum of line amounts
+    let totalAmount = Number(amount) || 0;
+    const validLines = [];
+    if (lines && Array.isArray(lines) && lines.length > 0) {
+      for (const line of lines) {
+        const lineCategory = line.category || category || null;
+        if (!lineCategory) continue;
+        validLines.push({ ...line, category: lineCategory });
+        totalAmount += Number(line.amount) || 0;
+      }
     }
 
     await req.pool.execute(
@@ -346,11 +447,39 @@ router.put('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTING_
            updated_at = NOW()
        WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
       [category || null, account_setting_id || null, payment_setting_id || null,
-       amount ?? null, note || null, type ?? 0, payment_date || null,
+       totalAmount, note || null, type ?? 0, payment_date || null,
        invoice_code || null, tag_id || null, tenant_id || null,
        property_id || null, unit_id || null, lease_id || null,
        id, orgId]
     );
+
+    // Replace accounting lines: delete old, insert new (header as line 1 + additional lines)
+    await req.pool.execute(
+      'DELETE FROM accounting_line WHERE accounting_id = ?',
+      [id]
+    );
+    // Insert header as line 1
+    const headerLineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+    await req.pool.execute(
+      `INSERT INTO accounting_line
+         (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [headerLineId.toString(), id,
+       Number(amount) || 0, category || null, invoice_code || null,
+       property_id || null, unit_id || null, lease_id || null, tag_id || null]
+    );
+    // Insert additional lines
+    for (const line of validLines) {
+      const lineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+      await req.pool.execute(
+        `INSERT INTO accounting_line
+           (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [lineId.toString(), id,
+         line.amount || 0, line.category, line.invoice_code || null,
+         line.property_id || null, line.unit_id || null, line.lease_id || null, line.tag_id || null]
+      );
+    }
 
     // Recalculate invoice statuses for any linked invoices
     await recalcInvoiceStatuses(req.pool, id, orgId);
@@ -411,6 +540,36 @@ router.delete('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTI
   } catch (error) {
     console.error('Delete transaction error:', error);
     res.status(500).json({ code: 500, message: 'Failed to delete transaction' });
+  }
+});
+
+// POST /api/accounting/account/balance-no-filter - Account balance ignoring all filters except account selection
+router.post('/account/balance-no-filter', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { account_setting_ids } = req.body || {};
+
+    let whereClause = 'a.org_id = ? AND a.deleted_at IS NULL';
+    const params = [orgId];
+
+    if (account_setting_ids && account_setting_ids.length > 0) {
+      whereClause += ` AND a.account_setting_id IN (${account_setting_ids.map(() => '?').join(',')})`;
+      params.push(...account_setting_ids);
+    }
+
+    const [[sums]] = await req.pool.execute(
+      `SELECT
+         COALESCE(SUM(CASE WHEN a.type = 0 THEN a.amount ELSE 0 END), 0) as inflow,
+         COALESCE(SUM(CASE WHEN a.type = 1 THEN a.amount ELSE 0 END), 0) as outflow
+       FROM accounting a
+       WHERE ${whereClause}`,
+      params
+    );
+
+    res.json({ code: 200, data: { balance: (sums.inflow || 0) - (sums.outflow || 0) } });
+  } catch (error) {
+    console.error('Get balance-no-filter error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get account balance' });
   }
 });
 

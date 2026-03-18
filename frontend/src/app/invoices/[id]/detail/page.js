@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Row, Col, Statistic } from 'antd';
-import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined } from '@ant-design/icons';
+import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Row, Col, Statistic, Divider } from 'antd';
+import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, DollarOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
 import { invoice, pdf } from '../../../../lib/api';
 
@@ -64,17 +64,22 @@ export default function InvoiceDetailPage() {
         </div>
 
         <Row gutter={16}>
-          <Col span={8}>
+          <Col span={6}>
             <Card loading={loading}>
               <Statistic title="Invoice Amount" value={inv?.amount || 0} prefix="$" />
             </Card>
           </Col>
-          <Col span={8}>
+          <Col span={6}>
             <Card loading={loading}>
-              <Statistic title="Type" value={TYPE_MAP[inv?.type] || 'Inflow'} />
+              <Statistic title="Amount Paid" value={inv?.amount_paid || 0} prefix="$" valueStyle={{ color: '#3f8600' }} />
             </Card>
           </Col>
-          <Col span={8}>
+          <Col span={6}>
+            <Card loading={loading}>
+              <Statistic title="Outstanding" value={inv?.outstanding || 0} prefix="$" valueStyle={{ color: (inv?.outstanding || 0) > 0 ? '#cf1322' : '#3f8600' }} />
+            </Card>
+          </Col>
+          <Col span={6}>
             <Card loading={loading}>
               <Statistic title="Status" value={statusInfo.label} valueStyle={{ color: statusInfo.color === 'green' ? '#3f8600' : statusInfo.color === 'red' ? '#cf1322' : '#d48806' }} />
             </Card>
@@ -98,6 +103,60 @@ export default function InvoiceDetailPage() {
             </Descriptions>
           )}
         </Card>
+
+        {inv?.payments && inv.payments.length > 0 && (
+          <Card title={<span><DollarOutlined /> Payment History</span>}>
+            <Table
+              dataSource={inv.payments}
+              rowKey={(r, i) => r.id + '-' + i}
+              pagination={false}
+              size="small"
+              columns={[
+                {
+                  title: 'Date',
+                  dataIndex: 'payment_date',
+                  render: (d) => formatDate(d),
+                },
+                {
+                  title: 'Transaction ID',
+                  dataIndex: 'transaction_code',
+                },
+                {
+                  title: 'Contact',
+                  render: (_, r) => [r.contact_first_name, r.contact_last_name].filter(Boolean).join(' ') || '-',
+                },
+                {
+                  title: 'Payment Method',
+                  dataIndex: 'payment_method_name',
+                  render: (v) => v || '-',
+                },
+                {
+                  title: 'Category',
+                  dataIndex: 'payment_category_name',
+                  render: (v) => v || '-',
+                },
+                {
+                  title: 'Amount',
+                  dataIndex: 'amount',
+                  render: (v) => formatCurrency(v),
+                  align: 'right',
+                },
+              ]}
+            />
+            <Divider style={{ margin: '12px 0' }} />
+            <Row>
+              <Col span={12}>
+                <strong>Total Paid: </strong>{formatCurrency(inv.amount_paid)}
+              </Col>
+              <Col span={12} style={{ textAlign: 'right' }}>
+                <strong>Outstanding: </strong>
+                <span style={{ color: inv.outstanding > 0 ? '#cf1322' : '#3f8600' }}>
+                  {formatCurrency(inv.outstanding)}
+                </span>
+              </Col>
+            </Row>
+          </Card>
+        )}
       </Space>
     </MainLayout>
   );

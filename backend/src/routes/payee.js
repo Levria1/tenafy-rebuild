@@ -36,7 +36,7 @@ router.post('/', authenticate, async (req, res) => {
 
     await req.pool.execute(
       'INSERT INTO tenant (id, org_id, first_name, last_name, email, phone, company_name, notes, category, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, 1, NOW())',
-      [id.toString(), orgId, first_name, last_name, email, phone, company_name || null, notes || null]
+      [id.toString(), orgId, first_name || null, last_name || null, email || null, phone || null, company_name || null, notes || null]
     );
 
     res.json({ code: 200, message: 'Payee created', data: { id: id.toString() } });

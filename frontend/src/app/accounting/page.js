@@ -24,6 +24,7 @@ function AccountingPage() {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState({ inflow: 0, outflow: 0, net: 0 });
+  const [accountBalance, setAccountBalance] = useState(0);
   const [lineSummary, setLineSummary] = useState({ inflow: 0, outflow: 0, net: 0 });
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
   const [linePagination, setLinePagination] = useState({ current: 1, pageSize: 50, total: 0 });
@@ -32,9 +33,9 @@ function AccountingPage() {
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [filters, setFilters] = useState({});
   const [search, setSearch] = useState('');
-  const [dateRange, setDateRange] = useState(() => [dayjs().subtract(3, 'month'), dayjs()]);
+  const [dateRange, setDateRange] = useState(() => [dayjs().subtract(2, 'month'), dayjs().add(2, 'month')]);
   const [selectedAccounts, setSelectedAccounts] = useState([]);
-  const [activeDateFilter, setActiveDateFilter] = useState('3M');
+  const [activeDateFilter, setActiveDateFilter] = useState('2M');
   const [sortInfo, setSortInfo] = useState({ field: null, order: null });
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -63,6 +64,10 @@ function AccountingPage() {
       loadLines();
     }
   }, [activeTab, pagination.current, pagination.pageSize, linePagination.current, linePagination.pageSize, filters, search, dateRange, selectedAccounts, sortInfo]);
+
+  useEffect(() => {
+    loadAccountBalance();
+  }, [selectedAccounts]);
 
   const loadSettings = async () => {
     try {
@@ -118,6 +123,19 @@ function AccountingPage() {
     }
   };
 
+  const loadAccountBalance = async () => {
+    try {
+      const payload = {};
+      if (selectedAccounts.length > 0) payload.account_setting_ids = selectedAccounts;
+      const response = await accounting.getBalanceNoFilter(payload);
+      if (response.data.code === 200) {
+        setAccountBalance(response.data.data.balance);
+      }
+    } catch (e) {
+      console.error('Failed to load account balance');
+    }
+  };
+
   const loadLines = async () => {
     setLoading(true);
     try {
@@ -149,7 +167,7 @@ function AccountingPage() {
     const now = dayjs();
     switch (period) {
       case 'ALL': setDateRange(null); break;
-      case '1M': setDateRange([now.subtract(1, 'month'), now]); break;
+      case '2M': setDateRange([now.subtract(2, 'month'), now.add(2, 'month')]); break;
       case 'LAST_M': setDateRange([now.subtract(1, 'month').startOf('month'), now.subtract(1, 'month').endOf('month')]); break;
       case '3M': setDateRange([now.subtract(3, 'month'), now]); break;
       case '1Y': setDateRange([now.subtract(1, 'year'), now]); break;
@@ -191,6 +209,7 @@ function AccountingPage() {
         closeDrawer();
         loadTransactions();
         loadSummary();
+        loadAccountBalance();
       } else {
         message.error('Failed to delete transaction');
       }
@@ -372,14 +391,53 @@ function AccountingPage() {
     },
   ];
 
+  // Build all drawer lines (header as first line + accounting_line entries)
+  const getDrawerLines = (txn) => {
+    if (!txn) return [];
+    const headerLine = {
+      id: 'header',
+      amount: txn.amount,
+      category_name: txn.category_name || '-',
+      contact_name: [txn.tenant_first_name, txn.tenant_last_name].filter(Boolean).join(' ') || '-',
+      property_name: txn.property_name || '-',
+      unit_name: txn.unit_name || '-',
+    };
+    const extraLines = (txn.lines || []).map(l => ({
+      ...l,
+      contact_name: [txn.tenant_first_name, txn.tenant_last_name].filter(Boolean).join(' ') || '-',
+    }));
+    // If there are extra lines, the header amount is total; show header line with its own category
+    if (extraLines.length > 0) {
+      // Recalculate: header line amount = total - sum of extra lines
+      const extraSum = extraLines.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+      const headerAmount = (parseFloat(txn.amount) || 0) - extraSum;
+      headerLine.amount = headerAmount;
+      return [headerLine, ...extraLines];
+    }
+    return [headerLine];
+  };
+
+  // Check if transaction has multiple different categories
+  const getDisplayCategory = (txn) => {
+    if (!txn) return '-';
+    const allLines = getDrawerLines(txn);
+    if (allLines.length <= 1) return txn.category_name || '-';
+    const cats = new Set(allLines.map(l => l.category_name).filter(c => c && c !== '-'));
+    return cats.size > 1 ? 'Multi-Category' : (txn.category_name || '-');
+  };
+
   // Account Line columns for drawer
   const drawerLineColumns = [
     {
-      title: 'Amount', dataIndex: 'amount', key: 'amount', width: 120,
+      title: 'Amount', dataIndex: 'amount', key: 'amount', width: 100,
       render: (v) => formatCurrency(v),
     },
     {
       title: 'Category', dataIndex: 'category_name', key: 'category', width: 120,
+      render: (v) => v || '-',
+    },
+    {
+      title: 'Contact', dataIndex: 'contact_name', key: 'contact', width: 120,
       render: (v) => v || '-',
     },
     {
@@ -394,7 +452,7 @@ function AccountingPage() {
 
   const quickDateButtons = [
     { label: 'ALL', key: 'ALL' },
-    { label: '1M', key: '1M' },
+    { label: '+/- 2M', key: '2M' },
     { label: 'LAST M', key: 'LAST_M' },
     { label: '3M', key: '3M' },
     { label: '1Y', key: '1Y' },
@@ -478,19 +536,25 @@ function AccountingPage() {
 
           {/* Summary Cards */}
           <Row gutter={0} style={{ marginBottom: 16 }}>
-            <Col span={8}>
+            <Col span={6}>
+              <Card size="small" style={{ borderRadius: 0 }}>
+                <div style={{ fontSize: 13, color: '#666' }}>Account Balance (No Filter)</div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: accountBalance >= 0 ? '#389e0d' : '#cf1322' }}>{formatCurrency(accountBalance)}</div>
+              </Card>
+            </Col>
+            <Col span={6}>
               <Card size="small" style={{ borderRadius: 0 }}>
                 <div style={{ fontSize: 13, color: '#666' }}>Outflow (DR)</div>
                 <div style={{ fontSize: 18, fontWeight: 600, color: '#cf1322' }}>- {formatCurrency(summary.outflow)}</div>
               </Card>
             </Col>
-            <Col span={8}>
+            <Col span={6}>
               <Card size="small" style={{ borderRadius: 0 }}>
                 <div style={{ fontSize: 13, color: '#666' }}>Inflow (CR)</div>
                 <div style={{ fontSize: 18, fontWeight: 600, color: '#389e0d' }}>{formatCurrency(summary.inflow)}</div>
               </Card>
             </Col>
-            <Col span={8}>
+            <Col span={6}>
               <Card size="small" style={{ borderRadius: 0 }}>
                 <div style={{ fontSize: 13, color: '#666' }}>Balance</div>
                 <div style={{ fontSize: 18, fontWeight: 600, color: '#1890ff' }}>{formatCurrency(summary.net)}</div>
@@ -680,7 +744,7 @@ function AccountingPage() {
                 {selectedTransaction.payment_method_name || '-'}
               </Descriptions.Item>
               <Descriptions.Item label="Category">
-                {selectedTransaction.category_name || '-'}
+                {getDisplayCategory(selectedTransaction)}
               </Descriptions.Item>
               <Descriptions.Item label="Amount">
                 <span style={{ color: selectedTransaction.type === 0 ? '#389e0d' : '#cf1322', fontWeight: 600, fontSize: 16 }}>
@@ -705,16 +769,16 @@ function AccountingPage() {
             </Descriptions>
 
             {/* Account Lines */}
-            {selectedTransaction.lines && selectedTransaction.lines.length > 0 && (
+            {getDrawerLines(selectedTransaction).length > 1 && (
               <>
                 <Divider orientation="left" style={{ marginTop: 24 }}>Account Line</Divider>
                 <Table
                   columns={drawerLineColumns}
-                  dataSource={selectedTransaction.lines}
+                  dataSource={getDrawerLines(selectedTransaction)}
                   rowKey="id"
                   size="small"
                   pagination={false}
-                  scroll={{ x: 400 }}
+                  scroll={{ x: 500 }}
                 />
               </>
             )}

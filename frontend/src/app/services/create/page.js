@@ -264,10 +264,10 @@ export default function ServiceCreatePage() {
 
               {/* Option 1 */}
               <div style={{ marginBottom: 12 }}>
-                <span style={{ color: '#ff4d4f', marginRight: 4 }}>*</span>
+                <span style={{ marginRight: 4, visibility: 'hidden' }}>*</span>
                 <span style={{ fontWeight: 500, marginRight: 12 }}>Option 1:</span>
                 <Space>
-                  <Form.Item name="pref1_date" noStyle rules={[{ required: true, message: 'Select date' }]}>
+                  <Form.Item name="pref1_date" noStyle>
                     <DatePicker placeholder="Select date" disabledDate={disabledDate} style={{ width: 150 }} />
                   </Form.Item>
                   <Form.Item name="pref1_start" noStyle>
