@@ -44,7 +44,7 @@ async function recalcInvoiceStatuses(pool, accountingId, orgId) {
       `SELECT COALESCE(SUM(al.amount), 0) as total_paid
        FROM accounting_line al
        JOIN accounting a ON al.accounting_id = a.id
-       WHERE al.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL`,
+       WHERE al.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
       [invoiceCode, orgId]
     );
 
@@ -204,10 +204,11 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
       unit_id, property_id, tenant_id: rawTenantId, tenant_name, lease_id,
       category, account_setting_id, payment_setting_id,
       currency_id, currency_type,
-      amount, note, type, payment_date, invoice_code, tag_id,
+      amount, note, type, payment_date, invoice_code: rawInvoiceCode, tag_id,
       lines
     } = req.body;
     const orgId = req.user.orgId;
+    const invoice_code = rawInvoiceCode ? rawInvoiceCode.trim() : null;
 
     // Resolve tenant: if tenant_name provided (typed new name), find or create payee
     let tenant_id = rawTenantId || null;
@@ -259,17 +260,20 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
     // Generate transaction code from sequence (uses MAX of existing codes)
     const transaction_code = await generateSequenceCode(req.pool, orgId, 'transaction_code');
 
-    // Calculate total amount: header amount + sum of line amounts
-    let totalAmount = Number(amount) || 0;
+    // Collect valid lines (trim invoice_code on each)
     const validLines = [];
     if (lines && Array.isArray(lines) && lines.length > 0) {
       for (const line of lines) {
         const lineCategory = line.category || category || null;
         if (!lineCategory) continue;
-        validLines.push({ ...line, category: lineCategory });
-        totalAmount += Number(line.amount) || 0;
+        validLines.push({ ...line, category: lineCategory, invoice_code: line.invoice_code ? line.invoice_code.trim() : null });
       }
     }
+
+    // Total amount: use sum of lines when lines exist, otherwise header amount
+    const totalAmount = validLines.length > 0
+      ? validLines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0)
+      : (Number(amount) || 0);
 
     await req.pool.execute(
       `INSERT INTO accounting
@@ -286,27 +290,30 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
        invoice_code || null, transaction_code, tag_id || null]
     );
 
-    // Always insert the header as the first accounting_line (line 1)
-    const headerLineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
-    await req.pool.execute(
-      `INSERT INTO accounting_line
-         (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [headerLineId.toString(), accountingId.toString(),
-       Number(amount) || 0, category || null, invoice_code || null,
-       property_id || null, unit_id || null, lease_id || null, tag_id || null]
-    );
-
-    // Insert additional accounting lines if provided
-    for (const line of validLines) {
-      const lineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+    // Insert accounting_line entries:
+    // If explicit lines provided, only insert those (no header line to avoid double-counting)
+    // If no lines, insert header as the single line entry
+    if (validLines.length > 0) {
+      for (const line of validLines) {
+        const lineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+        await req.pool.execute(
+          `INSERT INTO accounting_line
+             (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [lineId.toString(), accountingId.toString(),
+           line.amount || 0, line.category, line.invoice_code || null,
+           line.property_id || null, line.unit_id || null, line.lease_id || null, line.tag_id || null]
+        );
+      }
+    } else {
+      const headerLineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
       await req.pool.execute(
         `INSERT INTO accounting_line
            (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-        [lineId.toString(), accountingId.toString(),
-         line.amount || 0, line.category, line.invoice_code || null,
-         line.property_id || null, line.unit_id || null, line.lease_id || null, line.tag_id || null]
+        [headerLineId.toString(), accountingId.toString(),
+         Number(amount) || 0, category || null, invoice_code || null,
+         property_id || null, unit_id || null, lease_id || null, tag_id || null]
       );
     }
 
@@ -387,10 +394,11 @@ router.put('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTING_
     const { id } = req.params;
     const {
       category, account_setting_id, payment_setting_id,
-      amount, note, type, payment_date, invoice_code, tag_id,
+      amount, note, type, payment_date, invoice_code: rawInvoiceCode, tag_id,
       tenant_id: rawTenantId, tenant_name, property_id, unit_id, lease_id, lines
     } = req.body;
     const orgId = req.user.orgId;
+    const invoice_code = rawInvoiceCode ? rawInvoiceCode.trim() : null;
 
     // Resolve tenant: if tenant_name provided (typed new name), find or create payee
     let tenant_id = rawTenantId || null;
@@ -426,17 +434,20 @@ router.put('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTING_
       return res.status(404).json({ code: 404, message: 'Transaction not found' });
     }
 
-    // Calculate total amount: header amount + sum of line amounts
-    let totalAmount = Number(amount) || 0;
+    // Collect valid lines (trim invoice_code on each)
     const validLines = [];
     if (lines && Array.isArray(lines) && lines.length > 0) {
       for (const line of lines) {
         const lineCategory = line.category || category || null;
         if (!lineCategory) continue;
-        validLines.push({ ...line, category: lineCategory });
-        totalAmount += Number(line.amount) || 0;
+        validLines.push({ ...line, category: lineCategory, invoice_code: line.invoice_code ? line.invoice_code.trim() : null });
       }
     }
+
+    // Total amount: use sum of lines when lines exist, otherwise header amount
+    const totalAmount = validLines.length > 0
+      ? validLines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0)
+      : (Number(amount) || 0);
 
     await req.pool.execute(
       `UPDATE accounting
@@ -453,31 +464,35 @@ router.put('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTING_
        id, orgId]
     );
 
-    // Replace accounting lines: delete old, insert new (header as line 1 + additional lines)
+    // Replace accounting lines: delete old, insert new
     await req.pool.execute(
       'DELETE FROM accounting_line WHERE accounting_id = ?',
       [id]
     );
-    // Insert header as line 1
-    const headerLineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
-    await req.pool.execute(
-      `INSERT INTO accounting_line
-         (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [headerLineId.toString(), id,
-       Number(amount) || 0, category || null, invoice_code || null,
-       property_id || null, unit_id || null, lease_id || null, tag_id || null]
-    );
-    // Insert additional lines
-    for (const line of validLines) {
-      const lineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+
+    // If explicit lines provided, only insert those (no header line to avoid double-counting)
+    // If no lines, insert header as the single line entry
+    if (validLines.length > 0) {
+      for (const line of validLines) {
+        const lineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
+        await req.pool.execute(
+          `INSERT INTO accounting_line
+             (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [lineId.toString(), id,
+           line.amount || 0, line.category, line.invoice_code || null,
+           line.property_id || null, line.unit_id || null, line.lease_id || null, line.tag_id || null]
+        );
+      }
+    } else {
+      const headerLineId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
       await req.pool.execute(
         `INSERT INTO accounting_line
            (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, tag_id, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-        [lineId.toString(), id,
-         line.amount || 0, line.category, line.invoice_code || null,
-         line.property_id || null, line.unit_id || null, line.lease_id || null, line.tag_id || null]
+        [headerLineId.toString(), id,
+         Number(amount) || 0, category || null, invoice_code || null,
+         property_id || null, unit_id || null, lease_id || null, tag_id || null]
       );
     }
 

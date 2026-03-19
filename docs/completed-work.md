@@ -241,3 +241,48 @@ Core project setup: Express backend with JWT auth, Next.js 14 frontend, MySQL da
 ### Property Create Page — `property/create/page.js`
 - Added `payment_instructions` `Input.TextArea` field above Notes
 - `onValuesChange` now watches the `type` radio group: when property type changes, calls `loadAmenities(newType)` to reload type-filtered amenities and clears previous selections
+
+---
+
+## Session: 2026-03-05 (session 6)
+**Commit**: `9c0974f` — Payment add line and invoice fixed.
+
+---
+
+## Session: 2026-03-19
+
+### Account Settings CRUD (`settings/page.js` + `settings.js`)
+- Added "Accounts" tab to Accounting Settings for managing bank/payment accounts
+- Full CRUD: inline add form, inline edit (click Edit → input replaces name), delete with Popconfirm
+- Backend DELETE endpoint checks for linked accounting transactions before allowing soft-delete
+- Returns descriptive error message with transaction count if in use
+
+### Accounting Delete Confirmation (`accounting/page.js`)
+- Wrapped Delete button in Popconfirm for delete confirmation before removing inflow/outflow transactions
+
+### Leasing Filter — Unit Dropdown (`leasing/page.js` + `leasing.js`)
+- Added cascading property→unit filter: selecting a property loads its units in a second dropdown
+- Backend: added `unitId` WHERE clause to lease list query
+- Fixed duplicate units in `GET /:property_id/unit` by adding `GROUP BY u.id` (`property.js`)
+
+### Lease Detail Page Fix (`leasing/[id]/detail/page.js`)
+- Rewrote to use correct field names: `lease_no` (not snowflake `id`), `amount || price` (not `monthly_rent`), `unit_name` (not `unit_number`)
+- Added proper type/status mappings (LEASE_TYPE_MAP, CONTRACT_TYPE_MAP, INVOICING_MAP)
+- Added payments tab and PDF view button
+
+### Lease Create — End Date Validation (`leasing/create/page.js`)
+- Added validation: if end date is before start date, displays error and blocks creation
+
+### Contact Deletion (`contacts/tenants/page.js` + `tenant.js`)
+- Added delete button with Popconfirm to tenant list, gated by `LANDLORD/TENANT_DELETE` permission
+- Backend DELETE checks for linked invoices, leases, and accounting transactions before soft-deleting
+- Returns descriptive 400 error with count if any linked records exist
+
+### Other Changes
+- Master dashboard, layout, and API keys pages updates
+- Service create page updates
+- API client additions for account settings endpoints
+- Layout sidebar link for Accounts tab under Accounting Settings
+
+### Known Bug (Not Yet Fixed)
+- Recurring lease invoice generation fails when `first_invoice_date` > `end_date` — the loop breaks before creating any rent invoices

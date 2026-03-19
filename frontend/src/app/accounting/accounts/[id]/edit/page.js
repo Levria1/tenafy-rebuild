@@ -100,18 +100,25 @@ export default function AccountEditPage() {
         });
 
         // Load account lines if they exist
+        // Skip if there's only 1 line that matches the header (it's just the header line, not an extra breakdown)
         if (data.lines && data.lines.length > 0) {
-          setAccountLines(data.lines.map(l => ({
-            key: l.id || Date.now() + Math.random(),
-            amount: l.amount ? Number(l.amount) : '',
-            category: l.category || null,
-            invoice_code: l.invoice_code || '',
-            property_id: l.property_id || null,
-            unit_id: l.unit_id || null,
-            lease_id: l.lease_id || null,
-            tag_id: l.tag_id || null,
-            units: [],
-          })));
+          const isHeaderOnly = data.lines.length === 1
+            && Number(data.lines[0].amount) === Number(data.amount)
+            && String(data.lines[0].category || '') === String(data.category || '')
+            && String(data.lines[0].invoice_code || '').trim() === String(data.invoice_code || '').trim();
+          if (!isHeaderOnly) {
+            setAccountLines(data.lines.map(l => ({
+              key: l.id || Date.now() + Math.random(),
+              amount: l.amount ? Number(l.amount) : '',
+              category: l.category || null,
+              invoice_code: l.invoice_code || '',
+              property_id: l.property_id || null,
+              unit_id: l.unit_id || null,
+              lease_id: l.lease_id || null,
+              tag_id: l.tag_id || null,
+              units: [],
+            })));
+          }
         }
       }
     } catch (error) {

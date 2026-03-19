@@ -189,7 +189,7 @@ router.post('/create', authenticate, async (req, res) => {
     res.json({ code: 200, message: 'Service created', data: { id: serviceId, code } });
   } catch (error) {
     console.error('Create service error:', error);
-    res.status(500).json({ code: 500, message: 'Failed to create service' });
+    res.status(500).json({ code: 500, message: 'Failed to create service: ' + error.message });
   }
 });
 

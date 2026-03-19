@@ -37,6 +37,17 @@ export default function MasterDashboardPage() {
     }
   };
 
+  const handleToggleApi = async (org) => {
+    const newVal = Number(org.public_api_enabled) === 1 ? 0 : 1;
+    try {
+      await master.updateOrganization(org.id, { public_api_enabled: newVal });
+      message.success(`Public API ${newVal === 1 ? 'enabled' : 'disabled'} for ${org.display_name}`);
+      fetchOrgs();
+    } catch (err) {
+      message.error('Failed to update API setting');
+    }
+  };
+
   const columns = [
     {
       title: 'Organization',
@@ -59,6 +70,20 @@ export default function MasterDashboardPage() {
           checkedChildren="Active"
           unCheckedChildren="Disabled"
           onChange={() => handleToggleStatus(record)}
+        />
+      ),
+    },
+    {
+      title: 'Public API',
+      dataIndex: 'public_api_enabled',
+      key: 'public_api_enabled',
+      render: (val, record) => (
+        <Switch
+          checked={Number(val) === 1}
+          checkedChildren="On"
+          unCheckedChildren="Off"
+          onChange={() => handleToggleApi(record)}
+          size="small"
         />
       ),
     },

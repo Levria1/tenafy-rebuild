@@ -24,7 +24,10 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB per file
+});
 
 // MIME type lookup
 const MIME_TYPES = {
@@ -33,6 +36,8 @@ const MIME_TYPES = {
   '.svg': 'image/svg+xml', '.pdf': 'application/pdf',
   '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.avi': 'video/x-msvideo',
+  '.mkv': 'video/x-matroska', '.webm': 'video/webm', '.wmv': 'video/x-ms-wmv',
 };
 
 // GET /api/file/preview/:identifier - Serve file for preview

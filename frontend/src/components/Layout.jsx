@@ -95,6 +95,7 @@ function buildMenuItems(hasPermission) {
       children: [
         { key: '/settings?tab=payment', label: <Link href="/settings?tab=payment">Payment Methods</Link> },
         { key: '/settings?tab=categories', label: <Link href="/settings?tab=categories">Categories</Link> },
+        { key: '/settings?tab=accounts', label: <Link href="/settings?tab=accounts">Accounts</Link> },
         { key: '/settings?tab=sequences', label: <Link href="/settings?tab=sequences">Sequences</Link> },
       ],
     },
@@ -120,6 +121,9 @@ function buildMenuItems(hasPermission) {
       children: userMgmtChildren,
     });
   }
+
+  // API Keys link (visible to all, settings page checks if enabled)
+  settingsChildren.push({ key: '/settings?tab=apiKeys', label: <Link href="/settings?tab=apiKeys">API Keys</Link> });
 
   items.push({
     key: '/settings',
@@ -421,7 +425,7 @@ function MainLayout({ children }) {
     if (pathname.startsWith('/contacts')) keys.push('/contacts');
     if (pathname.startsWith('/settings')) {
       keys.push('/settings'); // Always open parent Settings
-      if (['payment', 'categories', 'sequences'].includes(tab)) {
+      if (['payment', 'categories', 'accounts', 'sequences'].includes(tab)) {
         keys.push('/settings/accounting');
       } else if (['emailTemplates'].includes(tab)) {
         keys.push('/settings/email');

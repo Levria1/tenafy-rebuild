@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const crypto = require('crypto');
+const { authenticate, requireSuperAdmin } = require('../middleware/auth');
+const { getMasterPool } = require('../config/poolRegistry');
 
 
 // ---------------------------------------------------------------------------
@@ -468,6 +470,16 @@ router.delete('/setting/account/delete/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
+
+    // Check if any accounting transactions use this account
+    const [[{ count }]] = await req.pool.execute(
+      'SELECT COUNT(*) as count FROM accounting WHERE account_setting_id = ? AND org_id = ? AND deleted_at IS NULL',
+      [id, orgId]
+    );
+    if (Number(count) > 0) {
+      return res.status(400).json({ code: 400, message: `Cannot delete this account — it is used by ${count} accounting transaction(s). Remove or reassign them first.` });
+    }
+
     await req.pool.execute(
       'UPDATE account_setting SET enabled = 0 WHERE id = ? AND org_id = ?',
       [id, orgId]
@@ -476,6 +488,114 @@ router.delete('/setting/account/delete/:id', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Delete account setting error:', error);
     res.status(500).json({ code: 500, message: 'Failed to delete account setting' });
+  }
+});
+
+// ─── API KEY MANAGEMENT (Super Admin only) ──────────────────────────────────
+
+// GET /api/user/setting/api-keys/enabled - Check if public API is enabled for this org
+router.get('/setting/api-keys/enabled', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const masterPool = getMasterPool();
+    const [[org]] = await masterPool.execute(
+      'SELECT public_api_enabled FROM organizations WHERE id = ?',
+      [orgId]
+    );
+    res.json({ code: 200, data: { enabled: org ? Number(org.public_api_enabled) === 1 : false } });
+  } catch (err) {
+    console.error('Check API enabled error:', err);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// GET /api/user/setting/api-keys - List API keys for this org
+router.get('/setting/api-keys', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const masterPool = getMasterPool();
+    const [keys] = await masterPool.execute(
+      'SELECT id, api_key, name, status, created_at, last_used_at FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
+      [orgId]
+    );
+    res.json({ code: 200, data: keys });
+  } catch (err) {
+    console.error('List API keys error:', err);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// POST /api/user/setting/api-keys - Create API key for this org
+router.post('/setting/api-keys', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { name } = req.body;
+    const masterPool = getMasterPool();
+
+    // Check if public API is enabled
+    const [[org]] = await masterPool.execute(
+      'SELECT public_api_enabled FROM organizations WHERE id = ?',
+      [orgId]
+    );
+    if (!org || Number(org.public_api_enabled) !== 1) {
+      return res.status(403).json({ code: 403, message: 'Public API is not enabled for your organization. Contact master admin.' });
+    }
+
+    const id = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+    const apiKey = 'pk_' + crypto.randomBytes(32).toString('hex');
+
+    await masterPool.execute(
+      'INSERT INTO api_keys (id, org_id, api_key, name, status, created_at) VALUES (?, ?, ?, ?, 1, NOW())',
+      [id, orgId, apiKey, name || 'Default']
+    );
+
+    res.json({ code: 200, data: { id, api_key: apiKey, name: name || 'Default' } });
+  } catch (err) {
+    console.error('Create API key error:', err);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// PUT /api/user/setting/api-keys/:id - Update API key (name, status)
+router.put('/setting/api-keys/:id', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const { name, status } = req.body;
+    const masterPool = getMasterPool();
+
+    const updates = [];
+    const params = [];
+    if (name !== undefined) { updates.push('name = ?'); params.push(name); }
+    if (status !== undefined) { updates.push('status = ?'); params.push(status); }
+
+    if (!updates.length) return res.status(400).json({ code: 400, message: 'Nothing to update' });
+
+    // Ensure key belongs to this org
+    params.push(id, orgId);
+    await masterPool.execute(`UPDATE api_keys SET ${updates.join(', ')} WHERE id = ? AND org_id = ?`, params);
+
+    res.json({ code: 200, message: 'API key updated' });
+  } catch (err) {
+    console.error('Update API key error:', err);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// DELETE /api/user/setting/api-keys/:id - Delete API key
+router.delete('/setting/api-keys/:id', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const masterPool = getMasterPool();
+
+    // Ensure key belongs to this org
+    await masterPool.execute('DELETE FROM api_keys WHERE id = ? AND org_id = ?', [id, orgId]);
+
+    res.json({ code: 200, message: 'API key deleted' });
+  } catch (err) {
+    console.error('Delete API key error:', err);
+    res.status(500).json({ code: 500, message: err.message });
   }
 });
 

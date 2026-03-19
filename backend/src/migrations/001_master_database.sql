@@ -22,8 +22,21 @@ CREATE TABLE IF NOT EXISTS organizations (
   db_user VARCHAR(100),
   db_password VARCHAR(255),
   status TINYINT DEFAULT 1,
+  public_api_enabled TINYINT DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+  id BIGINT PRIMARY KEY,
+  org_id BIGINT NOT NULL,
+  api_key VARCHAR(100) UNIQUE NOT NULL,
+  name VARCHAR(255),
+  status TINYINT DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  last_used_at TIMESTAMP NULL,
+  INDEX idx_api_key (api_key),
+  INDEX idx_org_id (org_id)
 );
 
 CREATE TABLE IF NOT EXISTS org_user_map (

@@ -251,14 +251,43 @@ router.put('/:id/profile', authenticate, async (req, res) => {
 router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    await req.pool.execute(
-      'UPDATE tenant SET status = 0 WHERE id = ?',
+    const orgId = req.user.orgId;
+
+    // Check for linked invoices
+    const [[{ invoiceCount }]] = await req.pool.execute(
+      'SELECT COUNT(*) as invoiceCount FROM invoice WHERE tenant_id = ? AND org_id = ? AND deleted_at IS NULL',
+      [id, orgId]
+    );
+    if (Number(invoiceCount) > 0) {
+      return res.status(400).json({ code: 400, message: `Cannot delete this contact — they have ${invoiceCount} invoice(s) linked. Remove or reassign them first.` });
+    }
+
+    // Check for linked leases
+    const [[{ leaseCount }]] = await req.pool.execute(
+      'SELECT COUNT(*) as leaseCount FROM leasing WHERE tenant_id = ? AND deleted_at IS NULL',
       [id]
     );
-    res.json({ code: 200, message: 'Tenant deleted' });
+    if (Number(leaseCount) > 0) {
+      return res.status(400).json({ code: 400, message: `Cannot delete this contact — they have ${leaseCount} lease(s) linked. Remove or reassign them first.` });
+    }
+
+    // Check for linked accounting transactions (inflow/outflow)
+    const [[{ acctCount }]] = await req.pool.execute(
+      'SELECT COUNT(*) as acctCount FROM accounting WHERE tenant_id = ? AND org_id = ? AND deleted_at IS NULL',
+      [id, orgId]
+    );
+    if (Number(acctCount) > 0) {
+      return res.status(400).json({ code: 400, message: `Cannot delete this contact — they have ${acctCount} accounting transaction(s) linked. Remove or reassign them first.` });
+    }
+
+    await req.pool.execute(
+      'UPDATE tenant SET status = 0 WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+    res.json({ code: 200, message: 'Contact deleted' });
   } catch (error) {
     console.error('Delete tenant error:', error);
-    res.status(500).json({ code: 500, message: 'Failed to delete tenant' });
+    res.status(500).json({ code: 500, message: 'Failed to delete contact' });
   }
 });
 

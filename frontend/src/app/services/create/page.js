@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Form, Input, Select, DatePicker, TimePicker, Button, Space, message,
+  Form, Input, Select, DatePicker, TimePicker, Button, Space, message, Modal,
   Row, Col, Upload, Radio,
 } from 'antd';
 import { ArrowLeftOutlined, InboxOutlined } from '@ant-design/icons';
@@ -92,10 +92,25 @@ export default function ServiceCreatePage() {
   };
 
   const onFinish = async (values) => {
+    // Prompt if no unit selected
+    if (!values.unit_id) {
+      Modal.confirm({
+        title: 'No unit selected',
+        content: 'Do you want to create a service order without a unit selected?',
+        okText: 'OK',
+        cancelText: 'Cancel',
+        onOk: () => submitWorkOrder(values),
+      });
+      return;
+    }
+    submitWorkOrder(values);
+  };
+
+  const submitWorkOrder = async (values) => {
     setSubmitting(true);
     try {
       const payload = {
-        unit_id: values.unit_id,
+        unit_id: values.unit_id || null,
         category: values.category || null,
         sub_category: values.sub_category || null,
         priority: values.priority,
@@ -145,11 +160,19 @@ export default function ServiceCreatePage() {
       if (fileList.length > 0) {
         const uploadedIds = [];
         for (const f of fileList) {
-          const formData = new FormData();
-          formData.append('file', f.originFileObj);
-          const uploadRes = await fileApi.upload(formData);
-          if (uploadRes.data.code === 200) {
-            uploadedIds.push(uploadRes.data.data.id);
+          if (!f.originFileObj) continue; // skip files without a File object
+          try {
+            const formData = new FormData();
+            formData.append('file', f.originFileObj);
+            const uploadRes = await fileApi.upload(formData);
+            if (uploadRes.data.code === 200) {
+              uploadedIds.push(uploadRes.data.data.id);
+            }
+          } catch (uploadErr) {
+            const errMsg = uploadErr.response?.data?.message || 'File upload failed';
+            message.error(`Failed to upload "${f.name}": ${errMsg}`);
+            setSubmitting(false);
+            return;
           }
         }
         if (uploadedIds.length > 0) {
@@ -208,7 +231,7 @@ export default function ServiceCreatePage() {
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item name="unit_id" label="Unit" rules={[{ required: true, message: 'Please select a unit' }]}>
+                <Form.Item name="unit_id" label="Unit">
                   <Select
                     placeholder="Select Unit"
                     allowClear
@@ -416,11 +439,11 @@ export default function ServiceCreatePage() {
                 fileList={fileList}
                 onChange={({ fileList: fl }) => setFileList(fl)}
                 beforeUpload={() => false}
-                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"
+                accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx"
               >
                 <p className="ant-upload-drag-icon"><InboxOutlined /></p>
                 <p className="ant-upload-text">Click or drag files to this area to upload</p>
-                <p className="ant-upload-hint">Support images, PDF, Word, Excel files</p>
+                <p className="ant-upload-hint">Support images, videos, PDF, Word, Excel files</p>
               </Dragger>
             </Form.Item>
 

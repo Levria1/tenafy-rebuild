@@ -194,6 +194,13 @@ export default function LeaseCreatePage() {
           step1Fields.push('invoicing', 'due_date');
         }
         await form.validateFields(step1Fields);
+        // Block if end date is before start date
+        const startVal = form.getFieldValue('start_date');
+        const endVal = form.getFieldValue('end_date');
+        if (startVal && endVal && endVal.isBefore(startVal, 'day')) {
+          message.error('End date cannot be before start date');
+          return;
+        }
         // Block if conflict
         if (conflictResult && conflictResult.conflict) {
           message.error('Please resolve the lease conflict before proceeding.');

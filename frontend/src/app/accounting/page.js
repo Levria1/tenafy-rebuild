@@ -1,7 +1,7 @@
 'use client';
 
 import { Suspense, useEffect, useState, useCallback } from 'react';
-import { Table, Button, Space, Tag, Card, Input, Select, DatePicker, Row, Col, Tabs, message, Drawer, Descriptions, Divider, Popover, Radio, Checkbox, Spin, Tooltip } from 'antd';
+import { Table, Button, Space, Tag, Card, Input, Select, DatePicker, Row, Col, Tabs, message, Drawer, Descriptions, Divider, Popover, Popconfirm, Radio, Checkbox, Spin, Tooltip } from 'antd';
 import { PlusOutlined, FilterOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, CloseOutlined } from '@ant-design/icons';
 import { useRouter, useSearchParams } from 'next/navigation';
 import dayjs from 'dayjs';
@@ -391,30 +391,28 @@ function AccountingPage() {
     },
   ];
 
-  // Build all drawer lines (header as first line + accounting_line entries)
+  // Build drawer lines from accounting_line entries
   const getDrawerLines = (txn) => {
     if (!txn) return [];
-    const headerLine = {
+    const contactName = [txn.tenant_first_name, txn.tenant_last_name].filter(Boolean).join(' ') || '-';
+
+    // If there are accounting_line entries, show those directly (they ARE the line items)
+    if (txn.lines && txn.lines.length > 0) {
+      return txn.lines.map(l => ({
+        ...l,
+        contact_name: contactName,
+      }));
+    }
+
+    // Fallback: show header as a single line
+    return [{
       id: 'header',
       amount: txn.amount,
       category_name: txn.category_name || '-',
-      contact_name: [txn.tenant_first_name, txn.tenant_last_name].filter(Boolean).join(' ') || '-',
+      contact_name: contactName,
       property_name: txn.property_name || '-',
       unit_name: txn.unit_name || '-',
-    };
-    const extraLines = (txn.lines || []).map(l => ({
-      ...l,
-      contact_name: [txn.tenant_first_name, txn.tenant_last_name].filter(Boolean).join(' ') || '-',
-    }));
-    // If there are extra lines, the header amount is total; show header line with its own category
-    if (extraLines.length > 0) {
-      // Recalculate: header line amount = total - sum of extra lines
-      const extraSum = extraLines.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
-      const headerAmount = (parseFloat(txn.amount) || 0) - extraSum;
-      headerLine.amount = headerAmount;
-      return [headerLine, ...extraLines];
-    }
-    return [headerLine];
+    }];
   };
 
   // Check if transaction has multiple different categories
@@ -703,7 +701,11 @@ function AccountingPage() {
               <Space>
                 <Button icon={<PrinterOutlined />} onClick={() => window.print()}>Print</Button>
                 {canEdit && <Button icon={<EditOutlined />} onClick={() => router.push(`/accounting/accounts/${selectedTransaction.id}/edit`)}>Edit</Button>}
-                {canDelete && <Button danger icon={<DeleteOutlined />} onClick={handleDeleteTransaction}>Delete</Button>}
+                {canDelete && (
+                  <Popconfirm title="Are you sure you want to delete this transaction?" onConfirm={handleDeleteTransaction} okText="Yes" cancelText="No">
+                    <Button danger icon={<DeleteOutlined />}>Delete</Button>
+                  </Popconfirm>
+                )}
               </Space>
               <Button onClick={closeDrawer}>Close</Button>
             </div>

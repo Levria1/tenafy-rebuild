@@ -11,7 +11,7 @@ const app = express();
 
 app.use(helmet());
 app.use(cors({
-  origin: config.frontendUrl,
+  origin: [config.frontendUrl, 'http://localhost:3000', 'http://192.168.1.31:3000'],
   credentials: true
 }));
 app.use(morgan('dev'));
@@ -43,6 +43,7 @@ app.use('/api/notification', require('./routes/notification'));
 app.use('/api/tenant-portal', require('./routes/tenantPortal'));
 app.use('/api/pdf', require('./routes/pdf'));
 app.use('/api/storage', require('./routes/storage'));
+app.use('/api/public', require('./routes/public'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

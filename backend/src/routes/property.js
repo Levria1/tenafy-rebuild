@@ -625,6 +625,7 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
        LEFT JOIN leasing l ON l.unit_id = u.id AND l.status = 1 AND l.deleted_at IS NULL
        LEFT JOIN tenant t ON l.tenant_id = t.id
        WHERE u.property_id = ? AND p.org_id = ? AND u.active_status = 1
+       GROUP BY u.id
        ORDER BY u.name`,
       [property_id, orgId]
     );

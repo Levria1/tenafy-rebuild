@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Layout, Button, Spin } from 'antd';
-import { LogoutOutlined } from '@ant-design/icons';
+import { LogoutOutlined, ApiOutlined, AppstoreOutlined } from '@ant-design/icons';
 import Cookies from 'js-cookie';
 import { master } from '../../lib/api';
 
@@ -65,6 +65,22 @@ export default function MasterLayout({ children }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <span style={{ color: '#1890ff', fontSize: 20, fontWeight: 'bold' }}>Tenafy</span>
           <span style={{ color: 'rgba(255,255,255,0.65)', fontSize: 14 }}>Master Admin</span>
+          <Button
+            type="text"
+            icon={<AppstoreOutlined />}
+            onClick={() => router.push('/master/dashboard')}
+            style={{ color: pathname === '/master/dashboard' ? '#1890ff' : 'rgba(255,255,255,0.65)' }}
+          >
+            Organizations
+          </Button>
+          <Button
+            type="text"
+            icon={<ApiOutlined />}
+            onClick={() => router.push('/master/api-keys')}
+            style={{ color: pathname === '/master/api-keys' ? '#1890ff' : 'rgba(255,255,255,0.65)' }}
+          >
+            API Keys
+          </Button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           {user && <span style={{ color: 'rgba(255,255,255,0.85)' }}>{user.username}</span>}

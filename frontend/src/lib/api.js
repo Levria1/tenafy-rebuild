@@ -309,6 +309,12 @@ export const settings = {
   // Email settings (whitelist)
   getEmailSettings: () => api.get('/api/user/setting/email'),
   updateEmailSettings: (data) => api.put('/api/user/setting/email', data),
+  // API Keys
+  checkApiEnabled: () => api.get('/api/user/setting/api-keys/enabled'),
+  getApiKeys: () => api.get('/api/user/setting/api-keys'),
+  createApiKey: (data) => api.post('/api/user/setting/api-keys', data),
+  updateApiKey: (id, data) => api.put(`/api/user/setting/api-keys/${id}`, data),
+  deleteApiKey: (id) => api.delete(`/api/user/setting/api-keys/${id}`),
 };
 
 export const pdf = {
@@ -355,6 +361,11 @@ export const master = {
   createOrganization: (data) => api.post('/api/master/organizations', data),
   updateOrganization: (id, data) => api.put(`/api/master/organizations/${id}`, data),
   getOrgStats: (id) => api.get(`/api/master/organizations/${id}/stats`),
+  // API Keys
+  listApiKeys: () => api.get('/api/master/api-keys'),
+  createApiKey: (data) => api.post('/api/master/api-keys', data),
+  updateApiKey: (id, data) => api.put(`/api/master/api-keys/${id}`, data),
+  deleteApiKey: (id) => api.delete(`/api/master/api-keys/${id}`),
 };
 
 export default api;

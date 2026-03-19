@@ -27,6 +27,9 @@ export default function LeasingPage() {
   const [filterType, setFilterType] = useState(null);
   const [filterTenantStatus, setFilterTenantStatus] = useState(null);
   const [filterProperty, setFilterProperty] = useState(null);
+  const [filterUnit, setFilterUnit] = useState(null);
+  const [units, setUnits] = useState([]);
+  const [unitsLoading, setUnitsLoading] = useState(false);
   const [filters, setFilters] = useState({});
 
   useEffect(() => {
@@ -42,6 +45,16 @@ export default function LeasingPage() {
       const res = await propertyApi.getAll();
       if (res.data.code === 200) setProperties(res.data.data || []);
     } catch (e) { /* ignore */ }
+  };
+
+  const loadUnits = async (propertyId) => {
+    if (!propertyId) { setUnits([]); return; }
+    setUnitsLoading(true);
+    try {
+      const res = await propertyApi.getUnits(propertyId);
+      if (res.data.code === 200) setUnits(res.data.data || []);
+    } catch (e) { setUnits([]); }
+    finally { setUnitsLoading(false); }
   };
 
   const loadLeases = async () => {
@@ -100,7 +113,7 @@ export default function LeasingPage() {
   };
 
   // Filter
-  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterProperty].filter(v => v !== null).length;
+  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterProperty, filterUnit].filter(v => v !== null).length;
 
   const applyFilters = () => {
     const f = {};
@@ -108,6 +121,7 @@ export default function LeasingPage() {
     if (filterType !== null) f.type = filterType;
     if (filterTenantStatus !== null) f.tenantStatus = filterTenantStatus;
     if (filterProperty !== null) f.propertyId = filterProperty;
+    if (filterUnit !== null) f.unitId = filterUnit;
     setFilters(f);
     setPagination(p => ({ ...p, current: 1 }));
     setFilterOpen(false);
@@ -118,6 +132,8 @@ export default function LeasingPage() {
     setFilterType(null);
     setFilterTenantStatus(null);
     setFilterProperty(null);
+    setFilterUnit(null);
+    setUnits([]);
     setFilters({});
     setPagination(p => ({ ...p, current: 1 }));
   };
@@ -162,13 +178,17 @@ export default function LeasingPage() {
 
       {/* Property & Units */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Property & Units</div>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Property</div>
         <Select
-          placeholder="All Property"
+          placeholder="All Properties"
           allowClear
           style={{ width: '100%' }}
           value={filterProperty}
-          onChange={(v) => setFilterProperty(v ?? null)}
+          onChange={(v) => {
+            setFilterProperty(v ?? null);
+            setFilterUnit(null);
+            if (v) { loadUnits(v); } else { setUnits([]); }
+          }}
           showSearch
           optionFilterProp="children"
         >
@@ -177,6 +197,27 @@ export default function LeasingPage() {
           ))}
         </Select>
       </div>
+
+      {filterProperty && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>Unit</div>
+          <Select
+            placeholder="All Units"
+            allowClear
+            style={{ width: '100%' }}
+            value={filterUnit}
+            onChange={(v) => setFilterUnit(v ?? null)}
+            showSearch
+            optionFilterProp="children"
+            loading={unitsLoading}
+            notFoundContent={unitsLoading ? 'Loading...' : 'No units'}
+          >
+            {units.map(u => (
+              <Select.Option key={u.id} value={u.id}>{u.name}</Select.Option>
+            ))}
+          </Select>
+        </div>
+      )}
 
       <Divider style={{ margin: '12px 0' }} />
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>

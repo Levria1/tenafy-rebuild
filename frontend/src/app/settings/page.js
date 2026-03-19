@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../components/Layout';
 import { settings, user, amenity, role, emailTemplate, smtpAccount } from '../../lib/api';
 import { useCallback } from 'react';
@@ -166,6 +166,7 @@ function SettingsPage() {
         <Table columns={paymentColumns} dataSource={paymentMethods} rowKey="id" loading={loading} pagination={false} />
       </Card>
     )},
+    { key: 'accounts', label: 'Accounts', children: <AccountSettings /> },
     { key: 'sequences', label: 'Sequences', children: <SequenceSettings /> },
   ];
 
@@ -199,15 +200,23 @@ function SettingsPage() {
     )}] : []),
   ];
 
+  const apiKeyTabs = [
+    { key: 'apiKeys', label: 'API Keys', children: <ApiKeySettings /> },
+  ];
+
   // Determine which group the active tab belongs to
   const accountKeys = ['personal', 'landlord'];
-  const accountingKeys = ['categories', 'payment', 'sequences'];
+  const accountingKeys = ['categories', 'payment', 'accounts', 'sequences'];
   const amenityKeys = ['amenities'];
   const emailKeys = ['emailTemplates', 'smtpAccounts', 'emailSettings'];
   const userKeys = ['users', 'roles'];
+  const apiKeyKeys = ['apiKeys'];
 
   let tabItems, pageTitle;
-  if (accountingKeys.includes(activeTab)) {
+  if (apiKeyKeys.includes(activeTab)) {
+    tabItems = apiKeyTabs;
+    pageTitle = 'API Keys';
+  } else if (accountingKeys.includes(activeTab)) {
     tabItems = accountingTabs;
     pageTitle = 'Accounting Settings';
   } else if (amenityKeys.includes(activeTab)) {
@@ -326,6 +335,135 @@ function LandlordSettings() {
         <Form.Item name="tax_number" label="Tax / Registration Number"><Input /></Form.Item>
         <Form.Item><Button type="primary" htmlType="submit" loading={loading}>Save Landlord Settings</Button></Form.Item>
       </Form>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Account Settings (Bank / Payment Accounts)
+// ---------------------------------------------------------------------------
+
+function AccountSettings() {
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+
+  const loadAccounts = async () => {
+    setLoading(true);
+    try {
+      const r = await settings.getAccountSettings();
+      if (r.data.code === 200) setAccounts(r.data.data || []);
+    } catch (err) {
+      console.error('Load accounts error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadAccounts(); }, []);
+
+  const handleAdd = async (values) => {
+    try {
+      await settings.createAccountSetting(values);
+      message.success('Account created');
+      loadAccounts();
+    } catch (err) {
+      message.error('Failed to create account');
+    }
+  };
+
+  const handleEdit = (record) => {
+    setEditingId(record.id);
+    setEditName(record.name);
+  };
+
+  const handleEditSave = async () => {
+    if (!editName.trim()) { message.warning('Name cannot be empty'); return; }
+    try {
+      await settings.updateAccountSetting(editingId, { name: editName.trim() });
+      message.success('Account updated');
+      setEditingId(null);
+      setEditName('');
+      loadAccounts();
+    } catch (err) {
+      message.error('Failed to update account');
+    }
+  };
+
+  const handleEditCancel = () => {
+    setEditingId(null);
+    setEditName('');
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await settings.deleteAccountSetting(id);
+      message.success('Account deleted');
+      loadAccounts();
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to delete account');
+    }
+  };
+
+  const columns = [
+    {
+      title: 'Account Name', dataIndex: 'name', key: 'name',
+      render: (val, r) => {
+        if (String(r.id) === String(editingId)) {
+          return (
+            <Input
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onPressEnter={handleEditSave}
+              style={{ width: 250 }}
+              autoFocus
+            />
+          );
+        }
+        return val;
+      },
+    },
+    {
+      title: 'Actions', key: 'actions', width: 200,
+      render: (_, r) => {
+        if (String(r.id) === String(editingId)) {
+          return (
+            <Space>
+              <Button type="link" style={{ padding: 0 }} onClick={handleEditSave}>Save</Button>
+              <Button type="link" style={{ padding: 0 }} onClick={handleEditCancel}>Cancel</Button>
+            </Space>
+          );
+        }
+        return (
+          <Space>
+            <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
+            <Popconfirm title="Delete this account?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
+            </Popconfirm>
+          </Space>
+        );
+      },
+    },
+  ];
+
+  return (
+    <Card>
+      <h3 style={{ marginBottom: 4 }}>Accounts</h3>
+      <p style={{ color: '#666', marginBottom: 16, fontSize: 13 }}>
+        Manage bank and payment accounts used for accounting transactions.
+      </p>
+      <div style={{ marginBottom: 16 }}>
+        <Form layout="inline" onFinish={handleAdd}>
+          <Form.Item name="name" rules={[{ required: true, message: 'Enter account name' }]}>
+            <Input placeholder="Account name" style={{ width: 250 }} />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />}>Add Account</Button>
+          </Form.Item>
+        </Form>
+      </div>
+      <Table columns={columns} dataSource={accounts} rowKey="id" loading={loading} pagination={false} size="middle" />
     </Card>
   );
 }
@@ -739,6 +877,231 @@ function SmtpAccountSettings() {
           </Row>
         </Form>
       </Modal>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// API Key Settings (Super Admin only)
+// ---------------------------------------------------------------------------
+
+function ApiKeySettings() {
+  const [keys, setKeys] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [apiEnabled, setApiEnabled] = useState(false);
+  const [checkingEnabled, setCheckingEnabled] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+  const [newKey, setNewKey] = useState(null);
+
+  useEffect(() => {
+    checkEnabled();
+  }, []);
+
+  const checkEnabled = async () => {
+    setCheckingEnabled(true);
+    try {
+      const r = await settings.checkApiEnabled();
+      if (r.data.code === 200) {
+        setApiEnabled(r.data.data.enabled);
+        if (r.data.data.enabled) loadKeys();
+        else setLoading(false);
+      }
+    } catch (err) {
+      console.error('Check API enabled error:', err);
+      setLoading(false);
+    } finally {
+      setCheckingEnabled(false);
+    }
+  };
+
+  const loadKeys = async () => {
+    setLoading(true);
+    try {
+      const r = await settings.getApiKeys();
+      if (r.data.code === 200) setKeys(r.data.data || []);
+    } catch (err) {
+      console.error('Load API keys error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    try {
+      const values = await form.validateFields();
+      setSaving(true);
+      const r = await settings.createApiKey(values);
+      if (r.data.code === 200) {
+        setNewKey(r.data.data.api_key);
+        message.success('API key created');
+        setModalOpen(false);
+        form.resetFields();
+        loadKeys();
+      }
+    } catch (err) {
+      if (err.errorFields) return;
+      message.error(err.response?.data?.message || 'Failed to create API key');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleStatus = async (record) => {
+    const newStatus = Number(record.status) === 1 ? 0 : 1;
+    try {
+      await settings.updateApiKey(record.id, { status: newStatus });
+      message.success(`API key ${newStatus === 1 ? 'enabled' : 'disabled'}`);
+      loadKeys();
+    } catch (err) {
+      message.error('Failed to update');
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await settings.deleteApiKey(id);
+      message.success('API key deleted');
+      loadKeys();
+    } catch (err) {
+      message.error('Failed to delete');
+    }
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text).then(() => message.success('Copied to clipboard'));
+  };
+
+  if (checkingEnabled) return <Card loading />;
+
+  if (!apiEnabled) {
+    return (
+      <Card>
+        <div style={{ textAlign: 'center', padding: '40px 0' }}>
+          <KeyOutlined style={{ fontSize: 48, color: '#d9d9d9', marginBottom: 16 }} />
+          <h3 style={{ color: '#999' }}>Public API Not Enabled</h3>
+          <p style={{ color: '#999' }}>
+            The Public API has not been enabled for your organization. Please contact the master administrator to enable it.
+          </p>
+        </div>
+      </Card>
+    );
+  }
+
+  const columns = [
+    { title: 'Name', dataIndex: 'name', key: 'name' },
+    {
+      title: 'API Key', dataIndex: 'api_key', key: 'api_key',
+      render: (v) => (
+        <Space>
+          <code style={{ fontSize: 12 }}>{v.substring(0, 12)}...{v.substring(v.length - 6)}</code>
+          <Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copyToClipboard(v)} />
+        </Space>
+      ),
+    },
+    {
+      title: 'Status', dataIndex: 'status', key: 'status',
+      render: (status, record) => (
+        <Switch
+          checked={Number(status) === 1}
+          checkedChildren="Active"
+          unCheckedChildren="Disabled"
+          onChange={() => handleToggleStatus(record)}
+          size="small"
+        />
+      ),
+    },
+    {
+      title: 'Last Used', dataIndex: 'last_used_at', key: 'last_used_at',
+      render: (v) => v ? new Date(v).toLocaleDateString() : 'Never',
+    },
+    {
+      title: 'Created', dataIndex: 'created_at', key: 'created_at',
+      render: (v) => v ? new Date(v).toLocaleDateString() : '-',
+    },
+    {
+      title: 'Actions', key: 'actions', width: 80,
+      render: (_, r) => (
+        <Popconfirm title="Delete this API key?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+          <Button type="link" danger style={{ padding: 0 }}>Delete</Button>
+        </Popconfirm>
+      ),
+    },
+  ];
+
+  return (
+    <>
+      <Card>
+        <h3 style={{ marginBottom: 4 }}>API Keys</h3>
+        <p style={{ color: '#666', marginBottom: 16, fontSize: 13 }}>
+          Manage API keys for external integrations. Use these keys to access your organization&apos;s public data via the API.
+        </p>
+        <div style={{ marginBottom: 16 }}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setModalOpen(true); }}>
+            Create API Key
+          </Button>
+        </div>
+        <Table columns={columns} dataSource={keys} rowKey="id" loading={loading} pagination={false} size="middle" />
+      </Card>
+
+      {/* New key reveal */}
+      <Modal
+        title="API Key Created"
+        open={!!newKey}
+        onCancel={() => setNewKey(null)}
+        footer={[
+          <Button key="copy" type="primary" icon={<CopyOutlined />} onClick={() => { copyToClipboard(newKey); setNewKey(null); }}>
+            Copy & Close
+          </Button>,
+        ]}
+      >
+        <p style={{ marginBottom: 8 }}>Your new API key has been created. <strong>Copy it now</strong> &mdash; you won&apos;t be able to see the full key again.</p>
+        <Input.TextArea
+          value={newKey}
+          readOnly
+          rows={2}
+          style={{ fontFamily: 'monospace', fontSize: 13 }}
+        />
+      </Modal>
+
+      {/* Create modal */}
+      <Modal
+        title="Create API Key"
+        open={modalOpen}
+        onCancel={() => setModalOpen(false)}
+        footer={[
+          <Button key="cancel" onClick={() => setModalOpen(false)}>Cancel</Button>,
+          <Button key="create" type="primary" onClick={handleCreate} loading={saving}>Create</Button>,
+        ]}
+      >
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="name" label="Key Name" rules={[{ required: true, message: 'Please enter a name for this key' }]}>
+            <Input placeholder="e.g. Vacancy Scraper, Partner Integration" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Card style={{ marginTop: 16 }}>
+        <h4 style={{ marginBottom: 8 }}>API Usage</h4>
+        <p style={{ color: '#666', fontSize: 13, marginBottom: 12 }}>
+          Use the <code>X-API-Key</code> header with your key to access the public endpoints:
+        </p>
+        <pre style={{ background: '#f5f5f5', padding: 16, borderRadius: 6, fontSize: 12, overflow: 'auto' }}>
+{`# Get available units (defaults to today)
+GET /api/public/units/available
+X-API-Key: pk_your_key_here
+
+# Get available units on a specific date
+GET /api/public/units/available?date=2026-04-01
+
+# Filter by property
+GET /api/public/units/available?propertyId=123&date=2026-04-01
+
+# Get properties with vacancy counts
+GET /api/public/properties`}
+        </pre>
+      </Card>
     </>
   );
 }

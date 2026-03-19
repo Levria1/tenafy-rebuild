@@ -4,14 +4,14 @@ import { Suspense, useEffect, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Input, Button, Space, Avatar, Empty, Spin, Pagination, Badge,
-  Typography, Tooltip, Popover, Radio, Select, message,
+  Typography, Tooltip, Popover, Popconfirm, Radio, Select, message,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, UserOutlined, MailOutlined,
   FileTextOutlined, DollarOutlined, ProfileOutlined, FilterOutlined,
-  SendOutlined,
+  SendOutlined, DeleteOutlined,
 } from '@ant-design/icons';
-import MainLayout from '../../../components/Layout';
+import MainLayout, { useAuth } from '../../../components/Layout';
 import { tenant, property } from '../../../lib/api';
 
 const { Text, Title } = Typography;
@@ -19,7 +19,7 @@ const { Text, Title } = Typography;
 // ---------------------------------------------------------------------------
 // Tenant row component matching the original Tenafy layout
 // ---------------------------------------------------------------------------
-function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
+function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile, onDelete, canDelete }) {
   const hasLease = data.has_active_lease === 1 || data.has_active_lease === true;
 
   return (
@@ -92,6 +92,11 @@ function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
         <Button size="small" onClick={onEmail}>Email</Button>
         <Button size="small" onClick={onInvoice}>+ Invoice</Button>
         <Button size="small" onClick={onInvite}>Invite</Button>
+        {canDelete && (
+          <Popconfirm title="Are you sure you want to delete this contact?" onConfirm={onDelete} okText="Yes" cancelText="No">
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        )}
       </Space>
 
       {/* Profile arrow */}
@@ -111,6 +116,8 @@ export default function TenantsPageWrapper() {
 }
 
 function TenantsPage() {
+  const { hasPermission } = useAuth();
+  const canDelete = hasPermission ? hasPermission('LANDLORD/TENANT_DELETE') : false;
   const router = useRouter();
   const searchParams = useSearchParams();
   const propertyIdParam = searchParams.get('propertyId');
@@ -192,6 +199,20 @@ function TenantsPage() {
 
   const handleProfile = (t) => {
     router.push(`/contacts/tenant/${t.id}/detail`);
+  };
+
+  const handleDelete = async (t) => {
+    try {
+      const res = await tenant.delete(t.id);
+      if (res.data.code === 200) {
+        message.success('Contact deleted');
+        loadData(pagination.current);
+      } else {
+        message.error(res.data.message || 'Failed to delete contact');
+      }
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to delete contact');
+    }
   };
 
   const handleEmailAll = () => {
@@ -326,6 +347,8 @@ function TenantsPage() {
                 onInvoice={() => handleInvoice(t)}
                 onInvite={() => handleInvite(t)}
                 onProfile={() => handleProfile(t)}
+                onDelete={() => handleDelete(t)}
+                canDelete={canDelete}
               />
             ))}
             {pagination.total > pagination.pageSize && (

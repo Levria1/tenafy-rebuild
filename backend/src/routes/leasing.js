@@ -56,7 +56,7 @@ function advanceInvoiceDate(date, schedule, dueDay) {
 router.post('/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status, startDate, endDate, type, tenantStatus, propertyId, sortField, sortOrder } = req.body || {};
+    const { search, status, startDate, endDate, type, tenantStatus, propertyId, unitId, sortField, sortOrder } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
@@ -84,6 +84,10 @@ router.post('/list', authenticate, async (req, res) => {
     if (propertyId) {
       whereClause += ' AND (p.id = ? OR u.property_id = ?)';
       params.push(propertyId, propertyId);
+    }
+    if (unitId) {
+      whereClause += ' AND l.unit_id = ?';
+      params.push(unitId);
     }
     if (startDate) {
       whereClause += ' AND l.start_date >= ?';

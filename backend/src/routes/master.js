@@ -76,7 +76,7 @@ router.get('/organizations', authenticateMaster, async (req, res) => {
   try {
     const masterPool = getMasterPool();
     const [orgs] = await masterPool.execute(
-      'SELECT id, display_name, db_name, status, created_at, updated_at FROM organizations ORDER BY created_at DESC'
+      'SELECT id, display_name, db_name, status, public_api_enabled, created_at, updated_at FROM organizations ORDER BY created_at DESC'
     );
     res.json({ code: 200, data: orgs });
   } catch (error) {
@@ -134,6 +134,7 @@ router.put('/organizations/:id', authenticateMaster, async (req, res) => {
     const params = [];
     if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name); }
     if (status !== undefined) { updates.push('status = ?'); params.push(status); }
+    if (req.body.public_api_enabled !== undefined) { updates.push('public_api_enabled = ?'); params.push(req.body.public_api_enabled ? 1 : 0); }
 
     if (!updates.length) return res.status(400).json({ code: 400, message: 'Nothing to update' });
 
@@ -169,6 +170,96 @@ router.get('/organizations/:id/stats', authenticateMaster, async (req, res) => {
     });
   } catch (error) {
     console.error('Org stats error:', error);
+    res.status(500).json({ code: 500, message: 'Server error' });
+  }
+});
+
+// ─── API Key Management ─────────────────────────────────
+
+const crypto = require('crypto');
+
+// GET /api/master/api-keys - List all API keys (with org name)
+router.get('/api-keys', authenticateMaster, async (req, res) => {
+  try {
+    const masterPool = getMasterPool();
+    const [keys] = await masterPool.execute(
+      `SELECT k.id, k.org_id, k.api_key, k.name, k.status, k.created_at, k.last_used_at,
+              o.display_name AS org_name
+       FROM api_keys k
+       LEFT JOIN organizations o ON k.org_id = o.id
+       ORDER BY k.created_at DESC`
+    );
+    res.json({ code: 200, data: keys });
+  } catch (error) {
+    console.error('List API keys error:', error);
+    res.status(500).json({ code: 500, message: 'Server error' });
+  }
+});
+
+// POST /api/master/api-keys - Create a new API key
+router.post('/api-keys', authenticateMaster, async (req, res) => {
+  try {
+    const { org_id, name } = req.body;
+    if (!org_id) {
+      return res.status(400).json({ code: 400, message: 'org_id is required' });
+    }
+
+    const masterPool = getMasterPool();
+
+    // Verify org exists
+    const [orgs] = await masterPool.execute('SELECT id FROM organizations WHERE id = ?', [org_id]);
+    if (!orgs.length) {
+      return res.status(404).json({ code: 404, message: 'Organization not found' });
+    }
+
+    const id = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+    const apiKey = 'pk_' + crypto.randomBytes(32).toString('hex');
+
+    await masterPool.execute(
+      'INSERT INTO api_keys (id, org_id, api_key, name, status, created_at) VALUES (?, ?, ?, ?, 1, NOW())',
+      [id, org_id, apiKey, name || 'Default']
+    );
+
+    res.json({ code: 200, data: { id, api_key: apiKey, name: name || 'Default' } });
+  } catch (error) {
+    console.error('Create API key error:', error);
+    res.status(500).json({ code: 500, message: 'Server error' });
+  }
+});
+
+// PUT /api/master/api-keys/:id - Update API key (name, status)
+router.put('/api-keys/:id', authenticateMaster, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, status } = req.body;
+    const masterPool = getMasterPool();
+
+    const updates = [];
+    const params = [];
+    if (name !== undefined) { updates.push('name = ?'); params.push(name); }
+    if (status !== undefined) { updates.push('status = ?'); params.push(status); }
+
+    if (!updates.length) return res.status(400).json({ code: 400, message: 'Nothing to update' });
+
+    params.push(id);
+    await masterPool.execute(`UPDATE api_keys SET ${updates.join(', ')} WHERE id = ?`, params);
+
+    res.json({ code: 200, message: 'API key updated' });
+  } catch (error) {
+    console.error('Update API key error:', error);
+    res.status(500).json({ code: 500, message: 'Server error' });
+  }
+});
+
+// DELETE /api/master/api-keys/:id - Delete API key
+router.delete('/api-keys/:id', authenticateMaster, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const masterPool = getMasterPool();
+    await masterPool.execute('DELETE FROM api_keys WHERE id = ?', [id]);
+    res.json({ code: 200, message: 'API key deleted' });
+  } catch (error) {
+    console.error('Delete API key error:', error);
     res.status(500).json({ code: 500, message: 'Server error' });
   }
 });
