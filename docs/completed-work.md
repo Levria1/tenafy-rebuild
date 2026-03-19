@@ -286,3 +286,12 @@ Core project setup: Express backend with JWT auth, Next.js 14 frontend, MySQL da
 
 ### Known Bug (Not Yet Fixed)
 - Recurring lease invoice generation fails when `first_invoice_date` > `end_date` — the loop breaks before creating any rent invoices
+
+---
+
+## Session: 2026-03-19 (continued)
+
+### Contact Delete — Move to Profile & Fix Soft-Delete
+- Removed delete button from tenant list page (`contacts/tenants/page.js`) — cleaned up unused imports (Popconfirm, DeleteOutlined, useAuth, canDelete, handleDelete)
+- Added "Delete" option to Actions dropdown on tenant profile page (`contacts/tenant/[id]/detail/page.js`) — gated by `LANDLORD/TENANT_DELETE` permission, shows Modal.confirm, redirects to tenant list on success
+- Fixed tenant soft-delete not hiding deleted contacts: backend `POST /contacts` now excludes `status = 0` tenants by default (`tenant.js` — added `AND t.status != 0` fallback when no tenantStatus filter is applied)

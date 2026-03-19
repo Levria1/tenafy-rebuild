@@ -4,15 +4,15 @@ import { Suspense, useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import {
   Button, Space, Tag, Table, message, Spin, Empty, Dropdown, Tooltip,
-  Typography, Statistic, Row, Col, Divider, Avatar, Drawer, Descriptions,
+  Typography, Statistic, Row, Col, Divider, Avatar, Drawer, Descriptions, Modal,
 } from 'antd';
 import {
   EditOutlined, UserOutlined, MailOutlined,
   FileTextOutlined, DollarOutlined, PrinterOutlined,
-  DownOutlined, EyeOutlined,
+  DownOutlined, EyeOutlined, DeleteOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import MainLayout from '../../../../../components/Layout';
+import MainLayout, { useAuth } from '../../../../../components/Layout';
 import { tenant, invoice } from '../../../../../lib/api';
 
 const { Text } = Typography;
@@ -61,6 +61,8 @@ export default function TenantDetailPageWrapper() {
 }
 
 function TenantDetailPage() {
+  const { hasPermission } = useAuth();
+  const canDelete = hasPermission ? hasPermission('LANDLORD/TENANT_DELETE') : false;
   const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();
@@ -171,18 +173,45 @@ function TenantDetailPage() {
   const hasActiveLease = leases.some(l => l.status === 1);
   const fmt = (v) => v != null ? `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : '—';
 
+  const handleDeleteTenant = () => {
+    Modal.confirm({
+      title: 'Delete Contact',
+      content: 'Are you sure you want to delete this contact?',
+      okText: 'Delete',
+      okType: 'danger',
+      onOk: async () => {
+        try {
+          const res = await tenant.delete(tenantId);
+          if (res.data.code === 200) {
+            message.success('Contact deleted');
+            router.push('/contacts/tenants');
+          } else {
+            message.error(res.data.message || 'Failed to delete contact');
+          }
+        } catch (err) {
+          message.error(err.response?.data?.message || 'Failed to delete contact');
+        }
+      },
+    });
+  };
+
+  const actionsMenuItems = [
+    { key: 'edit', label: 'Edit Tenant', icon: <EditOutlined /> },
+    { key: 'email', label: 'Send Email', icon: <MailOutlined /> },
+    { key: 'invoice', label: 'Create Invoice', icon: <FileTextOutlined /> },
+    ...(canDelete ? [{ key: 'delete', label: 'Delete', icon: <DeleteOutlined />, danger: true }] : []),
+  ];
+
   const actionsMenu = {
-    items: [
-      { key: 'edit', label: 'Edit Tenant', icon: <EditOutlined /> },
-      { key: 'email', label: 'Send Email', icon: <MailOutlined /> },
-      { key: 'invoice', label: 'Create Invoice', icon: <FileTextOutlined /> },
-    ],
+    items: actionsMenuItems,
     onClick: ({ key }) => {
       if (key === 'edit') router.push(`/contacts/tenant/${tenantId}/edit`);
       else if (key === 'email') {
         router.push(`/contacts/email/send?category=tenant&id=${tenantId}`);
       } else if (key === 'invoice') {
         router.push(`/invoices/create?tenantId=${tenantId}&tenantName=${encodeURIComponent((tenantData?.first_name || '') + ' ' + (tenantData?.last_name || ''))}`);
+      } else if (key === 'delete') {
+        handleDeleteTenant();
       }
     },
   };

@@ -25,10 +25,14 @@ router.post('/contacts', authenticate, async (req, res) => {
     }
 
     // Tenant Status: active = status 1, inactive = status 0
+    // By default exclude deleted/inactive (status=0) tenants
     if (tenantStatus === 'active') {
       whereClause += ' AND t.status = 1';
     } else if (tenantStatus === 'inactive') {
       whereClause += ' AND t.status = 0';
+    } else {
+      // Default: show only active tenants (exclude soft-deleted)
+      whereClause += ' AND t.status != 0';
     }
 
     // Lease Status: 'active' = has active lease, 'inactive' = no active lease
