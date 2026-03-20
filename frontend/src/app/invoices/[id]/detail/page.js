@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Row, Col, Statistic, Divider } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, DollarOutlined } from '@ant-design/icons';
-import MainLayout from '../../../../components/Layout';
+import MainLayout, { useAuth } from '../../../../components/Layout';
 import { invoice, pdf } from '../../../../lib/api';
 
 const STATUS_MAP = {
@@ -21,6 +21,8 @@ export default function InvoiceDetailPage() {
   const [loading, setLoading] = useState(true);
   const router = useRouter();
   const params = useParams();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/INVOICE_EDIT') : false;
   const invoiceId = params.id;
 
   useEffect(() => {
@@ -59,7 +61,7 @@ export default function InvoiceDetailPage() {
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/invoices')}>Back to Invoices</Button>
           <Space>
             <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.invoiceUrl(invoiceId), '_blank')}>View PDF</Button>
-            <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/invoices/${invoiceId}/edit`)}>Edit Invoice</Button>
+            {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/invoices/${invoiceId}/edit`)}>Edit Invoice</Button>}
           </Space>
         </div>
 

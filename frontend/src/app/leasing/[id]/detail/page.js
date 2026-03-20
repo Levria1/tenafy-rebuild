@@ -5,7 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import MainLayout from '../../../../components/Layout';
+import MainLayout, { useAuth } from '../../../../components/Layout';
 import { leasing, pdf } from '../../../../lib/api';
 
 const LEASE_TYPE_MAP = { 0: 'Fixed', 1: 'Month-to-Month' };
@@ -23,6 +23,8 @@ export default function LeasingDetailPage() {
   const [loading, setLoading] = useState(true);
   const router = useRouter();
   const params = useParams();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/LEASING_EDIT') : false;
   const leaseId = params.id;
 
   useEffect(() => {
@@ -125,7 +127,7 @@ export default function LeasingDetailPage() {
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/leasing')}>Back to Leases</Button>
           <Space>
             <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.leaseUrl(leaseId), '_blank')}>View PDF</Button>
-            <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/leasing/${leaseId}/edit`)}>Edit Lease</Button>
+            {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/leasing/${leaseId}/edit`)}>Edit Lease</Button>}
           </Space>
         </div>
         <Card title={`Lease ${leaseTitle}`} loading={loading}>

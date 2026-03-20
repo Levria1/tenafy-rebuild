@@ -168,11 +168,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     const [roles] = await req.pool.execute(
-      `SELECT r.*, GROUP_CONCAT(rp.permission_code) as permissions
-       FROM role r
-       LEFT JOIN role_permission rp ON r.id = rp.role_id
-       WHERE r.id = ? AND r.org_id = ?
-       GROUP BY r.id`,
+      'SELECT * FROM role WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
 
@@ -181,7 +177,13 @@ router.get('/:id', authenticate, async (req, res) => {
     }
 
     const role = roles[0];
-    role.permissions = role.permissions ? role.permissions.split(',') : [];
+
+    // Fetch permissions separately to avoid GROUP_CONCAT truncation
+    const [permRows] = await req.pool.execute(
+      'SELECT permission_code FROM role_permission WHERE role_id = ?',
+      [id]
+    );
+    role.permissions = permRows.map(r => r.permission_code);
 
     res.json({ code: 200, data: role });
   } catch (error) {

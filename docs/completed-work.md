@@ -4,6 +4,16 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Permission Guards, Role Checkbox Fix, SQL Fixes, File Preview Fix
+
+- **Frontend permission guards**: Added `hasPermission()` checks to hide/show Edit and Delete buttons across 12+ pages based on role permissions. Pattern: `const canEdit = hasPermission ? hasPermission('LANDLORD/ENTITY_EDIT') : false` → `{canEdit && <Button>}`. Applied to: leasing, services, contacts (tenant, payee, service-vendor), property, unit, maintenance, invoices, email groups, settings (roles, users).
+- **Role edit/create page**: Refactored broken `Checkbox.Group` implementation to custom `PermissionCheckboxes` component with fully controlled checkboxes. Fixed group header checkboxes that were toggling all groups instead of just their own children. Uses `checked`/`onChange` per checkbox instead of `Checkbox.Group`.
+- **Tenant list SQL fix** (`tenant.js`): Fixed `ONLY_FULL_GROUP_BY` error on `POST /api/tenant/contacts`. Wrapped non-grouped joined columns with `MAX()`/`ANY_VALUE()`. Fixed count query from `COUNT(*) ... GROUP BY t.id` (returned one row per tenant) to `COUNT(DISTINCT t.id)` (single total). Added `deleted_at IS NULL` to invoice outstanding subquery.
+- **Unit list SQL fix** (`property.js`): Fixed same `ONLY_FULL_GROUP_BY` error on `GET /api/property/:id/unit`. Replaced `LEFT JOIN leasing + LEFT JOIN tenant + GROUP BY` with a `ROW_NUMBER()` subquery to get the most recent active tenant per unit without GROUP BY issues.
+- **File preview/download fix** (`file.js`): Preview and download routes were crashing with 500 because `req.pool` is undefined on unauthenticated routes (set by auth middleware). Added `getPoolFromRequest()` helper that tries JWT cookie first, then falls back to first active org from master DB.
+
+---
+
 ## Session: Invoice Delete + Admin Seed Script
 **Commit**: `834acd6` — Add invoice delete with cascade soft delete and admin seed script
 

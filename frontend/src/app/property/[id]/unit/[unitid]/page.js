@@ -11,7 +11,7 @@ import {
   EditOutlined, ArrowLeftOutlined, UserOutlined, CloseOutlined, CheckOutlined,
   PlusOutlined, DeleteOutlined, SearchOutlined, MailOutlined, FilterOutlined,
 } from '@ant-design/icons';
-import MainLayout from '../../../../../components/Layout';
+import MainLayout, { useAuth } from '../../../../../components/Layout';
 import { property as propertyApi, service as serviceApi } from '../../../../../lib/api';
 
 const { Text, Title } = Typography;
@@ -176,6 +176,9 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
 // FURNISHING TAB
 // ===========================
 function FurnishingTab({ unitId }) {
+  const { hasPermission } = useAuth();
+  const canEditProp = hasPermission ? hasPermission('LANDLORD/PROPERTY_EDIT') : false;
+  const canDeleteProp = hasPermission ? hasPermission('LANDLORD/PROPERTY_DELETE') : false;
   const [items, setItems] = useState([]);
   const [totalSum, setTotalSum] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -277,10 +280,10 @@ function FurnishingTab({ unitId }) {
         </Space>
       ) : (
         <Space>
-          <Button type="link" size="small" onClick={() => handleEdit(r)}>Edit</Button>
-          <Popconfirm title="Delete this item?" onConfirm={() => handleDelete(r.id)}>
+          {canEditProp && <Button type="link" size="small" onClick={() => handleEdit(r)}>Edit</Button>}
+          {canDeleteProp && <Popconfirm title="Delete this item?" onConfirm={() => handleDelete(r.id)}>
             <Button type="link" size="small" danger>Delete</Button>
-          </Popconfirm>
+          </Popconfirm>}
         </Space>
       ),
     },
@@ -639,6 +642,8 @@ function ServiceCostTab({ unitId }) {
 // MAIN UNIT DETAIL PAGE
 // ===========================
 export default function UnitDetailPage() {
+  const { hasPermission } = useAuth();
+  const canEditUnit = hasPermission ? hasPermission('LANDLORD/UNIT_EDIT') : false;
   const [unit, setUnit] = useState(null);
   const [propertyInfo, setPropertyInfo] = useState(null);
   const [amenities, setAmenities] = useState([]);
@@ -705,9 +710,9 @@ export default function UnitDetailPage() {
         <Title level={4} style={{ margin: 0 }}>General Information</Title>
         <Space>
           <Button onClick={() => router.push(`/property/${propertyId}`)}>Close</Button>
-          <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/property/${propertyId}/unit/${unitId}/edit`)}>
+          {canEditUnit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/property/${propertyId}/unit/${unitId}/edit`)}>
             Edit
-          </Button>
+          </Button>}
         </Space>
       </div>
 

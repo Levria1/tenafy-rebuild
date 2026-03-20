@@ -6,6 +6,62 @@ import { ArrowLeftOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../components/Layout';
 import { role } from '../../../../../lib/api';
 
+function PermissionCheckboxes({ value = [], onChange, permissionGroups, leftGroups, rightGroups }) {
+  const selected = value || [];
+
+  const toggle = (key) => {
+    const next = selected.includes(key) ? selected.filter(k => k !== key) : [...selected, key];
+    onChange(next);
+  };
+
+  const toggleGroup = (groupName, checked) => {
+    const groupPerms = permissionGroups[groupName].map(p => p.key);
+    let next;
+    if (checked) {
+      next = [...new Set([...selected, ...groupPerms])];
+    } else {
+      next = selected.filter(p => !groupPerms.includes(p));
+    }
+    onChange(next);
+  };
+
+  const renderGroups = (groups) => groups.map(groupName => {
+    const groupPerms = permissionGroups[groupName].map(p => p.key);
+    const allChecked = groupPerms.length > 0 && groupPerms.every(p => selected.includes(p));
+    const someChecked = !allChecked && groupPerms.some(p => selected.includes(p));
+
+    return (
+      <div key={groupName} style={{ marginBottom: 12 }}>
+        <Checkbox
+          checked={allChecked}
+          indeterminate={someChecked}
+          onChange={(e) => toggleGroup(groupName, e.target.checked)}
+          style={{ fontWeight: 600, fontSize: 13 }}
+        >
+          {groupName}
+        </Checkbox>
+        {permissionGroups[groupName].map(p => (
+          <div key={p.key} style={{ marginLeft: 24, marginTop: 2 }}>
+            <Checkbox
+              checked={selected.includes(p.key)}
+              onChange={() => toggle(p.key)}
+            >
+              {p.label}
+            </Checkbox>
+          </div>
+        ))}
+      </div>
+    );
+  });
+
+  return (
+    <Row gutter={24}>
+      <Col span={12}>{renderGroups(leftGroups)}</Col>
+      <Col span={12}>{renderGroups(rightGroups)}</Col>
+    </Row>
+  );
+}
+
 export default function EditRolePage() {
   const router = useRouter();
   const params = useParams();
@@ -62,31 +118,6 @@ export default function EditRolePage() {
   const leftGroups = groupNames.slice(0, midpoint);
   const rightGroups = groupNames.slice(midpoint);
 
-  const renderGroups = (groups) => groups.map(groupName => (
-    <div key={groupName} style={{ marginBottom: 12 }}>
-      <Checkbox
-        onChange={(e) => {
-          const groupPerms = permissionGroups[groupName].map(p => p.key);
-          const current = form.getFieldValue('permissions') || [];
-          if (e.target.checked) {
-            const merged = [...new Set([...current, ...groupPerms])];
-            form.setFieldsValue({ permissions: merged });
-          } else {
-            form.setFieldsValue({ permissions: current.filter(p => !groupPerms.includes(p)) });
-          }
-        }}
-        style={{ fontWeight: 600, fontSize: 13 }}
-      >
-        {groupName}
-      </Checkbox>
-      {permissionGroups[groupName].map(p => (
-        <div key={p.key} style={{ marginLeft: 24, marginTop: 2 }}>
-          <Checkbox value={p.key}>{p.label}</Checkbox>
-        </div>
-      ))}
-    </div>
-  ));
-
   return (
     <MainLayout>
       <Space direction="vertical" style={{ width: '100%' }}>
@@ -110,17 +141,9 @@ export default function EditRolePage() {
               <Input.TextArea rows={3} placeholder="Please input description" />
             </Form.Item>
             <div style={{ marginBottom: 8, fontWeight: 600, color: '#d4380d' }}>* Permissions</div>
-            <Form.Item name="permissions">
-              <Checkbox.Group style={{ width: '100%' }}>
-                <Row gutter={24}>
-                  <Col span={12}>
-                    {renderGroups(leftGroups)}
-                  </Col>
-                  <Col span={12}>
-                    {renderGroups(rightGroups)}
-                  </Col>
-                </Row>
-              </Checkbox.Group>
+            <Form.Item name="permissions" valuePropName="value" trigger="onChange"
+              getValueFromEvent={(val) => val}>
+              <PermissionCheckboxes permissionGroups={permissionGroups} leftGroups={leftGroups} rightGroups={rightGroups} />
             </Form.Item>
             <Form.Item>
               <Space>

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message } from 'antd';
 import { EditOutlined, ArrowLeftOutlined } from '@ant-design/icons';
-import MainLayout from '../../../../../components/Layout';
+import MainLayout, { useAuth } from '../../../../../components/Layout';
 import { contact, accounting } from '../../../../../lib/api';
 
 export default function PayeeDetailPage() {
@@ -14,6 +14,8 @@ export default function PayeeDetailPage() {
   const [loading, setLoading] = useState(true);
   const router = useRouter();
   const params = useParams();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/PAYEE_EDIT') : false;
   const payeeId = params.id;
 
   useEffect(() => {
@@ -93,7 +95,7 @@ export default function PayeeDetailPage() {
       <Space direction="vertical" style={{ width: '100%' }} size="large">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/contacts')}>Back to Contacts</Button>
-          <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/contacts/payee/${payeeId}/edit`)}>Edit Payee</Button>
+          {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/contacts/payee/${payeeId}/edit`)}>Edit Payee</Button>}
         </div>
         <Card title={payee?.name || 'Payee Details'} loading={loading}>
           {payee && <Tabs items={tabItems} />}

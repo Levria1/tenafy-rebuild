@@ -34,81 +34,105 @@ const { Text } = Typography;
 export const AuthContext = createContext(null);
 
 // Build menu items dynamically based on permissions
-function buildMenuItems(hasPermission) {
-  const items = [
-    {
-      key: '/dashboard',
-      icon: <DashboardOutlined />,
-      label: <Link href="/dashboard">Dashboard</Link>,
-    },
-    {
+function buildMenuItems(hasPermission, isSuperAdmin) {
+  const items = [];
+
+  // Dashboard — always visible to all authenticated users
+  items.push({
+    key: '/dashboard',
+    icon: <DashboardOutlined />,
+    label: <Link href="/dashboard">Dashboard</Link>,
+  });
+
+  // Properties
+  if (hasPermission('LANDLORD/PROPERTY_LIST')) {
+    items.push({
       key: '/property',
       icon: <HomeOutlined />,
       label: <Link href="/property">Properties</Link>,
-    },
-    {
+    });
+  }
+
+  // Contacts — show parent only if user can see at least one child
+  const contactChildren = [];
+  if (hasPermission('LANDLORD/TENANT_LIST')) contactChildren.push({ key: '/contacts/tenants', label: <Link href="/contacts/tenants">Tenants</Link> });
+  if (hasPermission('LANDLORD/EMAIL_GROUP_LIST')) contactChildren.push({ key: '/contacts/groups', label: <Link href="/contacts/groups">Groups</Link> });
+  if (hasPermission('LANDLORD/PAYEE_LIST')) contactChildren.push({ key: '/contacts/payees', label: <Link href="/contacts/payees">Payees</Link> });
+  if (hasPermission('LANDLORD/SERVICE_VENDOR_LIST')) contactChildren.push({ key: '/contacts/service-vendors', label: <Link href="/contacts/service-vendors">Service Vendors</Link> });
+  if (contactChildren.length > 0) {
+    items.push({
       key: '/contacts',
       icon: <TeamOutlined />,
       label: 'Contacts',
-      children: [
-        { key: '/contacts/tenants', label: <Link href="/contacts/tenants">Tenants</Link> },
-        { key: '/contacts/groups', label: <Link href="/contacts/groups">Groups</Link> },
-        { key: '/contacts/payees', label: <Link href="/contacts/payees">Payees</Link> },
-        { key: '/contacts/service-vendors', label: <Link href="/contacts/service-vendors">Service Vendors</Link> },
-      ],
-    },
-    {
+      children: contactChildren,
+    });
+  }
+
+  // Leasing
+  if (hasPermission('LANDLORD/LEASING_LIST')) {
+    items.push({
       key: '/leasing',
       icon: <CalendarOutlined />,
       label: <Link href="/leasing">Leasing</Link>,
-    },
-    {
+    });
+  }
+
+  // Accounting — show parent only if user can see at least one child
+  const accountingChildren = [];
+  if (hasPermission('LANDLORD/ACCOUNTING_LIST')) accountingChildren.push({ key: '/accounting/accounts', label: <Link href="/accounting">Accounts</Link> });
+  if (hasPermission('LANDLORD/INVOICE_LIST')) accountingChildren.push({ key: '/accounting/invoices', label: <Link href="/invoices">Invoices</Link> });
+  if (accountingChildren.length > 0) {
+    items.push({
       key: '/accounting',
       icon: <DollarOutlined />,
       label: 'Accounting',
-      children: [
-        {
-          key: '/accounting/accounts',
-          label: <Link href="/accounting">Accounts</Link>,
-        },
-        {
-          key: '/accounting/invoices',
-          label: <Link href="/invoices">Invoices</Link>,
-        },
-      ],
-    },
-    {
+      children: accountingChildren,
+    });
+  }
+
+  // Services
+  if (hasPermission('LANDLORD/SERVICE_LIST')) {
+    items.push({
       key: '/services',
       icon: <ToolOutlined />,
       label: <Link href="/services">Service</Link>,
-    },
-  ];
+    });
+  }
 
   // Build settings children based on permissions
-  const settingsChildren = [
-    { key: '/settings?tab=personal', label: <Link href="/settings?tab=personal">Account Settings</Link> },
-    { key: '/settings?tab=landlord', label: <Link href="/settings?tab=landlord">Landlord Setting</Link> },
-    { key: '/settings?tab=amenities', label: <Link href="/settings?tab=amenities">Amenity Setting</Link> },
-    {
+  const settingsChildren = [];
+
+  // Personal settings — always visible to logged-in users
+  settingsChildren.push({ key: '/settings?tab=personal', label: <Link href="/settings?tab=personal">Account Settings</Link> });
+  if (hasPermission('LANDLORD/SETTING_LANDLORD')) settingsChildren.push({ key: '/settings?tab=landlord', label: <Link href="/settings?tab=landlord">Landlord Setting</Link> });
+  if (hasPermission('LANDLORD/SETTING_AMENITY')) settingsChildren.push({ key: '/settings?tab=amenities', label: <Link href="/settings?tab=amenities">Amenity Setting</Link> });
+
+  // Accounting settings sub-group
+  const acctSettingsChildren = [];
+  if (hasPermission('LANDLORD/SETTING_PAYMENT_METHODS')) acctSettingsChildren.push({ key: '/settings?tab=payment', label: <Link href="/settings?tab=payment">Payment Methods</Link> });
+  if (hasPermission('LANDLORD/SETTING_CATEGORY')) acctSettingsChildren.push({ key: '/settings?tab=categories', label: <Link href="/settings?tab=categories">Categories</Link> });
+  if (hasPermission('LANDLORD/SETTING_ACCOUNT')) acctSettingsChildren.push({ key: '/settings?tab=accounts', label: <Link href="/settings?tab=accounts">Accounts</Link> });
+  if (hasPermission('LANDLORD/SETTING_SEQUENCE')) acctSettingsChildren.push({ key: '/settings?tab=sequences', label: <Link href="/settings?tab=sequences">Sequences</Link> });
+  if (acctSettingsChildren.length > 0) {
+    settingsChildren.push({
       key: '/settings/accounting',
       label: 'Accounting Settings',
-      children: [
-        { key: '/settings?tab=payment', label: <Link href="/settings?tab=payment">Payment Methods</Link> },
-        { key: '/settings?tab=categories', label: <Link href="/settings?tab=categories">Categories</Link> },
-        { key: '/settings?tab=accounts', label: <Link href="/settings?tab=accounts">Accounts</Link> },
-        { key: '/settings?tab=sequences', label: <Link href="/settings?tab=sequences">Sequences</Link> },
-      ],
-    },
-    {
+      children: acctSettingsChildren,
+    });
+  }
+
+  // Email settings sub-group
+  const emailSettingsChildren = [];
+  if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) emailSettingsChildren.push({ key: '/settings?tab=emailTemplates', label: <Link href="/settings?tab=emailTemplates">Email Template</Link> });
+  if (emailSettingsChildren.length > 0) {
+    settingsChildren.push({
       key: '/settings/email',
       label: 'Email Settings',
-      children: [
-        { key: '/settings?tab=emailTemplates', label: <Link href="/settings?tab=emailTemplates">Email Template</Link> },
-      ],
-    },
-  ];
+      children: emailSettingsChildren,
+    });
+  }
 
-  // Only show User Management if user has USER_LIST or ROLE_LIST permissions
+  // User Management sub-group
   const canSeeUsers = hasPermission('LANDLORD/USER_LIST');
   const canSeeRoles = hasPermission('LANDLORD/ROLE_LIST');
   if (canSeeUsers || canSeeRoles) {
@@ -122,15 +146,19 @@ function buildMenuItems(hasPermission) {
     });
   }
 
-  // API Keys link (visible to all, settings page checks if enabled)
-  settingsChildren.push({ key: '/settings?tab=apiKeys', label: <Link href="/settings?tab=apiKeys">API Keys</Link> });
+  // API Keys — super admin only
+  if (isSuperAdmin) {
+    settingsChildren.push({ key: '/settings?tab=apiKeys', label: <Link href="/settings?tab=apiKeys">API Keys</Link> });
+  }
 
-  items.push({
-    key: '/settings',
-    icon: <SettingOutlined />,
-    label: 'Settings',
-    children: settingsChildren,
-  });
+  if (settingsChildren.length > 0) {
+    items.push({
+      key: '/settings',
+      icon: <SettingOutlined />,
+      label: 'Settings',
+      children: settingsChildren,
+    });
+  }
 
   return items;
 }
@@ -394,7 +422,7 @@ function MainLayout({ children }) {
   const [openKeys, setOpenKeys] = useState([]);
   const pathname = usePathname();
   const router = useRouter();
-  const { user, logout, hasPermission } = useAuth();
+  const { user, logout, hasPermission, isSuperAdmin } = useAuth();
 
   const searchParams = useSearchParams();
   const tab = searchParams.get('tab');
@@ -503,7 +531,7 @@ function MainLayout({ children }) {
           selectedKeys={getSelectedKeys()}
           openKeys={openKeys}
           onOpenChange={setOpenKeys}
-          items={buildMenuItems(hasPermission || (() => false))}
+          items={buildMenuItems(hasPermission || (() => false), isSuperAdmin)}
           style={{ background: '#001529' }}
         />
       </Sider>

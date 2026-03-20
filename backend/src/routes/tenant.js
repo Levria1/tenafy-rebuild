@@ -4,8 +4,8 @@ const { authenticate } = require('../middleware/auth');
 
 
 // POST /api/tenant/contacts - List tenants with paging
-// Only returns tenants who have had at least one lease
-// Includes has_active_lease flag and current unit/property info
+// A tenant = someone who has had at least one lease (active or not)
+// One contact card per tenant regardless of how many leases they have
 // Filters: tenantStatus (active/inactive), leaseFilter (active/inactive), leaseType (fixed/month-to-month), propertyId, unitId
 router.post('/contacts', authenticate, async (req, res) => {
   try {
@@ -24,69 +24,52 @@ router.post('/contacts', authenticate, async (req, res) => {
       params.push(searchParam, searchParam, searchParam, searchParam, searchParam, searchParam);
     }
 
-    // Tenant Status: active = status 1, inactive = status 0
-    // By default exclude deleted/inactive (status=0) tenants
+    // Always exclude soft-deleted tenants
+    whereClause += ' AND t.status != 0';
+
+    // Tenant Status: active = has a lease where today falls within start_date..end_date (inclusive)
+    // Tenant Status: inactive = no such lease
     if (tenantStatus === 'active') {
-      whereClause += ' AND t.status = 1';
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND l.start_date <= CURDATE() AND l.end_date >= CURDATE())';
     } else if (tenantStatus === 'inactive') {
-      whereClause += ' AND t.status = 0';
-    } else {
-      // Default: show only active tenants (exclude soft-deleted)
-      whereClause += ' AND t.status != 0';
+      whereClause += ' AND NOT EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND l.start_date <= CURDATE() AND l.end_date >= CURDATE())';
     }
 
-    // Lease Status: 'active' = has active lease, 'inactive' = no active lease
+    // Lease Status: active = has a current or upcoming lease (end_date >= today OR end_date IS NULL)
+    // Lease Status: inactive = no current or upcoming lease
     if (leaseFilter === 'active') {
-      whereClause += ' AND al.id IS NOT NULL';
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND (l.end_date >= CURDATE() OR l.end_date IS NULL))';
     } else if (leaseFilter === 'inactive') {
-      whereClause += ' AND al.id IS NULL';
+      whereClause += ' AND NOT EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND (l.end_date >= CURDATE() OR l.end_date IS NULL))';
     }
 
-    // Lease Type: 'fixed' = type 0, 'month-to-month' = type 1
+    // Lease Type filter: tenant has at least one lease of this type
     if (leaseType === 'fixed') {
-      whereClause += ' AND al.type = 0';
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.type = 0 AND l.deleted_at IS NULL)';
     } else if (leaseType === 'month-to-month') {
-      whereClause += ' AND al.type = 1';
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.type = 1 AND l.deleted_at IS NULL)';
     }
 
-    // Build lease_history join — only needed when filtering by property/unit
-    const hasPropertyFilter = propertyId || unitId;
-    let leaseHistoryJoin = '';
-    const leaseHistoryParams = [];
-    if (hasPropertyFilter) {
-      let leaseHistorySubquery = 'SELECT DISTINCT l_h.tenant_id FROM leasing l_h JOIN unit u_h ON l_h.unit_id = u_h.id WHERE l_h.deleted_at IS NULL';
-      if (propertyId) {
-        leaseHistorySubquery += ' AND u_h.property_id = ?';
-        leaseHistoryParams.push(propertyId);
-      }
-      if (unitId) {
-        leaseHistorySubquery += ' AND l_h.unit_id = ?';
-        leaseHistoryParams.push(unitId);
-      }
-      leaseHistoryJoin = `INNER JOIN (${leaseHistorySubquery}) lease_history ON lease_history.tenant_id = t.id`;
+    // Property/unit filter: tenant has a lease at this property/unit
+    if (propertyId) {
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l JOIN unit u ON l.unit_id = u.id WHERE l.tenant_id = t.id AND u.property_id = ? AND l.deleted_at IS NULL)';
+      params.push(propertyId);
     }
+    if (unitId) {
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.unit_id = ? AND l.deleted_at IS NULL)';
+      params.push(unitId);
+    }
+
+    // Must have at least one lease (active or not) to be a "tenant" contact
+    whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL)';
 
     const query = `
       SELECT t.*,
-             CASE WHEN al.id IS NOT NULL THEN 1 ELSE 0 END AS has_active_lease,
-             al.id AS active_lease_id,
-             al.amount AS rent_amount,
-             al.start_date AS lease_start,
-             al.end_date AS lease_end,
-             al.type AS lease_type,
-             u.name AS unit_name,
-             u.id AS unit_id,
-             p.display_name AS property_name,
-             p.id AS property_id,
              COALESCE(inv.outstanding, 0) AS outstanding_amount
       FROM tenant t
-      ${leaseHistoryJoin}
-      LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL AND al.start_date <= CURDATE() AND (al.end_date >= CURDATE() OR al.end_date IS NULL)
-      LEFT JOIN unit u ON al.unit_id = u.id
-      LEFT JOIN property p ON u.property_id = p.id
       LEFT JOIN (
         SELECT tenant_id, SUM(amount) AS outstanding
-        FROM invoice WHERE org_id = ? AND status = 0
+        FROM invoice WHERE org_id = ? AND status = 0 AND deleted_at IS NULL
         GROUP BY tenant_id
       ) inv ON inv.tenant_id = t.id
       WHERE ${whereClause} AND t.category = 1
@@ -97,13 +80,11 @@ router.post('/contacts', authenticate, async (req, res) => {
     const countQuery = `
       SELECT COUNT(*) as total
       FROM tenant t
-      ${leaseHistoryJoin}
-      LEFT JOIN leasing al ON al.tenant_id = t.id AND al.status = 1 AND al.deleted_at IS NULL AND al.start_date <= CURDATE() AND (al.end_date >= CURDATE() OR al.end_date IS NULL)
       WHERE ${whereClause} AND t.category = 1
     `;
 
-    const [tenants] = await req.pool.execute(query, [...leaseHistoryParams, orgId, ...params]);
-    const [[{ total }]] = await req.pool.execute(countQuery, [...leaseHistoryParams, ...params]);
+    const [tenants] = await req.pool.execute(query, [orgId, ...params]);
+    const [[{ total }]] = await req.pool.execute(countQuery, params);
 
     res.json({ code: 200, data: { content: tenants, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page } });
   } catch (error) {
@@ -284,10 +265,14 @@ router.delete('/:id', authenticate, async (req, res) => {
       return res.status(400).json({ code: 400, message: `Cannot delete this contact — they have ${acctCount} accounting transaction(s) linked. Remove or reassign them first.` });
     }
 
-    await req.pool.execute(
+    const [result] = await req.pool.execute(
       'UPDATE tenant SET status = 0 WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
+    if (result.affectedRows === 0) {
+      console.warn(`[Tenant Delete] No rows affected — id=${id}, orgId=${orgId}`);
+      return res.status(404).json({ code: 404, message: 'Contact not found or already deleted' });
+    }
     res.json({ code: 200, message: 'Contact deleted' });
   } catch (error) {
     console.error('Delete tenant error:', error);

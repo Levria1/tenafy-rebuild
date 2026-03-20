@@ -617,15 +617,22 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const [units] = await req.pool.execute(
       `SELECT u.*,
-              t.id AS tenant_id,
-              t.first_name AS tenant_first_name,
-              t.last_name AS tenant_last_name
+              lt.tenant_id,
+              lt.tenant_first_name,
+              lt.tenant_last_name
        FROM unit u
-       LEFT JOIN property p ON u.property_id = p.id
-       LEFT JOIN leasing l ON l.unit_id = u.id AND l.status = 1 AND l.deleted_at IS NULL
-       LEFT JOIN tenant t ON l.tenant_id = t.id
+       JOIN property p ON u.property_id = p.id
+       LEFT JOIN (
+         SELECT l.unit_id,
+                t.id AS tenant_id,
+                t.first_name AS tenant_first_name,
+                t.last_name AS tenant_last_name,
+                ROW_NUMBER() OVER (PARTITION BY l.unit_id ORDER BY l.start_date DESC) AS rn
+         FROM leasing l
+         JOIN tenant t ON l.tenant_id = t.id
+         WHERE l.status = 1 AND l.deleted_at IS NULL
+       ) lt ON lt.unit_id = u.id AND lt.rn = 1
        WHERE u.property_id = ? AND p.org_id = ? AND u.active_status = 1
-       GROUP BY u.id
        ORDER BY u.name`,
       [property_id, orgId]
     );

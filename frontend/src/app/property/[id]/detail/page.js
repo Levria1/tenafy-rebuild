@@ -7,7 +7,7 @@ import {
   ArrowLeftOutlined, PlusOutlined, HomeOutlined, UserOutlined,
   RightOutlined, EditOutlined, DeleteOutlined, CopyOutlined, EllipsisOutlined,
 } from '@ant-design/icons';
-import MainLayout from '../../../../components/Layout';
+import MainLayout, { useAuth } from '../../../../components/Layout';
 import { property, accounting } from '../../../../lib/api';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -212,6 +212,9 @@ function PropertyInfoTab({ propertyData, amenities }) {
 export default function PropertyDetailPage() {
   const router = useRouter();
   const params = useParams();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/PROPERTY_EDIT') : false;
+  const canDelete = hasPermission ? hasPermission('LANDLORD/PROPERTY_DELETE') : false;
   const [loading, setLoading] = useState(true);
   const [propertyData, setPropertyData] = useState(null);
   const [units, setUnits] = useState([]);
@@ -294,9 +297,9 @@ export default function PropertyDetailPage() {
           placement="bottomRight"
           menu={{
             items: [
-              { key: 'edit', icon: <EditOutlined />, label: 'Edit', onClick: () => router.push(`/property/${params.id}/edit`) },
+              ...(canEdit ? [{ key: 'edit', icon: <EditOutlined />, label: 'Edit', onClick: () => router.push(`/property/${params.id}/edit`) }] : []),
               { key: 'clone', icon: <CopyOutlined />, label: 'Clone' },
-              { key: 'delete', icon: <DeleteOutlined />, label: 'Delete', danger: true, onClick: handleDelete },
+              ...(canDelete ? [{ key: 'delete', icon: <DeleteOutlined />, label: 'Delete', danger: true, onClick: handleDelete }] : []),
             ],
           }}
         >

@@ -89,11 +89,11 @@ function SettingsPage() {
     { title: 'Status', dataIndex: 'status', render: (s) => <Tag color={s === 1 ? 'green' : 'red'}>{s === 1 ? 'Active' : 'Inactive'}</Tag> },
     { title: 'Actions', key: 'actions', render: (_, r) => (
       <Space>
-        <Button type="link" onClick={() => router.push(`/settings/role/${r.id}/edit`)}>Edit</Button>
-        <Button type="link" danger onClick={async () => {
-          try { await role.delete(r.id); message.success('Deleted'); loadData(); } 
+        {canEditRole && <Button type="link" onClick={() => router.push(`/settings/role/${r.id}/edit`)}>Edit</Button>}
+        {canDeleteRole && <Button type="link" danger onClick={async () => {
+          try { await role.delete(r.id); message.success('Deleted'); loadData(); }
           catch (error) { message.error('Failed to delete'); }
-        }}>Delete</Button>
+        }}>Delete</Button>}
       </Space>
     )},
   ];
@@ -120,7 +120,7 @@ function SettingsPage() {
     { title: 'Status', dataIndex: 'status', key: 'status', render: (s) => <Tag color={s === 1 ? 'green' : 'red'}>{s === 1 ? 'Active' : 'Inactive'}</Tag> },
     { title: 'Actions', key: 'actions', render: (_, r) => (
       <Space>
-        <Button type="link" onClick={() => router.push(`/settings/users/${r.id}/edit`)}>Edit</Button>
+        {canEditUser && <Button type="link" onClick={() => router.push(`/settings/users/${r.id}/edit`)}>Edit</Button>}
       </Space>
     )},
   ];
@@ -130,6 +130,9 @@ function SettingsPage() {
   const canCreateTemplate = hasPermission ? hasPermission('LANDLORD/EMAIL_TEMPLATE_CREATE') : false;
   const canEditTemplate = hasPermission ? hasPermission('LANDLORD/EMAIL_TEMPLATE_EDIT') : false;
   const canDeleteTemplate = hasPermission ? hasPermission('LANDLORD/EMAIL_TEMPLATE_DELETE') : false;
+  const canEditRole = hasPermission ? hasPermission('LANDLORD/ROLE_EDIT') : false;
+  const canDeleteRole = hasPermission ? hasPermission('LANDLORD/ROLE_DELETE') : false;
+  const canEditUser = hasPermission ? hasPermission('LANDLORD/USER_EDIT') : false;
 
   // Group tabs by section — each sidebar link only shows its own tabs
   const accountTabs = [

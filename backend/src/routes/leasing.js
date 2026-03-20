@@ -233,6 +233,26 @@ router.post('/', authenticate, async (req, res) => {
     } = req.body;
     const orgId = req.user.orgId;
 
+    // Server-side overlap check — block creation if dates conflict with an existing active lease on the same unit
+    if (unit_id && start_date) {
+      const overlapEnd = end_date || '2099-12-31';
+      const [conflicts] = await req.pool.execute(
+        `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
+         FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
+         WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status = 1
+           AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)`,
+        [unit_id, overlapEnd, start_date]
+      );
+      if (conflicts.length > 0) {
+        const c = conflicts[0];
+        const tenantName = [c.first_name, c.last_name].filter(Boolean).join(' ');
+        return res.status(400).json({
+          code: 400,
+          message: `Cannot create lease — overlaps with ${c.lease_no || '#' + c.id} (${tenantName}): ${c.start_date} to ${c.end_date || 'ongoing'}`
+        });
+      }
+    }
+
     // Generate lease ID (snowflake-style)
     const leaseId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
@@ -401,6 +421,39 @@ router.put('/:id', authenticate, async (req, res) => {
       additionalTenantIds,
       mark_past_paid
     } = req.body;
+
+    // Server-side overlap check on edit — check if new dates/unit conflict with other leases
+    const checkUnit = unit_id || null;
+    const checkStart = start_date || null;
+    const checkEnd = end_date !== undefined ? (end_date || null) : undefined;
+    if (checkUnit || checkStart || checkEnd !== undefined) {
+      // Fetch current lease to fill in any fields not being changed
+      const [[current]] = await req.pool.execute(
+        'SELECT unit_id, start_date, end_date FROM leasing WHERE id = ?', [id]
+      );
+      if (current) {
+        const effectiveUnit = checkUnit || current.unit_id;
+        const effectiveStart = checkStart || current.start_date;
+        const effectiveEnd = checkEnd !== undefined ? (checkEnd || '2099-12-31') : (current.end_date || '2099-12-31');
+        const effectiveStartStr = typeof effectiveStart === 'string' ? effectiveStart : effectiveStart.toISOString().split('T')[0];
+
+        const [conflicts] = await req.pool.execute(
+          `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
+           FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
+           WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status = 1 AND l.id != ?
+             AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)`,
+          [effectiveUnit, id, effectiveEnd, effectiveStartStr]
+        );
+        if (conflicts.length > 0) {
+          const c = conflicts[0];
+          const tenantName = [c.first_name, c.last_name].filter(Boolean).join(' ');
+          return res.status(400).json({
+            code: 400,
+            message: `Cannot update lease — overlaps with ${c.lease_no || '#' + c.id} (${tenantName}): ${c.start_date} to ${c.end_date || 'ongoing'}`
+          });
+        }
+      }
+    }
 
     // Build dynamic SET clause
     const fields = [];

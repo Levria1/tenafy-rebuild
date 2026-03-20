@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Card, Button, Space, Tag, Image, message, Modal, Row, Col } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, DeleteOutlined, FileOutlined, FilePdfOutlined, FileImageOutlined, FileWordOutlined, FileExcelOutlined, DownloadOutlined } from '@ant-design/icons';
-import MainLayout from '../../../../components/Layout';
+import MainLayout, { useAuth } from '../../../../components/Layout';
 import { service, file as fileApi } from '../../../../lib/api';
 
 const STATUS_MAP = {
@@ -39,6 +39,9 @@ export default function ServiceDetailPage() {
   const [loading, setLoading] = useState(true);
   const router = useRouter();
   const params = useParams();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/SERVICE_EDIT') : false;
+  const canDelete = hasPermission ? hasPermission('LANDLORD/SERVICE_DELETE') : false;
   const serviceId = params.id;
 
   useEffect(() => {
@@ -108,8 +111,8 @@ export default function ServiceDetailPage() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/services')}>Back to Services</Button>
           <Space>
-            <Button danger icon={<DeleteOutlined />} onClick={handleDelete}>Delete</Button>
-            <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/services/${serviceId}/edit`)}>Edit Service</Button>
+            {canDelete && <Button danger icon={<DeleteOutlined />} onClick={handleDelete}>Delete</Button>}
+            {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/services/${serviceId}/edit`)}>Edit Service</Button>}
           </Space>
         </div>
 

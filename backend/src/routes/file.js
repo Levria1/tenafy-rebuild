@@ -4,8 +4,34 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { authenticate } = require('../middleware/auth');
+const jwt = require('jsonwebtoken');
+const config = require('../config');
+const { getOrgPool } = require('../config/poolRegistry');
 
 const { v4: uuidv4 } = require('uuid');
+
+// Helper: get a DB pool for unauthenticated file routes
+// Tries JWT cookie first, then falls back to looking up the first active org
+async function getPoolFromRequest(req) {
+  // Try JWT cookie or Authorization header
+  try {
+    const token = req.cookies?.__s_t || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+    if (token) {
+      const decoded = jwt.verify(token, config.jwtSecret);
+      if (decoded.orgId) return await getOrgPool(decoded.orgId);
+    }
+  } catch (e) { /* ignore - token missing or invalid */ }
+
+  // Fallback: look up the first active org from master DB
+  try {
+    const { getMasterPool } = require('../config/poolRegistry');
+    const master = getMasterPool();
+    const [orgs] = await master.execute('SELECT id FROM organizations WHERE status = 1 LIMIT 1');
+    if (orgs.length > 0) return await getOrgPool(orgs[0].id);
+  } catch (e) { /* ignore */ }
+
+  return null;
+}
 
 // Storage directories — check both local uploads and legacy AWS backup storage
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
@@ -50,10 +76,13 @@ router.get('/preview/:identifier', async (req, res) => {
 
     // Check if identifier is a numeric file ID
     if (/^\d+$/.test(identifier)) {
-      const [files] = await req.pool.execute('SELECT item_name, mime_type, extension FROM file WHERE id = ?', [identifier]);
-      if (files.length > 0) {
-        filename = files[0].item_name;
-        mimeType = files[0].mime_type;
+      const pool = req.pool || await getPoolFromRequest(req);
+      if (pool) {
+        const [files] = await pool.execute('SELECT item_name, mime_type, extension FROM file WHERE id = ?', [identifier]);
+        if (files.length > 0) {
+          filename = files[0].item_name;
+          mimeType = files[0].mime_type;
+        }
       }
     }
 
@@ -108,10 +137,13 @@ router.get('/download/:identifier', async (req, res) => {
     let originalName = null;
 
     if (/^\d+$/.test(identifier)) {
-      const [files] = await req.pool.execute('SELECT item_name, filename AS original_name FROM file WHERE id = ?', [identifier]);
-      if (files.length > 0) {
-        filename = files[0].item_name;
-        originalName = files[0].original_name || filename;
+      const pool = req.pool || await getPoolFromRequest(req);
+      if (pool) {
+        const [files] = await pool.execute('SELECT item_name, filename AS original_name FROM file WHERE id = ?', [identifier]);
+        if (files.length > 0) {
+          filename = files[0].item_name;
+          originalName = files[0].original_name || filename;
+        }
       }
     }
 

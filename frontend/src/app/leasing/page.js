@@ -6,7 +6,7 @@ import { PlusOutlined, FilterOutlined, CalendarOutlined } from '@ant-design/icon
 import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
-import MainLayout from '../../components/Layout';
+import MainLayout, { useAuth } from '../../components/Layout';
 import { leasing, property as propertyApi } from '../../lib/api';
 
 const { RangePicker } = DatePicker;
@@ -20,6 +20,10 @@ export default function LeasingPage() {
   const [sorter, setSorter] = useState({ field: null, order: null });
   const [properties, setProperties] = useState([]);
   const router = useRouter();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/LEASING_EDIT') : false;
+  const canDelete = hasPermission ? hasPermission('LANDLORD/LEASING_DELETE') : false;
+  const canCreate = hasPermission ? hasPermission('LANDLORD/LEASING_CREATE') : false;
 
   // Filter state
   const [filterOpen, setFilterOpen] = useState(false);
@@ -273,9 +277,9 @@ export default function LeasingPage() {
       title: 'Action', key: 'actions', width: 180,
       render: (_, r) => (
         <Space size="small">
-          <Button type="link" size="small" onClick={() => router.push(`/leasing/${r.id}/edit`)}>Edit</Button>
+          {canEdit && <Button type="link" size="small" onClick={() => router.push(`/leasing/${r.id}/edit`)}>Edit</Button>}
           <Button type="link" size="small" onClick={() => router.push(`/leasing/${r.id}/detail`)}>Detail</Button>
-          <Button type="link" size="small" danger onClick={() => handleDelete(r.id)}>Delete</Button>
+          {canDelete && <Button type="link" size="small" danger onClick={() => handleDelete(r.id)}>Delete</Button>}
         </Space>
       ),
     },
@@ -306,9 +310,9 @@ export default function LeasingPage() {
           <Button icon={<CalendarOutlined />} onClick={() => router.push('/leasing/calendar')}>
             Calendar View
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/leasing/create')}>
+          {canCreate && <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/leasing/create')}>
             ADD LEASE
-          </Button>
+          </Button>}
         </div>
       </div>
 

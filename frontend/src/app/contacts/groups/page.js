@@ -4,13 +4,15 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, Table, Button, Space, Typography, message } from 'antd';
 import { PlusOutlined, EditOutlined, SendOutlined } from '@ant-design/icons';
-import MainLayout from '../../../components/Layout';
+import MainLayout, { useAuth } from '../../../components/Layout';
 import { contact } from '../../../lib/api';
 
 const { Title } = Typography;
 
 export default function EmailGroupsPage() {
   const router = useRouter();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/EMAIL_GROUP_EDIT') : false;
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -40,7 +42,7 @@ export default function EmailGroupsPage() {
       title: 'Actions', key: 'actions', width: 180,
       render: (_, r) => (
         <Space>
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => router.push(`/contacts/group/${r.id}/edit`)}>Edit</Button>
+          {canEdit && <Button type="link" size="small" icon={<EditOutlined />} onClick={() => router.push(`/contacts/group/${r.id}/edit`)}>Edit</Button>}
           <Button type="link" size="small" icon={<SendOutlined />} onClick={() => router.push(`/contacts/email/send?group=${r.id}`)}>Send Email</Button>
         </Space>
       ),

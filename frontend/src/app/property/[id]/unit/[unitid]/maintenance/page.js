@@ -8,7 +8,7 @@ import {
 } from 'antd';
 import { PlusOutlined, ArrowLeftOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import MainLayout from '../../../../../../components/Layout';
+import MainLayout, { useAuth } from '../../../../../../components/Layout';
 import { property as propertyApi } from '../../../../../../lib/api';
 
 const CATEGORIES = [
@@ -27,6 +27,9 @@ const CATEGORIES = [
 export default function UnitMaintenancePage() {
   const params = useParams();
   const router = useRouter();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/PROPERTY_EDIT') : false;
+  const canDelete = hasPermission ? hasPermission('LANDLORD/PROPERTY_DELETE') : false;
   const propertyId = params.id;
   const unitId = params.unitid;
 
@@ -131,8 +134,8 @@ export default function UnitMaintenancePage() {
       title: 'Actions', key: 'actions',
       render: (_, record) => (
         <Space>
-          <Button type="link" icon={<EditOutlined />} onClick={() => openEdit(record)}>Edit</Button>
-          <Button type="link" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)}>Delete</Button>
+          {canEdit && <Button type="link" icon={<EditOutlined />} onClick={() => openEdit(record)}>Edit</Button>}
+          {canDelete && <Button type="link" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)}>Delete</Button>}
         </Space>
       ),
     },

@@ -63,6 +63,8 @@ export default function TenantDetailPageWrapper() {
 function TenantDetailPage() {
   const { hasPermission } = useAuth();
   const canDelete = hasPermission ? hasPermission('LANDLORD/TENANT_DELETE') : false;
+  const canEdit = hasPermission ? hasPermission('LANDLORD/TENANT_EDIT') : false;
+  const canEditInvoice = hasPermission ? hasPermission('LANDLORD/INVOICE_EDIT') : false;
   const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();
@@ -196,7 +198,7 @@ function TenantDetailPage() {
   };
 
   const actionsMenuItems = [
-    { key: 'edit', label: 'Edit Tenant', icon: <EditOutlined /> },
+    ...(canEdit ? [{ key: 'edit', label: 'Edit Tenant', icon: <EditOutlined /> }] : []),
     { key: 'email', label: 'Send Email', icon: <MailOutlined /> },
     { key: 'invoice', label: 'Create Invoice', icon: <FileTextOutlined /> },
     ...(canDelete ? [{ key: 'delete', label: 'Delete', icon: <DeleteOutlined />, danger: true }] : []),
@@ -789,10 +791,10 @@ function TenantDetailPage() {
             <Button type="primary" icon={<PrinterOutlined />} block onClick={() => window.print()}>
               Print
             </Button>
-            <Button type="primary" icon={<EditOutlined />} block style={{ background: '#52c41a', borderColor: '#52c41a' }}
+            {canEditInvoice && <Button type="primary" icon={<EditOutlined />} block style={{ background: '#52c41a', borderColor: '#52c41a' }}
               onClick={() => { closeDrawer(); router.push(`/invoices/${selectedInvoice.id}/edit`); }}>
               Edit
-            </Button>
+            </Button>}
             <Button block onClick={closeDrawer}>
               Close
             </Button>

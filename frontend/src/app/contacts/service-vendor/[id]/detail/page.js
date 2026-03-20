@@ -7,7 +7,7 @@ import {
 } from 'antd';
 import { UserOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import MainLayout from '../../../../../components/Layout';
+import MainLayout, { useAuth } from '../../../../../components/Layout';
 import { contact } from '../../../../../lib/api';
 
 const STATUS_MAP = {
@@ -50,6 +50,9 @@ export default function ServiceVendorDetailPage() {
   const [activeTab, setActiveTab] = useState('profile');
   const router = useRouter();
   const params = useParams();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/SERVICE_VENDOR_EDIT') : false;
+  const canDelete = hasPermission ? hasPermission('LANDLORD/SERVICE_VENDOR_DELETE') : false;
   const vendorId = params.id;
 
   useEffect(() => {
@@ -336,8 +339,8 @@ export default function ServiceVendorDetailPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <h1 style={{ margin: 0 }}>Profile</h1>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Button onClick={handleDelete}>Delete</Button>
-          <Button onClick={() => router.push(`/contacts/service-vendor/${vendorId}/edit`)}>Edit</Button>
+          {canDelete && <Button onClick={handleDelete}>Delete</Button>}
+          {canEdit && <Button onClick={() => router.push(`/contacts/service-vendor/${vendorId}/edit`)}>Edit</Button>}
         </div>
       </div>
 
