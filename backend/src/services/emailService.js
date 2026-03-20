@@ -715,6 +715,32 @@ async function sendDepositToTenant(pool, orgId, leaseId) {
 }
 
 // ---------------------------------------------------------------------------
+// Dedup helper — check if an email of a given type was already sent for a lease
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if an email of a specific type has already been sent for a lease.
+ * Used by scheduler to avoid sending duplicate check-in/check-out/renewal emails.
+ * @param {string} leaseId
+ * @param {string} templateType - e.g. 'Checkin-Tenant', 'Checkout-Tenant'
+ * @returns {boolean} true if already sent
+ */
+async function hasEmailBeenSent(pool, leaseId, templateType) {
+  if (!leaseId || !templateType) return false;
+  try {
+    const [[row]] = await pool.execute(
+      `SELECT COUNT(*) AS cnt FROM email_log
+       WHERE lease_id = ? AND type = ? AND status = 'sent'`,
+      [leaseId, templateType]
+    );
+    return (row.cnt || 0) > 0;
+  } catch (err) {
+    console.error(`[EmailService] Error checking email_log for ${templateType}:`, err.message);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -734,6 +760,7 @@ module.exports = {
   sendTemplateEmail,
   previewTemplate,
   shouldSendEmail,
+  hasEmailBeenSent,
 
   // Convenience senders
   sendInvoiceToTenant,

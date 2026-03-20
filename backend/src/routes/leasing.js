@@ -3,6 +3,14 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 
 const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequenceCode');
+const {
+  sendInvoiceToTenant,
+  sendInvoiceToLandlord,
+  sendDepositToTenant,
+  sendCheckinToTenant,
+  sendCheckoutToTenant,
+  loadTemplate,
+} = require('../services/emailService');
 
 // Helper: advance a date by one invoice period
 function advanceInvoiceDate(date, schedule, dueDay) {
@@ -240,7 +248,7 @@ router.post('/', authenticate, async (req, res) => {
         `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
          FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
          WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status = 1
-           AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)`,
+           AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`,
         [unit_id, overlapEnd, start_date]
       );
       if (conflicts.length > 0) {
@@ -319,6 +327,7 @@ router.post('/', authenticate, async (req, res) => {
       const rentCategoryId = rentCat ? rentCat.id : null;
 
       // Helper: create a single invoice with collision-safe code generation
+      // Returns { invoiceId, invoiceCode, dueDate } for email sending
       const createOneInvoice = async (dueDate, status) => {
         const invoiceCode = await generateInvoiceCode(req.pool, orgId);
         const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -329,8 +338,10 @@ router.post('/', authenticate, async (req, res) => {
           [invoiceId, orgId, tenant_id, unit_id, leaseId.toString(), propertyId,
            invoiceCode, invoiceAmount, dueDate, status, rentCategoryId, currencyId]
         );
+        return { invoiceId, invoiceCode, dueDate };
       };
 
+      const createdInvoices = [];
       const isRecurring = share_lease && invoicing;
 
       if (isRecurring) {
@@ -346,9 +357,9 @@ router.post('/', authenticate, async (req, res) => {
           const isPast = cursor.getTime() <= todayMs;
 
           if (isPast) {
-            await createOneInvoice(dateStr, mark_past_paid ? 1 : 0);
+            createdInvoices.push(await createOneInvoice(dateStr, mark_past_paid ? 1 : 0));
           } else {
-            await createOneInvoice(dateStr, 0);
+            createdInvoices.push(await createOneInvoice(dateStr, 0));
             break;
           }
           cursor = advanceInvoiceDate(cursor, invoicing, due_date);
@@ -359,7 +370,20 @@ router.post('/', authenticate, async (req, res) => {
         const invoiceDate = first_invoice_date || start_date || today;
         const isPast = new Date(invoiceDate).getTime() <= todayMs;
         const invoiceStatus = (isPast && mark_past_paid) ? 1 : 0;
-        await createOneInvoice(invoiceDate, invoiceStatus);
+        createdInvoices.push(await createOneInvoice(invoiceDate, invoiceStatus));
+      }
+
+      // Send invoice posted emails (fire-and-forget, don't block lease creation)
+      for (const inv of createdInvoices) {
+        sendInvoiceToTenant(req.pool, orgId, leaseId.toString(), {
+          invoiceId: inv.invoiceId, invoiceCode: inv.invoiceCode,
+          category: rentCategoryId, dueDate: new Date(inv.dueDate),
+        }).catch(err => console.error('[Lease] Invoice email to tenant error:', err.message));
+
+        sendInvoiceToLandlord(req.pool, orgId, leaseId.toString(), {
+          invoiceId: inv.invoiceId, invoiceCode: inv.invoiceCode,
+          category: rentCategoryId, dueDate: new Date(inv.dueDate),
+        }).catch(err => console.error('[Lease] Invoice email to landlord error:', err.message));
       }
     }
 
@@ -390,6 +414,58 @@ router.post('/', authenticate, async (req, res) => {
         [depInvoiceId.toString(), orgId, tenant_id, unit_id, leaseId.toString(), depPropertyId,
          depInvoiceCode, deposit, today, depositCategoryId, currencyId]
       );
+
+      // Send deposit posted email (fire-and-forget)
+      sendDepositToTenant(req.pool, orgId, leaseId.toString())
+        .catch(err => console.error('[Lease] Deposit email error:', err.message));
+    }
+
+    // Send check-in email if lease starts within the template's date_first window (fire-and-forget)
+    if (tenant_checkin && start_date) {
+      (async () => {
+        try {
+          const checkinTemplate = await loadTemplate(req.pool, orgId, 'Checkin-Tenant');
+          const dateFirstDays = checkinTemplate ? (Number(checkinTemplate.date_first) || 0) : 0;
+          const startMs = new Date(start_date).getTime();
+          const todayMs2 = new Date(new Date().toISOString().split('T')[0]).getTime();
+          const daysUntilStart = Math.round((startMs - todayMs2) / (1000 * 60 * 60 * 24));
+          // Send if start date is today or within the date_first window
+          if (daysUntilStart >= 0 && daysUntilStart <= dateFirstDays) {
+            await sendCheckinToTenant(req.pool, orgId, leaseId.toString());
+          }
+        } catch (err) {
+          console.error('[Lease] Check-in email error:', err.message);
+        }
+      })();
+    }
+
+    // Send check-out email if lease ends within the template's date_first window (fire-and-forget)
+    if (tenant_checkout && end_date) {
+      (async () => {
+        try {
+          const checkoutTemplate = await loadTemplate(req.pool, orgId, 'Checkout-Tenant');
+          const dateFirstDays = checkoutTemplate ? (Number(checkoutTemplate.date_first) || 0) : 0;
+          let beforeDate = true;
+          if (checkoutTemplate && checkoutTemplate.before_date !== undefined && checkoutTemplate.before_date !== null) {
+            if (Buffer.isBuffer(checkoutTemplate.before_date)) {
+              beforeDate = checkoutTemplate.before_date[0] === 1;
+            } else {
+              beforeDate = Boolean(checkoutTemplate.before_date);
+            }
+          }
+          // Only send at creation if before_date is true (sending before end date)
+          if (beforeDate) {
+            const endMs = new Date(end_date).getTime();
+            const todayMs2 = new Date(new Date().toISOString().split('T')[0]).getTime();
+            const daysUntilEnd = Math.round((endMs - todayMs2) / (1000 * 60 * 60 * 24));
+            if (daysUntilEnd >= 0 && daysUntilEnd <= dateFirstDays) {
+              await sendCheckoutToTenant(req.pool, orgId, leaseId.toString());
+            }
+          }
+        } catch (err) {
+          console.error('[Lease] Check-out email error:', err.message);
+        }
+      })();
     }
 
     // Insert additional tenants
@@ -441,7 +517,7 @@ router.put('/:id', authenticate, async (req, res) => {
           `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
            FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
            WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status = 1 AND l.id != ?
-             AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)`,
+             AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`,
           [effectiveUnit, id, effectiveEnd, effectiveStartStr]
         );
         if (conflicts.length > 0) {

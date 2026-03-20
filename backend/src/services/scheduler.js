@@ -8,7 +8,12 @@ const {
   sendLeaseExpiryToLandlord,
   sendOverdueToTenant,
   sendOverdueToLandlord,
+  sendCheckinToTenant,
+  sendCheckoutToTenant,
+  sendRenewalToTenant,
   shouldSendEmail,
+  loadTemplate,
+  hasEmailBeenSent,
 } = require('./emailService');
 
 // ---------------------------------------------------------------------------
@@ -213,13 +218,17 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
 // ---------------------------------------------------------------------------
 
 async function sendLeaseExpiryForOrg(pool, orgId) {
+  // landlord_expired_days is a bitmask: 1=30 days, 2=60 days, 4=90 days
   const [leases] = await pool.execute(
-    `SELECT l.id, l.end_date, l.tenant_id, t.email AS tenant_email, t.first_name AS tenant_first_name,
+    `SELECT l.id, l.end_date, l.landlord_expired_days, l.tenant_id,
+       t.email AS tenant_email, t.first_name AS tenant_first_name,
        t.last_name AS tenant_last_name, p.display_name AS property_name, p.org_id AS org_id,
        u.name AS unit_name, DATEDIFF(l.end_date, CURDATE()) AS days_remaining
      FROM leasing l JOIN unit u ON l.unit_id = u.id JOIN property p ON u.property_id = p.id JOIN tenant t ON l.tenant_id = t.id
-     WHERE l.status = 1 AND l.deleted_at IS NULL AND l.end_date >= CURDATE()
-       AND l.end_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) AND t.email IS NOT NULL AND t.email != '' AND p.org_id = ?`,
+     WHERE l.status = 1 AND l.deleted_at IS NULL AND l.landlord_expired = 1
+       AND l.type = 0 AND l.end_date IS NOT NULL AND l.end_date >= CURDATE()
+       AND l.end_date <= DATE_ADD(CURDATE(), INTERVAL 90 DAY)
+       AND p.org_id = ?`,
     [orgId]
   );
 
@@ -229,13 +238,24 @@ async function sendLeaseExpiryForOrg(pool, orgId) {
 
   for (const lease of leases) {
     try {
+      const daysRemaining = Number(lease.days_remaining);
+      const flags = Number(lease.landlord_expired_days) || 0;
+
+      // Check if today matches one of the configured reminder days
+      const shouldNotify =
+        ((flags & 1) !== 0 && daysRemaining === 30) ||
+        ((flags & 2) !== 0 && daysRemaining === 60) ||
+        ((flags & 4) !== 0 && daysRemaining === 90);
+
+      if (!shouldNotify) continue;
+
       const templateResult = await sendLeaseExpiryToLandlord(pool, orgId, lease.id);
-      if (!templateResult) {
+      if (!templateResult && lease.tenant_email) {
         const endDateFormatted = new Date(lease.end_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
         await sendMail({
           to: lease.tenant_email,
           subject: `Lease Expiry Notice — ${lease.property_name}`,
-          html: `<p>Dear ${lease.tenant_first_name} ${lease.tenant_last_name},</p><p>Your lease at <strong>${lease.property_name}</strong>${lease.unit_name ? `, Unit ${lease.unit_name}` : ''} expires on <strong>${endDateFormatted}</strong> (${lease.days_remaining} day(s) remaining).</p>`
+          html: `<p>Dear ${lease.tenant_first_name} ${lease.tenant_last_name},</p><p>Your lease at <strong>${lease.property_name}</strong>${lease.unit_name ? `, Unit ${lease.unit_name}` : ''} expires on <strong>${endDateFormatted}</strong> (${daysRemaining} day(s) remaining).</p>`
         });
       }
       sent++;
@@ -321,6 +341,177 @@ async function markOverdueInvoicesForOrg(pool, orgId) {
 }
 
 // ---------------------------------------------------------------------------
+// Job 5: Check-in emails (per org) — send X days before lease start
+// ---------------------------------------------------------------------------
+
+async function sendCheckinEmailsForOrg(pool, orgId) {
+  // Find leases with tenant_checkin enabled, starting today or in the future
+  const [leases] = await pool.execute(
+    `SELECT l.id, l.start_date, l.tenant_id,
+       t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+       p.display_name AS property_name, u.name AS unit_name
+     FROM leasing l
+     JOIN unit u ON l.unit_id = u.id
+     JOIN property p ON u.property_id = p.id
+     JOIN tenant t ON l.tenant_id = t.id
+     WHERE l.status = 1 AND l.deleted_at IS NULL
+       AND l.tenant_checkin = 1
+       AND l.start_date >= CURDATE()
+       AND t.email IS NOT NULL AND t.email != ''
+       AND p.org_id = ?`,
+    [orgId]
+  );
+  if (leases.length === 0) return;
+
+  // Load the default Checkin-Tenant template to get date_first offset
+  const template = await loadTemplate(pool, orgId, 'Checkin-Tenant');
+  const dateFirstDays = template ? (Number(template.date_first) || 0) : 0;
+
+  let sent = 0;
+  const today = new Date(toDateString(new Date()));
+  for (const lease of leases) {
+    try {
+      const startDate = new Date(toDateString(new Date(lease.start_date)));
+      const triggerDate = new Date(startDate);
+      triggerDate.setDate(triggerDate.getDate() - dateFirstDays);
+
+      // Send if today is on or after the trigger date (but before/on start date)
+      if (today < triggerDate || today > startDate) continue;
+
+      // Skip if already sent for this lease
+      if (await hasEmailBeenSent(pool, lease.id, 'Checkin-Tenant')) continue;
+
+      await sendCheckinToTenant(pool, orgId, lease.id);
+      sent++;
+    } catch (err) {
+      console.error(`[Scheduler] Check-in email error for lease ${lease.id}:`, err.message);
+    }
+  }
+  if (sent > 0) {
+    await createNotification(pool, { orgId, type: 'info', title: `${sent} check-in email(s) sent`, link: '/leasing' });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Job 6: Check-out emails (per org) — send X days before/after lease end
+// ---------------------------------------------------------------------------
+
+async function sendCheckoutEmailsForOrg(pool, orgId) {
+  // Find leases with tenant_checkout enabled that have an end date
+  const [leases] = await pool.execute(
+    `SELECT l.id, l.end_date, l.tenant_id,
+       t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+       p.display_name AS property_name, u.name AS unit_name
+     FROM leasing l
+     JOIN unit u ON l.unit_id = u.id
+     JOIN property p ON u.property_id = p.id
+     JOIN tenant t ON l.tenant_id = t.id
+     WHERE l.status = 1 AND l.deleted_at IS NULL
+       AND l.tenant_checkout = 1
+       AND l.end_date IS NOT NULL
+       AND t.email IS NOT NULL AND t.email != ''
+       AND p.org_id = ?`,
+    [orgId]
+  );
+  if (leases.length === 0) return;
+
+  // Load the default Checkout-Tenant template to get date_first offset and before_date flag
+  const template = await loadTemplate(pool, orgId, 'Checkout-Tenant');
+  const dateFirstDays = template ? (Number(template.date_first) || 0) : 0;
+  let beforeDate = true; // default: send before end date
+  if (template && template.before_date !== undefined && template.before_date !== null) {
+    if (Buffer.isBuffer(template.before_date)) {
+      beforeDate = template.before_date[0] === 1;
+    } else {
+      beforeDate = Boolean(template.before_date);
+    }
+  }
+
+  let sent = 0;
+  const today = new Date(toDateString(new Date()));
+  for (const lease of leases) {
+    try {
+      const endDate = new Date(toDateString(new Date(lease.end_date)));
+      const triggerDate = new Date(endDate);
+      if (beforeDate) {
+        triggerDate.setDate(triggerDate.getDate() - dateFirstDays);
+      } else {
+        triggerDate.setDate(triggerDate.getDate() + dateFirstDays);
+      }
+
+      // Send if today is on or after the trigger date (within the window)
+      if (beforeDate) {
+        // Before mode: trigger between triggerDate and endDate
+        if (today < triggerDate || today > endDate) continue;
+      } else {
+        // After mode: trigger between endDate and triggerDate
+        if (today < endDate || today > triggerDate) continue;
+      }
+
+      // Skip if already sent for this lease
+      if (await hasEmailBeenSent(pool, lease.id, 'Checkout-Tenant')) continue;
+
+      await sendCheckoutToTenant(pool, orgId, lease.id);
+      sent++;
+    } catch (err) {
+      console.error(`[Scheduler] Check-out email error for lease ${lease.id}:`, err.message);
+    }
+  }
+  if (sent > 0) {
+    await createNotification(pool, { orgId, type: 'info', title: `${sent} check-out email(s) sent`, link: '/leasing' });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Job 7: Renewal emails (per org) — send tenant_renewal_days before lease end
+// ---------------------------------------------------------------------------
+
+async function sendRenewalEmailsForOrg(pool, orgId) {
+  // Find leases with tenant_renewal enabled, with an end date and renewal days set
+  const [leases] = await pool.execute(
+    `SELECT l.id, l.end_date, l.tenant_renewal_days, l.tenant_id,
+       t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+       p.display_name AS property_name, u.name AS unit_name
+     FROM leasing l
+     JOIN unit u ON l.unit_id = u.id
+     JOIN property p ON u.property_id = p.id
+     JOIN tenant t ON l.tenant_id = t.id
+     WHERE l.status = 1 AND l.deleted_at IS NULL
+       AND l.tenant_renewal = 1
+       AND l.end_date IS NOT NULL
+       AND l.tenant_renewal_days IS NOT NULL AND l.tenant_renewal_days > 0
+       AND t.email IS NOT NULL AND t.email != ''
+       AND p.org_id = ?`,
+    [orgId]
+  );
+  if (leases.length === 0) return;
+
+  let sent = 0;
+  const today = new Date(toDateString(new Date()));
+  for (const lease of leases) {
+    try {
+      const endDate = new Date(toDateString(new Date(lease.end_date)));
+      const triggerDate = new Date(endDate);
+      triggerDate.setDate(triggerDate.getDate() - Number(lease.tenant_renewal_days));
+
+      // Send if today is on or after the trigger date (but before/on end date)
+      if (today < triggerDate || today > endDate) continue;
+
+      // Skip if already sent for this lease
+      if (await hasEmailBeenSent(pool, lease.id, 'Renewal-Tenant')) continue;
+
+      await sendRenewalToTenant(pool, orgId, lease.id);
+      sent++;
+    } catch (err) {
+      console.error(`[Scheduler] Renewal email error for lease ${lease.id}:`, err.message);
+    }
+  }
+  if (sent > 0) {
+    await createNotification(pool, { orgId, type: 'info', title: `${sent} renewal email(s) sent`, link: '/leasing' });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-org job runner — runs a job against ALL active orgs
 // ---------------------------------------------------------------------------
 
@@ -376,6 +567,24 @@ function startScheduler() {
   cron.schedule('0 9 * * 1', () => {
     console.log('[Scheduler] Sending overdue invoice reminders...');
     runForAllOrgs('overdueReminders', sendOverdueRemindersForOrg);
+  });
+
+  // Daily at 07:00 - check-in emails (X days before lease start, based on template date_first)
+  cron.schedule('0 7 * * *', () => {
+    console.log('[Scheduler] Sending check-in emails...');
+    runForAllOrgs('checkinEmails', sendCheckinEmailsForOrg);
+  });
+
+  // Daily at 07:30 - check-out emails (X days before/after lease end, based on template date_first)
+  cron.schedule('30 7 * * *', () => {
+    console.log('[Scheduler] Sending check-out emails...');
+    runForAllOrgs('checkoutEmails', sendCheckoutEmailsForOrg);
+  });
+
+  // Daily at 07:45 - renewal emails (tenant_renewal_days before lease end)
+  cron.schedule('45 7 * * *', () => {
+    console.log('[Scheduler] Sending renewal emails...');
+    runForAllOrgs('renewalEmails', sendRenewalEmailsForOrg);
   });
 
   // Run once at startup to fix stale statuses
