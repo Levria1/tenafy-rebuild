@@ -12,7 +12,7 @@
     {
       "name": "frontend",
       "runtimeExecutable": "cmd.exe",
-      "runtimeArgs": ["/c", "npm", "run", "dev"],
+      "runtimeArgs": ["/c", "npx", "next", "dev"],
       "port": 3000,
       "autoPort": false,
       "cwd": "frontend"
