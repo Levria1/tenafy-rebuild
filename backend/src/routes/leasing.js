@@ -478,6 +478,22 @@ router.post('/', authenticate, async (req, res) => {
       }
     }
 
+    // Auto-create checkout_cleaning if lease has an end_date
+    if (end_date) {
+      try {
+        const [[unitInfo]] = await req.pool.execute('SELECT property_id FROM unit WHERE id = ?', [unit_id]);
+        const cleanPropId = unitInfo ? unitInfo.property_id : null;
+        const cleanId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+        await req.pool.execute(
+          `INSERT INTO checkout_cleaning (id, org_id, lease_id, tenant_id, property_id, unit_id, cleaning_date, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+          [cleanId, orgId, leaseId.toString(), tenant_id, cleanPropId, unit_id, end_date]
+        );
+      } catch (cleanErr) {
+        console.error('Auto-create checkout_cleaning error (non-fatal):', cleanErr);
+      }
+    }
+
     res.json({ code: 200, message: 'Lease created', data: { id: leaseId.toString(), lease_no: leaseNo } });
   } catch (error) {
     console.error('Create lease error:', error);

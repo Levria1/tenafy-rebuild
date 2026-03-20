@@ -349,6 +349,26 @@ export const notification = {
   delete: (id) => api.delete(`/api/notification/${id}`),
 };
 
+export const cleaning = {
+  // Cleaners (settings)
+  getCleaners: () => api.get('/api/cleaning/cleaners'),
+  createCleaner: (data) => api.post('/api/cleaning/cleaner', data),
+  updateCleaner: (id, data) => api.put(`/api/cleaning/cleaner/${id}`, data),
+  deleteCleaner: (id) => api.delete(`/api/cleaning/cleaner/${id}`),
+  // Unit cleaning config
+  getConfig: () => api.get('/api/cleaning/config'),
+  saveConfig: (data) => api.post('/api/cleaning/config/save', data),
+  // Overrides
+  getOverrides: (week_of) => api.get('/api/cleaning/overrides', { params: { week_of } }),
+  saveOverride: (data) => api.post('/api/cleaning/override', data),
+  // Checkout cleaning
+  getCheckout: (month) => api.get('/api/cleaning/checkout', { params: { month } }),
+  updateCheckout: (id, data) => api.put(`/api/cleaning/checkout/${id}`, data),
+  // Weekly schedule
+  getSchedule: (week_of) => api.get('/api/cleaning/schedule', { params: { week_of } }),
+  generateSchedule: (data) => api.post('/api/cleaning/schedule/generate', data),
+};
+
 export const storageMonitoring = {
   getUsage: () => api.get('/api/storage/usage'),
   getEmailUsage: () => api.get('/api/storage/email/usage'),

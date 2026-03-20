@@ -18,6 +18,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   BellOutlined,
+  ClearOutlined,
   MailOutlined,
   CheckOutlined,
   WarningOutlined,
@@ -98,6 +99,13 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
       label: <Link href="/services">Service</Link>,
     });
   }
+
+  // Cleaning
+  items.push({
+    key: '/cleaning',
+    icon: <ClearOutlined />,
+    label: <Link href="/cleaning">Cleaning</Link>,
+  });
 
   // Build settings children based on permissions
   const settingsChildren = [];

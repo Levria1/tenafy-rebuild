@@ -485,7 +485,12 @@ async function sendTemplateEmail(pool, orgId, {
 
   // 3. Substitute in subject and body
   const renderedSubject = substituteVariables(template.subject || '', variables);
-  const renderedBody = substituteVariables(template.template_content || '', variables);
+  let renderedBody = substituteVariables(template.template_content || '', variables);
+
+  // Convert plain-text newlines to HTML line breaks (unless body already contains HTML tags)
+  if (!/<[a-z][\s\S]*>/i.test(renderedBody)) {
+    renderedBody = renderedBody.replace(/\n/g, '<br>\n');
+  }
 
   // 4. Determine recipient
   let recipient = toOverride;
@@ -612,7 +617,12 @@ async function previewTemplate(pool, orgId, { templateId, templateType, leaseId,
   }
 
   const renderedSubject = substituteVariables(template.subject || '', variables);
-  const renderedBody = substituteVariables(template.template_content || '', variables);
+  let renderedBody = substituteVariables(template.template_content || '', variables);
+
+  // Convert plain-text newlines to HTML line breaks (unless body already contains HTML tags)
+  if (!/<[a-z][\s\S]*>/i.test(renderedBody)) {
+    renderedBody = renderedBody.replace(/\n/g, '<br>\n');
+  }
 
   return { subject: renderedSubject, body: renderedBody, variables };
 }

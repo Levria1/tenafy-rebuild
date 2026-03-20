@@ -127,7 +127,12 @@ router.post('/send', authenticate, async (req, res) => {
       for (const recipient of recipients) {
         try {
           const renderedSubject = substituteVariables(manualSubject, variables);
-          const renderedBody = substituteVariables(manualBody, variables);
+          let renderedBody = substituteVariables(manualBody, variables);
+
+          // Convert plain-text newlines to HTML line breaks (unless body already contains HTML tags)
+          if (!/<[a-z][\s\S]*>/i.test(renderedBody)) {
+            renderedBody = renderedBody.replace(/\n/g, '<br>\n');
+          }
           const { from: manualFrom } = req.body;
           const mailOpts = {
             to: recipient,

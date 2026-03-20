@@ -58,7 +58,7 @@ async function provisionOrg({ orgId, displayName, adminUsername, adminPassword, 
     // System admin role
     const roleId = '230000000001';
     await tempConn.query(
-      `INSERT INTO role (id, display_name, description, type, org_id, status) VALUES (?, 'Landlord System Manager', 'Full system access', 1, ?, 1)`,
+      `INSERT INTO role (id, display_name, description, type, org_id, status) VALUES (?, 'Super Admin', 'Full system access', 1, ?, 1)`,
       [roleId, orgId]
     );
 

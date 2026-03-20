@@ -1,0 +1,735 @@
+'use client';
+
+import { Suspense, useEffect, useState, useCallback } from 'react';
+import { Tabs, Table, Button, Select, DatePicker, Tag, Space, Input, Modal, Form, message, Popconfirm, Card, Typography } from 'antd';
+import { SaveOutlined, PlusOutlined, DeleteOutlined, ThunderboltOutlined, EditOutlined } from '@ant-design/icons';
+import MainLayout from '../../components/Layout';
+import { cleaning } from '../../lib/api';
+import dayjs from 'dayjs';
+
+const { Text, Title } = Typography;
+
+const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const DAY_OPTIONS = DAY_LABELS.map((label, i) => ({ label, value: i }));
+
+export default function CleaningPageWrapper() {
+  return <Suspense fallback={<div />}><CleaningPage /></Suspense>;
+}
+
+function CleaningPage() {
+  const [activeTab, setActiveTab] = useState('weekly');
+
+  const items = [
+    { key: 'weekly', label: 'Weekly Cleaning', children: <WeeklyCleaningTab /> },
+    { key: 'checkout', label: 'Checkout Cleaning', children: <CheckoutCleaningTab /> },
+    { key: 'schedule', label: 'Weekly Schedule', children: <WeeklyScheduleTab /> },
+    { key: 'settings', label: 'Settings', children: <CleanerSettingsTab /> },
+  ];
+
+  return (
+    <MainLayout>
+      <div style={{ marginBottom: 16 }}>
+        <Title level={4} style={{ margin: 0 }}>Cleaning</Title>
+      </div>
+      <Tabs activeKey={activeTab} onChange={setActiveTab} items={items} />
+    </MainLayout>
+  );
+}
+
+// ─── TAB 1: Weekly Cleaning ──────────────────────────────────────────────────
+
+function WeeklyCleaningTab() {
+  const [configs, setConfigs] = useState([]);
+  const [cleaners, setCleaners] = useState([]);
+  const [overrides, setOverrides] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [checkoutMap, setCheckoutMap] = useState({});
+
+  // The selected week for overrides (default: next Monday)
+  const [selectedWeek, setSelectedWeek] = useState(() => {
+    const today = dayjs();
+    const dayOfWeek = today.day(); // 0=Sun
+    const daysUntilMon = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
+    return today.add(daysUntilMon, 'day').format('YYYY-MM-DD');
+  });
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [cfgRes, cleanerRes, checkoutRes] = await Promise.all([
+        cleaning.getConfig(),
+        cleaning.getCleaners(),
+        cleaning.getCheckout(),
+      ]);
+
+      const cfgData = cfgRes.data?.data || [];
+      const cleanerData = (cleanerRes.data?.data || []).filter(c => Number(c.status) === 1);
+      setCleaners(cleanerData);
+
+      // Config endpoint now returns ALL active units with their config + current tenant
+      const merged = cfgData.map(r => ({
+        unit_id: r.unit_id,
+        unit_name: r.unit_name,
+        property_id: r.property_id,
+        property_name: r.property_name,
+        cleaning_day: r.cleaning_day !== null && r.cleaning_day !== undefined ? Number(r.cleaning_day) : null,
+        cleaner_id: r.cleaner_id,
+        tenant_name: [r.tenant_first_name, r.tenant_last_name].filter(Boolean).join(' ') || null,
+      }));
+      setConfigs(merged);
+
+      // Build checkout map: unit_id -> checkout info
+      const coMap = {};
+      for (const co of (checkoutRes.data?.data || [])) {
+        coMap[co.unit_id.toString()] = co;
+      }
+      setCheckoutMap(coMap);
+
+      // Load overrides for selected week
+      await loadOverrides(selectedWeek);
+    } catch (err) {
+      console.error(err);
+      message.error('Failed to load cleaning data');
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedWeek]);
+
+  const loadOverrides = async (weekOf) => {
+    try {
+      const res = await cleaning.getOverrides(weekOf);
+      const map = {};
+      for (const o of (res.data?.data || [])) {
+        map[o.unit_id.toString()] = o;
+      }
+      setOverrides(map);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  useEffect(() => { loadOverrides(selectedWeek); }, [selectedWeek]);
+
+  const handleConfigChange = (unitId, field, value) => {
+    setConfigs(prev => prev.map(c =>
+      c.unit_id.toString() === unitId.toString()
+        ? { ...c, [field]: value }
+        : c
+    ));
+    setDirty(true);
+  };
+
+  const handleOverrideChange = async (unitId, value) => {
+    // value: null = Normal, 'skip' = skip, number = move to day
+    let override_type = null;
+    let override_day = null;
+
+    if (value === 'skip') {
+      override_type = 0;
+    } else if (value !== null && value !== undefined && value !== 'normal') {
+      override_type = 1;
+      override_day = Number(value);
+    }
+
+    try {
+      await cleaning.saveOverride({
+        unit_id: unitId,
+        week_of: selectedWeek,
+        override_type,
+        override_day,
+      });
+      // Update local state
+      if (override_type === null) {
+        setOverrides(prev => {
+          const copy = { ...prev };
+          delete copy[unitId.toString()];
+          return copy;
+        });
+      } else {
+        setOverrides(prev => ({
+          ...prev,
+          [unitId.toString()]: { override_type, override_day },
+        }));
+      }
+    } catch (err) {
+      message.error('Failed to save override');
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await cleaning.saveConfig({
+        configs: configs.map(c => ({
+          unit_id: c.unit_id,
+          property_id: c.property_id,
+          cleaning_day: c.cleaning_day,
+          cleaner_id: c.cleaner_id,
+        })),
+      });
+      message.success('Cleaning config saved');
+      setDirty(false);
+    } catch (err) {
+      message.error('Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const getOverrideValue = (unitId) => {
+    const o = overrides[unitId.toString()];
+    if (!o) return 'normal';
+    if (Number(o.override_type) === 0) return 'skip';
+    return o.override_day;
+  };
+
+  const columns = [
+    {
+      title: 'Property',
+      dataIndex: 'property_name',
+      width: 180,
+      onFilter: (value, record) => record.property_name === value,
+      filters: [...new Set(configs.map(c => c.property_name))].map(p => ({ text: p, value: p })),
+    },
+    {
+      title: 'Unit',
+      dataIndex: 'unit_name',
+      width: 120,
+    },
+    {
+      title: 'Tenant',
+      dataIndex: 'tenant_name',
+      width: 150,
+      render: v => v || <Text type="secondary">Vacant</Text>,
+    },
+    {
+      title: 'Day',
+      dataIndex: 'cleaning_day',
+      width: 130,
+      render: (val, record) => (
+        <Select
+          value={val !== null && val !== undefined ? Number(val) : undefined}
+          onChange={v => handleConfigChange(record.unit_id, 'cleaning_day', v)}
+          options={DAY_OPTIONS}
+          placeholder="Select day"
+          allowClear
+          style={{ width: 110 }}
+          size="small"
+        />
+      ),
+    },
+    {
+      title: 'Cleaner',
+      dataIndex: 'cleaner_id',
+      width: 160,
+      render: (val, record) => (
+        <Select
+          value={val ? val.toString() : undefined}
+          onChange={v => handleConfigChange(record.unit_id, 'cleaner_id', v)}
+          options={cleaners.map(c => ({ label: c.name, value: c.id.toString() }))}
+          placeholder="Select cleaner"
+          allowClear
+          style={{ width: 140 }}
+          size="small"
+        />
+      ),
+    },
+    {
+      title: `Change (week of ${dayjs(selectedWeek).format('MMM D')})`,
+      width: 180,
+      render: (_, record) => {
+        const overrideVal = getOverrideValue(record.unit_id);
+        return (
+          <Select
+            value={overrideVal}
+            onChange={v => handleOverrideChange(record.unit_id, v)}
+            style={{ width: 160 }}
+            size="small"
+            options={[
+              { label: 'Normal', value: 'normal' },
+              { label: 'No Cleaning', value: 'skip' },
+              ...DAY_OPTIONS.map(d => ({ label: `Move to ${d.label}`, value: d.value })),
+            ]}
+          />
+        );
+      },
+    },
+    {
+      title: '',
+      width: 80,
+      render: (_, record) => {
+        const co = checkoutMap[record.unit_id.toString()];
+        if (co) {
+          return <Tag color="orange">退房 {dayjs(co.cleaning_date).format('M/D')}</Tag>;
+        }
+        return null;
+      },
+    },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <Space>
+          <Text>Override week:</Text>
+          <DatePicker
+            value={dayjs(selectedWeek)}
+            onChange={d => d && setSelectedWeek(d.startOf('week').add(1, 'day').format('YYYY-MM-DD'))}
+            picker="week"
+            size="small"
+          />
+        </Space>
+        <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!dirty}>
+          Save Config
+        </Button>
+      </div>
+      <Table
+        dataSource={configs}
+        columns={columns}
+        rowKey="unit_id"
+        loading={loading}
+        size="small"
+        pagination={false}
+        scroll={{ y: 600 }}
+      />
+    </div>
+  );
+}
+
+// ─── TAB 2: Checkout Cleaning ────────────────────────────────────────────────
+
+function CheckoutCleaningTab() {
+  const [data, setData] = useState([]);
+  const [cleaners, setCleaners] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedMonth, setSelectedMonth] = useState(dayjs());
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const monthStr = selectedMonth.format('YYYY-MM');
+      const [coRes, cleanerRes] = await Promise.all([
+        cleaning.getCheckout(monthStr),
+        cleaning.getCleaners(),
+      ]);
+      setData(coRes.data?.data || []);
+      setCleaners((cleanerRes.data?.data || []).filter(c => Number(c.status) === 1));
+    } catch (err) {
+      message.error('Failed to load checkout cleaning');
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedMonth]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleUpdate = async (id, field, value) => {
+    try {
+      await cleaning.updateCheckout(id, { [field]: value });
+      message.success('Updated');
+      loadData();
+    } catch (err) {
+      message.error('Failed to update');
+    }
+  };
+
+  const columns = [
+    {
+      title: 'Property',
+      dataIndex: 'property_name',
+      width: 160,
+    },
+    {
+      title: 'Unit',
+      dataIndex: 'unit_name',
+      width: 100,
+    },
+    {
+      title: 'Tenant',
+      width: 150,
+      render: (_, r) => [r.first_name, r.last_name].filter(Boolean).join(' '),
+    },
+    {
+      title: 'Lease End',
+      dataIndex: 'lease_end_date',
+      width: 110,
+      render: v => v ? dayjs(v).format('YYYY-MM-DD') : '-',
+      sorter: (a, b) => new Date(a.lease_end_date) - new Date(b.lease_end_date),
+      defaultSortOrder: 'ascend',
+    },
+    {
+      title: 'Cleaning Date',
+      dataIndex: 'cleaning_date',
+      width: 140,
+      render: (v, r) => (
+        <DatePicker
+          value={v ? dayjs(v) : null}
+          onChange={d => handleUpdate(r.id, 'cleaning_date', d ? d.format('YYYY-MM-DD') : null)}
+          size="small"
+        />
+      ),
+    },
+    {
+      title: 'Cleaner',
+      dataIndex: 'cleaner_id',
+      width: 150,
+      render: (v, r) => (
+        <Select
+          value={v ? v.toString() : undefined}
+          onChange={val => handleUpdate(r.id, 'cleaner_id', val)}
+          options={cleaners.map(c => ({ label: c.name, value: c.id.toString() }))}
+          placeholder="Assign"
+          allowClear
+          style={{ width: 130 }}
+          size="small"
+        />
+      ),
+    },
+    {
+      title: 'Next Lease Start',
+      dataIndex: 'next_lease_start',
+      width: 130,
+      render: (v, r) => v ? (
+        <span>{dayjs(v).format('YYYY-MM-DD')}{r.next_tenant_name ? ` (${r.next_tenant_name})` : ''}</span>
+      ) : <Text type="secondary">None</Text>,
+    },
+  ];
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <span>Month:</span>
+        <DatePicker
+          picker="month"
+          value={selectedMonth}
+          onChange={v => v && setSelectedMonth(v)}
+          allowClear={false}
+          size="small"
+        />
+      </div>
+      <Table
+        dataSource={data}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        size="small"
+        pagination={false}
+        scroll={{ y: 600 }}
+      />
+    </div>
+  );
+}
+
+// ─── TAB 3: Weekly Schedule ──────────────────────────────────────────────────
+
+function WeeklyScheduleTab() {
+  const [schedule, setSchedule] = useState([]);
+  const [cleaners, setCleaners] = useState([]);
+  const [selectedCleaner, setSelectedCleaner] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+
+  // Default to upcoming Monday
+  const [selectedMonday, setSelectedMonday] = useState(() => {
+    const today = dayjs();
+    const dayOfWeek = today.day(); // 0=Sun
+    const daysUntilMon = dayOfWeek === 0 ? 1 : dayOfWeek === 1 ? 0 : (8 - dayOfWeek);
+    return today.add(daysUntilMon, 'day').format('YYYY-MM-DD');
+  });
+
+  // Calculate the month view: first Monday of the month that selectedMonday falls in
+  const selectedMonth = dayjs(selectedMonday);
+
+  const loadSchedule = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [res, cleanerRes] = await Promise.all([
+        cleaning.getSchedule(selectedMonday),
+        cleaning.getCleaners(),
+      ]);
+      setSchedule(res.data?.data || []);
+      setCleaners((cleanerRes.data?.data || []).filter(c => Number(c.status) === 1));
+    } catch (err) {
+      message.error('Failed to load schedule');
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedMonday]);
+
+  useEffect(() => { loadSchedule(); }, [loadSchedule]);
+
+  // Filter schedule by selected cleaner
+  const filteredSchedule = selectedCleaner
+    ? schedule.filter(s => s.cleaner_id && s.cleaner_id.toString() === selectedCleaner)
+    : schedule;
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const res = await cleaning.generateSchedule({ week_of: selectedMonday });
+      message.success(res.data?.message || 'Schedule generated');
+      loadSchedule();
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to generate');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // Group by date, then by property
+  const grouped = {};
+  for (const item of filteredSchedule) {
+    const dateKey = item.scheduled_date;
+    if (!grouped[dateKey]) grouped[dateKey] = {};
+    const propKey = item.property_name;
+    if (!grouped[dateKey][propKey]) grouped[dateKey][propKey] = [];
+    grouped[dateKey][propKey].push(item);
+  }
+
+  const sortedDates = Object.keys(grouped).sort();
+
+  // Get all Mondays in the selected month
+  const monthStart = selectedMonth.startOf('month');
+  const monthEnd = selectedMonth.endOf('month');
+  const mondays = [];
+  let cursor = monthStart.startOf('week').add(1, 'day'); // First Monday
+  if (cursor.isAfter(monthStart)) {
+    cursor = cursor.subtract(7, 'day');
+  }
+  while (cursor.isBefore(monthEnd) || cursor.isSame(monthEnd, 'day')) {
+    if (cursor.month() === selectedMonth.month() || cursor.add(6, 'day').month() === selectedMonth.month()) {
+      mondays.push(cursor.format('YYYY-MM-DD'));
+    }
+    cursor = cursor.add(7, 'day');
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <Space>
+          <Text strong>Month:</Text>
+          <DatePicker
+            value={selectedMonth}
+            onChange={d => {
+              if (!d) return;
+              // Find first Monday of that month
+              let first = d.startOf('month');
+              while (first.day() !== 1) first = first.add(1, 'day');
+              setSelectedMonday(first.format('YYYY-MM-DD'));
+            }}
+            picker="month"
+            size="small"
+          />
+        </Space>
+        <Space>
+          <Text>Cleaner:</Text>
+          <Select
+            value={selectedCleaner}
+            onChange={v => setSelectedCleaner(v)}
+            options={[
+              { label: 'All Cleaners', value: null },
+              ...cleaners.map(c => ({ label: c.name, value: c.id.toString() })),
+            ]}
+            placeholder="All Cleaners"
+            allowClear
+            onClear={() => setSelectedCleaner(null)}
+            style={{ width: 150 }}
+            size="small"
+          />
+          <Text>Week of:</Text>
+          <Select
+            value={selectedMonday}
+            onChange={v => setSelectedMonday(v)}
+            options={mondays.map(m => ({ label: dayjs(m).format('MMM D'), value: m }))}
+            style={{ width: 120 }}
+            size="small"
+          />
+          <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={generating}>
+            Generate
+          </Button>
+        </Space>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 40 }}>Loading...</div>
+      ) : filteredSchedule.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
+          No schedule generated for this week. Click Generate to create one.
+        </div>
+      ) : (
+        <div>
+          {sortedDates.map(date => {
+            const dayLabel = dayjs(date).format('ddd');
+            const dateLabel = dayjs(date).format('M/D/YYYY');
+            const props = grouped[date];
+            return (
+              <div key={date} style={{ marginBottom: 8, display: 'flex', borderBottom: '1px solid #f0f0f0', padding: '8px 0' }}>
+                <div style={{ width: 40, fontWeight: 'bold', color: '#666' }}>{dayLabel}</div>
+                <div style={{ width: 90, color: '#999' }}>{dateLabel}</div>
+                <div style={{ flex: 1 }}>
+                  {Object.entries(props).map(([propName, units]) => {
+                    const unitLabels = units.map(u => {
+                      const isCheckout = Number(u.type) === 1;
+                      return isCheckout ? `${u.unit_name} (退房清家)` : u.unit_name;
+                    });
+                    // Show cleaner name if assigned (all units in a property likely same cleaner)
+                    const cleanerName = units[0]?.cleaner_name;
+                    return (
+                      <span key={propName} style={{ marginRight: 16 }}>
+                        <Text strong>{propName}</Text>{' '}
+                        <Text>{unitLabels.join(', ')}</Text>
+                        {cleanerName && <Text type="secondary" style={{ marginLeft: 6 }}>({cleanerName})</Text>}
+                        <Text style={{ marginLeft: 4 }}>; </Text>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── TAB 4: Settings (Cleaners) ──────────────────────────────────────────────
+
+function CleanerSettingsTab() {
+  const [cleaners, setCleaners] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingCleaner, setEditingCleaner] = useState(null);
+  const [form] = Form.useForm();
+
+  const loadCleaners = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await cleaning.getCleaners();
+      setCleaners(res.data?.data || []);
+    } catch (err) {
+      message.error('Failed to load cleaners');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadCleaners(); }, [loadCleaners]);
+
+  const handleSave = async () => {
+    try {
+      const values = await form.validateFields();
+      if (editingCleaner) {
+        await cleaning.updateCleaner(editingCleaner.id, { name: values.name, status: 1 });
+        message.success('Cleaner updated');
+      } else {
+        await cleaning.createCleaner({ name: values.name });
+        message.success('Cleaner created');
+      }
+      setModalOpen(false);
+      form.resetFields();
+      setEditingCleaner(null);
+      loadCleaners();
+    } catch (err) {
+      if (err.errorFields) return; // validation error
+      message.error('Failed to save cleaner');
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await cleaning.deleteCleaner(id);
+      message.success('Cleaner deleted');
+      loadCleaners();
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to delete cleaner');
+    }
+  };
+
+  const columns = [
+    {
+      title: 'Name',
+      dataIndex: 'name',
+      width: 300,
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      width: 100,
+      render: v => Number(v) === 1 ? <Tag color="green">Active</Tag> : <Tag color="red">Inactive</Tag>,
+    },
+    {
+      title: 'Actions',
+      width: 150,
+      render: (_, record) => (
+        <Space>
+          <Button
+            type="link"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => {
+              setEditingCleaner(record);
+              form.setFieldsValue({ name: record.name });
+              setModalOpen(true);
+            }}
+          >
+            Edit
+          </Button>
+          <Popconfirm
+            title="Delete this cleaner?"
+            onConfirm={() => handleDelete(record.id)}
+            okText="Yes"
+            cancelText="No"
+          >
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+              Delete
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          onClick={() => {
+            setEditingCleaner(null);
+            form.resetFields();
+            setModalOpen(true);
+          }}
+        >
+          Add Cleaner
+        </Button>
+      </div>
+      <Table
+        dataSource={cleaners}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        size="small"
+        pagination={false}
+      />
+      <Modal
+        title={editingCleaner ? 'Edit Cleaner' : 'Add Cleaner'}
+        open={modalOpen}
+        onOk={handleSave}
+        onCancel={() => { setModalOpen(false); setEditingCleaner(null); form.resetFields(); }}
+        okText="Save"
+      >
+        <Form form={form} layout="vertical">
+          <Form.Item name="name" label="Cleaner Name" rules={[{ required: true, message: 'Name is required' }]}>
+            <Input placeholder="Enter cleaner name" />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  );
+}

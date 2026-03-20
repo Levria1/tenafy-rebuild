@@ -47,7 +47,7 @@ async function seedAdmin() {
       'INSERT INTO user_role (user_id, role_id) VALUES (?, ?)',
       [userId, ADMIN_ROLE_ID]
     );
-    console.log('Assigned role: Landlord System Manager');
+    console.log('Assigned role: Super Admin');
 
     console.log('\nDone! Login with username:', USERNAME, '/ password:', PASSWORD);
     await pool.end();
