@@ -55,6 +55,12 @@ export default function MasterDashboardPage() {
       key: 'display_name',
     },
     {
+      title: 'Admin',
+      dataIndex: 'admin_username',
+      key: 'admin_username',
+      render: (v) => v || '-',
+    },
+    {
       title: 'Database',
       dataIndex: 'db_name',
       key: 'db_name',

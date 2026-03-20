@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message } from 'antd';
-import { EditOutlined, ArrowLeftOutlined } from '@ant-design/icons';
-import MainLayout from '../../../../../components/Layout';
+import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Modal } from 'antd';
+import { EditOutlined, ArrowLeftOutlined, DeleteOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
+import MainLayout, { useAuth } from '../../../../../components/Layout';
 import { accounting } from '../../../../../lib/api';
 
 export default function AccountDetailPage() {
@@ -13,6 +13,9 @@ export default function AccountDetailPage() {
   const router = useRouter();
   const params = useParams();
   const accountId = params.id;
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission ? hasPermission('LANDLORD/ACCOUNTING_EDIT') : false;
+  const canDelete = hasPermission ? hasPermission('LANDLORD/ACCOUNTING_DELETE') : false;
 
   useEffect(() => {
     loadAccount();
@@ -31,6 +34,28 @@ export default function AccountDetailPage() {
     }
   };
 
+  const handleDelete = () => {
+    Modal.confirm({
+      title: 'Delete Transaction',
+      icon: <ExclamationCircleOutlined />,
+      content: 'Are you sure you want to delete this transaction? This action cannot be undone.',
+      okText: 'Delete',
+      okType: 'danger',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        try {
+          const res = await accounting.delete(accountId);
+          if (res.data.code === 200) {
+            message.success('Transaction deleted');
+            router.push('/accounting');
+          }
+        } catch (error) {
+          message.error(error.response?.data?.message || 'Failed to delete transaction');
+        }
+      },
+    });
+  };
+
   const linesColumns = [
     { title: 'Date', dataIndex: 'transaction_date', key: 'transaction_date' },
     { title: 'Description', dataIndex: 'description', key: 'description' },
@@ -44,7 +69,14 @@ export default function AccountDetailPage() {
       <Space direction="vertical" style={{ width: '100%' }} size="large">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/accounting')}>Back to Accounting</Button>
-          <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/accounting/accounts/${accountId}/edit`)}>Edit</Button>
+          <Space>
+            {canDelete && (
+              <Button danger icon={<DeleteOutlined />} onClick={handleDelete}>Delete</Button>
+            )}
+            {canEdit && (
+              <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/accounting/accounts/${accountId}/edit`)}>Edit</Button>
+            )}
+          </Space>
         </div>
         <Card title={`Transaction #${accountId}`} loading={loading}>
           {account && (

@@ -76,7 +76,7 @@ router.get('/organizations', authenticateMaster, async (req, res) => {
   try {
     const masterPool = getMasterPool();
     const [orgs] = await masterPool.execute(
-      'SELECT id, display_name, db_name, status, public_api_enabled, created_at, updated_at FROM organizations ORDER BY created_at DESC'
+      'SELECT id, display_name, admin_username, db_name, status, public_api_enabled, created_at, updated_at FROM organizations ORDER BY created_at DESC'
     );
     res.json({ code: 200, data: orgs });
   } catch (error) {

@@ -111,8 +111,8 @@ async function provisionOrg({ orgId, displayName, adminUsername, adminPassword, 
 
     // 5. Register in master database
     await masterPool.execute(
-      `INSERT INTO organizations (id, display_name, db_name, status, created_at) VALUES (?, ?, ?, 1, NOW())`,
-      [orgId, displayName, dbName]
+      `INSERT INTO organizations (id, display_name, admin_username, db_name, status, created_at) VALUES (?, ?, ?, ?, 1, NOW())`,
+      [orgId, displayName, adminUsername, dbName]
     );
 
     // 6. Insert into org_user_map
