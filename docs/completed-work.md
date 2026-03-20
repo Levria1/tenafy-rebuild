@@ -4,7 +4,22 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
-## Session: Permission Guards, Role Checkbox Fix, SQL Fixes, File Preview Fix
+## Session: Permission Guards, SQL Fixes, File Preview, Master Dashboard, UI Fixes
+
+- **Permission guards**: Added `hasPermission()` checks across 12+ pages to hide/show Edit/Delete buttons based on role permissions
+- **Role edit/create page**: Replaced broken `Checkbox.Group` with custom `PermissionCheckboxes` component fixing group header toggle behavior
+- **Tenant list SQL fix** (`tenant.js`): Fixed `ONLY_FULL_GROUP_BY` error — wrapped non-grouped columns with `MAX()`/`ANY_VALUE()`, fixed count query to `COUNT(DISTINCT t.id)`
+- **Unit list SQL fix** (`property.js`): Fixed same error using `ROW_NUMBER()` subquery for tenant info
+- **File preview/download fix** (`file.js`): Fixed 500 error on unauthenticated routes — added `getPoolFromRequest()` helper with JWT cookie + master DB fallback
+- **Accounting delete**: Added Delete button with confirmation modal to accounting detail page, gated by `ACCOUNTING_DELETE` permission
+- **Master dashboard**: Added `admin_username` column to `organizations` table and Admin column to dashboard UI. Updated org provisioner to save admin username during creation
+- **Service edit**: Removed required validation from preferred date Option 1 field
+- **Profile link**: Fixed Profile button in user dropdown menu to link to `/settings?tab=personal`
+- **Master dashboard droplet fix**: `public_api_enabled` column missing on droplet `organizations` table causing 500
+
+---
+
+## Session: Permission Guards, Role Checkbox Fix, SQL Fixes, File Preview Fix (superseded by above)
 
 - **Frontend permission guards**: Added `hasPermission()` checks to hide/show Edit and Delete buttons across 12+ pages based on role permissions. Pattern: `const canEdit = hasPermission ? hasPermission('LANDLORD/ENTITY_EDIT') : false` → `{canEdit && <Button>}`. Applied to: leasing, services, contacts (tenant, payee, service-vendor), property, unit, maintenance, invoices, email groups, settings (roles, users).
 - **Role edit/create page**: Refactored broken `Checkbox.Group` implementation to custom `PermissionCheckboxes` component with fully controlled checkboxes. Fixed group header checkboxes that were toggling all groups instead of just their own children. Uses `checked`/`onChange` per checkbox instead of `Checkbox.Group`.

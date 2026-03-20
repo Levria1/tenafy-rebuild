@@ -471,7 +471,7 @@ function MainLayout({ children }) {
     {
       key: 'profile',
       icon: <UserOutlined />,
-      label: 'Profile',
+      label: <Link href="/settings?tab=personal">Profile</Link>,
     },
     {
       key: 'settings',
