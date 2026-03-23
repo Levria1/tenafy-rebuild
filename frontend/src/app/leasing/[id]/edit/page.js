@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Form, Input, DatePicker, Select, Button, message, Spin, Row, Col, Divider, Switch, Checkbox } from 'antd';
+import { Form, Input, InputNumber, DatePicker, Select, Button, message, Spin, Row, Col, Divider, Switch, Checkbox } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
@@ -115,6 +115,7 @@ export default function LeasingEditPage() {
           invoicing: d.invoicing || undefined,
           first_invoice_date: d.first_invoice_date ? dayjs(d.first_invoice_date) : undefined,
           credits: d.credits || '',
+          utility_credit: d.utility_credit != null ? Number(d.utility_credit) : undefined,
           note: d.note || '',
           contact_phone: d.contact_phone || '',
           unit_information: d.unit_information || '',
@@ -165,6 +166,7 @@ export default function LeasingEditPage() {
         unit_information: values.unit_information || null,
         note: values.note || null,
         credits: values.credits || null,
+        utility_credit: values.utility_credit ?? null,
         contact_phone: values.contact_phone || null,
         status: values.status ?? 1,
         mark_past_paid: values.mark_past_paid || false,
@@ -368,6 +370,14 @@ export default function LeasingEditPage() {
               <FLabel>Credits</FLabel>
               <Form.Item name="credits" noStyle>
                 <Input placeholder="Credits" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16} style={{ marginTop: 12 }}>
+            <Col span={8}>
+              <FLabel>Monthly Utility Credit</FLabel>
+              <Form.Item name="utility_credit" noStyle>
+                <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="0.00" />
               </Form.Item>
             </Col>
             <Col span={8}>

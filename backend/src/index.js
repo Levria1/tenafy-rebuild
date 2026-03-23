@@ -45,6 +45,7 @@ app.use('/api/pdf', require('./routes/pdf'));
 app.use('/api/storage', require('./routes/storage'));
 app.use('/api/public', require('./routes/public'));
 app.use('/api/cleaning', require('./routes/cleaning'));
+app.use('/api/utility', require('./routes/utility'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

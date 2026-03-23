@@ -369,6 +369,33 @@ export const cleaning = {
   generateSchedule: (data) => api.post('/api/cleaning/schedule/generate', data),
 };
 
+export const utility = {
+  // Groups
+  getGroups: () => api.get('/api/utility/groups'),
+  createGroup: (data) => api.post('/api/utility/group', data),
+  updateGroup: (id, data) => api.put(`/api/utility/group/${id}`, data),
+  deleteGroup: (id) => api.delete(`/api/utility/group/${id}`),
+  getPropertiesUnits: () => api.get('/api/utility/properties-units'),
+  getUnitGroups: () => api.get('/api/utility/unit-groups'),
+  assignUnitGroups: (data) => api.post('/api/utility/unit-groups/assign', data),
+  // Meters
+  getMeters: (params) => api.get('/api/utility/meters', { params }),
+  createMeter: (data) => api.post('/api/utility/meter', data),
+  updateMeter: (id, data) => api.put(`/api/utility/meter/${id}`, data),
+  deleteMeter: (id) => api.delete(`/api/utility/meter/${id}`),
+  // Bills
+  getLastBillDate: (params) => api.get('/api/utility/last-bill-date', { params }),
+  getBills: (params) => api.get('/api/utility/bills', { params }),
+  getBill: (id) => api.get(`/api/utility/bill/${id}`),
+  createBill: (data) => api.post('/api/utility/bill', data),
+  updateBill: (id, data) => api.put(`/api/utility/bill/${id}`, data),
+  deleteBill: (id) => api.delete(`/api/utility/bill/${id}`),
+  updateBillLine: (id, data) => api.put(`/api/utility/bill-line/${id}`, data),
+  finalizeBill: (id) => api.post(`/api/utility/bill/${id}/finalize`),
+  generateInvoices: (id) => api.post(`/api/utility/bill/${id}/generate-invoices`),
+  getReport: () => api.get('/api/utility/report'),
+};
+
 export const storageMonitoring = {
   getUsage: () => api.get('/api/storage/usage'),
   getEmailUsage: () => api.get('/api/storage/email/usage'),

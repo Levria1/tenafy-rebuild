@@ -227,7 +227,7 @@ router.post('/', authenticate, async (req, res) => {
     const {
       unit_id, tenant_id, start_date, end_date, type,
       price, deposit, due_date, invoicing, amount, first_invoice_date,
-      contract_type, unit_information, note, credits,
+      contract_type, unit_information, note, credits, utility_credit,
       contact_phone, lease_no,
       additionalTenantIds,
       // notification flags
@@ -277,7 +277,7 @@ router.post('/', authenticate, async (req, res) => {
     await req.pool.execute(
       `INSERT INTO leasing (
         id, unit_id, tenant_id, start_date, end_date, status, price, type, invoicing,
-        amount, due_date, deposit, currency_id, contract_type, unit_information, note, credits,
+        amount, due_date, deposit, currency_id, contract_type, unit_information, note, credits, utility_credit,
         contact_phone, lease_no, first_invoice_date,
         access_setting, share_lease, all_past,
         tenant_posted, landlord_posted, landlord_due, tenant_due,
@@ -289,7 +289,7 @@ router.post('/', authenticate, async (req, res) => {
         leaseId.toString(), unit_id, tenant_id, start_date, end_date || null,
         price || 0, type || 0, invoicing || null,
         amount || price || 0, due_date || null, deposit || 0, currencyId,
-        contract_type || 0, unit_information || null, note || null, credits || null,
+        contract_type || 0, unit_information || null, note || null, credits || null, utility_credit ?? null,
         contact_phone || null, leaseNo, first_invoice_date || null,
         access_setting || null, share_lease ? 1 : 0, all_past ? 1 : 0,
         tenant_posted ? 1 : 0, landlord_posted ? 1 : 0,
@@ -509,7 +509,7 @@ router.put('/:id', authenticate, async (req, res) => {
     const {
       unit_id, tenant_id, start_date, end_date, type, price, deposit,
       due_date, invoicing, amount, contract_type, unit_information,
-      note, credits, contact_phone, first_invoice_date, status,
+      note, credits, utility_credit, contact_phone, first_invoice_date, status,
       additionalTenantIds,
       mark_past_paid
     } = req.body;
@@ -564,6 +564,7 @@ router.put('/:id', authenticate, async (req, res) => {
     if (unit_information !== undefined) { fields.push('unit_information = ?'); params.push(unit_information || null); }
     if (note !== undefined) { fields.push('note = ?'); params.push(note || null); }
     if (credits !== undefined) { fields.push('credits = ?'); params.push(credits || null); }
+    if (utility_credit !== undefined) { fields.push('utility_credit = ?'); params.push(utility_credit ?? null); }
     if (contact_phone !== undefined) { fields.push('contact_phone = ?'); params.push(contact_phone || null); }
     if (first_invoice_date !== undefined) { fields.push('first_invoice_date = ?'); params.push(first_invoice_date || null); }
     if (status !== undefined) { fields.push('status = ?'); params.push(status); }

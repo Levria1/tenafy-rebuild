@@ -19,6 +19,7 @@ import {
   MenuUnfoldOutlined,
   BellOutlined,
   ClearOutlined,
+  ThunderboltOutlined,
   MailOutlined,
   CheckOutlined,
   WarningOutlined,
@@ -105,6 +106,13 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     key: '/cleaning',
     icon: <ClearOutlined />,
     label: <Link href="/cleaning">Cleaning</Link>,
+  });
+
+  // Utilities
+  items.push({
+    key: '/utilities',
+    icon: <ThunderboltOutlined />,
+    label: <Link href="/utilities">Utilities</Link>,
   });
 
   // Build settings children based on permissions

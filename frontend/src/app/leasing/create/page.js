@@ -241,6 +241,7 @@ export default function LeaseCreatePage() {
       unit_information: values.unit_information || null,
       note: values.note || null,
       credits: values.credits || null,
+      utility_credit: values.utility_credit ?? null,
       contact_phone: values.contact_phone || null,
       // notifications
       tenant_posted: values.tenant_posted || false,
@@ -527,6 +528,13 @@ export default function LeaseCreatePage() {
           </Col>
           <Col span={12}>
             <Form.Item name="credits" label="Credits">
+              <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="0.00" />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={16}>
+          <Col span={12}>
+            <Form.Item name="utility_credit" label="Monthly Utility Credit">
               <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="0.00" />
             </Form.Item>
           </Col>

@@ -11,8 +11,8 @@
     },
     {
       "name": "frontend",
-      "runtimeExecutable": "cmd.exe",
-      "runtimeArgs": ["/c", "npx", "next", "dev"],
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": ["./node_modules/next/dist/bin/next", "dev"],
       "port": 3000,
       "autoPort": false,
       "cwd": "frontend"
