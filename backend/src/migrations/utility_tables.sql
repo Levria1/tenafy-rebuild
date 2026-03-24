@@ -81,5 +81,13 @@ CREATE TABLE IF NOT EXISTS `utility_bill_line` (
   KEY `idx_invoice_id` (`invoice_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Junction table: which units belong to which billing group
+CREATE TABLE IF NOT EXISTS `utility_unit_group` (
+  `unit_id` bigint NOT NULL,
+  `group_id` bigint NOT NULL,
+  PRIMARY KEY (`unit_id`, `group_id`),
+  KEY `idx_group_id` (`group_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Add utility_credit column to leasing table
 ALTER TABLE `leasing` ADD COLUMN `utility_credit` decimal(10,2) DEFAULT NULL AFTER `credits`;

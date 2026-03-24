@@ -290,6 +290,12 @@ function TenantDetailPage() {
         {tenantData?.notes || '—'}
       </div>
 
+      {/* CLEANING NOTES */}
+      <SectionHeader title="Cleaning Notes" />
+      <div style={{ fontSize: 14, color: '#333', marginBottom: 16 }}>
+        {tenantData?.cleaning_notes || '—'}
+      </div>
+
       {/* ATTACHMENTS */}
       <SectionHeader title="Attachments" />
       <div style={{ fontSize: 14, color: '#333' }}>

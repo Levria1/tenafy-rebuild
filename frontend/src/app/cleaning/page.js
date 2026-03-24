@@ -6,6 +6,8 @@ import { SaveOutlined, PlusOutlined, DeleteOutlined, ThunderboltOutlined, EditOu
 import MainLayout from '../../components/Layout';
 import { cleaning } from '../../lib/api';
 import dayjs from 'dayjs';
+import isoWeek from 'dayjs/plugin/isoWeek';
+dayjs.extend(isoWeek);
 
 const { Text, Title } = Typography;
 
@@ -46,6 +48,7 @@ function WeeklyCleaningTab() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [checkoutMap, setCheckoutMap] = useState({});
+  const [weekNotes, setWeekNotes] = useState({}); // { propertyId: notes }
 
   // The selected week for overrides (default: next Monday)
   const [selectedWeek, setSelectedWeek] = useState(() => {
@@ -77,6 +80,7 @@ function WeeklyCleaningTab() {
         cleaning_day: r.cleaning_day !== null && r.cleaning_day !== undefined ? Number(r.cleaning_day) : null,
         cleaner_id: r.cleaner_id,
         tenant_name: [r.tenant_first_name, r.tenant_last_name].filter(Boolean).join(' ') || null,
+        tenant_cleaning_notes: r.tenant_cleaning_notes || null,
       }));
       setConfigs(merged);
 
@@ -99,12 +103,20 @@ function WeeklyCleaningTab() {
 
   const loadOverrides = async (weekOf) => {
     try {
-      const res = await cleaning.getOverrides(weekOf);
+      const [overRes, notesRes] = await Promise.all([
+        cleaning.getOverrides(weekOf),
+        cleaning.getWeekNotes(weekOf),
+      ]);
       const map = {};
-      for (const o of (res.data?.data || [])) {
+      for (const o of (overRes.data?.data || [])) {
         map[o.unit_id.toString()] = o;
       }
       setOverrides(map);
+      const nMap = {};
+      for (const n of (notesRes.data?.data || [])) {
+        nMap[n.property_id.toString()] = n.notes;
+      }
+      setWeekNotes(nMap);
     } catch (err) {
       console.error(err);
     }
@@ -135,15 +147,25 @@ function WeeklyCleaningTab() {
       override_day = Number(value);
     }
 
+    // Preserve existing notes when changing override type
+    const existingNotes = overrides[unitId.toString()]?.notes || null;
+
+    // If setting to Normal but there are notes, use type=2 (notes-only) to preserve them
+    let effectiveType = override_type;
+    if (override_type === null && existingNotes) {
+      effectiveType = 2;
+    }
+
     try {
       await cleaning.saveOverride({
         unit_id: unitId,
         week_of: selectedWeek,
-        override_type,
+        override_type: effectiveType,
         override_day,
+        notes: existingNotes,
       });
       // Update local state
-      if (override_type === null) {
+      if (effectiveType === null) {
         setOverrides(prev => {
           const copy = { ...prev };
           delete copy[unitId.toString()];
@@ -152,11 +174,54 @@ function WeeklyCleaningTab() {
       } else {
         setOverrides(prev => ({
           ...prev,
-          [unitId.toString()]: { override_type, override_day },
+          [unitId.toString()]: { override_type: effectiveType, override_day, notes: existingNotes },
         }));
       }
     } catch (err) {
       message.error('Failed to save override');
+    }
+  };
+
+  const handleOverrideNotes = async (unitId, notes) => {
+    const existing = overrides[unitId.toString()];
+    const override_type = existing?.override_type;
+    const override_day = existing?.override_day;
+
+    try {
+      if ((override_type === null || override_type === undefined) && !notes?.trim()) {
+        // No override and no notes — nothing to save
+        return;
+      }
+
+      // If no override exists but notes are being added, use type=2 (notes-only)
+      const effectiveType = (override_type !== null && override_type !== undefined) ? override_type : 2;
+
+      await cleaning.saveOverride({
+        unit_id: unitId,
+        week_of: selectedWeek,
+        override_type: effectiveType,
+        override_day: override_day ?? null,
+        notes: notes || null,
+      });
+      setOverrides(prev => ({
+        ...prev,
+        [unitId.toString()]: { ...existing, override_type: effectiveType, override_day: override_day ?? null, notes },
+      }));
+    } catch (err) {
+      message.error('Failed to save notes');
+    }
+  };
+
+  const handlePropertyNotes = async (propertyId, notes) => {
+    try {
+      await cleaning.saveWeekNotes({
+        property_id: propertyId,
+        week_of: selectedWeek,
+        notes: notes || null,
+      });
+      setWeekNotes(prev => ({ ...prev, [propertyId.toString()]: notes }));
+    } catch (err) {
+      message.error('Failed to save property notes');
     }
   };
 
@@ -184,6 +249,7 @@ function WeeklyCleaningTab() {
     const o = overrides[unitId.toString()];
     if (!o) return 'normal';
     if (Number(o.override_type) === 0) return 'skip';
+    if (Number(o.override_type) === 2) return 'normal'; // notes-only, keep normal
     return o.override_day;
   };
 
@@ -205,6 +271,12 @@ function WeeklyCleaningTab() {
       dataIndex: 'tenant_name',
       width: 150,
       render: v => v || <Text type="secondary">Vacant</Text>,
+    },
+    {
+      title: 'Cleaning Notes',
+      dataIndex: 'tenant_cleaning_notes',
+      width: 180,
+      render: v => v ? <Text type="secondary" style={{ fontSize: 12 }}>{v}</Text> : null,
     },
     {
       title: 'Day',
@@ -269,6 +341,10 @@ function WeeklyCleaningTab() {
         return null;
       },
     },
+    {
+      title: 'Notes',
+      width: 200,
+    },
   ];
 
   return (
@@ -288,14 +364,87 @@ function WeeklyCleaningTab() {
         </Button>
       </div>
       <Table
-        dataSource={configs}
-        columns={columns}
+        dataSource={(() => {
+          // Insert property header rows before each property group
+          const rows = [];
+          let lastProp = null;
+          for (const c of configs) {
+            if (c.property_id?.toString() !== lastProp) {
+              lastProp = c.property_id?.toString();
+              rows.push({ _type: 'property', property_id: c.property_id, property_name: c.property_name, unit_id: `prop-${c.property_id}` });
+            }
+            rows.push(c);
+          }
+          return rows;
+        })()}
+        columns={columns.map(col => {
+          if (col.dataIndex === 'property_name') {
+            return {
+              ...col,
+              render: (val, record) => {
+                if (record._type === 'property') {
+                  return <Text strong style={{ fontSize: 13 }}>{record.property_name}</Text>;
+                }
+                return val;
+              },
+            };
+          }
+          if (col.title === 'Notes') {
+            return {
+              ...col,
+              render: (_, record) => {
+                if (record._type === 'property') {
+                  return (
+                    <Input
+                      size="small"
+                      placeholder="Property notes for this week..."
+                      value={weekNotes[record.property_id.toString()] || ''}
+                      onChange={e => setWeekNotes(prev => ({ ...prev, [record.property_id.toString()]: e.target.value }))}
+                      onBlur={e => handlePropertyNotes(record.property_id, e.target.value)}
+                      onPressEnter={e => handlePropertyNotes(record.property_id, e.target.value)}
+                      style={{ fontWeight: 'bold' }}
+                    />
+                  );
+                }
+                const o = overrides[record.unit_id.toString()];
+                return (
+                  <Input
+                    size="small"
+                    placeholder="Special notes..."
+                    value={o?.notes || ''}
+                    onChange={e => {
+                      setOverrides(prev => ({
+                        ...prev,
+                        [record.unit_id.toString()]: { ...prev[record.unit_id.toString()], notes: e.target.value },
+                      }));
+                    }}
+                    onBlur={e => handleOverrideNotes(record.unit_id, e.target.value)}
+                    onPressEnter={e => handleOverrideNotes(record.unit_id, e.target.value)}
+                  />
+                );
+              },
+            };
+          }
+          // For property rows, render empty cells for other columns
+          const origRender = col.render;
+          return {
+            ...col,
+            render: (val, record, idx) => {
+              if (record._type === 'property' && col.dataIndex !== 'property_name' && col.title !== 'Notes') {
+                return null;
+              }
+              return origRender ? origRender(val, record, idx) : val;
+            },
+          };
+        })}
         rowKey="unit_id"
         loading={loading}
         size="small"
         pagination={false}
         scroll={{ y: 600 }}
+        rowClassName={(record) => record._type === 'property' ? 'cleaning-property-row' : ''}
       />
+      <style>{`.cleaning-property-row td { background: #f5f5f5 !important; }`}</style>
     </div>
   );
 }
@@ -432,6 +581,7 @@ function WeeklyScheduleTab() {
   const [selectedCleaner, setSelectedCleaner] = useState(null);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [weekNotes, setWeekNotes] = useState([]);
 
   // Default to upcoming Monday
   const [selectedMonday, setSelectedMonday] = useState(() => {
@@ -447,12 +597,14 @@ function WeeklyScheduleTab() {
   const loadSchedule = useCallback(async () => {
     setLoading(true);
     try {
-      const [res, cleanerRes] = await Promise.all([
+      const [res, cleanerRes, notesRes] = await Promise.all([
         cleaning.getSchedule(selectedMonday),
         cleaning.getCleaners(),
+        cleaning.getWeekNotes(selectedMonday),
       ]);
       setSchedule(res.data?.data || []);
       setCleaners((cleanerRes.data?.data || []).filter(c => Number(c.status) === 1));
+      setWeekNotes(notesRes.data?.data || []);
     } catch (err) {
       message.error('Failed to load schedule');
     } finally {
@@ -544,8 +696,8 @@ function WeeklyScheduleTab() {
           <Select
             value={selectedMonday}
             onChange={v => setSelectedMonday(v)}
-            options={mondays.map(m => ({ label: dayjs(m).format('MMM D'), value: m }))}
-            style={{ width: 120 }}
+            options={mondays.map(m => ({ label: `Wk ${dayjs(m).isoWeek()} — ${dayjs(m).format('MMM D')}`, value: m }))}
+            style={{ width: 180 }}
             size="small"
           />
           <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={generating}>
@@ -576,7 +728,6 @@ function WeeklyScheduleTab() {
                       const isCheckout = Number(u.type) === 1;
                       return isCheckout ? `${u.unit_name} (退房清家)` : u.unit_name;
                     });
-                    // Show cleaner name if assigned (all units in a property likely same cleaner)
                     const cleanerName = units[0]?.cleaner_name;
                     return (
                       <span key={propName} style={{ marginRight: 16 }}>
@@ -591,6 +742,67 @@ function WeeklyScheduleTab() {
               </div>
             );
           })}
+
+          {/* Notes section at bottom */}
+          {(() => {
+            // Override notes (one-off weekly notes per unit)
+            const overrideNotes = filteredSchedule.filter(s => s.notes).map(s => ({
+              unit_name: s.unit_name,
+              cleaner_name: s.cleaner_name,
+              notes: s.notes,
+              property_name: s.property_name,
+            }));
+            // Tenant cleaning notes (persistent from tenant profile)
+            const seen = new Set();
+            const cleaningNotes = filteredSchedule.filter(s => {
+              if (!s.cleaning_notes) return false;
+              const key = s.unit_id?.toString();
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            }).map(s => ({
+              unit_name: s.unit_name,
+              property_name: s.property_name,
+              cleaning_notes: s.cleaning_notes,
+            }));
+            // Property-level notes
+            const propNotes = weekNotes.filter(n => n.notes);
+
+            if (overrideNotes.length === 0 && cleaningNotes.length === 0 && propNotes.length === 0) return null;
+
+            return (
+              <div style={{ marginTop: 16, padding: 12, background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 4 }}>
+                <Text strong style={{ display: 'block', marginBottom: 8 }}>Special Notes</Text>
+                {propNotes.map((n, i) => {
+                  const propItem = filteredSchedule.find(s => s.property_id?.toString() === n.property_id?.toString());
+                  const propName = propItem?.property_name || 'Property';
+                  return (
+                    <div key={`prop-${i}`} style={{ marginBottom: 4 }}>
+                      <Text strong>{propName}:</Text> <Text>{n.notes}</Text>
+                    </div>
+                  );
+                })}
+                {overrideNotes.map((n, i) => (
+                  <div key={`override-${i}`} style={{ marginBottom: 4 }}>
+                    <Text strong>{n.property_name} - {n.unit_name}</Text>
+                    {n.cleaner_name && <Text type="secondary"> ({n.cleaner_name})</Text>}
+                    <Text>: {n.notes}</Text>
+                  </div>
+                ))}
+                {cleaningNotes.length > 0 && (
+                  <>
+                    <Text strong style={{ display: 'block', marginTop: 8, marginBottom: 4 }}>Cleaning Notes</Text>
+                    {cleaningNotes.map((n, i) => (
+                      <div key={`clean-${i}`} style={{ marginBottom: 4 }}>
+                        <Text strong>{n.property_name} - {n.unit_name}</Text>
+                        <Text>: {n.cleaning_notes}</Text>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

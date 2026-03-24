@@ -281,6 +281,13 @@ export default function TenantEditPage() {
                     <Input.TextArea rows={4} placeholder="Please input your notes here" />
                   </Form.Item>
                 </div>
+
+                <div>
+                  <Label>CLEANING NOTES</Label>
+                  <Form.Item name="cleaning_notes" noStyle>
+                    <Input.TextArea rows={3} placeholder="Special cleaning instructions for this tenant (e.g. no shoes inside, allergic to bleach)" />
+                  </Form.Item>
+                </div>
               </div>
 
               {/* Upload Section */}

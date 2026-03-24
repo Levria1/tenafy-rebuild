@@ -228,6 +228,7 @@ router.post('/', authenticate, async (req, res) => {
       unit_id, tenant_id, start_date, end_date, type,
       price, deposit, due_date, invoicing, amount, first_invoice_date,
       contract_type, unit_information, note, credits, utility_credit,
+      check_in_meter, check_out_meter,
       contact_phone, lease_no,
       additionalTenantIds,
       // notification flags
@@ -278,18 +279,21 @@ router.post('/', authenticate, async (req, res) => {
       `INSERT INTO leasing (
         id, unit_id, tenant_id, start_date, end_date, status, price, type, invoicing,
         amount, due_date, deposit, currency_id, contract_type, unit_information, note, credits, utility_credit,
+        check_in_meter, check_out_meter, check_in_meter_updated_at, check_out_meter_updated_at,
         contact_phone, lease_no, first_invoice_date,
         access_setting, share_lease, all_past,
         tenant_posted, landlord_posted, landlord_due, tenant_due,
         landlord_overdue, tenant_overdue, landlord_expired, landlord_expired_days,
         tenant_checkin, tenant_checkout, tenant_renewal, tenant_renewal_days,
         tenant_deposit_posted, email_template_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         leaseId.toString(), unit_id, tenant_id, start_date, end_date || null,
         price || 0, type || 0, invoicing || null,
         amount || price || 0, due_date || null, deposit || 0, currencyId,
         contract_type || 0, unit_information || null, note || null, credits || null, utility_credit ?? null,
+        check_in_meter ?? null, check_out_meter ?? null,
+        check_in_meter != null ? new Date() : null, check_out_meter != null ? new Date() : null,
         contact_phone || null, leaseNo, first_invoice_date || null,
         access_setting || null, share_lease ? 1 : 0, all_past ? 1 : 0,
         tenant_posted ? 1 : 0, landlord_posted ? 1 : 0,
@@ -509,7 +513,8 @@ router.put('/:id', authenticate, async (req, res) => {
     const {
       unit_id, tenant_id, start_date, end_date, type, price, deposit,
       due_date, invoicing, amount, contract_type, unit_information,
-      note, credits, utility_credit, contact_phone, first_invoice_date, status,
+      note, credits, utility_credit, check_in_meter, check_out_meter,
+      contact_phone, first_invoice_date, status,
       additionalTenantIds,
       mark_past_paid
     } = req.body;
@@ -565,6 +570,8 @@ router.put('/:id', authenticate, async (req, res) => {
     if (note !== undefined) { fields.push('note = ?'); params.push(note || null); }
     if (credits !== undefined) { fields.push('credits = ?'); params.push(credits || null); }
     if (utility_credit !== undefined) { fields.push('utility_credit = ?'); params.push(utility_credit ?? null); }
+    if (check_in_meter !== undefined) { fields.push('check_in_meter = ?'); params.push(check_in_meter ?? null); fields.push('check_in_meter_updated_at = NOW()'); }
+    if (check_out_meter !== undefined) { fields.push('check_out_meter = ?'); params.push(check_out_meter ?? null); fields.push('check_out_meter_updated_at = NOW()'); }
     if (contact_phone !== undefined) { fields.push('contact_phone = ?'); params.push(contact_phone || null); }
     if (first_invoice_date !== undefined) { fields.push('first_invoice_date = ?'); params.push(first_invoice_date || null); }
     if (status !== undefined) { fields.push('status = ?'); params.push(status); }

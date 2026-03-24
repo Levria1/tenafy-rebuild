@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
-import { leasing, pdf } from '../../../../lib/api';
+import { leasing, pdf, utility } from '../../../../lib/api';
 
 const LEASE_TYPE_MAP = { 0: 'Fixed', 1: 'Month-to-Month' };
 const CONTRACT_TYPE_MAP = { 0: 'Standard', 1: 'Commercial', 2: 'Residential', 3: 'Short Term' };
@@ -18,8 +18,12 @@ const INVOICING_MAP = {
   'bi-annually': 'Bi-Annually', '180': 'Bi-Annually',
 };
 
+const READING_TYPE_LABELS = { 0: 'Move-In', 1: 'Move-Out', 2: 'Billing', 3: 'Monthly' };
+
 export default function LeasingDetailPage() {
   const [lease, setLease] = useState(null);
+  const [readings, setReadings] = useState([]);
+  const [readingsLoading, setReadingsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
   const params = useParams();
@@ -35,12 +39,26 @@ export default function LeasingDetailPage() {
     try {
       const response = await leasing.get(leaseId);
       if (response.data.code === 200) {
-        setLease(response.data.data);
+        const data = response.data.data;
+        setLease(data);
+        if (data.unit_id) loadReadings(data.unit_id);
       }
     } catch (error) {
       message.error('Failed to load lease');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadReadings = async (unitId) => {
+    setReadingsLoading(true);
+    try {
+      const res = await utility.getUnitReadings({ unit_id: unitId });
+      setReadings(res.data?.data || []);
+    } catch (err) {
+      // silently fail — unit may not have meters
+    } finally {
+      setReadingsLoading(false);
     }
   };
 
@@ -79,6 +97,9 @@ export default function LeasingDetailPage() {
           <Descriptions.Item label="End Date">{formatDate(lease?.end_date)}</Descriptions.Item>
           <Descriptions.Item label="Monthly Rent">{formatCurrency(lease?.amount || lease?.price)}</Descriptions.Item>
           <Descriptions.Item label="Security Deposit">{formatCurrency(lease?.deposit)}</Descriptions.Item>
+          <Descriptions.Item label="Monthly Utility Credit">{formatCurrency(lease?.utility_credit)}</Descriptions.Item>
+          <Descriptions.Item label="Check In Meter">{lease?.check_in_meter != null ? Number(lease.check_in_meter).toLocaleString() : '-'}</Descriptions.Item>
+          <Descriptions.Item label="Check Out Meter">{lease?.check_out_meter != null ? Number(lease.check_out_meter).toLocaleString() : '-'}</Descriptions.Item>
           {lease?.invoicing && (
             <Descriptions.Item label="Invoice Schedule">{INVOICING_MAP[String(lease.invoicing)] || lease.invoicing}</Descriptions.Item>
           )}
@@ -114,6 +135,43 @@ export default function LeasingDetailPage() {
           rowKey="id"
           locale={{ emptyText: 'No payments recorded' }}
         />
+      ),
+    },
+    {
+      key: 'meter-readings',
+      label: 'Meter Readings',
+      children: (
+        <div>
+          {(lease?.check_in_meter != null || lease?.check_out_meter != null) && (
+            <div style={{ marginBottom: 16, padding: 12, background: '#fafafa', borderRadius: 6 }}>
+              <Space size="large">
+                {lease?.check_in_meter != null && (
+                  <span><strong>Check In Meter:</strong> {Number(lease.check_in_meter).toLocaleString()}</span>
+                )}
+                {lease?.check_out_meter != null && (
+                  <span><strong>Check Out Meter:</strong> {Number(lease.check_out_meter).toLocaleString()}</span>
+                )}
+                {lease?.check_in_meter != null && lease?.check_out_meter != null && (
+                  <span><strong>Total Usage:</strong> {(Number(lease.check_out_meter) - Number(lease.check_in_meter)).toLocaleString()} kW</span>
+                )}
+              </Space>
+            </div>
+          )}
+          <Table
+            columns={[
+              { title: 'Date', dataIndex: 'reading_date', key: 'date', render: v => dayjs(v).format('MMM D, YYYY') },
+              { title: 'Meter #', dataIndex: 'meter_number', key: 'meter' },
+              { title: 'Reading', dataIndex: 'reading_value', key: 'value', render: v => Number(v).toLocaleString() },
+              { title: 'Type', dataIndex: 'reading_type', key: 'type', render: v => <Tag>{READING_TYPE_LABELS[Number(v)] || '-'}</Tag> },
+              { title: 'Notes', dataIndex: 'notes', key: 'notes', render: v => v || '-' },
+            ]}
+            dataSource={readings}
+            rowKey="id"
+            size="small"
+            loading={readingsLoading}
+            locale={{ emptyText: 'No meter readings recorded' }}
+          />
+        </div>
       ),
     },
   ];

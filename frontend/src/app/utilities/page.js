@@ -1,8 +1,8 @@
 'use client';
 
 import { Suspense, useEffect, useState, useCallback } from 'react';
-import { Tabs, Table, Button, Select, Input, InputNumber, Modal, Form, Row, Col, Tag, Space, DatePicker, message, Popconfirm, Card, Typography, Descriptions } from 'antd';
-import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined, CheckCircleOutlined, FileTextOutlined } from '@ant-design/icons';
+import { Tabs, Table, Button, Select, Input, InputNumber, Modal, Form, Row, Col, Tag, Space, DatePicker, message, Popconfirm, Card, Typography, Descriptions, Checkbox } from 'antd';
+import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined, CheckCircleOutlined, FileTextOutlined, HistoryOutlined, EditOutlined, WarningOutlined } from '@ant-design/icons';
 import MainLayout from '../../components/Layout';
 import { utility, property } from '../../lib/api';
 import dayjs from 'dayjs';
@@ -14,6 +14,17 @@ const METER_TYPE_OPTIONS = [
   { label: 'Electric', value: 0 },
   { label: 'Water', value: 1 },
   { label: 'Gas', value: 2 },
+];
+const METER_CATEGORY_LABELS = { 0: 'Master', 1: 'Sub-meter' };
+const METER_CATEGORY_OPTIONS = [
+  { label: 'Master Meter', value: 0 },
+  { label: 'Tenant Sub-meter', value: 1 },
+];
+const READING_TYPE_LABELS = { 0: 'Move-In', 1: 'Move-Out', 2: 'Billing', 3: 'Monthly' };
+const READING_TYPE_OPTIONS = [
+  { label: 'Monthly', value: 3 },
+  { label: 'Move-In', value: 0 },
+  { label: 'Move-Out', value: 1 },
 ];
 
 export default function UtilitiesPageWrapper() {
@@ -307,15 +318,19 @@ function SettingsTab() {
   const [editingGroup, setEditingGroup] = useState(null);
   const [selectedGroupForMeter, setSelectedGroupForMeter] = useState(null);
   const [meters, setMeters] = useState([]);
+  const [meterCategoryValue, setMeterCategoryValue] = useState(1);
   const [groupForm] = Form.useForm();
   const [meterForm] = Form.useForm();
+
+  const [unitGroupMap, setUnitGroupMap] = useState({}); // unitId → groupId
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [gRes, pRes] = await Promise.all([
+      const [gRes, pRes, ugRes] = await Promise.all([
         utility.getGroups(),
         property.getAllWithUnits(),
+        utility.getUnitGroups(),
       ]);
       setGroups(gRes.data?.data || []);
       const props = pRes.data?.data || [];
@@ -327,6 +342,13 @@ function SettingsTab() {
         });
       });
       setUnits(allUnits);
+
+      // Build unit → group map
+      const ugMap = {};
+      (ugRes.data?.data || []).forEach(ug => {
+        ugMap[ug.unit_id.toString()] = ug.group_id.toString();
+      });
+      setUnitGroupMap(ugMap);
     } catch (err) {
       message.error('Failed to load data');
     } finally {
@@ -429,9 +451,10 @@ function SettingsTab() {
 
   const meterColumns = [
     { title: 'Meter #', dataIndex: 'meter_number', key: 'meter_number' },
+    { title: 'Category', key: 'meter_category', width: 100, render: (_, row) => Number(row.meter_category) === 0 ? <Tag color="gold">Master</Tag> : <Tag>Sub-meter</Tag> },
     { title: 'Type', dataIndex: 'meter_type', key: 'meter_type', render: v => METER_TYPE_LABELS[v] || 'Electric', width: 100 },
-    { title: 'Unit', key: 'unit', render: (_, row) => row.unit_name ? `${row.property_name} - ${row.unit_name}` : <Tag color="blue">Common Area</Tag> },
-    { title: 'Current Reading', dataIndex: 'current_reading', key: 'current_reading', width: 140, render: v => Number(v).toLocaleString() },
+    { title: 'Unit', key: 'unit', render: (_, row) => Number(row.meter_category) === 0 ? <Tag color="blue">Master</Tag> : row.unit_name ? `${row.property_name} - ${row.unit_name}` : <Tag color="blue">Common Area</Tag> },
+    { title: 'Last Reading', key: 'last_reading', width: 140, render: (_, row) => Number(row.last_reading ?? row.current_reading).toLocaleString() },
     {
       title: '', key: 'actions', width: 50,
       render: (_, row) => (
@@ -478,6 +501,7 @@ function SettingsTab() {
               <Space>
                 <Button type="primary" icon={<PlusOutlined />} onClick={() => {
                   meterForm.resetFields();
+                  setMeterCategoryValue(1);
                   setMeterModal(true);
                 }}>Add Meter</Button>
                 <Button onClick={() => { setSelectedGroupForMeter(null); setMeters([]); }}>Close</Button>
@@ -513,20 +537,27 @@ function SettingsTab() {
         title="Add Meter"
         open={meterModal}
         onOk={handleSaveMeter}
-        onCancel={() => { setMeterModal(false); meterForm.resetFields(); }}
+        onCancel={() => { setMeterModal(false); meterForm.resetFields(); setMeterCategoryValue(1); }}
       >
         <Form form={meterForm} layout="vertical">
+          <Form.Item name="meter_category" label="Meter Category" initialValue={1}>
+            <Select options={METER_CATEGORY_OPTIONS} onChange={v => setMeterCategoryValue(v)} />
+          </Form.Item>
           <Form.Item name="meter_number" label="Meter Number" rules={[{ required: true, message: 'Meter number is required' }]}>
             <Input placeholder="e.g. MTR-001" />
           </Form.Item>
           <Form.Item name="meter_type" label="Meter Type" initialValue={0}>
             <Select options={METER_TYPE_OPTIONS} />
           </Form.Item>
-          <Form.Item name="unit_id" label="Unit (leave blank for common area)">
-            <Select allowClear showSearch placeholder="Select unit" optionFilterProp="label"
-              options={units.map(u => ({ label: `${u.property_name} - ${u.name}`, value: u.id }))}
-            />
-          </Form.Item>
+          {meterCategoryValue === 1 && (
+            <Form.Item name="unit_id" label="Unit (leave blank for common area)">
+              <Select allowClear showSearch placeholder="Select unit" optionFilterProp="label"
+                options={units
+                  .filter(u => selectedGroupForMeter && unitGroupMap[u.id.toString()] === selectedGroupForMeter.toString())
+                  .map(u => ({ label: `${u.property_name} - ${u.name}`, value: u.id }))}
+              />
+            </Form.Item>
+          )}
           <Form.Item name="current_reading" label="Initial Meter Reading" initialValue={0}>
             <InputNumber style={{ width: '100%' }} min={0} precision={2} />
           </Form.Item>
@@ -540,42 +571,212 @@ function SettingsTab() {
 
 function MetersTab() {
   const [meters, setMeters] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [filterGroup, setFilterGroup] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [readingModal, setReadingModal] = useState(false);
+  const [historyModal, setHistoryModal] = useState(false);
+  const [selectedMeter, setSelectedMeter] = useState(null);
+  const [readings, setReadings] = useState([]);
+  const [readingForm] = Form.useForm();
 
-  const loadMeters = useCallback(async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await utility.getMeters({});
-      setMeters(res.data?.data || []);
+      const [mRes, gRes] = await Promise.all([
+        utility.getMeters(filterGroup ? { group_id: filterGroup } : {}),
+        utility.getGroups(),
+      ]);
+      setMeters(mRes.data?.data || []);
+      setGroups(gRes.data?.data || []);
     } catch (err) {
       message.error('Failed to load meters');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filterGroup]);
 
-  useEffect(() => { loadMeters(); }, [loadMeters]);
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleLogReading = async () => {
+    try {
+      const values = await readingForm.validateFields();
+      const res = await utility.logMeterReading({
+        meter_id: selectedMeter.id,
+        reading_value: values.reading_value,
+        reading_date: values.reading_date?.format('YYYY-MM-DD') || new Date().toISOString().split('T')[0],
+        reading_type: values.reading_type,
+        tenant_id: selectedMeter.tenant_id || null,
+        notes: values.notes || null,
+      });
+      if (res.data?.data?.warning) {
+        message.warning(res.data.data.warning);
+      }
+      message.success('Reading logged');
+      setReadingModal(false);
+      readingForm.resetFields();
+      loadData();
+    } catch (err) {
+      if (err.response?.data?.message) message.error(err.response.data.message);
+    }
+  };
+
+  const loadHistory = async (meter) => {
+    setSelectedMeter(meter);
+    setHistoryModal(true);
+    try {
+      const res = await utility.getMeterReadings({ meter_id: meter.id });
+      setReadings(res.data?.data || []);
+    } catch (err) {
+      message.error('Failed to load readings');
+    }
+  };
 
   const columns = [
     { title: 'Meter #', dataIndex: 'meter_number', key: 'meter_number' },
-    { title: 'Type', dataIndex: 'meter_type', key: 'meter_type', render: v => METER_TYPE_LABELS[v] || 'Electric', width: 100 },
+    { title: 'Category', key: 'meter_category', width: 100, render: (_, row) => Number(row.meter_category) === 0 ? <Tag color="gold">Master</Tag> : <Tag>Sub-meter</Tag> },
+    { title: 'Type', dataIndex: 'meter_type', key: 'meter_type', render: v => METER_TYPE_LABELS[v] || 'Electric', width: 90 },
     { title: 'Group', dataIndex: 'group_name', key: 'group_name' },
     {
       title: 'Unit', key: 'unit',
-      render: (_, row) => row.unit_name ? `${row.property_name || ''} - ${row.unit_name}` : <Tag color="blue">Common Area</Tag>
+      render: (_, row) => Number(row.meter_category) === 0 ? <Tag color="blue">Master</Tag> : row.unit_name ? `${row.property_name || ''} - ${row.unit_name}` : <Tag color="blue">Common Area</Tag>
     },
-    { title: 'Current Reading', dataIndex: 'current_reading', key: 'current_reading', render: v => Number(v).toLocaleString() },
+    {
+      title: 'Tenant', key: 'tenant', width: 200,
+      render: (_, row) => {
+        if (Number(row.meter_category) === 0) return null;
+        const name = [row.tenant_first_name, row.tenant_last_name].filter(Boolean).join(' ');
+        if (!name) return <Text type="secondary" style={{ fontStyle: 'italic' }}>Vacant</Text>;
+        const isCurrent = Number(row.is_current_tenant) === 1;
+        const checkoutDate = row.lease_end_date ? dayjs(row.lease_end_date).format('MMM D, YYYY') : null;
+        return (
+          <div>
+            <div>{name} {!isCurrent && <Tag color="orange" style={{ fontSize: 10 }}>Past</Tag>}</div>
+            {!isCurrent && checkoutDate && <div style={{ fontSize: 11, color: '#888' }}>Checkout: {checkoutDate}</div>}
+          </div>
+        );
+      }
+    },
+    {
+      title: 'Last Reading', key: 'last_reading', width: 120,
+      render: (_, row) => Number(row.last_reading ?? row.current_reading).toLocaleString()
+    },
+    {
+      title: 'Last Date', key: 'last_date', width: 100,
+      render: (_, row) => row.last_reading_date ? dayjs(row.last_reading_date).format('MMM D, YYYY') : '-'
+    },
+    {
+      title: 'Last Type', key: 'last_type', width: 90,
+      render: (_, row) => row.last_reading_type != null ? <Tag>{READING_TYPE_LABELS[Number(row.last_reading_type)] || '-'}</Tag> : '-'
+    },
+    {
+      title: 'Actions', key: 'actions', width: 160,
+      render: (_, row) => (
+        <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => {
+            setSelectedMeter(row);
+            readingForm.resetFields();
+            readingForm.setFieldsValue({ reading_date: dayjs(), reading_type: 3 });
+            setReadingModal(true);
+          }}>Log</Button>
+          <Button size="small" icon={<HistoryOutlined />} onClick={() => loadHistory(row)}>History</Button>
+        </Space>
+      )
+    }
   ];
 
+  const historyColumns = [
+    { title: 'Date', dataIndex: 'reading_date', key: 'date', render: v => dayjs(v).format('MMM D, YYYY') },
+    { title: 'Reading', dataIndex: 'reading_value', key: 'value', render: v => Number(v).toLocaleString() },
+    { title: 'Type', dataIndex: 'reading_type', key: 'type', render: v => <Tag>{READING_TYPE_LABELS[Number(v)] || '-'}</Tag> },
+    { title: 'Tenant', key: 'tenant', render: (_, row) => [row.tenant_first_name, row.tenant_last_name].filter(Boolean).join(' ') || '-' },
+    { title: 'Notes', dataIndex: 'notes', key: 'notes', render: v => v || '-' },
+  ];
+
+  const lastReading = selectedMeter ? Number(selectedMeter.last_reading ?? selectedMeter.current_reading) : 0;
+
   return (
-    <Table
-      dataSource={meters}
-      columns={columns}
-      rowKey="id"
-      size="small"
-      loading={loading}
-      pagination={false}
-    />
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <Space>
+          <Text strong>Filter by group:</Text>
+          <Select
+            style={{ width: 250 }}
+            placeholder="All groups"
+            value={filterGroup}
+            onChange={v => setFilterGroup(v)}
+            allowClear
+            options={groups.map(g => ({ label: g.name, value: g.id }))}
+          />
+        </Space>
+      </div>
+      <Table
+        dataSource={meters}
+        columns={columns}
+        rowKey="id"
+        size="small"
+        loading={loading}
+        pagination={false}
+      />
+
+      {/* Log Reading Modal */}
+      <Modal
+        title={`Log Reading — ${selectedMeter?.meter_number || ''}${selectedMeter?.tenant_first_name ? ` — ${[selectedMeter.tenant_first_name, selectedMeter.tenant_last_name].filter(Boolean).join(' ')}` : ''}`}
+        open={readingModal}
+        onOk={handleLogReading}
+        onCancel={() => { setReadingModal(false); readingForm.resetFields(); }}
+      >
+        <Form form={readingForm} layout="vertical">
+          <div style={{ marginBottom: 16, padding: 12, background: '#fafafa', borderRadius: 6 }}>
+            {selectedMeter?.unit_name && (
+              <div style={{ marginBottom: 4 }}>
+                <Text type="secondary">Unit: </Text>
+                <Text strong>{selectedMeter.property_name} — {selectedMeter.unit_name}</Text>
+                {selectedMeter?.tenant_first_name && (
+                  <Text type="secondary"> ({[selectedMeter.tenant_first_name, selectedMeter.tenant_last_name].filter(Boolean).join(' ')})</Text>
+                )}
+              </div>
+            )}
+            <div>
+              <Text type="secondary">Last reading: </Text>
+              <Text strong>{lastReading.toLocaleString()}</Text>
+              {selectedMeter?.last_reading_date && (
+                <Text type="secondary"> ({dayjs(selectedMeter.last_reading_date).format('MMM D, YYYY')})</Text>
+              )}
+            </div>
+          </div>
+          <Form.Item name="reading_value" label="New Reading" rules={[{ required: true, message: 'Reading is required' }]}>
+            <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="Enter meter reading" />
+          </Form.Item>
+          <Form.Item name="reading_date" label="Reading Date" rules={[{ required: true, message: 'Date is required' }]}>
+            <DatePicker style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="reading_type" label="Reading Type" rules={[{ required: true, message: 'Type is required' }]}>
+            <Select options={READING_TYPE_OPTIONS} placeholder="Select type" />
+          </Form.Item>
+          <Form.Item name="notes" label="Notes (optional)">
+            <Input.TextArea rows={2} placeholder="e.g. Tenant moved in today" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* History Modal */}
+      <Modal
+        title={`Reading History — ${selectedMeter?.meter_number || ''}`}
+        open={historyModal}
+        onCancel={() => { setHistoryModal(false); setReadings([]); }}
+        footer={null}
+        width={700}
+      >
+        <Table
+          dataSource={readings}
+          columns={historyColumns}
+          rowKey="id"
+          size="small"
+          pagination={false}
+        />
+      </Modal>
+    </div>
   );
 }
 
@@ -589,7 +790,14 @@ function BillingTab() {
   const [billDetail, setBillDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [billModal, setBillModal] = useState(false);
+  const [checkoutModal, setCheckoutModal] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutResult, setCheckoutResult] = useState(null);
+  const [checkoutMeters, setCheckoutMeters] = useState([]);
+  const [highestRate, setHighestRate] = useState(null);
+  const [useHighestRate, setUseHighestRate] = useState(false);
   const [billForm] = Form.useForm();
+  const [checkoutForm] = Form.useForm();
 
   const loadGroups = useCallback(async () => {
     try {
@@ -603,7 +811,8 @@ function BillingTab() {
   const loadBills = useCallback(async (groupId) => {
     setLoading(true);
     try {
-      const res = await utility.getBills({ group_id: groupId });
+      const params = groupId ? { group_id: groupId } : {};
+      const res = await utility.getBills(params);
       setBills(res.data?.data || []);
     } catch (err) {
       message.error('Failed to load bills');
@@ -621,11 +830,14 @@ function BillingTab() {
     }
   }, []);
 
-  useEffect(() => { loadGroups(); }, [loadGroups]);
+  useEffect(() => {
+    loadGroups();
+    loadBills();
+  }, [loadGroups]);
 
   useEffect(() => {
-    if (selectedGroup) loadBills(selectedGroup);
-  }, [selectedGroup, loadBills]);
+    loadBills(selectedGroup);
+  }, [selectedGroup]);
 
   const handleCreateBill = async () => {
     try {
@@ -684,10 +896,26 @@ function BillingTab() {
     }
   };
 
+  const [invoiceModal, setInvoiceModal] = useState(false);
+  const [selectedLineIds, setSelectedLineIds] = useState([]);
+
+  const openInvoiceModal = () => {
+    if (!billDetail) return;
+    const tenantLines = (billDetail.lines || []).filter(l => !Number(l.is_common_area));
+    const eligible = tenantLines.filter(l => Number(l.net_amount) > 0 && !l.invoice_id && l.tenant_id);
+    setSelectedLineIds(eligible.map(l => l.id));
+    setInvoiceModal(true);
+  };
+
   const handleGenerateInvoices = async () => {
     try {
-      const res = await utility.generateInvoices(selectedBill);
+      if (selectedLineIds.length === 0) {
+        message.warning('No tenants selected');
+        return;
+      }
+      const res = await utility.generateInvoices(selectedBill, { line_ids: selectedLineIds });
       message.success(res.data?.message || 'Invoices generated');
+      setInvoiceModal(false);
       loadBillDetail(selectedBill);
     } catch (err) {
       message.error(err.response?.data?.message || 'Failed to generate invoices');
@@ -695,6 +923,7 @@ function BillingTab() {
   };
 
   const billColumns = [
+    { title: 'Group', dataIndex: 'group_name', key: 'group_name', width: 180 },
     {
       title: 'Period', key: 'period',
       render: (_, row) => `${dayjs(row.period_start).format('MMM D, YYYY')} - ${dayjs(row.period_end).format('MMM D, YYYY')}`
@@ -744,22 +973,30 @@ function BillingTab() {
           );
         }
       },
-      { title: 'Start', dataIndex: 'starting_reading', key: 'starting_reading', width: 100, render: v => Number(v).toLocaleString() },
+      { title: 'Last Reading', dataIndex: 'starting_reading', key: 'starting_reading', width: 110, render: v => Number(v).toLocaleString() },
       {
-        title: 'End', key: 'ending_reading', width: 140,
+        title: 'New Reading', key: 'ending_reading', width: 140,
         render: (_, row) => {
           if (isFinalized) return Number(row.ending_reading).toLocaleString();
           return (
             <InputNumber
               size="small"
               value={Number(row.ending_reading) || undefined}
-              min={Number(row.starting_reading)}
               precision={2}
+              status={Number(row.ending_reading) > 0 && Number(row.ending_reading) < Number(row.starting_reading) ? 'warning' : undefined}
               style={{ width: 120 }}
               onBlur={(e) => {
                 const val = parseFloat(e.target.value);
                 if (!isNaN(val) && val !== Number(row.ending_reading)) {
-                  handleUpdateLine(row.id, val);
+                  if (val < Number(row.starting_reading)) {
+                    Modal.confirm({
+                      title: 'Warning',
+                      content: `New reading (${val}) is less than last reading (${Number(row.starting_reading)}). Are you sure?`,
+                      onOk: () => handleUpdateLine(row.id, val),
+                    });
+                  } else {
+                    handleUpdateLine(row.id, val);
+                  }
                 }
               }}
               onPressEnter={(e) => {
@@ -841,9 +1078,7 @@ function BillingTab() {
               </Popconfirm>
             )}
             {isFinalized && hasUninvoiced && (
-              <Popconfirm title="Generate invoices for all tenants who owe?" onConfirm={handleGenerateInvoices}>
-                <Button type="primary" icon={<FileTextOutlined />}>Generate Invoices</Button>
-              </Popconfirm>
+              <Button type="primary" icon={<FileTextOutlined />} onClick={openInvoiceModal}>Generate Invoices</Button>
             )}
           </Space>
         </div>
@@ -888,56 +1123,143 @@ function BillingTab() {
             />
           </>
         )}
+
+        {/* Selective Invoice Generation Modal */}
+        <Modal
+          title="Generate Invoices"
+          open={invoiceModal}
+          onOk={handleGenerateInvoices}
+          okText={`Generate ${selectedLineIds.length} Invoice(s)`}
+          onCancel={() => setInvoiceModal(false)}
+          width={700}
+        >
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            Select which tenants should receive utility invoices. Uncheck tenants who should not be billed (e.g. Airbnb/Agoda).
+          </Text>
+          <Table
+            dataSource={tenantLines.filter(l => Number(l.net_amount) > 0 && !l.invoice_id && l.tenant_id)}
+            columns={[
+              {
+                title: 'Unit / Tenant', key: 'unit_tenant',
+                render: (_, row) => {
+                  const tenant = [row.tenant_first_name, row.tenant_last_name].filter(Boolean).join(' ');
+                  return <div><div>{row.unit_name}</div>{tenant && <div style={{ fontSize: 12, color: '#888' }}>{tenant}</div>}</div>;
+                }
+              },
+              { title: 'kW Used', dataIndex: 'kw_used', key: 'kw_used', width: 80, render: v => Number(v).toLocaleString() },
+              { title: 'Gross', dataIndex: 'gross_amount', key: 'gross', width: 90, render: v => `$${Number(v).toFixed(2)}` },
+              { title: 'Credit', dataIndex: 'prorated_credit', key: 'credit', width: 90, render: v => Number(v) > 0 ? `-$${Number(v).toFixed(2)}` : '-' },
+              { title: 'Net', dataIndex: 'net_amount', key: 'net', width: 90, render: v => <Text strong>${Number(v).toFixed(2)}</Text> },
+            ]}
+            rowKey="id"
+            size="small"
+            pagination={false}
+            rowSelection={{
+              selectedRowKeys: selectedLineIds,
+              onChange: (keys) => setSelectedLineIds(keys),
+            }}
+          />
+        </Modal>
       </div>
     );
   }
+
+  // Checkout settlement handlers
+  const openCheckoutModal = async () => {
+    checkoutForm.resetFields();
+    setCheckoutResult(null);
+    setUseHighestRate(false);
+    setHighestRate(null);
+
+    // Load meters with tenants for the selected group (or all)
+    try {
+      const params = selectedGroup ? { group_id: selectedGroup } : {};
+      const res = await utility.getMeters(params);
+      const allMeters = res.data?.data || [];
+      // Only sub-meters (category 1) with active tenants
+      // Include sub-meters with current OR past tenants
+      setCheckoutMeters(allMeters.filter(m => Number(m.meter_category) === 1 && m.tenant_first_name));
+    } catch (err) {
+      message.error('Failed to load meters');
+    }
+    setCheckoutModal(true);
+  };
+
+  const handleCheckoutMeterChange = async (meterId) => {
+    const meter = checkoutMeters.find(m => m.id.toString() === meterId?.toString());
+    if (!meter) return;
+    // Load highest rate for this meter's group
+    try {
+      const res = await utility.getHighestRate({ group_id: meter.group_id });
+      setHighestRate(res.data?.data?.highest_rate || null);
+    } catch (err) { /* ignore */ }
+  };
+
+  const handleCheckoutSettlement = async () => {
+    try {
+      const values = await checkoutForm.validateFields();
+      const meter = checkoutMeters.find(m => m.id.toString() === values.meter_id?.toString());
+      if (!meter) return message.error('Meter not found');
+
+      setCheckoutLoading(true);
+      const res = await utility.checkoutSettlement({
+        meter_id: values.meter_id,
+        tenant_id: meter.tenant_id || values.tenant_id,
+        leasing_id: meter.leasing_id || values.leasing_id,
+        checkout_reading: values.checkout_reading,
+        manual_rate: values.manual_rate,
+        reading_date: values.reading_date?.format('YYYY-MM-DD') || undefined,
+      });
+      setCheckoutResult(res.data?.data);
+      message.success('Checkout settlement completed');
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to process settlement');
+    } finally {
+      setCheckoutLoading(false);
+    }
+  };
 
   // Bill list view
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Space>
-          <Text strong>Group:</Text>
+          <Text strong>Filter by group:</Text>
           <Select
             style={{ width: 300 }}
-            placeholder="Select a meter group"
+            placeholder="All groups"
             value={selectedGroup}
             onChange={v => { setSelectedGroup(v); setSelectedBill(null); setBillDetail(null); }}
             options={groups.map(g => ({ label: g.name, value: g.id }))}
             allowClear
           />
         </Space>
-        {selectedGroup && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={async () => {
-            billForm.resetFields();
-            try {
-              const res = await utility.getLastBillDate({ group_id: selectedGroup });
-              const data = res.data?.data;
-              if (data?.next_start) {
-                billForm.setFieldsValue({ start_date: dayjs(data.next_start) });
-              }
-            } catch (err) { /* ignore */ }
-            setBillModal(true);
-          }}>New Bill</Button>
-        )}
+        <Space>
+          <Button onClick={openCheckoutModal}>Checkout Settlement</Button>
+          {selectedGroup && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={async () => {
+              billForm.resetFields();
+              try {
+                const res = await utility.getLastBillDate({ group_id: selectedGroup });
+                const data = res.data?.data;
+                if (data?.next_start) {
+                  billForm.setFieldsValue({ start_date: dayjs(data.next_start) });
+                }
+              } catch (err) { /* ignore */ }
+              setBillModal(true);
+            }}>New Bill</Button>
+          )}
+        </Space>
       </div>
 
-      {selectedGroup && (
-        <Table
-          dataSource={bills}
-          columns={billColumns}
-          rowKey="id"
-          size="small"
-          loading={loading}
-          pagination={false}
-        />
-      )}
-
-      {!selectedGroup && (
-        <div style={{ textAlign: 'center', padding: 60, color: '#999' }}>
-          Select a meter group to view and create bills
-        </div>
-      )}
+      <Table
+        dataSource={bills}
+        columns={billColumns}
+        rowKey="id"
+        size="small"
+        loading={loading}
+        pagination={false}
+      />
 
       {/* New Bill Modal */}
       <Modal
@@ -972,6 +1294,91 @@ function BillingTab() {
             </Col>
           </Row>
         </Form>
+      </Modal>
+
+      {/* Checkout Settlement Modal */}
+      <Modal
+        title="Checkout Settlement"
+        open={checkoutModal}
+        onOk={checkoutResult ? () => { setCheckoutModal(false); setCheckoutResult(null); loadBills(selectedGroup); } : handleCheckoutSettlement}
+        okText={checkoutResult ? 'Done' : 'Calculate & Settle'}
+        confirmLoading={checkoutLoading}
+        onCancel={() => { setCheckoutModal(false); setCheckoutResult(null); }}
+        width={600}
+      >
+        {!checkoutResult ? (
+          <Form form={checkoutForm} layout="vertical">
+            <Form.Item name="meter_id" label="Tenant Sub-Meter" rules={[{ required: true, message: 'Select a meter' }]}>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                placeholder="Select tenant's meter"
+                onChange={handleCheckoutMeterChange}
+                options={checkoutMeters.map(m => {
+                  const name = [m.tenant_first_name, m.tenant_last_name].filter(Boolean).join(' ');
+                  const checkout = m.lease_end_date ? ` [${dayjs(m.lease_end_date).format('MMM D, YYYY')}]` : '';
+                  return {
+                    label: `${m.meter_number} — ${name} (${m.property_name} - ${m.unit_name})${checkout}`,
+                    value: m.id,
+                  };
+                })}
+              />
+            </Form.Item>
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item name="checkout_reading" label="Checkout Meter Reading" rules={[{ required: true, message: 'Reading is required' }]}>
+                  <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="Enter reading" />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item name="reading_date" label="Date" initialValue={dayjs()}>
+                  <DatePicker style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+            </Row>
+            <Form.Item
+              name="manual_rate"
+              label={
+                <Space>
+                  <span>Manual $/kWh Rate</span>
+                  {highestRate && (
+                    <Checkbox
+                      checked={useHighestRate}
+                      onChange={e => {
+                        setUseHighestRate(e.target.checked);
+                        if (e.target.checked) {
+                          checkoutForm.setFieldsValue({ manual_rate: highestRate });
+                        }
+                      }}
+                    >
+                      Use highest rate (${Number(highestRate).toFixed(4)}/kWh)
+                    </Checkbox>
+                  )}
+                </Space>
+              }
+              rules={[{ required: true, message: 'Rate is required' }]}
+            >
+              <InputNumber style={{ width: '100%' }} min={0} precision={4} placeholder="e.g. 2.0000" />
+            </Form.Item>
+          </Form>
+        ) : (
+          <div>
+            <Descriptions bordered column={1} size="small">
+              <Descriptions.Item label="Starting Reading">{Number(checkoutResult.start_reading).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="Checkout Reading">{Number(checkoutResult.checkout_reading).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="kWh Used">{Number(checkoutResult.kw_used).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="Rate">${Number(checkoutResult.rate).toFixed(4)}/kWh</Descriptions.Item>
+              <Descriptions.Item label="Gross Amount">${Number(checkoutResult.gross_amount).toFixed(2)}</Descriptions.Item>
+              <Descriptions.Item label="Prorated Credit ({checkoutResult.period_days} days)">-${Number(checkoutResult.prorated_credit).toFixed(2)}</Descriptions.Item>
+              <Descriptions.Item label="Net Amount"><Text strong style={{ color: Number(checkoutResult.net_amount) > 0 ? '#cf1322' : '#52c41a' }}>${Number(checkoutResult.net_amount).toFixed(2)}</Text></Descriptions.Item>
+            </Descriptions>
+            {checkoutResult.next_lease_updated && (
+              <div style={{ marginTop: 12 }}>
+                <Tag color="blue">Next tenant's check-in meter updated automatically</Tag>
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
     </div>
   );

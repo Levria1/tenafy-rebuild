@@ -242,6 +242,8 @@ export default function LeaseCreatePage() {
       note: values.note || null,
       credits: values.credits || null,
       utility_credit: values.utility_credit ?? null,
+      check_in_meter: values.check_in_meter ?? null,
+      check_out_meter: values.check_out_meter ?? null,
       contact_phone: values.contact_phone || null,
       // notifications
       tenant_posted: values.tenant_posted || false,
@@ -488,6 +490,31 @@ export default function LeaseCreatePage() {
         </div>
       </div>
 
+      {/* Utility */}
+      <div style={sectionStyle}>
+        <div style={sectionTitle}>UTILITY</div>
+        <div>
+          <FLabel>MONTHLY UTILITY CREDIT</FLabel>
+          <Form.Item name="utility_credit" noStyle>
+            <InputNumber placeholder="0.00" min={0} precision={2} style={{ maxWidth: 500, width: '100%' }} />
+          </Form.Item>
+        </div>
+        <Row gutter={16} style={{ marginTop: 12 }}>
+          <Col span={12}>
+            <FLabel>CHECK IN METER</FLabel>
+            <Form.Item name="check_in_meter" noStyle>
+              <InputNumber placeholder="0.00" min={0} precision={2} style={{ maxWidth: 500, width: '100%' }} />
+            </Form.Item>
+          </Col>
+          <Col span={12}>
+            <FLabel>CHECK OUT METER</FLabel>
+            <Form.Item name="check_out_meter" noStyle>
+              <InputNumber placeholder="0.00" min={0} precision={2} style={{ maxWidth: 500, width: '100%' }} />
+            </Form.Item>
+          </Col>
+        </Row>
+      </div>
+
       {/* Deposit */}
       <div style={sectionStyle}>
         <div style={sectionTitle}>DEPOSIT</div>
@@ -532,14 +559,6 @@ export default function LeaseCreatePage() {
             </Form.Item>
           </Col>
         </Row>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item name="utility_credit" label="Monthly Utility Credit">
-              <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="0.00" />
-            </Form.Item>
-          </Col>
-        </Row>
-
         <Form.Item name="unit_information" label="Unit Information">
           <TextArea rows={4} placeholder="Enter unit details, condition notes, furniture list, etc." />
         </Form.Item>

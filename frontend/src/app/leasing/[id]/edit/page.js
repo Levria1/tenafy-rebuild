@@ -116,6 +116,8 @@ export default function LeasingEditPage() {
           first_invoice_date: d.first_invoice_date ? dayjs(d.first_invoice_date) : undefined,
           credits: d.credits || '',
           utility_credit: d.utility_credit != null ? Number(d.utility_credit) : undefined,
+          check_in_meter: d.check_in_meter != null ? Number(d.check_in_meter) : undefined,
+          check_out_meter: d.check_out_meter != null ? Number(d.check_out_meter) : undefined,
           note: d.note || '',
           contact_phone: d.contact_phone || '',
           unit_information: d.unit_information || '',
@@ -167,6 +169,8 @@ export default function LeasingEditPage() {
         note: values.note || null,
         credits: values.credits || null,
         utility_credit: values.utility_credit ?? null,
+        check_in_meter: values.check_in_meter ?? null,
+        check_out_meter: values.check_out_meter ?? null,
         contact_phone: values.contact_phone || null,
         status: values.status ?? 1,
         mark_past_paid: values.mark_past_paid || false,
@@ -356,6 +360,31 @@ export default function LeasingEditPage() {
           </div>
         </div>
 
+        {/* Utility */}
+        <div style={sectionStyle}>
+          <div style={sectionTitle}>UTILITY</div>
+          <div>
+            <FLabel>MONTHLY UTILITY CREDIT</FLabel>
+            <Form.Item name="utility_credit" noStyle>
+              <InputNumber style={{ width: '100%', maxWidth: 500 }} min={0} precision={2} placeholder="0.00" />
+            </Form.Item>
+          </div>
+          <Row gutter={16} style={{ marginTop: 12 }}>
+            <Col span={12}>
+              <FLabel>CHECK IN METER</FLabel>
+              <Form.Item name="check_in_meter" noStyle>
+                <InputNumber placeholder="0.00" min={0} precision={2} style={{ maxWidth: 500, width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <FLabel>CHECK OUT METER</FLabel>
+              <Form.Item name="check_out_meter" noStyle>
+                <InputNumber placeholder="0.00" min={0} precision={2} style={{ maxWidth: 500, width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+        </div>
+
         {/* Deposit & Status */}
         <div style={sectionStyle}>
           <div style={sectionTitle}>Deposit & Status</div>
@@ -374,12 +403,6 @@ export default function LeasingEditPage() {
             </Col>
           </Row>
           <Row gutter={16} style={{ marginTop: 12 }}>
-            <Col span={8}>
-              <FLabel>Monthly Utility Credit</FLabel>
-              <Form.Item name="utility_credit" noStyle>
-                <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="0.00" />
-              </Form.Item>
-            </Col>
             <Col span={8}>
               <FLabel>Status</FLabel>
               <Form.Item name="status" noStyle>

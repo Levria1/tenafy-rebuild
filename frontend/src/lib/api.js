@@ -361,6 +361,9 @@ export const cleaning = {
   // Overrides
   getOverrides: (week_of) => api.get('/api/cleaning/overrides', { params: { week_of } }),
   saveOverride: (data) => api.post('/api/cleaning/override', data),
+  // Week notes (per property per week)
+  getWeekNotes: (week_of) => api.get('/api/cleaning/week-notes', { params: { week_of } }),
+  saveWeekNotes: (data) => api.post('/api/cleaning/week-notes', data),
   // Checkout cleaning
   getCheckout: (month) => api.get('/api/cleaning/checkout', { params: { month } }),
   updateCheckout: (id, data) => api.put(`/api/cleaning/checkout/${id}`, data),
@@ -383,6 +386,10 @@ export const utility = {
   createMeter: (data) => api.post('/api/utility/meter', data),
   updateMeter: (id, data) => api.put(`/api/utility/meter/${id}`, data),
   deleteMeter: (id) => api.delete(`/api/utility/meter/${id}`),
+  // Meter readings
+  logMeterReading: (data) => api.post('/api/utility/meter-reading', data),
+  getMeterReadings: (params) => api.get('/api/utility/meter-readings', { params }),
+  getUnitReadings: (params) => api.get('/api/utility/unit-readings', { params }),
   // Bills
   getLastBillDate: (params) => api.get('/api/utility/last-bill-date', { params }),
   getBills: (params) => api.get('/api/utility/bills', { params }),
@@ -392,8 +399,10 @@ export const utility = {
   deleteBill: (id) => api.delete(`/api/utility/bill/${id}`),
   updateBillLine: (id, data) => api.put(`/api/utility/bill-line/${id}`, data),
   finalizeBill: (id) => api.post(`/api/utility/bill/${id}/finalize`),
-  generateInvoices: (id) => api.post(`/api/utility/bill/${id}/generate-invoices`),
+  generateInvoices: (id, data) => api.post(`/api/utility/bill/${id}/generate-invoices`, data || {}),
   getReport: () => api.get('/api/utility/report'),
+  getHighestRate: (params) => api.get('/api/utility/highest-rate', { params }),
+  checkoutSettlement: (data) => api.post('/api/utility/checkout-settlement', data),
 };
 
 export const storageMonitoring = {

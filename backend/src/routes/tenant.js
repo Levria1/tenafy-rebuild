@@ -60,8 +60,7 @@ router.post('/contacts', authenticate, async (req, res) => {
       params.push(unitId);
     }
 
-    // Must have at least one lease (active or not) to be a "tenant" contact
-    whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL)';
+    // Show all tenants regardless of lease status
 
     const query = `
       SELECT t.*,
@@ -149,20 +148,20 @@ router.post('/', authenticate, async (req, res) => {
   try {
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
             company_name, type, sex, id_card, profession, budget, employer, salary,
-            emergency_contact, referral, notes, status } = req.body;
+            emergency_contact, referral, notes, cleaning_notes, status } = req.body;
     const orgId = req.user.orgId;
     const tenantId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
     await req.pool.execute(
       `INSERT INTO tenant (id, org_id, first_name, last_name, middle_name, email, secondary_email, phone,
        birth_date, company_name, type, sex, id_card, profession, budget, employer, salary,
-       emergency_contact, referral, notes, status, category, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+       emergency_contact, referral, notes, cleaning_notes, status, category, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
       [tenantId, orgId, first_name || null, last_name || null, middle_name || null,
        email || null, secondary_email || null, phone || null, birth_date || null,
        company_name || null, type ?? 0, sex ?? 0, id_card || null, profession || null,
        budget || null, employer || null, salary || null, emergency_contact || null,
-       referral || null, notes || null, status ?? 1]
+       referral || null, notes || null, cleaning_notes || null, status ?? 1]
     );
     res.json({ code: 200, message: 'Tenant created', data: { id: tenantId } });
   } catch (error) {
@@ -213,17 +212,17 @@ router.put('/:id/profile', authenticate, async (req, res) => {
     const { id } = req.params;
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
             company_name, type, sex, id_card, profession, budget, employer, salary,
-            emergency_contact, referral, notes, status } = req.body;
+            emergency_contact, referral, notes, cleaning_notes, status } = req.body;
 
     await req.pool.execute(
       `UPDATE tenant SET first_name = ?, last_name = ?, middle_name = ?, email = ?, secondary_email = ?,
        phone = ?, birth_date = ?, company_name = ?, type = ?, sex = ?, id_card = ?, profession = ?,
        budget = ?, employer = ?, salary = ?, emergency_contact = ?, referral = ?, notes = ?,
-       status = ?, updated_at = NOW() WHERE id = ?`,
+       cleaning_notes = ?, status = ?, updated_at = NOW() WHERE id = ?`,
       [first_name || null, last_name || null, middle_name || null, email || null, secondary_email || null,
        phone || null, birth_date || null, company_name || null, type ?? 0, sex ?? 0,
        id_card || null, profession || null, budget || null, employer || null, salary || null,
-       emergency_contact || null, referral || null, notes || null, status ?? 1, id]
+       emergency_contact || null, referral || null, notes || null, cleaning_notes || null, status ?? 1, id]
     );
     res.json({ code: 200, message: 'Tenant updated' });
   } catch (error) {

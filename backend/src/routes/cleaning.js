@@ -114,7 +114,8 @@ router.get('/config', authenticate, async (req, res) => {
               p.display_name AS property_name,
               ucc.id AS config_id, ucc.cleaning_day, ucc.cleaner_id,
               cl.name AS cleaner_name,
-              t.first_name AS tenant_first_name, t.last_name AS tenant_last_name
+              t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+              t.cleaning_notes AS tenant_cleaning_notes
        FROM unit u
        JOIN property p ON u.property_id = p.id AND p.org_id = ?
        LEFT JOIN unit_cleaning_config ucc ON ucc.unit_id = u.id
@@ -193,7 +194,7 @@ router.get('/overrides', authenticate, async (req, res) => {
     if (!week_of) return res.status(400).json({ code: 400, message: 'week_of required' });
 
     const [rows] = await req.pool.execute(
-      'SELECT id, unit_id, week_of, override_type, override_day FROM unit_cleaning_override WHERE org_id = ? AND week_of = ?',
+      'SELECT id, unit_id, week_of, override_type, override_day, notes FROM unit_cleaning_override WHERE org_id = ? AND week_of = ?',
       [orgId, week_of]
     );
     res.json({ code: 200, data: rows });
@@ -207,7 +208,7 @@ router.get('/overrides', authenticate, async (req, res) => {
 // Body: { unit_id, week_of, override_type, override_day }
 router.post('/override', authenticate, async (req, res) => {
   try {
-    const { unit_id, week_of, override_type, override_day } = req.body;
+    const { unit_id, week_of, override_type, override_day, notes } = req.body;
     const orgId = req.user.orgId;
     if (!unit_id || !week_of) return res.status(400).json({ code: 400, message: 'unit_id and week_of required' });
 
@@ -221,8 +222,8 @@ router.post('/override', authenticate, async (req, res) => {
     if (override_type !== null && override_type !== undefined) {
       const id = genId();
       await req.pool.execute(
-        'INSERT INTO unit_cleaning_override (id, org_id, unit_id, week_of, override_type, override_day) VALUES (?, ?, ?, ?, ?, ?)',
-        [id, orgId, unit_id, week_of, override_type, override_day ?? null]
+        'INSERT INTO unit_cleaning_override (id, org_id, unit_id, week_of, override_type, override_day, notes) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, orgId, unit_id, week_of, override_type, override_day ?? null, notes || null]
       );
     }
 
@@ -230,6 +231,54 @@ router.post('/override', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Save override error:', error);
     res.status(500).json({ code: 500, message: 'Failed to save override' });
+  }
+});
+
+// ─── WEEK NOTES (per property per week) ──────────────────────────────────────
+
+// GET /api/cleaning/week-notes?week_of=YYYY-MM-DD
+router.get('/week-notes', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { week_of } = req.query;
+    if (!week_of) return res.status(400).json({ code: 400, message: 'week_of required' });
+    const [rows] = await req.pool.execute(
+      'SELECT id, property_id, week_of, notes FROM cleaning_week_notes WHERE org_id = ? AND week_of = ?',
+      [orgId, week_of]
+    );
+    res.json({ code: 200, data: rows });
+  } catch (error) {
+    console.error('Get week notes error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load week notes' });
+  }
+});
+
+// POST /api/cleaning/week-notes - Save notes for a property+week
+// Body: { property_id, week_of, notes }
+router.post('/week-notes', authenticate, async (req, res) => {
+  try {
+    const { property_id, week_of, notes } = req.body;
+    const orgId = req.user.orgId;
+    if (!property_id || !week_of) return res.status(400).json({ code: 400, message: 'property_id and week_of required' });
+
+    // Delete existing
+    await req.pool.execute(
+      'DELETE FROM cleaning_week_notes WHERE property_id = ? AND week_of = ? AND org_id = ?',
+      [property_id, week_of, orgId]
+    );
+
+    if (notes && notes.trim()) {
+      const id = genId();
+      await req.pool.execute(
+        'INSERT INTO cleaning_week_notes (id, org_id, property_id, week_of, notes) VALUES (?, ?, ?, ?, ?)',
+        [id, orgId, property_id, week_of, notes.trim()]
+      );
+    }
+
+    res.json({ code: 200, message: 'Notes saved' });
+  } catch (error) {
+    console.error('Save week notes error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to save notes' });
   }
 });
 
@@ -360,7 +409,7 @@ router.get('/schedule', authenticate, async (req, res) => {
 
     const [rows] = await req.pool.execute(
       `SELECT cs.id, cs.property_id, cs.unit_id, cs.cleaner_id, cs.scheduled_date,
-              cs.type, cs.lease_id, cs.tenant_id, cs.status,
+              cs.type, cs.lease_id, cs.tenant_id, cs.status, cs.notes, cs.cleaning_notes,
               p.display_name AS property_name, u.name AS unit_name,
               cl.name AS cleaner_name,
               t.first_name, t.last_name
@@ -408,7 +457,7 @@ router.post('/schedule/generate', authenticate, async (req, res) => {
 
     // 3. Get overrides for this week
     const [overrides] = await req.pool.execute(
-      'SELECT unit_id, override_type, override_day FROM unit_cleaning_override WHERE org_id = ? AND week_of = ?',
+      'SELECT unit_id, override_type, override_day, notes FROM unit_cleaning_override WHERE org_id = ? AND week_of = ?',
       [orgId, week_of]
     );
     const overrideMap = {};
@@ -416,7 +465,22 @@ router.post('/schedule/generate', authenticate, async (req, res) => {
       overrideMap[o.unit_id.toString()] = o;
     }
 
-    // 4. Generate weekly tasks
+    // 4. Get active tenant cleaning notes for all units
+    const today = new Date().toISOString().split('T')[0];
+    const [tenantNotes] = await req.pool.execute(
+      `SELECT l.unit_id, t.cleaning_notes
+       FROM leasing l
+       JOIN tenant t ON l.tenant_id = t.id
+       WHERE l.deleted_at IS NULL AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)
+         AND t.cleaning_notes IS NOT NULL AND t.cleaning_notes != ''`,
+      [today, today]
+    );
+    const tenantNotesMap = {};
+    for (const tn of tenantNotes) {
+      tenantNotesMap[tn.unit_id.toString()] = tn.cleaning_notes;
+    }
+
+    // 5. Generate weekly tasks
     const inserted = [];
     for (const cfg of configs) {
       const unitKey = cfg.unit_id.toString();
@@ -426,18 +490,21 @@ router.post('/schedule/generate', authenticate, async (req, res) => {
       if (override) {
         if (Number(override.override_type) === 0) continue; // skip
         if (Number(override.override_type) === 1 && override.override_day !== null) {
-          effectiveDay = Number(override.override_day);
+          effectiveDay = Number(override.override_day); // move to different day
         }
+        // type=2 (notes-only) — keep original day, just carry notes
       }
 
       // Calculate date: week_of is Monday (day 0), so add effectiveDay
       const scheduledDate = addDays(week_of, effectiveDay);
+      const overrideNotes = override?.notes || null;
+      const tenantCleaningNotes = tenantNotesMap[unitKey] || null;
 
       const id = genId();
       await req.pool.execute(
-        `INSERT INTO cleaning_schedule (id, org_id, property_id, unit_id, cleaner_id, scheduled_date, type, week_of)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
-        [id, orgId, cfg.property_id, cfg.unit_id, cfg.cleaner_id || null, scheduledDate, week_of]
+        `INSERT INTO cleaning_schedule (id, org_id, property_id, unit_id, cleaner_id, scheduled_date, type, week_of, notes, cleaning_notes)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        [id, orgId, cfg.property_id, cfg.unit_id, cfg.cleaner_id || null, scheduledDate, week_of, overrideNotes, tenantCleaningNotes]
       );
       inserted.push(id);
     }
