@@ -13,7 +13,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
-import { tenant, invoice } from '../../../../../lib/api';
+import { tenant, invoice, utility } from '../../../../../lib/api';
 
 const { Text } = Typography;
 
@@ -223,6 +223,7 @@ function TenantDetailPage() {
     { key: 'profile', label: 'Profile' },
     { key: 'leases', label: 'Leases' },
     { key: 'accounting', label: 'Accounting' },
+    { key: 'utilities', label: 'Utilities' },
   ];
 
   // ---- Age from birth_date ----
@@ -598,6 +599,150 @@ function TenantDetailPage() {
   );
 
   // =========================================================================
+  // UTILITIES CONTENT
+  // =========================================================================
+
+  function UtilitiesContent({ tenantId }) {
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+      if (!tenantId) return;
+      setLoading(true);
+      utility.getTenantHistory(tenantId)
+        .then(res => setData(res.data?.data || null))
+        .catch(() => message.error('Failed to load utility history'))
+        .finally(() => setLoading(false));
+    }, [tenantId]);
+
+    if (loading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>;
+    if (!data) return <Empty description="No utility data" />;
+
+    const { billLines, readings, settlements, leases } = data;
+
+    const READING_TYPES = { 0: 'Move-In', 1: 'Move-Out', 2: 'Billing', 3: 'Monthly' };
+    const INV_STATUS = { 0: { color: 'blue', text: 'Open' }, 1: { color: 'green', text: 'Paid' }, 2: { color: 'red', text: 'Overdue' } };
+
+    // Combine bill lines and settlements into one billing history table
+    const billingHistory = [
+      ...billLines.map(bl => ({
+        key: `bill-${bl.id}`,
+        type: 'Monthly',
+        unit_name: bl.unit_name,
+        property_name: bl.property_name,
+        period: `${dayjs(bl.period_start).format('MMM D')} - ${dayjs(bl.period_end).format('MMM D, YYYY')}`,
+        meter_number: bl.meter_number,
+        starting_reading: Number(bl.starting_reading),
+        ending_reading: Number(bl.ending_reading),
+        kw_used: Number(bl.kw_used),
+        rate: Number(bl.rate_per_kw),
+        gross_amount: Number(bl.gross_amount),
+        credit: Number(bl.prorated_credit),
+        net_amount: Number(bl.net_amount),
+        invoice_code: bl.invoice_code,
+        invoice_status: bl.invoice_status,
+        invoice_amount: bl.invoice_amount,
+        sort_date: bl.period_start,
+      })),
+      ...settlements.map(cs => ({
+        key: `settle-${cs.id}`,
+        type: 'Checkout',
+        unit_name: cs.unit_name,
+        property_name: cs.property_name,
+        period: dayjs(cs.reading_date).format('MMM D, YYYY'),
+        meter_number: cs.meter_number,
+        starting_reading: Number(cs.starting_reading),
+        ending_reading: Number(cs.checkout_reading),
+        kw_used: Number(cs.kw_used),
+        rate: Number(cs.rate_per_kw),
+        gross_amount: Number(cs.gross_amount),
+        credit: Number(cs.prorated_credit),
+        net_amount: Number(cs.net_amount),
+        invoice_code: cs.invoice_code,
+        invoice_status: cs.invoice_status,
+        invoice_amount: cs.invoice_amount,
+        sort_date: cs.reading_date,
+      })),
+    ].sort((a, b) => new Date(b.sort_date) - new Date(a.sort_date));
+
+    const billingColumns = [
+      { title: 'Type', dataIndex: 'type', width: 80, render: v => <Tag color={v === 'Checkout' ? 'orange' : 'blue'}>{v}</Tag> },
+      { title: 'Unit', key: 'unit', width: 140, render: (_, r) => `${r.property_name} - ${r.unit_name}` },
+      { title: 'Period', dataIndex: 'period', width: 180 },
+      { title: 'Start', dataIndex: 'starting_reading', width: 80, render: v => v.toLocaleString() },
+      { title: 'End', dataIndex: 'ending_reading', width: 80, render: v => v.toLocaleString() },
+      { title: 'kW', dataIndex: 'kw_used', width: 70, render: v => v.toLocaleString() },
+      { title: 'Rate', dataIndex: 'rate', width: 80, render: v => `$${v.toFixed(2)}` },
+      { title: 'Gross', dataIndex: 'gross_amount', width: 90, render: v => `$${v.toFixed(2)}` },
+      { title: 'Credit', dataIndex: 'credit', width: 90, render: v => v > 0 ? `-$${v.toFixed(2)}` : '-' },
+      { title: 'Net', dataIndex: 'net_amount', width: 90, render: v => <Text strong style={{ color: v > 0 ? '#cf1322' : '#52c41a' }}>${v.toFixed(2)}</Text> },
+      {
+        title: 'Invoice', key: 'invoice', width: 120,
+        render: (_, r) => {
+          if (!r.invoice_code) return <Text type="secondary">—</Text>;
+          const s = INV_STATUS[Number(r.invoice_status)] || INV_STATUS[0];
+          return <Tag color={s.color}>{r.invoice_code} - {s.text}</Tag>;
+        }
+      },
+    ];
+
+    // Meter readings table
+    const readingColumns = [
+      { title: 'Date', dataIndex: 'reading_date', width: 120, render: v => dayjs(v).format('MMM D, YYYY') },
+      { title: 'Type', dataIndex: 'reading_type', width: 90, render: v => <Tag>{READING_TYPES[Number(v)] || 'Other'}</Tag> },
+      { title: 'Unit', key: 'unit', width: 140, render: (_, r) => `${r.property_name} - ${r.unit_name}` },
+      { title: 'Meter', dataIndex: 'meter_number', width: 100 },
+      { title: 'Reading', dataIndex: 'reading_value', width: 120, render: v => Number(v).toLocaleString() },
+    ];
+
+    // Lease meter values
+    const leaseColumns = [
+      { title: 'Unit', key: 'unit', width: 160, render: (_, r) => `${r.property_name} - ${r.unit_name}` },
+      { title: 'Lease Period', key: 'period', width: 200, render: (_, r) => `${dayjs(r.start_date).format('MMM D, YYYY')} - ${r.end_date ? dayjs(r.end_date).format('MMM D, YYYY') : 'Ongoing'}` },
+      { title: 'Monthly Credit', dataIndex: 'utility_credit', width: 120, render: v => v ? `$${Number(v).toFixed(2)}` : '—' },
+      { title: 'Check-In Meter', dataIndex: 'check_in_meter', width: 120, render: v => v != null ? Number(v).toLocaleString() : '—' },
+      { title: 'Check-Out Meter', dataIndex: 'check_out_meter', width: 120, render: v => v != null ? Number(v).toLocaleString() : '—' },
+    ];
+
+    return (
+      <div>
+        <SectionHeader title="Billing History" />
+        <Table
+          dataSource={billingHistory}
+          columns={billingColumns}
+          rowKey="key"
+          size="small"
+          pagination={false}
+          scroll={{ x: 1200 }}
+          locale={{ emptyText: 'No billing history' }}
+        />
+
+        <div style={{ marginTop: 24 }} />
+        <SectionHeader title="Meter Readings" />
+        <Table
+          dataSource={readings}
+          columns={readingColumns}
+          rowKey="id"
+          size="small"
+          pagination={false}
+          locale={{ emptyText: 'No meter readings' }}
+        />
+
+        <div style={{ marginTop: 24 }} />
+        <SectionHeader title="Lease Utility Details" />
+        <Table
+          dataSource={leases}
+          columns={leaseColumns}
+          rowKey="id"
+          size="small"
+          pagination={false}
+          locale={{ emptyText: 'No leases' }}
+        />
+      </div>
+    );
+  }
+
+  // =========================================================================
   // RENDER
   // =========================================================================
   return (
@@ -771,6 +916,7 @@ function TenantDetailPage() {
             {activeTab === 'profile' && <ProfileContent />}
             {activeTab === 'leases' && <LeasesContent />}
             {activeTab === 'accounting' && <AccountingContent />}
+            {activeTab === 'utilities' && <UtilitiesContent tenantId={tenantId} />}
           </div>
         </div>
       </div>

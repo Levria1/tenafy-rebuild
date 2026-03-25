@@ -930,7 +930,7 @@ function BillingTab() {
     },
     { title: 'Total', dataIndex: 'total_amount', key: 'total_amount', render: v => `$${Number(v).toFixed(2)}`, width: 110 },
     { title: 'kW', dataIndex: 'total_kw', key: 'total_kw', render: v => Number(v).toLocaleString(), width: 80 },
-    { title: 'Rate', dataIndex: 'rate_per_kw', key: 'rate_per_kw', render: v => `$${Number(v).toFixed(4)}`, width: 90 },
+    { title: 'Rate', dataIndex: 'rate_per_kw', key: 'rate_per_kw', render: v => `$${Number(v).toFixed(2)}`, width: 90 },
     {
       title: 'Status', dataIndex: 'status', key: 'status', width: 100,
       render: v => Number(v) === 1 ? <Tag color="green">Finalized</Tag> : <Tag color="orange">Draft</Tag>
@@ -1087,7 +1087,7 @@ function BillingTab() {
           <Row gutter={24}>
             <Col span={6}><Text type="secondary">Total Bill:</Text> <Text strong>${Number(billDetail.total_amount).toFixed(2)}</Text></Col>
             <Col span={6}><Text type="secondary">Total kW:</Text> <Text strong>{Number(billDetail.total_kw).toLocaleString()}</Text></Col>
-            <Col span={6}><Text type="secondary">Rate:</Text> <Text strong>${Number(billDetail.rate_per_kw).toFixed(4)}/kW</Text></Col>
+            <Col span={6}><Text type="secondary">Rate:</Text> <Text strong>${Number(billDetail.rate_per_kw).toFixed(2)}/kW</Text></Col>
             <Col span={6}><Text type="secondary">Tenant Net Total:</Text> <Text strong style={{ color: '#cf1322' }}>${totalNet.toFixed(2)}</Text></Col>
           </Row>
         </Card>
@@ -1318,7 +1318,7 @@ function BillingTab() {
                   const name = [m.tenant_first_name, m.tenant_last_name].filter(Boolean).join(' ');
                   const checkout = m.lease_end_date ? ` [${dayjs(m.lease_end_date).format('MMM D, YYYY')}]` : '';
                   return {
-                    label: `${m.meter_number} — ${name} (${m.property_name} - ${m.unit_name})${checkout}`,
+                    label: `${name} — ${m.meter_number} (${m.property_name} - ${m.unit_name})${checkout}`,
                     value: m.id,
                   };
                 })}
@@ -1351,7 +1351,7 @@ function BillingTab() {
                         }
                       }}
                     >
-                      Use highest rate (${Number(highestRate).toFixed(4)}/kWh)
+                      Use highest rate (${Number(highestRate).toFixed(2)}/kWh)
                     </Checkbox>
                   )}
                 </Space>
@@ -1367,7 +1367,7 @@ function BillingTab() {
               <Descriptions.Item label="Starting Reading">{Number(checkoutResult.start_reading).toLocaleString()}</Descriptions.Item>
               <Descriptions.Item label="Checkout Reading">{Number(checkoutResult.checkout_reading).toLocaleString()}</Descriptions.Item>
               <Descriptions.Item label="kWh Used">{Number(checkoutResult.kw_used).toLocaleString()}</Descriptions.Item>
-              <Descriptions.Item label="Rate">${Number(checkoutResult.rate).toFixed(4)}/kWh</Descriptions.Item>
+              <Descriptions.Item label="Rate">${Number(checkoutResult.rate).toFixed(2)}/kWh</Descriptions.Item>
               <Descriptions.Item label="Gross Amount">${Number(checkoutResult.gross_amount).toFixed(2)}</Descriptions.Item>
               <Descriptions.Item label="Prorated Credit ({checkoutResult.period_days} days)">-${Number(checkoutResult.prorated_credit).toFixed(2)}</Descriptions.Item>
               <Descriptions.Item label="Net Amount"><Text strong style={{ color: Number(checkoutResult.net_amount) > 0 ? '#cf1322' : '#52c41a' }}>${Number(checkoutResult.net_amount).toFixed(2)}</Text></Descriptions.Item>

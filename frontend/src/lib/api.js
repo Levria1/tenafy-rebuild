@@ -403,6 +403,7 @@ export const utility = {
   getReport: () => api.get('/api/utility/report'),
   getHighestRate: (params) => api.get('/api/utility/highest-rate', { params }),
   checkoutSettlement: (data) => api.post('/api/utility/checkout-settlement', data),
+  getTenantHistory: (tenantId) => api.get(`/api/utility/tenant/${tenantId}/history`),
 };
 
 export const storageMonitoring = {

@@ -629,7 +629,7 @@ router.post('/bill', authenticate, async (req, res) => {
     await req.pool.execute(
       `INSERT INTO utility_bill (id, org_id, group_id, period_start, period_end, total_amount, total_kw, rate_per_kw, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-      [billId, orgId, group_id, period_start, period_end, total_amount, total_kw, ratePerKw.toFixed(4)]
+      [billId, orgId, group_id, period_start, period_end, total_amount, total_kw, (Math.ceil(ratePerKw * 100) / 100).toFixed(2)]
     );
 
     // Get active sub-meters in this group (category=1 only; master meter is bill-level)
@@ -693,7 +693,7 @@ router.post('/bill', authenticate, async (req, res) => {
       );
     }
 
-    res.json({ code: 200, message: 'Bill created', data: { id: billId, rate_per_kw: ratePerKw.toFixed(4) } });
+    res.json({ code: 200, message: 'Bill created', data: { id: billId, rate_per_kw: (Math.ceil(ratePerKw * 100) / 100).toFixed(2) } });
   } catch (error) {
     console.error('Create utility bill error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create bill' });
@@ -729,10 +729,10 @@ router.put('/bill/:id', authenticate, async (req, res) => {
     await req.pool.execute(
       `UPDATE utility_bill SET total_amount = ?, total_kw = ?, rate_per_kw = ?, period_start = ?, period_end = ?
        WHERE id = ? AND org_id = ?`,
-      [newAmount, newKw, ratePerKw.toFixed(4), newStart, newEnd, id, orgId]
+      [newAmount, newKw, (Math.ceil(ratePerKw * 100) / 100).toFixed(2), newStart, newEnd, id, orgId]
     );
 
-    res.json({ code: 200, message: 'Bill updated', data: { rate_per_kw: ratePerKw.toFixed(4) } });
+    res.json({ code: 200, message: 'Bill updated', data: { rate_per_kw: (Math.ceil(ratePerKw * 100) / 100).toFixed(2) } });
   } catch (error) {
     console.error('Update utility bill error:', error);
     res.status(500).json({ code: 500, message: 'Failed to update bill' });
@@ -1244,5 +1244,84 @@ function daysBetween(start, end) {
   const diff = Math.abs(e - s);
   return Math.ceil(diff / (1000 * 60 * 60 * 24)) + 1; // inclusive
 }
+
+// ─── TENANT UTILITY HISTORY ──────────────────────────────────
+
+// GET /api/utility/tenant/:tenantId/history — get all meter readings + bill lines for a tenant
+router.get('/tenant/:tenantId/history', authenticate, async (req, res) => {
+  try {
+    const { tenantId } = req.params;
+    const orgId = req.user.orgId;
+
+    // Get all bill lines for this tenant with bill details
+    const [billLines] = await req.pool.execute(
+      `SELECT bl.*, b.period_start, b.period_end, b.total_amount, b.total_kw, b.rate_per_kw, b.status AS bill_status,
+              m.meter_number, m.meter_type,
+              u.name AS unit_name,
+              p.display_name AS property_name,
+              i.invoice_code, i.status AS invoice_status, i.amount AS invoice_amount
+       FROM utility_bill_line bl
+       JOIN utility_bill b ON bl.bill_id = b.id
+       LEFT JOIN utility_meter m ON bl.meter_id = m.id
+       LEFT JOIN unit u ON bl.unit_id = u.id
+       LEFT JOIN property p ON u.property_id = p.id
+       LEFT JOIN invoice i ON bl.invoice_id = i.id
+       WHERE bl.tenant_id = ? AND b.org_id = ?
+       ORDER BY b.period_start DESC`,
+      [tenantId, orgId]
+    );
+
+    // Get all meter readings for this tenant
+    const [readings] = await req.pool.execute(
+      `SELECT mr.*, m.meter_number, m.meter_type,
+              u.name AS unit_name, p.display_name AS property_name
+       FROM utility_meter_reading mr
+       JOIN utility_meter m ON mr.meter_id = m.id
+       LEFT JOIN unit u ON m.unit_id = u.id
+       LEFT JOIN property p ON u.property_id = p.id
+       WHERE mr.tenant_id = ? AND m.org_id = ?
+       ORDER BY mr.reading_date DESC, mr.created_at DESC`,
+      [tenantId, orgId]
+    );
+
+    // Get checkout settlements for this tenant (table may not exist yet)
+    let settlements = [];
+    try {
+      const [rows] = await req.pool.execute(
+        `SELECT cs.*, m.meter_number,
+                u.name AS unit_name, p.display_name AS property_name,
+                i.invoice_code, i.status AS invoice_status, i.amount AS invoice_amount
+         FROM utility_checkout_settlement cs
+         LEFT JOIN utility_meter m ON cs.meter_id = m.id
+         LEFT JOIN unit u ON m.unit_id = u.id
+         LEFT JOIN property p ON u.property_id = p.id
+         LEFT JOIN invoice i ON cs.invoice_id = i.id
+         WHERE cs.tenant_id = ? AND cs.org_id = ?
+         ORDER BY cs.created_at DESC`,
+        [tenantId, orgId]
+      );
+      settlements = rows;
+    } catch (e) {
+      // Table may not exist yet — return empty
+    }
+
+    // Get lease check-in/check-out meter values
+    const [leases] = await req.pool.execute(
+      `SELECT l.id, l.start_date, l.end_date, l.utility_credit, l.check_in_meter, l.check_out_meter,
+              u.name AS unit_name, p.display_name AS property_name
+       FROM leasing l
+       LEFT JOIN unit u ON l.unit_id = u.id
+       LEFT JOIN property p ON u.property_id = p.id
+       WHERE l.tenant_id = ? AND l.deleted_at IS NULL
+       ORDER BY l.start_date DESC`,
+      [tenantId, orgId]
+    );
+
+    res.json({ code: 200, data: { billLines, readings, settlements, leases } });
+  } catch (error) {
+    console.error('Get tenant utility history error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load utility history' });
+  }
+});
 
 module.exports = router;
