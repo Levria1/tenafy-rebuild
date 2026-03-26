@@ -599,4 +599,83 @@ router.delete('/setting/api-keys/:id', authenticate, requireSuperAdmin, async (r
   }
 });
 
+// ─── LEAD SOURCE SETTINGS ───────────────────────────────────────────────────
+
+// GET /api/setting/lead-source/list
+router.get('/setting/lead-source/list', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [rows] = await req.pool.execute(
+      'SELECT id, name, org_id, CAST(enabled AS UNSIGNED) as enabled, updated_at FROM lead_source_setting WHERE org_id = ? AND enabled = 1 ORDER BY name',
+      [orgId]
+    );
+    res.json({ code: 200, data: rows });
+  } catch (error) {
+    console.error('Get lead sources error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get lead sources' });
+  }
+});
+
+// POST /api/setting/lead-source/add
+router.post('/setting/lead-source/add', authenticate, async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ code: 400, message: 'Name is required' });
+    const orgId = req.user.orgId;
+    const [result] = await req.pool.execute(
+      'INSERT INTO lead_source_setting (org_id, name, enabled, updated_at) VALUES (?, ?, 1, NOW())',
+      [orgId, name.trim()]
+    );
+    res.json({ code: 200, message: 'Lead source created', data: { id: result.insertId } });
+  } catch (error) {
+    console.error('Create lead source error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to create lead source' });
+  }
+});
+
+// PUT /api/setting/lead-source/update/:id
+router.put('/setting/lead-source/update/:id', authenticate, async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ code: 400, message: 'Name is required' });
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    await req.pool.execute(
+      'UPDATE lead_source_setting SET name = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
+      [name.trim(), id, orgId]
+    );
+    res.json({ code: 200, message: 'Lead source updated' });
+  } catch (error) {
+    console.error('Update lead source error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to update lead source' });
+  }
+});
+
+// DELETE /api/setting/lead-source/delete/:id
+router.delete('/setting/lead-source/delete/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    // Check if any tenants reference this lead source
+    const [[{ tenantCount }]] = await req.pool.execute(
+      'SELECT COUNT(*) as tenantCount FROM tenant WHERE lead_source_id = ? AND org_id = ? AND status != 0',
+      [id, orgId]
+    );
+    if (Number(tenantCount) > 0) {
+      return res.status(400).json({
+        code: 400,
+        message: `Cannot delete — ${tenantCount} contact(s) are using this lead source.`
+      });
+    }
+    await req.pool.execute(
+      'UPDATE lead_source_setting SET enabled = 0 WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+    res.json({ code: 200, message: 'Lead source deleted' });
+  } catch (error) {
+    console.error('Delete lead source error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to delete lead source' });
+  }
+});
+
 module.exports = router;

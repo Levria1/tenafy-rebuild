@@ -517,11 +517,11 @@ export default function ServiceEditPage() {
                 fileList={fileList}
                 onChange={({ fileList: fl }) => setFileList(fl)}
                 beforeUpload={() => false}
-                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"
+                accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx"
               >
                 <p className="ant-upload-drag-icon"><InboxOutlined /></p>
                 <p className="ant-upload-text">Click or drag files to this area to upload</p>
-                <p className="ant-upload-hint">Support images, PDF, Word, Excel files</p>
+                <p className="ant-upload-hint">Support images, videos, PDF, Word, Excel files</p>
               </Dragger>
             </Form.Item>
 

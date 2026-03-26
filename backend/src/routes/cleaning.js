@@ -535,4 +535,108 @@ router.post('/schedule/generate', authenticate, async (req, res) => {
   }
 });
 
+// ─── CHECKOUT NOTES ──────────────────────────────────────────────────────────
+
+// GET /api/cleaning/checkout-notes?week_of=YYYY-MM-DD
+router.get('/checkout-notes', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { week_of } = req.query;
+    if (!week_of) return res.status(400).json({ code: 400, message: 'week_of required' });
+
+    // Monday to Sunday
+    const weekStart = week_of;
+    const weekEnd = addDays(week_of, 6);
+
+    // Leases ending in this week + next lease + checkout_notes
+    const [rows] = await req.pool.execute(
+      `SELECT l.id AS lease_id, l.tenant_id, l.unit_id, l.end_date AS lease_end,
+              l.unit_information AS lease_old_code,
+              u.property_id, p.display_name AS property_name, u.name AS unit_name,
+              t.first_name, t.last_name,
+              nl.start_date AS next_checkin, nl.unit_information AS lease_new_code,
+              nt.first_name AS next_first, nt.last_name AS next_last,
+              cn.id AS cn_id, cn.old_code, cn.new_code, cn.assigned_user_id, cn.notes,
+              usr.first_name AS user_first, usr.last_name AS user_last,
+              cc.cleaning_date AS checkout_date
+       FROM leasing l
+       JOIN unit u ON l.unit_id = u.id
+       JOIN property p ON u.property_id = p.id AND p.org_id = ?
+       LEFT JOIN tenant t ON l.tenant_id = t.id
+       LEFT JOIN leasing nl ON nl.unit_id = l.unit_id AND nl.deleted_at IS NULL
+         AND nl.start_date = (SELECT MIN(nl2.start_date) FROM leasing nl2 WHERE nl2.unit_id = l.unit_id AND nl2.start_date > l.end_date AND nl2.deleted_at IS NULL)
+       LEFT JOIN tenant nt ON nl.tenant_id = nt.id
+       LEFT JOIN checkout_notes cn ON cn.lease_id = l.id AND cn.org_id = ?
+       LEFT JOIN user usr ON cn.assigned_user_id = usr.id
+       LEFT JOIN checkout_cleaning cc ON cc.lease_id = l.id AND cc.org_id = ?
+       WHERE l.end_date >= ? AND l.end_date <= ? AND l.deleted_at IS NULL
+       ORDER BY p.display_name, u.name, l.end_date`,
+      [orgId, orgId, orgId, weekStart, weekEnd]
+    );
+
+    // Auto-create checkout_notes rows for leases that don't have one
+    const toCreate = rows.filter(r => !r.cn_id);
+    for (const r of toCreate) {
+      const id = genId();
+      await req.pool.execute(
+        `INSERT INTO checkout_notes (id, org_id, lease_id, unit_id, property_id, old_code, new_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [id, orgId, r.lease_id, r.unit_id, r.property_id, r.lease_old_code || null, r.lease_new_code || null]
+      );
+      r.cn_id = id;
+      r.old_code = r.lease_old_code || null;
+      r.new_code = r.lease_new_code || null;
+    }
+
+    const data = rows.map(r => ({
+      id: r.cn_id,
+      lease_id: r.lease_id,
+      property_id: r.property_id,
+      property_name: r.property_name,
+      unit_name: r.unit_name,
+      lease_end: r.lease_end,
+      checkout_date: r.checkout_date || null,
+      next_checkin: r.next_checkin || null,
+      old_code: r.old_code ?? r.lease_old_code ?? null,
+      new_code: r.new_code ?? r.lease_new_code ?? null,
+      assigned_user_id: r.assigned_user_id || null,
+      assigned_user_name: [r.user_first, r.user_last].filter(Boolean).join(' ') || null,
+      notes: r.notes || null,
+    }));
+
+    res.json({ code: 200, data });
+  } catch (error) {
+    console.error('Get checkout notes error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load checkout notes' });
+  }
+});
+
+// PUT /api/cleaning/checkout-notes/:id
+router.put('/checkout-notes/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const updates = [];
+    const params = [];
+
+    if (req.body.old_code !== undefined) { updates.push('old_code = ?'); params.push(req.body.old_code || null); }
+    if (req.body.new_code !== undefined) { updates.push('new_code = ?'); params.push(req.body.new_code || null); }
+    if (req.body.assigned_user_id !== undefined) { updates.push('assigned_user_id = ?'); params.push(req.body.assigned_user_id || null); }
+    if (req.body.notes !== undefined) { updates.push('notes = ?'); params.push(req.body.notes || null); }
+
+    if (updates.length === 0) return res.json({ code: 200, message: 'Nothing to update' });
+
+    updates.push('updated_at = NOW()');
+    params.push(id, orgId);
+    await req.pool.execute(
+      `UPDATE checkout_notes SET ${updates.join(', ')} WHERE id = ? AND org_id = ?`,
+      params
+    );
+    res.json({ code: 200, message: 'Checkout notes updated' });
+  } catch (error) {
+    console.error('Update checkout notes error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to update checkout notes' });
+  }
+});
+
 module.exports = router;

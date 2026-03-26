@@ -162,6 +162,9 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     });
   }
 
+  // Booking & Commission
+  settingsChildren.push({ key: '/settings?tab=bookingPlatforms', label: <Link href="/settings?tab=bookingPlatforms">Booking & Commission</Link> });
+
   // API Keys — super admin only
   if (isSuperAdmin) {
     settingsChildren.push({ key: '/settings?tab=apiKeys', label: <Link href="/settings?tab=apiKeys">API Keys</Link> });

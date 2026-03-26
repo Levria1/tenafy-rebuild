@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState, useCallback } from 'react';
 import { Tabs, Table, Button, Select, DatePicker, Tag, Space, Input, Modal, Form, message, Popconfirm, Card, Typography } from 'antd';
 import { SaveOutlined, PlusOutlined, DeleteOutlined, ThunderboltOutlined, EditOutlined } from '@ant-design/icons';
 import MainLayout from '../../components/Layout';
-import { cleaning } from '../../lib/api';
+import { cleaning, user } from '../../lib/api';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 dayjs.extend(isoWeek);
@@ -24,6 +24,7 @@ function CleaningPage() {
   const items = [
     { key: 'weekly', label: 'Weekly Cleaning', children: <WeeklyCleaningTab /> },
     { key: 'checkout', label: 'Checkout Cleaning', children: <CheckoutCleaningTab /> },
+    { key: 'checkoutNotes', label: 'Checkout Notes', children: <CheckoutNotesTab /> },
     { key: 'schedule', label: 'Weekly Schedule', children: <WeeklyScheduleTab /> },
     { key: 'settings', label: 'Settings', children: <CleanerSettingsTab /> },
   ];
@@ -942,6 +943,187 @@ function CleanerSettingsTab() {
           </Form.Item>
         </Form>
       </Modal>
+    </div>
+  );
+}
+
+// ─── TAB: Checkout Notes ─────────────────────────────────────────────────────
+
+function CheckoutNotesTab() {
+  const [data, setData] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [propertyFilter, setPropertyFilter] = useState(null);
+  const [notesLocal, setNotesLocal] = useState({});
+
+  // Default to current week's Monday
+  const [selectedWeek, setSelectedWeek] = useState(() => {
+    const today = dayjs();
+    const dow = today.day(); // 0=Sun
+    const daysSinceMon = dow === 0 ? 6 : (dow - 1);
+    return today.subtract(daysSinceMon, 'day').format('YYYY-MM-DD');
+  });
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await cleaning.getCheckoutNotes(selectedWeek);
+      if (res.data.code === 200) setData(res.data.data || []);
+    } catch (err) { console.error('Load checkout notes error:', err); }
+    finally { setLoading(false); }
+  }, [selectedWeek]);
+
+  const loadUsers = async () => {
+    try {
+      const res = await user.listUsers({ status: 1 }, { page: 1, limit: 200 });
+      if (res.data.code === 200) setUsers(res.data.data.content || []);
+    } catch (err) { console.error('Load users error:', err); }
+  };
+
+  useEffect(() => { loadData(); setNotesLocal({}); }, [loadData]);
+  useEffect(() => { loadUsers(); }, []);
+
+  const handleUpdate = async (id, field, value) => {
+    try {
+      await cleaning.updateCheckoutNotes(id, { [field]: value });
+    } catch (err) {
+      message.error('Failed to save');
+    }
+  };
+
+  const handleSaveNotes = async () => {
+    const entries = Object.entries(notesLocal);
+    if (entries.length === 0) { message.info('No notes to save'); return; }
+    setSaving(true);
+    try {
+      for (const [id, notes] of entries) {
+        await cleaning.updateCheckoutNotes(id, { notes });
+      }
+      message.success('Notes saved');
+      setNotesLocal({});
+      loadData();
+    } catch (err) {
+      message.error('Failed to save notes');
+    } finally { setSaving(false); }
+  };
+
+  const filteredData = propertyFilter
+    ? data.filter(r => r.property_name === propertyFilter)
+    : data;
+
+  const propertyOptions = [...new Set(data.map(r => r.property_name))].sort();
+
+  const weekLabel = dayjs(selectedWeek).isValid()
+    ? `Wk ${dayjs(selectedWeek).isoWeek()} — ${dayjs(selectedWeek).format('MMM D')}`
+    : '';
+
+  const columns = [
+    {
+      title: 'Property', dataIndex: 'property_name', width: 140,
+      filters: propertyOptions.map(p => ({ text: p, value: p })),
+      onFilter: (value, record) => record.property_name === value,
+    },
+    { title: 'Unit', dataIndex: 'unit_name', width: 90 },
+    {
+      title: 'Lease End', dataIndex: 'lease_end', width: 110,
+      render: v => v ? dayjs(v).format('MMM D') : '-',
+      sorter: (a, b) => dayjs(a.lease_end).unix() - dayjs(b.lease_end).unix(),
+    },
+    {
+      title: 'Check Out', dataIndex: 'checkout_date', width: 110,
+      render: v => v ? dayjs(v).format('MMM D') : '-',
+    },
+    {
+      title: 'Next Check-In', dataIndex: 'next_checkin', width: 110,
+      render: v => v ? dayjs(v).format('MMM D') : '-',
+    },
+    { title: 'Old Code', dataIndex: 'old_code', width: 140, render: v => v || '-' },
+    { title: 'New Code', dataIndex: 'new_code', width: 140, render: v => v || '-' },
+    {
+      title: 'Assigned To', dataIndex: 'assigned_user_id', width: 160,
+      render: (val, record) => (
+        <Select
+          size="small"
+          style={{ width: '100%' }}
+          value={val || undefined}
+          placeholder="Select user"
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          options={users.map(u => ({
+            label: [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username,
+            value: Number(u.id),
+          }))}
+          onChange={v => {
+            setData(prev => prev.map(r => r.id === record.id ? { ...r, assigned_user_id: v || null } : r));
+            handleUpdate(record.id, 'assigned_user_id', v || null);
+          }}
+        />
+      ),
+    },
+    {
+      title: 'Notes', dataIndex: 'notes', width: 220,
+      render: (val, record) => (
+        <Input
+          size="small"
+          value={notesLocal[record.id] !== undefined ? notesLocal[record.id] : (val || '')}
+          onChange={e => setNotesLocal(prev => ({ ...prev, [record.id]: e.target.value }))}
+          placeholder="Add notes..."
+        />
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+        <Space>
+          <Text>Checkout Week:</Text>
+          <DatePicker
+            value={dayjs(selectedWeek)}
+            onChange={d => d && setSelectedWeek(d.startOf('week').add(1, 'day').format('YYYY-MM-DD'))}
+            picker="week"
+            size="small"
+          />
+          <Tag color="blue">{weekLabel}</Tag>
+        </Space>
+        <Space>
+          <Text>Property:</Text>
+          <Select
+            size="small"
+            style={{ width: 180 }}
+            value={propertyFilter}
+            onChange={v => setPropertyFilter(v)}
+            allowClear
+            placeholder="All Properties"
+            options={propertyOptions.map(p => ({ label: p, value: p }))}
+          />
+        </Space>
+      </div>
+      <Table
+        dataSource={filteredData}
+        columns={columns}
+        rowKey="id"
+        size="small"
+        loading={loading}
+        pagination={false}
+        scroll={{ x: 1200 }}
+        locale={{ emptyText: 'No checkouts this week' }}
+      />
+      {filteredData.length > 0 && (
+        <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
+          <Button
+            type="primary"
+            icon={<SaveOutlined />}
+            onClick={handleSaveNotes}
+            loading={saving}
+            disabled={Object.keys(notesLocal).length === 0}
+          >
+            Save Notes
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

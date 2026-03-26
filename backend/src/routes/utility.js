@@ -960,7 +960,7 @@ router.post('/bill/:id/generate-invoices', authenticate, async (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, NOW())`,
         [invoiceId, orgId, invoiceCode, propertyId, line.unit_id || null, line.leasing_id || null,
          line.tenant_id, currencyId, bill.period_end, categoryId,
-         line.net_amount, note]
+         Math.ceil(Number(line.net_amount)), note]
       );
 
       // Link invoice to bill line

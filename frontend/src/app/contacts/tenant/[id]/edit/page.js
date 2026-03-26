@@ -6,7 +6,7 @@ import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload
 import { UploadOutlined, CloudUploadOutlined, UserOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../../components/Layout';
-import { tenant } from '../../../../../lib/api';
+import { tenant, settings } from '../../../../../lib/api';
 
 const sectionTitleStyle = {
   fontSize: 13,
@@ -37,9 +37,13 @@ export default function TenantEditPage() {
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [displayAsCompany, setDisplayAsCompany] = useState(false);
+  const [leadSources, setLeadSources] = useState([]);
 
   useEffect(() => {
     loadTenant();
+    settings.getLeadSources().then(res => {
+      if (res.data.code === 200) setLeadSources(res.data.data || []);
+    }).catch(() => {});
   }, [tenantId]);
 
   const loadTenant = async () => {
@@ -218,11 +222,25 @@ export default function TenantEditPage() {
                   </div>
                 </div>
 
-                <div style={{ marginBottom: 0 }}>
-                  <Label>ID / PASSPORT</Label>
-                  <Form.Item name="id_card" noStyle>
-                    <Input placeholder="Input ID or passport number" style={{ maxWidth: '50%' }} />
-                  </Form.Item>
+                <div style={{ display: 'flex', gap: 16, marginBottom: 0 }}>
+                  <div style={{ flex: 1 }}>
+                    <Label>ID / PASSPORT</Label>
+                    <Form.Item name="id_card" noStyle>
+                      <Input placeholder="Input ID or passport number" />
+                    </Form.Item>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <Label>LEAD SOURCE</Label>
+                    <Form.Item name="lead_source_id" noStyle>
+                      <Select
+                        placeholder="Select lead source"
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        options={leadSources.map(s => ({ label: s.name, value: Number(s.id) }))}
+                      />
+                    </Form.Item>
+                  </div>
                 </div>
               </div>
 

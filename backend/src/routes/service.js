@@ -8,7 +8,7 @@ const { generateSequenceCode } = require('../utils/sequenceCode');
 router.post('/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, searchFields, status, category, subCategoryList, property, unitIdList } = req.body || {};
+    const { search, searchFields, status, category, subCategoryList, property, unitIdList, sortField, sortOrder } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
@@ -72,6 +72,17 @@ router.post('/list', authenticate, async (req, res) => {
       params.push(...unitIdList);
     }
 
+    // Validate and build ORDER BY clause
+    const ALLOWED_SORT_FIELDS = {
+      created_at: 's.created_at',
+      service_date_start: 's.service_date_start',
+      service_date_end: 's.service_date_end',
+      category: 's.category',
+    };
+    const resolvedSortField = ALLOWED_SORT_FIELDS[sortField] || 's.created_at';
+    const resolvedSortOrder = sortOrder === 'ASC' ? 'ASC' : 'DESC';
+    const orderByClause = `ORDER BY ${resolvedSortField} IS NULL, ${resolvedSortField} ${resolvedSortOrder}`;
+
     // Count query needs same JOINs for property/unit/tenant filters
     const joinClause = `FROM service s
        LEFT JOIN unit u ON s.unit_id = u.id
@@ -93,7 +104,7 @@ router.post('/list', authenticate, async (req, res) => {
                    ELSE CONCAT(COALESCE(rb.first_name,''), ' ', COALESCE(rb.last_name,''))
               END AS reported_by_name
        ${joinClause}
-       WHERE ${whereClause} ORDER BY s.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+       WHERE ${whereClause} ${orderByClause} LIMIT ${limit} OFFSET ${offset}`,
       [...params]
     );
 

@@ -46,6 +46,8 @@ app.use('/api/storage', require('./routes/storage'));
 app.use('/api/public', require('./routes/public'));
 app.use('/api/cleaning', require('./routes/cleaning'));
 app.use('/api/utility', require('./routes/utility'));
+app.use('/api/booking-platform', require('./routes/bookingPlatform'));
+app.use('/api/sales-agent', require('./routes/salesAgent'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

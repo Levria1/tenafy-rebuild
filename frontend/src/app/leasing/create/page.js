@@ -11,7 +11,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
-import { leasing, property, tenant, emailTemplate, file as fileApi, settings } from '../../../lib/api';
+import { leasing, property, tenant, emailTemplate, file as fileApi, settings, bookingPlatform, salesAgent } from '../../../lib/api';
 
 const { TextArea } = Input;
 
@@ -39,6 +39,8 @@ export default function LeaseCreatePage() {
   const [filteredUnits, setFilteredUnits] = useState([]);
   const [tenants, setTenants] = useState([]);
   const [templates, setTemplates] = useState([]);
+  const [platforms, setPlatforms] = useState([]);
+  const [agents, setAgents] = useState([]);
 
   // Conflict
   const [conflictChecking, setConflictChecking] = useState(false);
@@ -59,14 +61,18 @@ export default function LeaseCreatePage() {
 
   const loadData = async () => {
     try {
-      const [propsRes, tenantsRes, templatesRes] = await Promise.all([
+      const [propsRes, tenantsRes, templatesRes, platformsRes, agentsRes] = await Promise.all([
         property.getAllWithUnits(),
         leasing.getTenants(),
         emailTemplate.getAll({ type: 'lease' }),
+        bookingPlatform.list(),
+        salesAgent.list(),
       ]);
       setProperties(propsRes.data.data || []);
       setTenants(tenantsRes.data.data || []);
       setTemplates(templatesRes.data.data || []);
+      setPlatforms(platformsRes.data.data || []);
+      setAgents(agentsRes.data.data || []);
 
       // Build flat units list from properties with units
       const props = propsRes.data.data || [];
@@ -348,12 +354,23 @@ export default function LeaseCreatePage() {
               </Select>
             </Form.Item>
           </div>
+        </div>
+        <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
           <div style={{ flex: 1 }}>
             <FLabel>LEASE TYPE</FLabel>
             <Form.Item name="type" noStyle initialValue={0}>
               <Select>
                 <Select.Option value={0}>Fixed</Select.Option>
                 <Select.Option value={1}>Month-to-Month</Select.Option>
+              </Select>
+            </Form.Item>
+          </div>
+          <div style={{ flex: 1 }}>
+            <FLabel>PROPERTY TYPE</FLabel>
+            <Form.Item name="contract_type" noStyle initialValue={0}>
+              <Select>
+                <Select.Option value={1}>Commercial</Select.Option>
+                <Select.Option value={2}>Residential</Select.Option>
               </Select>
             </Form.Item>
           </div>
@@ -544,17 +561,7 @@ export default function LeaseCreatePage() {
       <Card size="small" title="Additional Information" style={{ marginBottom: 16 }}>
         <Row gutter={16}>
           <Col span={12}>
-            <Form.Item name="contract_type" label="Contract Type" initialValue={0}>
-              <Select>
-                <Select.Option value={0}>Standard</Select.Option>
-                <Select.Option value={1}>Commercial</Select.Option>
-                <Select.Option value={2}>Residential</Select.Option>
-                <Select.Option value={3}>Short Term</Select.Option>
-              </Select>
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="credits" label="Credits">
+            <Form.Item name="credits" label="Additional Credits">
               <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="0.00" />
             </Form.Item>
           </Col>
@@ -566,6 +573,29 @@ export default function LeaseCreatePage() {
         <Form.Item name="note" label="Notes">
           <TextArea rows={4} placeholder="Additional notes about this lease..." />
         </Form.Item>
+      </Card>
+
+      <Card size="small" title="Booking & Commission" style={{ marginBottom: 16 }}>
+        <Row gutter={16}>
+          <Col span={12}>
+            <Form.Item name="booking_platform_id" label="Booking Platform">
+              <Select placeholder="Select platform" allowClear showSearch optionFilterProp="children">
+                {platforms.map(p => (
+                  <Select.Option key={p.id} value={p.id}>{p.name}</Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
+          </Col>
+          <Col span={12}>
+            <Form.Item name="sales_agent_id" label="Sales Agent">
+              <Select placeholder="Select agent" allowClear showSearch optionFilterProp="children">
+                {agents.map(a => (
+                  <Select.Option key={a.id} value={a.id}>{a.name}</Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
+          </Col>
+        </Row>
       </Card>
 
       <Card size="small" title="Files" style={{ marginBottom: 16 }}>

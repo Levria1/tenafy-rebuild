@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS checkout_notes (
+  id BIGINT PRIMARY KEY,
+  org_id BIGINT NOT NULL,
+  lease_id BIGINT NOT NULL,
+  unit_id BIGINT NOT NULL,
+  property_id BIGINT NOT NULL,
+  old_code VARCHAR(255) DEFAULT NULL,
+  new_code VARCHAR(255) DEFAULT NULL,
+  assigned_user_id BIGINT DEFAULT NULL,
+  notes TEXT DEFAULT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_lease (lease_id, org_id),
+  INDEX idx_org (org_id)
+);

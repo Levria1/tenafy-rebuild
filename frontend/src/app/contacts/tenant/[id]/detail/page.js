@@ -5,11 +5,12 @@ import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import {
   Button, Space, Tag, Table, message, Spin, Empty, Dropdown, Tooltip,
   Typography, Statistic, Row, Col, Divider, Avatar, Drawer, Descriptions, Modal,
+  Input, Select, DatePicker,
 } from 'antd';
 import {
   EditOutlined, UserOutlined, MailOutlined,
   FileTextOutlined, DollarOutlined, PrinterOutlined,
-  DownOutlined, EyeOutlined, DeleteOutlined,
+  DownOutlined, EyeOutlined, DeleteOutlined, SearchOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
@@ -605,6 +606,9 @@ function TenantDetailPage() {
   function UtilitiesContent({ tenantId }) {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(false);
+    const [searchText, setSearchText] = useState('');
+    const [filterProperty, setFilterProperty] = useState(null);
+    const [filterDates, setFilterDates] = useState(null);
 
     useEffect(() => {
       if (!tenantId) return;
@@ -618,9 +622,8 @@ function TenantDetailPage() {
     if (loading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>;
     if (!data) return <Empty description="No utility data" />;
 
-    const { billLines, readings, settlements, leases } = data;
+    const { billLines, settlements, leases } = data;
 
-    const READING_TYPES = { 0: 'Move-In', 1: 'Move-Out', 2: 'Billing', 3: 'Monthly' };
     const INV_STATUS = { 0: { color: 'blue', text: 'Open' }, 1: { color: 'green', text: 'Paid' }, 2: { color: 'red', text: 'Overdue' } };
 
     // Combine bill lines and settlements into one billing history table
@@ -665,6 +668,25 @@ function TenantDetailPage() {
       })),
     ].sort((a, b) => new Date(b.sort_date) - new Date(a.sort_date));
 
+    // Unique property names for filter dropdown
+    const propertyOptions = [...new Set(billingHistory.map(r => r.property_name).filter(Boolean))].map(p => ({ label: p, value: p }));
+
+    // Apply filters
+    const filteredBilling = billingHistory.filter(row => {
+      if (searchText) {
+        const s = searchText.toLowerCase();
+        const match = [row.type, row.unit_name, row.property_name, row.period, row.invoice_code, row.meter_number]
+          .filter(Boolean).some(v => String(v).toLowerCase().includes(s));
+        if (!match) return false;
+      }
+      if (filterProperty && row.property_name !== filterProperty) return false;
+      if (filterDates && filterDates[0] && filterDates[1]) {
+        const rowDate = dayjs(row.sort_date);
+        if (rowDate.isBefore(filterDates[0], 'day') || rowDate.isAfter(filterDates[1], 'day')) return false;
+      }
+      return true;
+    });
+
     const billingColumns = [
       { title: 'Type', dataIndex: 'type', width: 80, render: v => <Tag color={v === 'Checkout' ? 'orange' : 'blue'}>{v}</Tag> },
       { title: 'Unit', key: 'unit', width: 140, render: (_, r) => `${r.property_name} - ${r.unit_name}` },
@@ -686,57 +708,65 @@ function TenantDetailPage() {
       },
     ];
 
-    // Meter readings table
-    const readingColumns = [
-      { title: 'Date', dataIndex: 'reading_date', width: 120, render: v => dayjs(v).format('MMM D, YYYY') },
-      { title: 'Type', dataIndex: 'reading_type', width: 90, render: v => <Tag>{READING_TYPES[Number(v)] || 'Other'}</Tag> },
-      { title: 'Unit', key: 'unit', width: 140, render: (_, r) => `${r.property_name} - ${r.unit_name}` },
-      { title: 'Meter', dataIndex: 'meter_number', width: 100 },
-      { title: 'Reading', dataIndex: 'reading_value', width: 120, render: v => Number(v).toLocaleString() },
-    ];
-
-    // Lease meter values
-    const leaseColumns = [
-      { title: 'Unit', key: 'unit', width: 160, render: (_, r) => `${r.property_name} - ${r.unit_name}` },
-      { title: 'Lease Period', key: 'period', width: 200, render: (_, r) => `${dayjs(r.start_date).format('MMM D, YYYY')} - ${r.end_date ? dayjs(r.end_date).format('MMM D, YYYY') : 'Ongoing'}` },
-      { title: 'Monthly Credit', dataIndex: 'utility_credit', width: 120, render: v => v ? `$${Number(v).toFixed(2)}` : '—' },
-      { title: 'Check-In Meter', dataIndex: 'check_in_meter', width: 120, render: v => v != null ? Number(v).toLocaleString() : '—' },
-      { title: 'Check-Out Meter', dataIndex: 'check_out_meter', width: 120, render: v => v != null ? Number(v).toLocaleString() : '—' },
-    ];
+    // Use the most recent lease for the info header
+    const primaryLease = leases?.[0];
 
     return (
       <div>
+        {/* Tenant Utility Info Header */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px', marginBottom: 16 }}>
+          <div>
+            <FieldValue label="Tenant Name" value={`${tenantData?.first_name || ''} ${tenantData?.last_name || ''}`.trim() || '—'} />
+            <FieldValue label="Property & Unit" value={primaryLease ? `${primaryLease.property_name} - ${primaryLease.unit_name}` : '—'} />
+            <FieldValue label="Utility Credit" value={primaryLease?.utility_credit ? `$${Number(primaryLease.utility_credit).toFixed(2)}/mo` : '—'} />
+          </div>
+          <div>
+            <FieldValue label="Move In Date" value={primaryLease?.start_date ? dayjs(primaryLease.start_date).format('MMM D, YYYY') : '—'} />
+            <FieldValue label="Move Out Date" value={primaryLease?.end_date ? dayjs(primaryLease.end_date).format('MMM D, YYYY') : '—'} />
+          </div>
+          <div>
+            <FieldValue label="Check In Meter" value={primaryLease?.check_in_meter != null ? Number(primaryLease.check_in_meter).toLocaleString() : '—'} />
+            <FieldValue label="Check Out Meter" value={primaryLease?.check_out_meter != null ? Number(primaryLease.check_out_meter).toLocaleString() : '—'} />
+          </div>
+        </div>
+
         <SectionHeader title="Billing History" />
+        <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+          <Input
+            placeholder="Search..."
+            prefix={<SearchOutlined style={{ color: '#bbb' }} />}
+            value={searchText}
+            onChange={e => setSearchText(e.target.value)}
+            allowClear
+            style={{ width: 200 }}
+          />
+          <Select
+            placeholder="Filter by property"
+            value={filterProperty}
+            onChange={v => setFilterProperty(v)}
+            allowClear
+            options={propertyOptions}
+            style={{ width: 200 }}
+          />
+          <DatePicker.RangePicker
+            value={filterDates}
+            onChange={v => setFilterDates(v)}
+            style={{ width: 260 }}
+          />
+        </div>
         <Table
-          dataSource={billingHistory}
+          dataSource={filteredBilling}
           columns={billingColumns}
           rowKey="key"
           size="small"
-          pagination={false}
+          pagination={{
+            pageSize: 20,
+            showSizeChanger: true,
+            pageSizeOptions: ['20', '50', '100'],
+            showTotal: (total) => `${total} items`,
+          }}
           scroll={{ x: 1200 }}
           locale={{ emptyText: 'No billing history' }}
-        />
-
-        <div style={{ marginTop: 24 }} />
-        <SectionHeader title="Meter Readings" />
-        <Table
-          dataSource={readings}
-          columns={readingColumns}
-          rowKey="id"
-          size="small"
-          pagination={false}
-          locale={{ emptyText: 'No meter readings' }}
-        />
-
-        <div style={{ marginTop: 24 }} />
-        <SectionHeader title="Lease Utility Details" />
-        <Table
-          dataSource={leases}
-          columns={leaseColumns}
-          rowKey="id"
-          size="small"
-          pagination={false}
-          locale={{ emptyText: 'No leases' }}
         />
       </div>
     );

@@ -112,6 +112,7 @@ router.post('/invoices', authenticate, async (req, res) => {
     const [invoices] = await req.pool.execute(
       `SELECT i.*, t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               p.display_name as property_name, u.name as unit_name, cs.name as category_name,
+              bp.name as booking_platform_name, sa.name as sales_agent_name,
               COALESCE((SELECT SUM(al.amount)
                 FROM accounting_line al
                 JOIN accounting a ON al.accounting_id = a.id
@@ -134,6 +135,8 @@ router.post('/invoices', authenticate, async (req, res) => {
        LEFT JOIN unit u ON i.unit_id = u.id
        LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
        LEFT JOIN category_setting cs ON i.category = cs.id
+       LEFT JOIN booking_platform bp ON i.booking_platform_id = bp.id
+       LEFT JOIN sales_agent sa ON i.sales_agent_id = sa.id
        WHERE ${whereClause}
        ORDER BY ${orderClause} LIMIT ${limit} OFFSET ${offset}`,
       params
@@ -569,7 +572,7 @@ router.get('/:id', authenticate, async (req, res) => {
 router.put('/:id', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount, note, due_date, status, type, category, tenant_id, property_id, unit_id, leasing_id, tag_id } = req.body;
+    const { amount, note, due_date, status, type, category, tenant_id, property_id, unit_id, leasing_id, tag_id, booking_platform_id, sales_agent_id } = req.body;
     const orgId = req.user.orgId;
 
     // Verify invoice exists
@@ -595,6 +598,8 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), asy
     if (unit_id !== undefined) { fields.push('unit_id = ?'); params.push(unit_id || null); }
     if (leasing_id !== undefined) { fields.push('leasing_id = ?'); params.push(leasing_id || null); }
     if (tag_id !== undefined) { fields.push('tag_id = ?'); params.push(tag_id || null); }
+    if (booking_platform_id !== undefined) { fields.push('booking_platform_id = ?'); params.push(booking_platform_id || null); }
+    if (sales_agent_id !== undefined) { fields.push('sales_agent_id = ?'); params.push(sales_agent_id || null); }
 
     fields.push('updated_at = NOW()');
     params.push(id, orgId);

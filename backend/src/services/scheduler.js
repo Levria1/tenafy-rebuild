@@ -512,6 +512,22 @@ async function sendRenewalEmailsForOrg(pool, orgId) {
 }
 
 // ---------------------------------------------------------------------------
+// Service task auto-promote: pending → in-progress when start date is today
+// ---------------------------------------------------------------------------
+
+async function promoteServiceTasksForOrg(pool, orgId) {
+  const [result] = await pool.execute(
+    `UPDATE service SET status = 1, updated_at = NOW()
+     WHERE org_id = ? AND status = 0 AND service_date_start IS NOT NULL
+       AND DATE(service_date_start) <= CURDATE()`,
+    [orgId]
+  );
+  if (result.affectedRows > 0) {
+    console.log(`[Scheduler] Promoted ${result.affectedRows} service task(s) to in-progress for org ${orgId}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-org job runner — runs a job against ALL active orgs
 // ---------------------------------------------------------------------------
 
@@ -587,8 +603,15 @@ function startScheduler() {
     runForAllOrgs('renewalEmails', sendRenewalEmailsForOrg);
   });
 
+  // Daily at 06:00 - auto-promote pending service tasks to in-progress
+  cron.schedule('0 6 * * *', () => {
+    console.log('[Scheduler] Promoting pending service tasks to in-progress...');
+    runForAllOrgs('serviceAutoProgress', promoteServiceTasksForOrg);
+  });
+
   // Run once at startup to fix stale statuses
   runForAllOrgs('startupFix', markOverdueInvoicesForOrg);
+  runForAllOrgs('startupServiceFix', promoteServiceTasksForOrg);
 
   console.log('[Scheduler] All jobs scheduled.');
 }

@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../components/Layout';
-import { settings, user, amenity, role, emailTemplate, smtpAccount } from '../../lib/api';
+import { settings, user, amenity, role, emailTemplate, smtpAccount, bookingPlatform, salesAgent } from '../../lib/api';
 import { useCallback } from 'react';
 
 export default function SettingsPageWrapper() {
@@ -207,6 +207,12 @@ function SettingsPage() {
     { key: 'apiKeys', label: 'API Keys', children: <ApiKeySettings /> },
   ];
 
+  const bookingCommissionTabs = [
+    { key: 'bookingPlatforms', label: 'Booking Platforms', children: <BookingPlatformSettings /> },
+    { key: 'salesAgents', label: 'Sales Agents', children: <SalesAgentSettings /> },
+    { key: 'leadSources', label: 'Lead Sources', children: <LeadSourceSettings /> },
+  ];
+
   // Determine which group the active tab belongs to
   const accountKeys = ['personal', 'landlord'];
   const accountingKeys = ['categories', 'payment', 'accounts', 'sequences'];
@@ -214,9 +220,13 @@ function SettingsPage() {
   const emailKeys = ['emailTemplates', 'smtpAccounts', 'emailSettings'];
   const userKeys = ['users', 'roles'];
   const apiKeyKeys = ['apiKeys'];
+  const bookingKeys = ['bookingPlatforms', 'salesAgents', 'leadSources'];
 
   let tabItems, pageTitle;
-  if (apiKeyKeys.includes(activeTab)) {
+  if (bookingKeys.includes(activeTab)) {
+    tabItems = bookingCommissionTabs;
+    pageTitle = 'Booking & Commission';
+  } else if (apiKeyKeys.includes(activeTab)) {
     tabItems = apiKeyTabs;
     pageTitle = 'API Keys';
   } else if (accountingKeys.includes(activeTab)) {
@@ -1180,6 +1190,291 @@ function EmailWhitelistSettings() {
       <Button type="primary" onClick={handleSave} loading={saving}>
         Save
       </Button>
+    </Card>
+  );
+}
+
+function BookingPlatformSettings() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await bookingPlatform.list();
+      if (r.data.code === 200) setItems(r.data.data || []);
+    } catch (err) { console.error('Load platforms error:', err); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleAdd = async (values) => {
+    try { await bookingPlatform.create(values); message.success('Platform created'); load(); }
+    catch (err) { message.error('Failed to create platform'); }
+  };
+
+  const handleEdit = (record) => { setEditingId(record.id); setEditName(record.name); };
+
+  const handleEditSave = async () => {
+    if (!editName.trim()) { message.warning('Name cannot be empty'); return; }
+    try {
+      await bookingPlatform.update(editingId, { name: editName.trim() });
+      message.success('Platform updated');
+      setEditingId(null); setEditName('');
+      load();
+    } catch (err) { message.error('Failed to update platform'); }
+  };
+
+  const handleEditCancel = () => { setEditingId(null); setEditName(''); };
+
+  const handleDelete = async (id) => {
+    try { await bookingPlatform.delete(id); message.success('Platform deleted'); load(); }
+    catch (err) { message.error(err.response?.data?.message || 'Failed to delete platform'); }
+  };
+
+  const columns = [
+    {
+      title: 'Platform Name', dataIndex: 'name', key: 'name',
+      render: (val, r) => {
+        if (String(r.id) === String(editingId)) {
+          return <Input value={editName} onChange={(e) => setEditName(e.target.value)} onPressEnter={handleEditSave} style={{ width: 250 }} autoFocus />;
+        }
+        return val;
+      },
+    },
+    {
+      title: 'Actions', key: 'actions', width: 200,
+      render: (_, r) => {
+        if (String(r.id) === String(editingId)) {
+          return (
+            <Space>
+              <Button type="link" style={{ padding: 0 }} onClick={handleEditSave}>Save</Button>
+              <Button type="link" style={{ padding: 0 }} onClick={handleEditCancel}>Cancel</Button>
+            </Space>
+          );
+        }
+        return (
+          <Space>
+            <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
+            <Popconfirm title="Delete this platform?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
+            </Popconfirm>
+          </Space>
+        );
+      },
+    },
+  ];
+
+  return (
+    <Card>
+      <h3 style={{ marginBottom: 4 }}>Booking Platforms</h3>
+      <p style={{ color: '#666', marginBottom: 16, fontSize: 13 }}>
+        Manage booking platforms (e.g. Airbnb, Booking.com, Direct) to track where tenants come from.
+      </p>
+      <div style={{ marginBottom: 16 }}>
+        <Form layout="inline" onFinish={handleAdd}>
+          <Form.Item name="name" rules={[{ required: true, message: 'Enter platform name' }]}>
+            <Input placeholder="Platform name" style={{ width: 250 }} />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />}>Add Platform</Button>
+          </Form.Item>
+        </Form>
+      </div>
+      <Table columns={columns} dataSource={items} rowKey="id" loading={loading} pagination={false} size="middle" />
+    </Card>
+  );
+}
+
+function SalesAgentSettings() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await salesAgent.list();
+      if (r.data.code === 200) setItems(r.data.data || []);
+    } catch (err) { console.error('Load agents error:', err); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleAdd = async (values) => {
+    try { await salesAgent.create(values); message.success('Agent created'); load(); }
+    catch (err) { message.error('Failed to create agent'); }
+  };
+
+  const handleEdit = (record) => { setEditingId(record.id); setEditName(record.name); };
+
+  const handleEditSave = async () => {
+    if (!editName.trim()) { message.warning('Name cannot be empty'); return; }
+    try {
+      await salesAgent.update(editingId, { name: editName.trim() });
+      message.success('Agent updated');
+      setEditingId(null); setEditName('');
+      load();
+    } catch (err) { message.error('Failed to update agent'); }
+  };
+
+  const handleEditCancel = () => { setEditingId(null); setEditName(''); };
+
+  const handleDelete = async (id) => {
+    try { await salesAgent.delete(id); message.success('Agent deleted'); load(); }
+    catch (err) { message.error(err.response?.data?.message || 'Failed to delete agent'); }
+  };
+
+  const columns = [
+    {
+      title: 'Agent Name', dataIndex: 'name', key: 'name',
+      render: (val, r) => {
+        if (String(r.id) === String(editingId)) {
+          return <Input value={editName} onChange={(e) => setEditName(e.target.value)} onPressEnter={handleEditSave} style={{ width: 250 }} autoFocus />;
+        }
+        return val;
+      },
+    },
+    {
+      title: 'Actions', key: 'actions', width: 200,
+      render: (_, r) => {
+        if (String(r.id) === String(editingId)) {
+          return (
+            <Space>
+              <Button type="link" style={{ padding: 0 }} onClick={handleEditSave}>Save</Button>
+              <Button type="link" style={{ padding: 0 }} onClick={handleEditCancel}>Cancel</Button>
+            </Space>
+          );
+        }
+        return (
+          <Space>
+            <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
+            <Popconfirm title="Delete this agent?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
+            </Popconfirm>
+          </Space>
+        );
+      },
+    },
+  ];
+
+  return (
+    <Card>
+      <h3 style={{ marginBottom: 4 }}>Sales Agents</h3>
+      <p style={{ color: '#666', marginBottom: 16, fontSize: 13 }}>
+        Manage sales agents for commission tracking. Agents assigned to leases will be tagged on all generated invoices.
+      </p>
+      <div style={{ marginBottom: 16 }}>
+        <Form layout="inline" onFinish={handleAdd}>
+          <Form.Item name="name" rules={[{ required: true, message: 'Enter agent name' }]}>
+            <Input placeholder="Agent name" style={{ width: 250 }} />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />}>Add Agent</Button>
+          </Form.Item>
+        </Form>
+      </div>
+      <Table columns={columns} dataSource={items} rowKey="id" loading={loading} pagination={false} size="middle" />
+    </Card>
+  );
+}
+
+function LeadSourceSettings() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await settings.getLeadSources();
+      if (r.data.code === 200) setItems(r.data.data || []);
+    } catch (err) { console.error('Load lead sources error:', err); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleAdd = async (values) => {
+    try { await settings.createLeadSource(values); message.success('Lead source created'); load(); }
+    catch (err) { message.error('Failed to create lead source'); }
+  };
+
+  const handleEdit = (record) => { setEditingId(record.id); setEditName(record.name); };
+
+  const handleEditSave = async () => {
+    if (!editName.trim()) { message.warning('Name cannot be empty'); return; }
+    try {
+      await settings.updateLeadSource(editingId, { name: editName.trim() });
+      message.success('Lead source updated');
+      setEditingId(null); setEditName('');
+      load();
+    } catch (err) { message.error('Failed to update lead source'); }
+  };
+
+  const handleEditCancel = () => { setEditingId(null); setEditName(''); };
+
+  const handleDelete = async (id) => {
+    try { await settings.deleteLeadSource(id); message.success('Lead source deleted'); load(); }
+    catch (err) { message.error(err.response?.data?.message || 'Failed to delete lead source'); }
+  };
+
+  const columns = [
+    {
+      title: 'Lead Source Name', dataIndex: 'name', key: 'name',
+      render: (val, r) => {
+        if (String(r.id) === String(editingId)) {
+          return <Input value={editName} onChange={(e) => setEditName(e.target.value)} onPressEnter={handleEditSave} style={{ width: 250 }} autoFocus />;
+        }
+        return val;
+      },
+    },
+    {
+      title: 'Actions', key: 'actions', width: 200,
+      render: (_, r) => {
+        if (String(r.id) === String(editingId)) {
+          return (
+            <Space>
+              <Button type="link" style={{ padding: 0 }} onClick={handleEditSave}>Save</Button>
+              <Button type="link" style={{ padding: 0 }} onClick={handleEditCancel}>Cancel</Button>
+            </Space>
+          );
+        }
+        return (
+          <Space>
+            <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
+            <Popconfirm title="Delete this lead source?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
+            </Popconfirm>
+          </Space>
+        );
+      },
+    },
+  ];
+
+  return (
+    <Card>
+      <h3 style={{ marginBottom: 4 }}>Lead Sources</h3>
+      <p style={{ color: '#666', marginBottom: 16, fontSize: 13 }}>
+        Manage lead sources to track how contacts found you (e.g. Walk-in, Referral, Facebook, Google).
+      </p>
+      <div style={{ marginBottom: 16 }}>
+        <Form layout="inline" onFinish={handleAdd}>
+          <Form.Item name="name" rules={[{ required: true, message: 'Enter lead source name' }]}>
+            <Input placeholder="Lead source name" style={{ width: 250 }} />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />}>Add Lead Source</Button>
+          </Form.Item>
+        </Form>
+      </div>
+      <Table columns={columns} dataSource={items} rowKey="id" loading={loading} pagination={false} size="middle" />
     </Card>
   );
 }

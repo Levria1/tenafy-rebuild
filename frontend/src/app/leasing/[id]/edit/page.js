@@ -6,7 +6,7 @@ import { Form, Input, InputNumber, DatePicker, Select, Button, message, Spin, Ro
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
-import { leasing, property, tenant as tenantApi } from '../../../../lib/api';
+import { leasing, property, tenant as tenantApi, bookingPlatform, salesAgent } from '../../../../lib/api';
 
 const INVOICE_SCHEDULES = [
   { value: 'weekly', label: 'Weekly' },
@@ -48,6 +48,8 @@ export default function LeasingEditPage() {
   const [tenants, setTenants] = useState([]);
   const [leaseData, setLeaseData] = useState(null);
   const [makeRecurring, setMakeRecurring] = useState(false);
+  const [platforms, setPlatforms] = useState([]);
+  const [agents, setAgents] = useState([]);
   const router = useRouter();
   const params = useParams();
   const leaseId = params.id;
@@ -58,11 +60,15 @@ export default function LeasingEditPage() {
 
   const loadAll = async () => {
     try {
-      const [propRes, tenantRes, leaseRes] = await Promise.all([
+      const [propRes, tenantRes, leaseRes, platformsRes, agentsRes] = await Promise.all([
         leasing.getUnits({}),
         tenantApi.getAll(),
         leasing.get(leaseId),
+        bookingPlatform.list(),
+        salesAgent.list(),
       ]);
+      setPlatforms(platformsRes.data.data || []);
+      setAgents(agentsRes.data.data || []);
 
       let unitsList = [];
       let propsList = [];
@@ -122,6 +128,8 @@ export default function LeasingEditPage() {
           contact_phone: d.contact_phone || '',
           unit_information: d.unit_information || '',
           status: d.status != null ? Number(d.status) : 1,
+          booking_platform_id: d.booking_platform_id ? String(d.booking_platform_id) : undefined,
+          sales_agent_id: d.sales_agent_id ? String(d.sales_agent_id) : undefined,
         });
       }
     } catch (error) {
@@ -174,6 +182,8 @@ export default function LeasingEditPage() {
         contact_phone: values.contact_phone || null,
         status: values.status ?? 1,
         mark_past_paid: values.mark_past_paid || false,
+        booking_platform_id: values.booking_platform_id || null,
+        sales_agent_id: values.sales_agent_id || null,
       };
       const res = await leasing.update(leaseId, payload);
       if (res.data.code === 200) {
@@ -437,6 +447,33 @@ export default function LeasingEditPage() {
           <Form.Item name="note" noStyle>
             <Input.TextArea rows={3} placeholder="Notes" />
           </Form.Item>
+        </div>
+
+        {/* Booking & Commission */}
+        <div style={sectionStyle}>
+          <div style={sectionTitle}>Booking & Commission</div>
+          <Row gutter={16}>
+            <Col span={12}>
+              <FLabel>Booking Platform</FLabel>
+              <Form.Item name="booking_platform_id" noStyle>
+                <Select placeholder="Select platform" allowClear showSearch optionFilterProp="children" style={{ width: '100%' }}>
+                  {platforms.map(p => (
+                    <Select.Option key={p.id} value={String(p.id)}>{p.name}</Select.Option>
+                  ))}
+                </Select>
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <FLabel>Sales Agent</FLabel>
+              <Form.Item name="sales_agent_id" noStyle>
+                <Select placeholder="Select agent" allowClear showSearch optionFilterProp="children" style={{ width: '100%' }}>
+                  {agents.map(a => (
+                    <Select.Option key={a.id} value={String(a.id)}>{a.name}</Select.Option>
+                  ))}
+                </Select>
+              </Form.Item>
+            </Col>
+          </Row>
         </div>
 
         {/* Footer */}

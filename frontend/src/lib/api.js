@@ -289,6 +289,11 @@ export const settings = {
   createPaymentMethod: (data) => api.post('/api/user/setting/payment/add', data),
   updatePaymentMethod: (id, data) => api.put(`/api/user/setting/payment/update/${id}`, data),
   deletePaymentMethod: (id) => api.delete(`/api/user/setting/payment/delete/${id}`),
+  // Lead sources
+  getLeadSources: () => api.get('/api/user/setting/lead-source/list'),
+  createLeadSource: (data) => api.post('/api/user/setting/lead-source/add', data),
+  updateLeadSource: (id, data) => api.put(`/api/user/setting/lead-source/update/${id}`, data),
+  deleteLeadSource: (id) => api.delete(`/api/user/setting/lead-source/delete/${id}`),
   // Landlord / org settings
   getLandlord: () => api.get('/api/user/setting/landlord'),
   updateLandlord: (data) => api.put('/api/user/setting/landlord/update', data),
@@ -370,6 +375,9 @@ export const cleaning = {
   // Weekly schedule
   getSchedule: (week_of) => api.get('/api/cleaning/schedule', { params: { week_of } }),
   generateSchedule: (data) => api.post('/api/cleaning/schedule/generate', data),
+  // Checkout notes
+  getCheckoutNotes: (week_of) => api.get('/api/cleaning/checkout-notes', { params: { week_of } }),
+  updateCheckoutNotes: (id, data) => api.put(`/api/cleaning/checkout-notes/${id}`, data),
 };
 
 export const utility = {
@@ -404,6 +412,20 @@ export const utility = {
   getHighestRate: (params) => api.get('/api/utility/highest-rate', { params }),
   checkoutSettlement: (data) => api.post('/api/utility/checkout-settlement', data),
   getTenantHistory: (tenantId) => api.get(`/api/utility/tenant/${tenantId}/history`),
+};
+
+export const bookingPlatform = {
+  list: () => api.get('/api/booking-platform'),
+  create: (data) => api.post('/api/booking-platform', data),
+  update: (id, data) => api.put(`/api/booking-platform/${id}`, data),
+  delete: (id) => api.delete(`/api/booking-platform/${id}`),
+};
+
+export const salesAgent = {
+  list: () => api.get('/api/sales-agent'),
+  create: (data) => api.post('/api/sales-agent', data),
+  update: (id, data) => api.put(`/api/sales-agent/${id}`, data),
+  delete: (id) => api.delete(`/api/sales-agent/${id}`),
 };
 
 export const storageMonitoring = {

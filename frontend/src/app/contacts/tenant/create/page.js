@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload } from 'antd';
 import { UploadOutlined, CloudUploadOutlined, UserOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
-import { tenant } from '../../../../lib/api';
+import { tenant, settings } from '../../../../lib/api';
 
 const sectionTitleStyle = {
   fontSize: 13,
@@ -33,6 +33,13 @@ export default function TenantCreatePage() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [displayAsCompany, setDisplayAsCompany] = useState(false);
+  const [leadSources, setLeadSources] = useState([]);
+
+  useEffect(() => {
+    settings.getLeadSources().then(res => {
+      if (res.data.code === 200) setLeadSources(res.data.data || []);
+    }).catch(() => {});
+  }, []);
 
   const onFinish = async (values) => {
     try {
@@ -190,12 +197,26 @@ export default function TenantCreatePage() {
                   </div>
                 </div>
 
-                {/* Row: ID / Passport */}
-                <div style={{ marginBottom: 0 }}>
-                  <Label>ID / PASSPORT</Label>
-                  <Form.Item name="id_card" noStyle>
-                    <Input placeholder="Input ID or passport number" style={{ maxWidth: '50%' }} />
-                  </Form.Item>
+                {/* Row: ID / Passport + Lead Source */}
+                <div style={{ display: 'flex', gap: 16, marginBottom: 0 }}>
+                  <div style={{ flex: 1 }}>
+                    <Label>ID / PASSPORT</Label>
+                    <Form.Item name="id_card" noStyle>
+                      <Input placeholder="Input ID or passport number" />
+                    </Form.Item>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <Label>LEAD SOURCE</Label>
+                    <Form.Item name="lead_source_id" noStyle>
+                      <Select
+                        placeholder="Select lead source"
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        options={leadSources.map(s => ({ label: s.name, value: Number(s.id) }))}
+                      />
+                    </Form.Item>
+                  </div>
                 </div>
               </div>
 

@@ -125,11 +125,14 @@ router.post('/list', authenticate, async (req, res) => {
     const [leases] = await req.pool.execute(
       `SELECT l.*, u.name as unit_name, p.display_name as property_name,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name,
-              t.phone as tenant_phone, t.status as tenant_status
+              t.phone as tenant_phone, t.status as tenant_status,
+              bp.name as booking_platform_name, sa.name as sales_agent_name
        FROM leasing l
        LEFT JOIN unit u ON l.unit_id = u.id
        LEFT JOIN property p ON u.property_id = p.id
        LEFT JOIN tenant t ON l.tenant_id = t.id
+       LEFT JOIN booking_platform bp ON l.booking_platform_id = bp.id
+       LEFT JOIN sales_agent sa ON l.sales_agent_id = sa.id
        WHERE ${whereClause}
        ORDER BY ${orderBy}
        LIMIT ${limit} OFFSET ${offset}`,
@@ -238,7 +241,9 @@ router.post('/', authenticate, async (req, res) => {
       tenant_deposit_posted,
       // email
       email_template_id, access_setting, share_lease, all_past,
-      mark_past_paid
+      mark_past_paid,
+      // booking & commission
+      booking_platform_id, sales_agent_id
     } = req.body;
     const orgId = req.user.orgId;
 
@@ -285,8 +290,8 @@ router.post('/', authenticate, async (req, res) => {
         tenant_posted, landlord_posted, landlord_due, tenant_due,
         landlord_overdue, tenant_overdue, landlord_expired, landlord_expired_days,
         tenant_checkin, tenant_checkout, tenant_renewal, tenant_renewal_days,
-        tenant_deposit_posted, email_template_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        tenant_deposit_posted, email_template_id, booking_platform_id, sales_agent_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         leaseId.toString(), unit_id, tenant_id, start_date, end_date || null,
         price || 0, type || 0, invoicing || null,
@@ -302,7 +307,8 @@ router.post('/', authenticate, async (req, res) => {
         landlord_expired ? 1 : 0, landlord_expired_days || 0,
         tenant_checkin ? 1 : 0, tenant_checkout ? 1 : 0,
         tenant_renewal ? 1 : 0, tenant_renewal_days || 0,
-        tenant_deposit_posted ? 1 : 0, email_template_id || null
+        tenant_deposit_posted ? 1 : 0, email_template_id || null,
+        booking_platform_id || null, sales_agent_id || null
       ]
     );
 
@@ -337,10 +343,12 @@ router.post('/', authenticate, async (req, res) => {
         const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
         await req.pool.execute(
           `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
-            invoice_code, amount, due_on, status, category, currency_id, type, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())`,
+            invoice_code, amount, due_on, status, category, currency_id, type,
+            booking_platform_id, sales_agent_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NOW())`,
           [invoiceId, orgId, tenant_id, unit_id, leaseId.toString(), propertyId,
-           invoiceCode, invoiceAmount, dueDate, status, rentCategoryId, currencyId]
+           invoiceCode, invoiceAmount, dueDate, status, rentCategoryId, currencyId,
+           booking_platform_id || null, sales_agent_id || null]
         );
         return { invoiceId, invoiceCode, dueDate };
       };
@@ -413,10 +421,12 @@ router.post('/', authenticate, async (req, res) => {
 
       await req.pool.execute(
         `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
-          invoice_code, amount, due_on, status, category, currency_id, type, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, NOW())`,
+          invoice_code, amount, due_on, status, category, currency_id, type,
+          booking_platform_id, sales_agent_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, NOW())`,
         [depInvoiceId.toString(), orgId, tenant_id, unit_id, leaseId.toString(), depPropertyId,
-         depInvoiceCode, deposit, today, depositCategoryId, currencyId]
+         depInvoiceCode, deposit, today, depositCategoryId, currencyId,
+         booking_platform_id || null, sales_agent_id || null]
       );
 
       // Send deposit posted email (fire-and-forget)
@@ -516,7 +526,8 @@ router.put('/:id', authenticate, async (req, res) => {
       note, credits, utility_credit, check_in_meter, check_out_meter,
       contact_phone, first_invoice_date, status,
       additionalTenantIds,
-      mark_past_paid
+      mark_past_paid,
+      booking_platform_id, sales_agent_id
     } = req.body;
 
     // Server-side overlap check on edit — check if new dates/unit conflict with other leases
@@ -575,6 +586,8 @@ router.put('/:id', authenticate, async (req, res) => {
     if (contact_phone !== undefined) { fields.push('contact_phone = ?'); params.push(contact_phone || null); }
     if (first_invoice_date !== undefined) { fields.push('first_invoice_date = ?'); params.push(first_invoice_date || null); }
     if (status !== undefined) { fields.push('status = ?'); params.push(status); }
+    if (booking_platform_id !== undefined) { fields.push('booking_platform_id = ?'); params.push(booking_platform_id || null); }
+    if (sales_agent_id !== undefined) { fields.push('sales_agent_id = ?'); params.push(sales_agent_id || null); }
     fields.push('updated_at = NOW()');
     params.push(id);
 

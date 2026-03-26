@@ -42,6 +42,8 @@ export default function ServicesPage() {
   const [search, setSearch] = useState('');
   const [searchFields, setSearchFields] = useState([]);
   const [statusFilter, setStatusFilter] = useState('0');
+  const [sortField, setSortField] = useState('service_date_start');
+  const [sortOrder, setSortOrder] = useState('ASC');
 
   // Filter state
   const [filterCategory, setFilterCategory] = useState(undefined);
@@ -73,7 +75,7 @@ export default function ServicesPage() {
 
   useEffect(() => {
     loadServices(pagination.current);
-  }, [pagination.current, pagination.pageSize, search, searchFields, statusFilter, filterCategory, filterProperty]);
+  }, [pagination.current, pagination.pageSize, search, searchFields, statusFilter, filterCategory, filterProperty, sortField, sortOrder]);
 
   const loadServices = async (page) => {
     try {
@@ -84,6 +86,8 @@ export default function ServicesPage() {
       if (statusFilter !== 'all') body.status = Number(statusFilter);
       if (filterCategory) body.category = [filterCategory];
       if (filterProperty) body.property = [filterProperty];
+      if (sortField) body.sortField = sortField;
+      if (sortOrder) body.sortOrder = sortOrder;
 
       const response = await service.list(body, { page, limit: pagination.pageSize });
       if (response.data.code === 200) {
@@ -176,6 +180,7 @@ export default function ServicesPage() {
   const columns = [
     {
       title: 'Submission Date', dataIndex: 'created_at', key: 'created_at', width: 130, sorter: true,
+      sortOrder: sortField === 'created_at' ? (sortOrder === 'ASC' ? 'ascend' : 'descend') : null,
       render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',
     },
     {
@@ -210,10 +215,12 @@ export default function ServicesPage() {
     },
     {
       title: 'Category', dataIndex: 'category', key: 'category', width: 160, sorter: true,
+      sortOrder: sortField === 'category' ? (sortOrder === 'ASC' ? 'ascend' : 'descend') : null,
       render: (v) => v ? v.toUpperCase() : '-',
     },
     {
-      title: 'Date Started', dataIndex: 'service_date_start', key: 'service_date_start', width: 150,
+      title: 'Date Started', dataIndex: 'service_date_start', key: 'service_date_start', width: 150, sorter: true,
+      sortOrder: sortField === 'service_date_start' ? (sortOrder === 'ASC' ? 'ascend' : 'descend') : null,
       render: (v, r) => (
         <DatePicker
           size="small"
@@ -227,7 +234,8 @@ export default function ServicesPage() {
       ),
     },
     {
-      title: 'Date Completed', dataIndex: 'service_date_end', key: 'service_date_end', width: 150,
+      title: 'Date Completed', dataIndex: 'service_date_end', key: 'service_date_end', width: 150, sorter: true,
+      sortOrder: sortField === 'service_date_end' ? (sortOrder === 'ASC' ? 'ascend' : 'descend') : null,
       render: (v, r) => (
         <DatePicker
           size="small"
@@ -322,7 +330,21 @@ export default function ServicesPage() {
           {STATUS_TABS.map(tab => (
             <span
               key={tab.key}
-              onClick={() => { setStatusFilter(tab.key); setPagination(prev => ({ ...prev, current: 1 })); }}
+              onClick={() => {
+                setStatusFilter(tab.key);
+                setPagination(prev => ({ ...prev, current: 1 }));
+                // Default sort: Completed = most recent completion date desc, others = earliest start date asc
+                if (tab.key === '2') {
+                  setSortField('service_date_end');
+                  setSortOrder('DESC');
+                } else if (tab.key === '0' || tab.key === '1') {
+                  setSortField('service_date_start');
+                  setSortOrder('ASC');
+                } else {
+                  setSortField('created_at');
+                  setSortOrder('DESC');
+                }
+              }}
               style={{
                 cursor: 'pointer', fontSize: 13, fontWeight: 500,
                 color: statusFilter === tab.key ? '#1890ff' : '#888',
@@ -341,6 +363,27 @@ export default function ServicesPage() {
           dataSource={services}
           rowKey="id"
           loading={loading}
+          onChange={(pag, filters, sorter) => {
+            if (sorter && sorter.field) {
+              if (sorter.order) {
+                setSortField(sorter.field);
+                setSortOrder(sorter.order === 'ascend' ? 'ASC' : 'DESC');
+              } else {
+                // Sorter cleared — revert to default for current tab
+                if (statusFilter === '2') {
+                  setSortField('service_date_end');
+                  setSortOrder('DESC');
+                } else if (statusFilter === '0' || statusFilter === '1') {
+                  setSortField('service_date_start');
+                  setSortOrder('ASC');
+                } else {
+                  setSortField('created_at');
+                  setSortOrder('DESC');
+                }
+              }
+              setPagination(prev => ({ ...prev, current: 1 }));
+            }
+          }}
           pagination={{
             current: pagination.current,
             pageSize: pagination.pageSize,
