@@ -151,6 +151,125 @@ router.post('/list', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/leasing/calendar - Get calendar data for all units with leases in date range
+router.get('/calendar', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { startDate, endDate, propertyId, unitId, search } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ code: 400, message: 'startDate and endDate are required' });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Get all active units with their property info + current tenant
+    let unitWhere = 'u.active_status = 1 AND p.org_id = ? AND p.deleted_at IS NULL';
+    const unitParams = [today, today, orgId];
+    if (propertyId) {
+      unitWhere += ' AND p.id = ?';
+      unitParams.push(propertyId);
+    }
+    if (unitId) {
+      unitWhere += ' AND u.id = ?';
+      unitParams.push(unitId);
+    }
+    if (search) {
+      unitWhere += ' AND (u.name LIKE ? OR p.display_name LIKE ? OR t_search.first_name LIKE ? OR t_search.last_name LIKE ? OR CONCAT(COALESCE(t_search.first_name,""), " ", COALESCE(t_search.last_name,"")) LIKE ?)';
+      const s = `%${search}%`;
+      unitParams.push(s, s, s, s, s);
+    }
+
+    // Get units with current active tenant via subquery
+    const [units] = await req.pool.execute(
+      `SELECT DISTINCT u.id AS unit_id, u.name AS unit_name, p.id AS property_id, p.display_name AS property_name,
+              cur_t.first_name AS current_tenant_first, cur_t.last_name AS current_tenant_last,
+              cur_t.company_name AS current_tenant_company, cur_t.type AS current_tenant_type,
+              cur_l.amount AS current_rent, cur_l.contract_type AS current_contract_type
+       FROM unit u
+       JOIN property p ON u.property_id = p.id
+       LEFT JOIN leasing cur_l ON cur_l.unit_id = u.id AND cur_l.deleted_at IS NULL
+         AND cur_l.start_date <= ? AND (cur_l.end_date >= ? OR cur_l.end_date IS NULL)
+       LEFT JOIN tenant cur_t ON cur_l.tenant_id = cur_t.id
+       ${search ? `LEFT JOIN leasing t_search_l ON t_search_l.unit_id = u.id AND t_search_l.deleted_at IS NULL
+       LEFT JOIN tenant t_search ON t_search_l.tenant_id = t_search.id` : ''}
+       WHERE ${unitWhere}
+       ORDER BY p.display_name, u.name`,
+      unitParams
+    );
+
+    if (units.length === 0) {
+      return res.json({ code: 200, data: { units: [], properties: [] } });
+    }
+
+    const unitIds = units.map(u => u.unit_id);
+
+    // Get all leases that overlap with the date range for these units
+    const placeholders = unitIds.map(() => '?').join(',');
+    const [leases] = await req.pool.execute(
+      `SELECT l.id, l.unit_id, l.tenant_id, l.start_date, l.end_date, l.status, l.type, l.amount, l.price, l.contract_type,
+              t.first_name, t.last_name, t.company_name, t.type AS tenant_type, t.phone, t.email
+       FROM leasing l
+       JOIN tenant t ON l.tenant_id = t.id
+       WHERE l.unit_id IN (${placeholders})
+         AND l.deleted_at IS NULL
+         AND l.start_date <= ?
+         AND (l.end_date >= ? OR l.end_date IS NULL)
+       ORDER BY l.start_date ASC`,
+      [...unitIds, endDate, startDate]
+    );
+
+    // Group leases by unit_id
+    const leasesByUnit = {};
+    for (const lease of leases) {
+      const uid = String(lease.unit_id);
+      if (!leasesByUnit[uid]) leasesByUnit[uid] = [];
+      leasesByUnit[uid].push({
+        id: String(lease.id),
+        tenant_id: String(lease.tenant_id),
+        tenant_name: lease.tenant_type === 1
+          ? (lease.company_name || 'Company')
+          : [lease.first_name, lease.last_name].filter(Boolean).join(' '),
+        phone: lease.phone || null,
+        email: lease.email || null,
+        start_date: lease.start_date,
+        end_date: lease.end_date,
+        status: lease.status,
+        type: lease.type,
+        amount: lease.amount || lease.price,
+        contract_type: lease.contract_type ?? null,
+      });
+    }
+
+    // Build result grouped by property
+    const propertyMap = {};
+    for (const u of units) {
+      const pid = String(u.property_id);
+      if (!propertyMap[pid]) {
+        propertyMap[pid] = { id: pid, name: u.property_name, units: [] };
+      }
+      const currentTenantName = u.current_tenant_first
+        ? (Number(u.current_tenant_type) === 1
+          ? (u.current_tenant_company || 'Company')
+          : [u.current_tenant_first, u.current_tenant_last].filter(Boolean).join(' '))
+        : null;
+      propertyMap[pid].units.push({
+        id: String(u.unit_id),
+        name: u.unit_name,
+        current_tenant: currentTenantName,
+        current_contract_type: u.current_contract_type ?? null,
+        current_rent: u.current_rent || null,
+        leases: leasesByUnit[String(u.unit_id)] || [],
+      });
+    }
+
+    res.json({ code: 200, data: { properties: Object.values(propertyMap) } });
+  } catch (error) {
+    console.error('Calendar data error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load calendar data' });
+  }
+});
+
 // GET /api/leasing/:id - Get lease detail
 router.get('/:id', authenticate, async (req, res) => {
   try {

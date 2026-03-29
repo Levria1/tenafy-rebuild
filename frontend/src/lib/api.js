@@ -143,6 +143,7 @@ export const leasing = {
   getUnits: (data) => api.post('/api/leasing/unit', data),
   getAvailableUnits: (data) => api.post('/api/leasing/unit/available', data),
   checkConflict: (data) => api.post('/api/leasing/check-conflict', data),
+  getCalendar: (params) => api.get('/api/leasing/calendar', { params }),
 };
 
 export const accounting = {

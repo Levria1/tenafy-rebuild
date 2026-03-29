@@ -321,7 +321,7 @@ export default function LeaseCreatePage() {
       {/* Property Information */}
       <div style={sectionStyle}>
         <div style={sectionTitle}>PROPERTY INFORMATION</div>
-        <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
           <div style={{ flex: 2 }}>
             <FLabel required>PROPERTY NAME</FLabel>
             <Form.Item name="property_id" noStyle rules={[{ required: true, message: 'Select a property' }]}>
@@ -355,28 +355,12 @@ export default function LeaseCreatePage() {
             </Form.Item>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
-          <div style={{ flex: 1 }}>
-            <FLabel>LEASE TYPE</FLabel>
-            <Form.Item name="type" noStyle initialValue={0}>
-              <Select>
-                <Select.Option value={0}>Fixed</Select.Option>
-                <Select.Option value={1}>Month-to-Month</Select.Option>
-              </Select>
-            </Form.Item>
-          </div>
-          <div style={{ flex: 1 }}>
-            <FLabel>PROPERTY TYPE</FLabel>
-            <Form.Item name="contract_type" noStyle initialValue={0}>
-              <Select>
-                <Select.Option value={1}>Commercial</Select.Option>
-                <Select.Option value={2}>Residential</Select.Option>
-              </Select>
-            </Form.Item>
-          </div>
-        </div>
+      </div>
 
-        <div style={{ marginBottom: 0 }}>
+      {/* Lease Information */}
+      <div style={sectionStyle}>
+        <div style={sectionTitle}>LEASE INFORMATION</div>
+        <div style={{ marginBottom: 16 }}>
           <FLabel required>START DATE AND END DATE</FLabel>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <Form.Item name="start_date" noStyle rules={[{ required: true, message: 'Select start date' }]}>
@@ -385,6 +369,28 @@ export default function LeaseCreatePage() {
             <span style={{ color: '#999' }}>~</span>
             <Form.Item name="end_date" noStyle>
               <DatePicker style={{ width: 160 }} onChange={handleDateChange} />
+            </Form.Item>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ width: 160 }}>
+            <FLabel>LEASE TYPE</FLabel>
+            <Form.Item name="type" noStyle initialValue={0}>
+              <Select style={{ width: 160 }}>
+                <Select.Option value={0}>Fixed</Select.Option>
+                <Select.Option value={1}>Month-to-Month</Select.Option>
+              </Select>
+            </Form.Item>
+          </div>
+          <div style={{ width: 160 }}>
+            <FLabel>CONTRACT TYPE</FLabel>
+            <Form.Item name="contract_type" noStyle initialValue={0}>
+              <Select style={{ width: 160 }} allowClear>
+                <Select.Option value={1}>MR (May Renew)</Select.Option>
+                <Select.Option value={2}>MTM (Month To Month)</Select.Option>
+                <Select.Option value={3}>NR (Not Renewing)</Select.Option>
+                <Select.Option value={4}>UC (Unconfirmed)</Select.Option>
+              </Select>
             </Form.Item>
           </div>
         </div>

@@ -20,10 +20,10 @@ const INVOICE_SCHEDULES = [
 const DUE_DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => ({ value: i + 1, label: `${i + 1}` }));
 
 const CONTRACT_TYPES = [
-  { value: 0, label: 'Standard' },
-  { value: 1, label: 'Commercial' },
-  { value: 2, label: 'Residential' },
-  { value: 3, label: 'Short Term' },
+  { value: 1, label: 'MR (May Renew)' },
+  { value: 2, label: 'MTM (Month To Month)' },
+  { value: 3, label: 'NR (Not Renewing)' },
+  { value: 4, label: 'UC (Unconfirmed)' },
 ];
 
 const LEASE_TYPES = [

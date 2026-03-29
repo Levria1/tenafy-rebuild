@@ -75,7 +75,11 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     items.push({
       key: '/leasing',
       icon: <CalendarOutlined />,
-      label: <Link href="/leasing">Leasing</Link>,
+      label: 'Leasing',
+      children: [
+        { key: '/leasing/list', label: <Link href="/leasing">Leases</Link> },
+        { key: '/leasing/calendar', label: <Link href="/leasing/calendar">Calendar</Link> },
+      ],
     });
   }
 
@@ -455,6 +459,11 @@ function MainLayout({ children }) {
     if (pathname.startsWith('/settings') && tab) {
       return [`/settings?tab=${tab}`];
     }
+    // Leasing sub-routes
+    if (pathname.startsWith('/leasing')) {
+      if (pathname === '/leasing/calendar') return ['/leasing/calendar'];
+      return ['/leasing/list'];
+    }
     // Contacts sub-routes
     if (pathname.startsWith('/contacts')) {
       if (pathname.includes('/service-vendor')) return ['/contacts/service-vendors'];
@@ -469,6 +478,7 @@ function MainLayout({ children }) {
   useEffect(() => {
     const keys = [];
     if (pathname.startsWith('/accounting') || pathname.startsWith('/invoices')) keys.push('/accounting');
+    if (pathname.startsWith('/leasing')) keys.push('/leasing');
     if (pathname.startsWith('/contacts')) keys.push('/contacts');
     if (pathname.startsWith('/settings')) {
       keys.push('/settings'); // Always open parent Settings
