@@ -1,11 +1,10 @@
 -- Utility meter reading log + master/sub-meter distinction
 -- Run against each org database (e.g. tena_prod)
 
--- Add meter_category to utility_meter (0=master, 1=sub-meter)
-ALTER TABLE `utility_meter`
-  ADD COLUMN `meter_category` tinyint NOT NULL DEFAULT 1
-  COMMENT '0=master meter, 1=tenant sub-meter'
-  AFTER `meter_type`;
+-- Add meter_category to utility_meter (0=master, 1=sub-meter) (safe re-run)
+SET @col_exists = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'utility_meter' AND COLUMN_NAME = 'meter_category');
+SET @sql = IF(@col_exists = 0, "ALTER TABLE `utility_meter` ADD COLUMN `meter_category` tinyint NOT NULL DEFAULT 1 COMMENT '0=master meter, 1=tenant sub-meter' AFTER `meter_type`", 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- Meter reading log table
 CREATE TABLE IF NOT EXISTS `utility_meter_reading` (

@@ -21,10 +21,20 @@ CREATE TABLE IF NOT EXISTS `sales_agent` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Add columns to leasing
-ALTER TABLE `leasing` ADD COLUMN `booking_platform_id` bigint DEFAULT NULL;
-ALTER TABLE `leasing` ADD COLUMN `sales_agent_id` bigint DEFAULT NULL;
+-- Add columns to leasing (safe re-run)
+SET @col_exists = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leasing' AND COLUMN_NAME = 'booking_platform_id');
+SET @sql = IF(@col_exists = 0, 'ALTER TABLE `leasing` ADD COLUMN `booking_platform_id` bigint DEFAULT NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Add columns to invoice
-ALTER TABLE `invoice` ADD COLUMN `booking_platform_id` bigint DEFAULT NULL;
-ALTER TABLE `invoice` ADD COLUMN `sales_agent_id` bigint DEFAULT NULL;
+SET @col_exists = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leasing' AND COLUMN_NAME = 'sales_agent_id');
+SET @sql = IF(@col_exists = 0, 'ALTER TABLE `leasing` ADD COLUMN `sales_agent_id` bigint DEFAULT NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- Add columns to invoice (safe re-run)
+SET @col_exists = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoice' AND COLUMN_NAME = 'booking_platform_id');
+SET @sql = IF(@col_exists = 0, 'ALTER TABLE `invoice` ADD COLUMN `booking_platform_id` bigint DEFAULT NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col_exists = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoice' AND COLUMN_NAME = 'sales_agent_id');
+SET @sql = IF(@col_exists = 0, 'ALTER TABLE `invoice` ADD COLUMN `sales_agent_id` bigint DEFAULT NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

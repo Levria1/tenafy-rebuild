@@ -89,5 +89,7 @@ CREATE TABLE IF NOT EXISTS `utility_unit_group` (
   KEY `idx_group_id` (`group_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Add utility_credit column to leasing table
-ALTER TABLE `leasing` ADD COLUMN `utility_credit` decimal(10,2) DEFAULT NULL AFTER `credits`;
+-- Add utility_credit column to leasing table (safe re-run)
+SET @col_exists = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leasing' AND COLUMN_NAME = 'utility_credit');
+SET @sql = IF(@col_exists = 0, 'ALTER TABLE `leasing` ADD COLUMN `utility_credit` decimal(10,2) DEFAULT NULL AFTER `credits`', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
