@@ -24,7 +24,7 @@ function CleaningPage() {
   const items = [
     { key: 'weekly', label: 'Weekly Cleaning', children: <WeeklyCleaningTab /> },
     { key: 'checkout', label: 'Checkout Cleaning', children: <CheckoutCleaningTab /> },
-    { key: 'checkoutNotes', label: 'Checkout Notes', children: <CheckoutNotesTab /> },
+    { key: 'checkoutNotes', label: 'Checkout Schedule', children: <CheckoutNotesTab /> },
     { key: 'schedule', label: 'Weekly Schedule', children: <WeeklyScheduleTab /> },
     { key: 'settings', label: 'Settings', children: <CleanerSettingsTab /> },
   ];
@@ -1046,14 +1046,14 @@ function CheckoutNotesTab() {
         <Select
           size="small"
           style={{ width: '100%' }}
-          value={val || undefined}
+          value={val ? val.toString() : undefined}
           placeholder="Select user"
           allowClear
           showSearch
           optionFilterProp="label"
           options={users.map(u => ({
             label: [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username,
-            value: Number(u.id),
+            value: u.id.toString(),
           }))}
           onChange={v => {
             setData(prev => prev.map(r => r.id === record.id ? { ...r, assigned_user_id: v || null } : r));

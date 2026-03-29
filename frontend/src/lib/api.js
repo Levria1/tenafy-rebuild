@@ -192,6 +192,8 @@ export const service = {
   getUnitsByProperty: (propertyId) => api.get(`/api/service/property/${propertyId}/unit`),
   getUnitById: (unitId) => api.get(`/api/service/property/unit/${unitId}`),
   getInvoiceList: (id, params) => api.get('/api/service/invoice/list', { params: { id, ...params } }),
+  addActivity: (data) => api.post('/api/service/activity', data),
+  deleteActivity: (id) => api.delete(`/api/service/activity/${id}`),
 };
 
 export const contact = {

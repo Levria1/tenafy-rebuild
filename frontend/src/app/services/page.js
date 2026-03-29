@@ -333,11 +333,14 @@ export default function ServicesPage() {
               onClick={() => {
                 setStatusFilter(tab.key);
                 setPagination(prev => ({ ...prev, current: 1 }));
-                // Default sort: Completed = most recent completion date desc, others = earliest start date asc
+                // Default sort: Completed = most recent completion date desc, In Progress = most recent start desc, others = earliest start asc
                 if (tab.key === '2') {
                   setSortField('service_date_end');
                   setSortOrder('DESC');
-                } else if (tab.key === '0' || tab.key === '1') {
+                } else if (tab.key === '1') {
+                  setSortField('service_date_start');
+                  setSortOrder('DESC');
+                } else if (tab.key === '0') {
                   setSortField('service_date_start');
                   setSortOrder('ASC');
                 } else {
@@ -373,7 +376,10 @@ export default function ServicesPage() {
                 if (statusFilter === '2') {
                   setSortField('service_date_end');
                   setSortOrder('DESC');
-                } else if (statusFilter === '0' || statusFilter === '1') {
+                } else if (statusFilter === '1') {
+                  setSortField('service_date_start');
+                  setSortOrder('DESC');
+                } else if (statusFilter === '0') {
                   setSortField('service_date_start');
                   setSortOrder('ASC');
                 } else {

@@ -365,7 +365,30 @@ router.get('/detail/:id', authenticate, async (req, res) => {
       [id]
     );
 
-    res.json({ code: 200, data: { ...services[0], files } });
+    // Fetch activity timeline
+    const [activities] = await req.pool.execute(
+      `SELECT sa.*, u.first_name as user_first_name, u.last_name as user_last_name
+       FROM service_activity sa
+       LEFT JOIN user u ON sa.created_by = u.id
+       WHERE sa.service_id = ? AND sa.org_id = ?
+       ORDER BY sa.created_at ASC`,
+      [id, orgId]
+    );
+
+    // Fetch files for each activity
+    for (const activity of activities) {
+      const [actFiles] = await req.pool.execute(
+        `SELECT f.id, f.filename, f.item_name, f.extension, f.mime_type, f.file_size
+         FROM object_file of2
+         JOIN file f ON of2.file_id = f.id
+         WHERE of2.object_id = ? AND of2.deleted_at IS NULL AND f.deleted_at IS NULL
+         ORDER BY f.created_at`,
+        [activity.id]
+      );
+      activity.files = actFiles;
+    }
+
+    res.json({ code: 200, data: { ...services[0], files, activities } });
   } catch (error) {
     console.error('Get service error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get service' });
@@ -488,6 +511,93 @@ router.delete('/delete/:id', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Delete service error:', error);
     res.status(500).json({ code: 500, message: 'Failed to delete service' });
+  }
+});
+
+// ─── SERVICE ACTIVITY TIMELINE ──────────────────────────────────────────────
+
+// POST /api/service/activity - Add activity update
+router.post('/activity', authenticate, async (req, res) => {
+  try {
+    const { service_id, status, activity_date, note, file_ids } = req.body;
+    const orgId = req.user.orgId;
+    const userId = req.user.id;
+
+    // Verify service exists
+    const [existing] = await req.pool.execute(
+      'SELECT id FROM service WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
+      [service_id, orgId]
+    );
+    if (existing.length === 0) {
+      return res.status(404).json({ code: 404, message: 'Service not found' });
+    }
+
+    const activityId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+
+    await req.pool.execute(
+      `INSERT INTO service_activity (id, org_id, service_id, status, activity_date, note, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [activityId, orgId, service_id, status ?? null, activity_date || null, note || null, userId]
+    );
+
+    // Link files if provided
+    if (file_ids && file_ids.length > 0) {
+      for (const fileId of file_ids) {
+        await req.pool.execute(
+          `INSERT INTO object_file (object_id, file_id) VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE deleted_at = NULL`,
+          [activityId, fileId]
+        );
+      }
+    }
+
+    // Update service status if status was provided
+    if (status !== undefined && status !== null) {
+      await req.pool.execute(
+        'UPDATE service SET status = ?, updated_at = NOW() WHERE id = ? AND org_id = ?',
+        [status, service_id, orgId]
+      );
+    }
+
+    res.json({ code: 200, message: 'Activity added', data: { id: activityId } });
+  } catch (error) {
+    console.error('Add service activity error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to add activity' });
+  }
+});
+
+// DELETE /api/service/activity/:id - Delete activity
+router.delete('/activity/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const userId = req.user.id;
+
+    // Only allow delete if created by current user
+    const [activity] = await req.pool.execute(
+      'SELECT id, created_by FROM service_activity WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+    if (activity.length === 0) {
+      return res.status(404).json({ code: 404, message: 'Activity not found' });
+    }
+
+    // Soft-delete linked files
+    await req.pool.execute(
+      'UPDATE object_file SET deleted_at = NOW() WHERE object_id = ?',
+      [id]
+    );
+
+    // Delete activity
+    await req.pool.execute(
+      'DELETE FROM service_activity WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+
+    res.json({ code: 200, message: 'Activity deleted' });
+  } catch (error) {
+    console.error('Delete service activity error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to delete activity' });
   }
 });
 

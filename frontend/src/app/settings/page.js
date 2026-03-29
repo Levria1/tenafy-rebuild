@@ -114,6 +114,7 @@ function SettingsPage() {
   ];
 
   const userColumns = [
+    { title: 'Name', key: 'name', render: (_, r) => [r.first_name, r.last_name].filter(Boolean).join(' ') || '—' },
     { title: 'Username', dataIndex: 'username', key: 'username' },
     { title: 'Email', dataIndex: 'email', key: 'email' },
     { title: 'Role', dataIndex: 'role_name', key: 'role_name' },
