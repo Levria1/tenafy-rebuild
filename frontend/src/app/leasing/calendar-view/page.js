@@ -28,12 +28,12 @@ export default function LeasingCalendarPage() {
   };
 
   const getLeaseStatus = (lease) => {
-    const today = new Date();
-    const start = new Date(lease.start_date);
-    const end = new Date(lease.end_date);
-    
-    if (today < start) return { status: 'pending', color: 'orange' };
-    if (today > end) return { status: 'expired', color: 'red' };
+    const today = new Date().toISOString().split('T')[0];
+    const start = lease.start_date ? lease.start_date.slice(0, 10) : null;
+    const end = lease.end_date ? lease.end_date.slice(0, 10) : null;
+
+    if (start && start > today) return { status: 'upcoming', color: 'blue' };
+    if (end && end < today) return { status: 'inactive', color: 'red' };
     return { status: 'active', color: 'green' };
   };
 

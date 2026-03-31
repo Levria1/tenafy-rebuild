@@ -60,6 +60,26 @@ function advanceInvoiceDate(date, schedule, dueDay) {
   return next;
 }
 
+// Helper: compute lease status from dates
+// 0=Inactive (past or manually terminated), 1=Active (current), 2=Upcoming (future)
+function computeLeaseStatus(lease) {
+  if (Number(lease.status) === 0) return 0; // manually terminated
+  const today = new Date().toISOString().split('T')[0];
+  const start = lease.start_date ? (typeof lease.start_date === 'string' ? lease.start_date.slice(0, 10) : new Date(lease.start_date).toISOString().split('T')[0]) : null;
+  const end = lease.end_date ? (typeof lease.end_date === 'string' ? lease.end_date.slice(0, 10) : new Date(lease.end_date).toISOString().split('T')[0]) : null;
+  if (start && start > today) return 2; // upcoming
+  if (end && end < today) return 0; // inactive/past
+  return 1; // active
+}
+
+// SQL expression for computed lease status (for filtering/sorting)
+const COMPUTED_STATUS_SQL = `CASE
+  WHEN l.status = 0 THEN 0
+  WHEN l.start_date > CURDATE() THEN 2
+  WHEN l.end_date IS NOT NULL AND l.end_date < CURDATE() THEN 0
+  ELSE 1
+END`;
+
 // POST /api/leasing/list - List leases with paging
 router.post('/list', authenticate, async (req, res) => {
   try {
@@ -77,8 +97,9 @@ router.post('/list', authenticate, async (req, res) => {
       const searchParam = '%' + search + '%';
       params.push(searchParam, searchParam, searchParam, searchParam, searchParam);
     }
+    // Filter by computed status (0=inactive, 1=active, 2=upcoming)
     if (status !== undefined && status !== null) {
-      whereClause += ' AND l.status = ?';
+      whereClause += ` AND (${COMPUTED_STATUS_SQL}) = ?`;
       params.push(status);
     }
     if (type !== undefined && type !== null) {
@@ -112,7 +133,7 @@ router.post('/list', authenticate, async (req, res) => {
       property: 'p.display_name',
       start_date: 'l.start_date',
       end_date: 'l.end_date',
-      status: 'l.status',
+      status: `(${COMPUTED_STATUS_SQL})`,
       price: 'l.amount',
       phone: 't.phone',
     };
@@ -138,6 +159,11 @@ router.post('/list', authenticate, async (req, res) => {
        LIMIT ${limit} OFFSET ${offset}`,
       params
     );
+
+    // Attach computed lease_status to each row
+    for (const lease of leases) {
+      lease.lease_status = computeLeaseStatus(lease);
+    }
 
     const [[{ total }]] = await req.pool.execute(
       `SELECT COUNT(*) as total FROM leasing l LEFT JOIN unit u ON l.unit_id = u.id LEFT JOIN property p ON u.property_id = p.id LEFT JOIN tenant t ON l.tenant_id = t.id WHERE ${whereClause}`,
@@ -235,6 +261,7 @@ router.get('/calendar', authenticate, async (req, res) => {
         start_date: lease.start_date,
         end_date: lease.end_date,
         status: lease.status,
+        lease_status: computeLeaseStatus(lease),
         type: lease.type,
         amount: lease.amount || lease.price,
         contract_type: lease.contract_type ?? null,
@@ -294,6 +321,7 @@ router.get('/:id', authenticate, async (req, res) => {
       [id]
     );
     lease.additional_tenants = additionalTenants;
+    lease.lease_status = computeLeaseStatus(lease);
 
     res.json({ code: 200, data: lease });
   } catch (error) {

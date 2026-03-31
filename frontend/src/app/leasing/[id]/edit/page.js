@@ -278,6 +278,15 @@ export default function LeasingEditPage() {
               </Form.Item>
             </Col>
           </Row>
+          <div style={{ height: 16 }} />
+          <Row gutter={16}>
+            <Col span={6}>
+              <FLabel>Tenant Status</FLabel>
+              <Form.Item name="contract_type" noStyle>
+                <Select options={CONTRACT_TYPES} allowClear />
+              </Form.Item>
+            </Col>
+          </Row>
         </div>
 
         {/* Lease Details */}
@@ -288,12 +297,6 @@ export default function LeasingEditPage() {
               <FLabel required>Lease Type</FLabel>
               <Form.Item name="type" noStyle>
                 <Select options={LEASE_TYPES} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <FLabel>Contract Type</FLabel>
-              <Form.Item name="contract_type" noStyle>
-                <Select options={CONTRACT_TYPES} />
               </Form.Item>
             </Col>
             <Col span={6}>
@@ -418,9 +421,10 @@ export default function LeasingEditPage() {
               <Form.Item name="status" noStyle>
                 <Select options={[
                   { label: 'Active', value: 1 },
-                  { label: 'Inactive', value: 0 },
+                  { label: 'Inactive (Terminated)', value: 0 },
                 ]} />
               </Form.Item>
+              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>Set to Inactive to terminate early. Active/Upcoming is determined by dates.</div>
             </Col>
           </Row>
         </div>

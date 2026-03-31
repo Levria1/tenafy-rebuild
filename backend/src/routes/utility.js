@@ -986,15 +986,17 @@ router.delete('/bill/:id', authenticate, async (req, res) => {
     );
     if (!bill) return res.status(404).json({ code: 404, message: 'Bill not found' });
 
-    // Check if any invoices were generated
+    // Check if any invoices were generated (exclude soft-deleted invoices)
     const [[{ cnt }]] = await req.pool.execute(
-      'SELECT COUNT(*) as cnt FROM utility_bill_line WHERE bill_id = ? AND invoice_id IS NOT NULL',
+      `SELECT COUNT(*) as cnt FROM utility_bill_line bl
+       JOIN invoice i ON i.id = bl.invoice_id
+       WHERE bl.bill_id = ? AND bl.invoice_id IS NOT NULL AND i.deleted_at IS NULL`,
       [id]
     );
     if (Number(cnt) > 0) {
       return res.status(400).json({
         code: 400,
-        message: `Cannot delete: ${cnt} invoice(s) have been generated from this bill.`
+        message: `Cannot delete: ${cnt} active invoice(s) have been generated from this bill. Delete them first.`
       });
     }
 
@@ -1312,7 +1314,7 @@ router.get('/tenant/:tenantId/history', authenticate, async (req, res) => {
        FROM leasing l
        LEFT JOIN unit u ON l.unit_id = u.id
        LEFT JOIN property p ON u.property_id = p.id
-       WHERE l.tenant_id = ? AND l.deleted_at IS NULL
+       WHERE l.tenant_id = ? AND p.org_id = ? AND l.deleted_at IS NULL
        ORDER BY l.start_date DESC`,
       [tenantId, orgId]
     );

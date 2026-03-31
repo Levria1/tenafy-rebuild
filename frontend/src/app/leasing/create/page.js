@@ -382,17 +382,6 @@ export default function LeaseCreatePage() {
               </Select>
             </Form.Item>
           </div>
-          <div style={{ width: 160 }}>
-            <FLabel>CONTRACT TYPE</FLabel>
-            <Form.Item name="contract_type" noStyle initialValue={0}>
-              <Select style={{ width: 160 }} allowClear>
-                <Select.Option value={1}>MR (May Renew)</Select.Option>
-                <Select.Option value={2}>MTM (Month To Month)</Select.Option>
-                <Select.Option value={3}>NR (Not Renewing)</Select.Option>
-                <Select.Option value={4}>UC (Unconfirmed)</Select.Option>
-              </Select>
-            </Form.Item>
-          </div>
         </div>
 
         {/* Conflict Alert */}
@@ -457,6 +446,17 @@ export default function LeaseCreatePage() {
                   {[t.first_name, t.last_name].filter(Boolean).join(' ')} {t.email ? `(${t.email})` : ''}
                 </Select.Option>
               ))}
+            </Select>
+          </Form.Item>
+        </div>
+        <div style={{ marginTop: 16, width: 200 }}>
+          <FLabel>TENANT STATUS</FLabel>
+          <Form.Item name="contract_type" noStyle initialValue={0}>
+            <Select style={{ width: 200 }} allowClear>
+              <Select.Option value={1}>MR (May Renew)</Select.Option>
+              <Select.Option value={2}>MTM (Month To Month)</Select.Option>
+              <Select.Option value={3}>NR (Not Renewing)</Select.Option>
+              <Select.Option value={4}>UC (Unconfirmed)</Select.Option>
             </Select>
           </Form.Item>
         </div>

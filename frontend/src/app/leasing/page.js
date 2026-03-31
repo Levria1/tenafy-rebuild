@@ -151,6 +151,7 @@ export default function LeasingPage() {
           <Space wrap>
             <Radio value={null}>All</Radio>
             <Radio value={1}>Active</Radio>
+            <Radio value={2}>Upcoming</Radio>
             <Radio value={0}>Inactive</Radio>
           </Space>
         </Radio.Group>
@@ -259,9 +260,13 @@ export default function LeasingPage() {
       render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',
     },
     {
-      title: 'Status', dataIndex: 'status', key: 'status', width: 100,
+      title: 'Status', dataIndex: 'lease_status', key: 'status', width: 100,
       sorter: true,
-      render: (s) => s === 1 ? <span style={{ color: '#389e0d' }}>active</span> : <span style={{ color: '#999' }}>inactive</span>,
+      render: (s) => s === 2
+        ? <span style={{ color: '#1677ff' }}>upcoming</span>
+        : s === 1
+          ? <span style={{ color: '#389e0d' }}>active</span>
+          : <span style={{ color: '#999' }}>inactive</span>,
     },
     {
       title: 'Price', dataIndex: 'price', key: 'price', width: 120,

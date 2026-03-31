@@ -72,8 +72,9 @@ export default function LeasingDetailPage() {
     return `$${Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
-  const statusLabel = lease?.status === 1 ? 'Active' : lease?.status === 0 ? 'Inactive' : '-';
-  const statusColor = lease?.status === 1 ? 'green' : 'red';
+  const leaseStatus = lease?.lease_status ?? (lease?.status === 1 ? 1 : 0);
+  const statusLabel = leaseStatus === 2 ? 'Upcoming' : leaseStatus === 1 ? 'Active' : 'Inactive';
+  const statusColor = leaseStatus === 2 ? 'blue' : leaseStatus === 1 ? 'green' : 'red';
 
   const tabItems = [
     {
@@ -91,7 +92,7 @@ export default function LeasingDetailPage() {
               : '—'}
           </Descriptions.Item>
           <Descriptions.Item label="Lease Type">{LEASE_TYPE_MAP[lease?.type] || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Contract Type">{CONTRACT_TYPE_MAP[lease?.contract_type] || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Tenant Status">{CONTRACT_TYPE_MAP[lease?.contract_type] || '-'}</Descriptions.Item>
           <Descriptions.Item label="Status"><Tag color={statusColor}>{statusLabel}</Tag></Descriptions.Item>
           <Descriptions.Item label="Start Date">{formatDate(lease?.start_date)}</Descriptions.Item>
           <Descriptions.Item label="End Date">{formatDate(lease?.end_date)}</Descriptions.Item>

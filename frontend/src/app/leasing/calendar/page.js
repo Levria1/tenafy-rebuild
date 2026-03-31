@@ -370,7 +370,7 @@ function CalendarInner() {
                     </td>
                     <td style={{ position: 'sticky', left: unitColWidth, zIndex: 1, background: '#fff', padding: '6px 12px', borderRight: '1px solid #e8e8e8', borderBottom: '1px solid #f0f0f0', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: tenantColWidth }}>
                       {unit.current_tenant
-                        ? <Tooltip title={CONTRACT_TYPE_LABEL[unit.current_contract_type] ? `Contract: ${CONTRACT_TYPE_LABEL[unit.current_contract_type]} (${CONTRACT_TYPE_MAP[unit.current_contract_type]})` : 'No contract type set'}>
+                        ? <Tooltip title={CONTRACT_TYPE_LABEL[unit.current_contract_type] ? `Tenant Status: ${CONTRACT_TYPE_LABEL[unit.current_contract_type]} (${CONTRACT_TYPE_MAP[unit.current_contract_type]})` : 'No tenant status set'}>
                             <span>{unit.current_tenant}{CONTRACT_TYPE_MAP[unit.current_contract_type] ? <span style={{ color: '#999', marginLeft: 4 }}>({CONTRACT_TYPE_MAP[unit.current_contract_type]})</span> : null}</span>
                           </Tooltip>
                         : <span style={{ color: '#ccc' }}>—</span>}

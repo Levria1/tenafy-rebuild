@@ -940,11 +940,9 @@ function BillingTab() {
       render: (_, row) => (
         <Space>
           <Button size="small" onClick={() => { setSelectedBill(row.id); loadBillDetail(row.id); }}>View</Button>
-          {Number(row.status) === 0 && (
-            <Popconfirm title="Delete this bill?" onConfirm={() => handleDeleteBill(row.id)}>
-              <Button size="small" danger icon={<DeleteOutlined />} />
-            </Popconfirm>
-          )}
+          <Popconfirm title="Delete this bill?" onConfirm={() => handleDeleteBill(row.id)}>
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
         </Space>
       )
     }
