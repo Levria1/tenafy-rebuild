@@ -9,7 +9,7 @@ import MainLayout, { useAuth } from '../../../../components/Layout';
 import { leasing, pdf, utility } from '../../../../lib/api';
 
 const LEASE_TYPE_MAP = { 0: 'Fixed', 1: 'Month-to-Month' };
-const CONTRACT_TYPE_MAP = { 0: 'Standard', 1: 'Commercial', 2: 'Residential', 3: 'Short Term' };
+const CONTRACT_TYPE_MAP = { 1: 'MR (May Renew)', 2: 'MTM (Month To Month)', 3: 'NR (Not Renewing)', 4: 'UC (Unconfirmed)' };
 const INVOICING_MAP = {
   'weekly': 'Weekly', '7': 'Weekly',
   'bi-weekly': 'Bi-Weekly', '14': 'Bi-Weekly',
@@ -115,6 +115,12 @@ export default function LeasingDetailPage() {
           )}
           <Descriptions.Item label="Contact Phone">{lease?.contact_phone || lease?.tenant_phone || '-'}</Descriptions.Item>
           <Descriptions.Item label="Tenant Email">{lease?.tenant_email || '-'}</Descriptions.Item>
+          {(lease?.booking_platform_name || lease?.sales_agent_name) && (
+            <>
+              <Descriptions.Item label="Booking Platform">{lease?.booking_platform_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Sales Agent">{lease?.sales_agent_name || '-'}</Descriptions.Item>
+            </>
+          )}
           {lease?.note && (
             <Descriptions.Item label="Notes" span={2}>{lease.note}</Descriptions.Item>
           )}

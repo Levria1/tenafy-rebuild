@@ -257,12 +257,32 @@ router.get('/unit/tenant/:id', authenticate, async (req, res) => {
 router.put('/unit/:unit_id', authenticate, async (req, res) => {
   try {
     const { unit_id } = req.params;
-    const { name, internal_note, rent_price_min, deposit_price, beds, baths, size } = req.body;
+    const {
+      name, type, size, size_unit, beds, baths,
+      smoking, laundry, parking,
+      amenity_detail, access_information, key_code, wifi_information, payment_information, internal_note,
+      rent_price_min, rent_price_max, deposit_price,
+      charge_method, fee,
+    } = req.body;
     const orgId = req.user.orgId;
 
     await req.pool.execute(
-      'UPDATE unit u LEFT JOIN property p ON u.property_id = p.id SET u.name = ?, u.internal_note = ?, u.rent_price_min = ?, u.deposit_price = ?, u.beds = ?, u.baths = ?, u.size = ?, u.updated_at = NOW() WHERE u.id = ? AND p.org_id = ?',
-      [name, internal_note, rent_price_min, deposit_price, beds, baths, size, unit_id, orgId]
+      `UPDATE unit u LEFT JOIN property p ON u.property_id = p.id
+       SET u.name = ?, u.type = ?, u.size = ?, u.size_unit = ?, u.beds = ?, u.baths = ?,
+           u.smoking = ?, u.laundry = ?, u.parking = ?,
+           u.amenity_detail = ?, u.access_information = ?, u.key_code = ?, u.wifi_information = ?, u.payment_information = ?, u.internal_note = ?,
+           u.rent_price_min = ?, u.rent_price_max = ?, u.deposit_price = ?,
+           u.charge_method = ?, u.fee = ?,
+           u.updated_at = NOW()
+       WHERE u.id = ? AND p.org_id = ?`,
+      [
+        name || null, type || null, size ?? null, size_unit || null, beds ?? null, baths ?? null,
+        smoking ?? null, laundry ?? null, parking ?? null,
+        amenity_detail || null, access_information || null, key_code || null, wifi_information || null, payment_information || null, internal_note || null,
+        rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
+        charge_method ?? null, fee ?? null,
+        unit_id, orgId
+      ]
     );
     res.json({ code: 200, message: 'Unit updated' });
   } catch (error) {

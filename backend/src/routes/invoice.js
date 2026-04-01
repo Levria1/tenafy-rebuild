@@ -113,23 +113,15 @@ router.post('/invoices', authenticate, async (req, res) => {
       `SELECT i.*, t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               p.display_name as property_name, u.name as unit_name, cs.name as category_name,
               bp.name as booking_platform_name, sa.name as sales_agent_name,
-              COALESCE((SELECT SUM(al.amount)
-                FROM accounting_line al
-                JOIN accounting a ON al.accounting_id = a.id
-                WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL AND al.deleted_at IS NULL), 0) as amount_paid,
-              (CASE i.status
+              COALESCE(paid.total_paid, 0) as amount_paid,
+              CASE i.status
                 WHEN 1 THEN 0
-                ELSE IF(i.amount IS NULL, 0,
-                  i.amount - COALESCE((SELECT SUM(al2.amount)
-                    FROM accounting_line al2
-                    JOIN accounting a2 ON al2.accounting_id = a2.id
-                    WHERE al2.invoice_code = i.invoice_code AND a2.org_id = i.org_id AND a2.deleted_at IS NULL AND al2.deleted_at IS NULL), 0)
-                )
-              END) as outstanding,
-              (CASE i.status
+                ELSE IF(i.amount IS NULL, 0, i.amount - COALESCE(paid.total_paid, 0))
+              END as outstanding,
+              CASE i.status
                 WHEN 2 THEN IF(i.due_on IS NULL, 0, IF(DATEDIFF(CURRENT_TIMESTAMP, i.due_on) >= 0, DATEDIFF(CURRENT_TIMESTAMP, i.due_on), 0))
                 ELSE 0
-              END) as days_late
+              END as days_late
        FROM invoice i
        LEFT JOIN tenant t ON i.tenant_id = t.id
        LEFT JOIN unit u ON i.unit_id = u.id
@@ -137,6 +129,13 @@ router.post('/invoices', authenticate, async (req, res) => {
        LEFT JOIN category_setting cs ON i.category = cs.id
        LEFT JOIN booking_platform bp ON i.booking_platform_id = bp.id
        LEFT JOIN sales_agent sa ON i.sales_agent_id = sa.id
+       LEFT JOIN (
+         SELECT al.invoice_code, a.org_id, SUM(al.amount) as total_paid
+         FROM accounting_line al
+         JOIN accounting a ON al.accounting_id = a.id
+         WHERE a.deleted_at IS NULL AND al.deleted_at IS NULL
+         GROUP BY al.invoice_code, a.org_id
+       ) paid ON paid.invoice_code = i.invoice_code AND paid.org_id = i.org_id
        WHERE ${whereClause}
        ORDER BY ${orderClause} LIMIT ${limit} OFFSET ${offset}`,
       params

@@ -303,7 +303,17 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const [leases] = await req.pool.execute(
-      'SELECT l.*, u.name as unit_name, p.display_name as property_name, t.first_name as tenant_first_name, t.last_name as tenant_last_name, t.email as tenant_email, t.phone as tenant_phone FROM leasing l LEFT JOIN unit u ON l.unit_id = u.id LEFT JOIN property p ON u.property_id = p.id LEFT JOIN tenant t ON l.tenant_id = t.id WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL',
+      `SELECT l.*, u.name as unit_name, p.display_name as property_name,
+              t.first_name as tenant_first_name, t.last_name as tenant_last_name,
+              t.email as tenant_email, t.phone as tenant_phone,
+              bp.name as booking_platform_name, sa.name as sales_agent_name
+       FROM leasing l
+       LEFT JOIN unit u ON l.unit_id = u.id
+       LEFT JOIN property p ON u.property_id = p.id
+       LEFT JOIN tenant t ON l.tenant_id = t.id
+       LEFT JOIN booking_platform bp ON l.booking_platform_id = bp.id
+       LEFT JOIN sales_agent sa ON l.sales_agent_id = sa.id
+       WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL`,
       [id, orgId]
     );
     if (leases.length === 0) {

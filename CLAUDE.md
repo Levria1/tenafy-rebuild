@@ -94,7 +94,7 @@ router.get('/:id', ...);
 | Tenant category | 1=tenant, 2=payee (same `tenant` table) |
 | Leasing type | 0=fixed, 1=month-to-month |
 | Tenant sex | 0=null, 1=male, 2=female |
-| Contract type | 0=Standard, 1=Commercial, 2=Residential, 3=Short Term |
+| Contract type (Tenant Status) | 1=MR (May Renew), 2=MTM (Month To Month), 3=NR (Not Renewing), 4=UC (Unconfirmed) |
 | Tenant status | 0=Pending, 1=Active, 2=Inactive |
 | Unit status | 0=vacant, 1=occupied |
 | Unit active_status | 0=inactive, 1=active |

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Receipt Demo - Tenafy</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background: #f0f0f0; padding: 40px; }
+  .receipt { background: #fff; max-width: 595px; margin: 0 auto; padding: 0; box-shadow: 0 2px 20px rgba(0,0,0,0.1); }
+
+  /* Header */
+  .header { background: #f0f0f0; color: #333; padding: 30px 40px; display: flex; justify-content: space-between; align-items: flex-start; }
+  .header-left h1 { font-size: 26px; font-weight: 700; letter-spacing: 1px; margin-bottom: 4px; color: #333; }
+  .header-left .company { font-size: 12px; color: #666; }
+  .header-right { text-align: right; }
+  .header-right .receipt-no { font-size: 13px; font-weight: 600; color: #333; }
+  .header-right .receipt-date { font-size: 11px; color: #666; margin-top: 4px; }
+
+  /* Logo placeholder */
+  .logo-area { padding: 20px 40px 0; text-align: left; }
+  .logo-placeholder { width: 180px; height: 50px; border: 2px dashed #ccc; display: inline-flex; align-items: center; justify-content: center; color: #999; font-size: 11px; border-radius: 4px; }
+
+  /* Content */
+  .content { padding: 20px 40px 30px; }
+
+  /* Status badge */
+  .badge { display: inline-block; padding: 4px 16px; border-radius: 3px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+  .badge-paid { background: #52c41a; color: #fff; }
+
+  /* Two column info */
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin: 15px 0 20px; }
+  .info-box { background: #f8f9fb; padding: 16px 18px; }
+  .info-box:first-child { border-right: 1px solid #e8e8e8; }
+  .info-box .label { font-size: 9px; font-weight: 700; color: #1a3c8f; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; }
+  .info-box .value { font-size: 11px; color: #333; line-height: 1.7; }
+
+  /* Table */
+  .table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+  .table thead th { background: #f0f0f0; color: #333; padding: 8px 14px; font-size: 10px; font-weight: 600; text-align: left; letter-spacing: 0.3px; }
+  .table thead th:last-child { text-align: right; }
+  .table tbody td { padding: 12px 14px; font-size: 11px; color: #333; border-bottom: 1px solid #f0f0f0; }
+  .table tbody td:last-child { text-align: right; font-weight: 600; }
+
+  /* Totals */
+  .totals { display: flex; justify-content: flex-end; margin: 10px 0 20px; }
+  .totals-box { width: 240px; }
+  .totals-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 11px; color: #555; }
+  .totals-row.total { border-top: 2px solid #333; padding-top: 10px; margin-top: 6px; }
+  .totals-row.total .label, .totals-row.total .value { font-size: 14px; font-weight: 700; color: #333; }
+
+  /* Separator */
+  .sep { border: none; border-top: 1px solid #e8e8e8; margin: 20px 0; }
+
+  /* Payment info */
+  .payment-info { margin: 15px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .payment-detail .label { font-size: 9px; font-weight: 700; color: #999; text-transform: uppercase; letter-spacing: 0.3px; }
+  .payment-detail .value { font-size: 11px; color: #333; margin-top: 3px; }
+</style>
+</head>
+<body>
+
+<h2 style="text-align: center; color: #333; margin-bottom: 30px; font-family: sans-serif;">Receipt Demo v3 — For Approval</h2>
+
+<div class="receipt">
+  <!-- Company Logo -->
+  <div class="logo-area">
+    <div class="logo-placeholder">Company Logo (uploaded)</div>
+  </div>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <h1>RECEIPT</h1>
+      <div class="company">Tane Residence Limited</div>
+    </div>
+    <div class="header-right">
+      <div class="receipt-no"># REC33742</div>
+      <div class="receipt-date">Date: April 1, 2026</div>
+    </div>
+  </div>
+
+  <div class="content">
+    <!-- Status -->
+    <div style="margin-bottom: 15px;">
+      <span class="badge badge-paid">PAID</span>
+    </div>
+
+    <!-- Tenant / Property Info -->
+    <div class="info-grid">
+      <div class="info-box">
+        <div class="label">Received From</div>
+        <div class="value">
+          Alex Joanne Test<br>
+          alex@test.com<br>
+          +852 9123 4567
+        </div>
+      </div>
+      <div class="info-box">
+        <div class="label">Property / Unit</div>
+        <div class="value">
+          Poplar<br>
+          Unit 1B<br>
+          95 Tung Choi Street, Mong Kok
+        </div>
+      </div>
+    </div>
+
+    <!-- Items Table -->
+    <table class="table">
+      <thead>
+        <tr>
+          <th>DESCRIPTION</th>
+          <th>INVOICE #</th>
+          <th>AMOUNT</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Rental payment for Jun. 1 - 30, 2026</td>
+          <td>TRIV33742</td>
+          <td>HK$9,000.00</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- Totals -->
+    <div class="totals">
+      <div class="totals-box">
+        <div class="totals-row">
+          <span class="label">Invoice Amount:</span>
+          <span class="value">HK$9,000.00</span>
+        </div>
+        <div class="totals-row">
+          <span class="label">Amount Paid:</span>
+          <span class="value">HK$9,000.00</span>
+        </div>
+        <div class="totals-row">
+          <span class="label">Outstanding:</span>
+          <span class="value">HK$0.00</span>
+        </div>
+        <div class="totals-row total">
+          <span class="label">Total Received:</span>
+          <span class="value">HK$9,000.00</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Payment Details -->
+    <hr class="sep">
+    <div class="payment-info">
+      <div class="payment-detail">
+        <div class="label">Payment Method</div>
+        <div class="value">Bank Transfer</div>
+      </div>
+      <div class="payment-detail">
+        <div class="label">Payment Date</div>
+        <div class="value">April 1, 2026</div>
+      </div>
+      <div class="payment-detail">
+        <div class="label">Transaction Code</div>
+        <div class="value">ACC-20260401-001</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="text-align: center; margin-top: 30px; font-family: sans-serif; color: #666; font-size: 14px;">
+  <p><strong>Changes from v2:</strong></p>
+  <ul style="list-style: none; font-size: 13px; line-height: 2;">
+    <li>✅ RECEIPT header bar → light grey instead of dark blue</li>
+    <li>✅ Description table header → light grey instead of dark blue</li>
+    <li>✅ Removed "Generated by Tenafy" footer</li>
+    <li>✅ Removed "Payment received by / deposited to" bank info</li>
+  </ul>
+</div>
+
+</body>
+</html>
