@@ -42,8 +42,8 @@ export default function ServicesPage() {
   const [search, setSearch] = useState('');
   const [searchFields, setSearchFields] = useState([]);
   const [statusFilter, setStatusFilter] = useState('0');
-  const [sortField, setSortField] = useState('service_date_start');
-  const [sortOrder, setSortOrder] = useState('ASC');
+  const [sortField, setSortField] = useState('created_at');
+  const [sortOrder, setSortOrder] = useState('DESC');
 
   // Filter state
   const [filterCategory, setFilterCategory] = useState(undefined);
@@ -341,8 +341,8 @@ export default function ServicesPage() {
                   setSortField('service_date_start');
                   setSortOrder('DESC');
                 } else if (tab.key === '0') {
-                  setSortField('service_date_start');
-                  setSortOrder('ASC');
+                  setSortField('created_at');
+                  setSortOrder('DESC');
                 } else {
                   setSortField('created_at');
                   setSortOrder('DESC');
@@ -366,8 +366,8 @@ export default function ServicesPage() {
           dataSource={services}
           rowKey="id"
           loading={loading}
-          onChange={(pag, filters, sorter) => {
-            if (sorter && sorter.field) {
+          onChange={(pag, filters, sorter, extra) => {
+            if (extra.action === 'sort') {
               if (sorter.order) {
                 setSortField(sorter.field);
                 setSortOrder(sorter.order === 'ascend' ? 'ASC' : 'DESC');
@@ -380,8 +380,8 @@ export default function ServicesPage() {
                   setSortField('service_date_start');
                   setSortOrder('DESC');
                 } else if (statusFilter === '0') {
-                  setSortField('service_date_start');
-                  setSortOrder('ASC');
+                  setSortField('created_at');
+                  setSortOrder('DESC');
                 } else {
                   setSortField('created_at');
                   setSortOrder('DESC');
