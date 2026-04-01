@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import {
-  Form, Input, InputNumber, Select, Button, message, Switch, Radio, Checkbox, Spin,
+  Form, Input, InputNumber, Select, Button, message, Switch, Radio, Checkbox, Spin, Row, Col,
 } from 'antd';
 import { ArrowLeftOutlined, UploadOutlined, PlusOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../components/Layout';
@@ -366,8 +366,15 @@ export default function PropertyUnitCreatePage() {
 
             {/* Payment Information */}
             <SectionLabel>PAYMENT INFORMATION</SectionLabel>
-            <Form.Item name="payment_information">
-              <Input.TextArea rows={3} placeholder="Please input payment information" />
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item name="account_name" label="Bank Account Name">
+                  <Input placeholder="Bank account name" />
+                </Form.Item>
+              </Col>
+            </Row>
+            <Form.Item name="bank_details">
+              <Input.TextArea rows={3} placeholder="Bank name, account number, routing info..." />
             </Form.Item>
 
             {/* Internal Notes */}

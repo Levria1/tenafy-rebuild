@@ -265,6 +265,7 @@ export default function LeaseCreatePage() {
       tenant_renewal: values.tenant_renewal || false,
       tenant_renewal_days: values.tenant_renewal_days || 0,
       tenant_deposit_posted: values.tenant_deposit_posted || false,
+      payment_receipt: values.payment_receipt || false,
       // email
       email_template_id: values.email_template_id || null,
       access_setting: values.access_setting || null,
@@ -685,6 +686,9 @@ export default function LeaseCreatePage() {
           </Form.Item>
           <Form.Item name="tenant_deposit_posted" valuePropName="checked" style={{ marginBottom: 0 }}>
             <Checkbox>Email tenant when deposit is posted</Checkbox>
+          </Form.Item>
+          <Form.Item name="payment_receipt" valuePropName="checked" style={{ marginBottom: 0 }}>
+            <Checkbox>Email tenant payment receipt</Checkbox>
           </Form.Item>
           <Form.Item name="tenant_checkin" valuePropName="checked" style={{ marginBottom: 0 }}>
             <Checkbox>Email tenant on check-in</Checkbox>

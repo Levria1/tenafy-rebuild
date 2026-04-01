@@ -2,12 +2,12 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { Table, Button, Space, Tag, Input, Select, DatePicker, Drawer, Descriptions, Divider, Spin, Popover, Radio, Checkbox, Tooltip, message, Modal } from 'antd';
-import { PlusOutlined, FilterOutlined, FileTextOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ExclamationCircleOutlined, MailOutlined } from '@ant-design/icons';
+import { PlusOutlined, FilterOutlined, FileTextOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ExclamationCircleOutlined, MailOutlined, FilePdfOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
 import MainLayout, { useAuth } from '../../components/Layout';
-import { invoice, accountingApi, property as propertyApi } from '../../lib/api';
+import { invoice, accountingApi, property as propertyApi, pdf } from '../../lib/api';
 
 const { confirm } = Modal;
 
@@ -675,6 +675,20 @@ export default function InvoicesPage() {
                     <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
                     <div>—</div>
                   </div>
+                  <Button type="link" size="small" icon={<FilePdfOutlined />}
+                    style={{ color: '#52c41a', padding: 0 }}
+                    onClick={async () => {
+                      try {
+                        const res = await pdf.fetchReceipt(p.id);
+                        const blob = new Blob([res.data], { type: 'application/pdf' });
+                        const url = URL.createObjectURL(blob);
+                        window.open(url, '_blank');
+                      } catch (err) {
+                        message.error('Failed to generate receipt');
+                      }
+                    }}>
+                    Download Receipt
+                  </Button>
                 </div>
               ))
             ) : (

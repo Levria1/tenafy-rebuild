@@ -54,6 +54,17 @@ export default function InvoiceDetailPage() {
 
   const statusInfo = STATUS_MAP[inv?.status] || { label: 'Unknown', color: 'default' };
 
+  const openReceipt = async (paymentId) => {
+    try {
+      const res = await pdf.fetchReceipt(paymentId);
+      const blob = new Blob([res.data], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+    } catch (err) {
+      message.error('Failed to generate receipt');
+    }
+  };
+
   return (
     <MainLayout>
       <Space direction="vertical" style={{ width: '100%' }} size="large">
@@ -142,6 +153,18 @@ export default function InvoiceDetailPage() {
                   dataIndex: 'amount',
                   render: (v) => formatCurrency(v),
                   align: 'right',
+                },
+                {
+                  title: '',
+                  key: 'receipt',
+                  width: 80,
+                  render: (_, r) => (
+                    <Button type="link" size="small" icon={<FilePdfOutlined />}
+                      style={{ color: '#52c41a', padding: 0 }}
+                      onClick={() => openReceipt(r.id)}>
+                      Receipt
+                    </Button>
+                  ),
                 },
               ]}
             />

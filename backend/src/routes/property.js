@@ -260,7 +260,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
     const {
       name, type, size, size_unit, beds, baths,
       smoking, laundry, parking,
-      amenity_detail, access_information, key_code, wifi_information, payment_information, internal_note,
+      amenity_detail, access_information, key_code, wifi_information, account_name, bank_details, internal_note,
       rent_price_min, rent_price_max, deposit_price,
       charge_method, fee,
     } = req.body;
@@ -270,7 +270,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
       `UPDATE unit u LEFT JOIN property p ON u.property_id = p.id
        SET u.name = ?, u.type = ?, u.size = ?, u.size_unit = ?, u.beds = ?, u.baths = ?,
            u.smoking = ?, u.laundry = ?, u.parking = ?,
-           u.amenity_detail = ?, u.access_information = ?, u.key_code = ?, u.wifi_information = ?, u.payment_information = ?, u.internal_note = ?,
+           u.amenity_detail = ?, u.access_information = ?, u.key_code = ?, u.wifi_information = ?, u.account_name = ?, u.bank_details = ?, u.internal_note = ?,
            u.rent_price_min = ?, u.rent_price_max = ?, u.deposit_price = ?,
            u.charge_method = ?, u.fee = ?,
            u.updated_at = NOW()
@@ -278,7 +278,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
       [
         name || null, type || null, size ?? null, size_unit || null, beds ?? null, baths ?? null,
         smoking ?? null, laundry ?? null, parking ?? null,
-        amenity_detail || null, access_information || null, key_code || null, wifi_information || null, payment_information || null, internal_note || null,
+        amenity_detail || null, access_information || null, key_code || null, wifi_information || null, account_name || null, bank_details || null, internal_note || null,
         rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
         charge_method ?? null, fee ?? null,
         unit_id, orgId
@@ -670,7 +670,7 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
     const {
       name, type, amenity_type, beds, baths, size, size_unit, parking,
       smoking, laundry, amenity_detail, access_information, key_code,
-      wifi_information, payment_information, internal_note,
+      wifi_information, account_name, bank_details, internal_note,
       rent_price_min, rent_price_max, deposit_price, owner_id,
       charge_method, fee, amenityIds
     } = req.body;
@@ -687,15 +687,15 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
     await req.pool.execute(
       `INSERT INTO unit (id, property_id, name, type, amenity_type, beds, baths, size, size_unit,
        parking, smoking, laundry, amenity_detail, access_information, key_code,
-       wifi_information, payment_information, internal_note,
+       wifi_information, account_name, bank_details, internal_note,
        rent_price_min, rent_price_max, deposit_price, owner_id,
        charge_method, fee, status, active_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
       [unitId, property_id, name || null, type || null, amenity_type ?? 1,
        beds ?? null, baths ?? null, size ?? null, size_unit || 'sqft',
        parking ?? null, smoking ? 1 : 0, laundry ? 1 : 0,
        amenity_detail || null, access_information || null, key_code || null,
-       wifi_information || null, payment_information || null, internal_note || null,
+       wifi_information || null, account_name || null, bank_details || null, internal_note || null,
        rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
        owner_id || null, charge_method || null, fee ?? null]
     );

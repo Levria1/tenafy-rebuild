@@ -130,6 +130,7 @@ export default function LeasingEditPage() {
           status: d.status != null ? Number(d.status) : 1,
           booking_platform_id: d.booking_platform_id ? String(d.booking_platform_id) : undefined,
           sales_agent_id: d.sales_agent_id ? String(d.sales_agent_id) : undefined,
+          payment_receipt: d.payment_receipt ? true : false,
         });
       }
     } catch (error) {
@@ -182,6 +183,7 @@ export default function LeasingEditPage() {
         contact_phone: values.contact_phone || null,
         status: values.status ?? 1,
         mark_past_paid: values.mark_past_paid || false,
+        payment_receipt: values.payment_receipt || false,
         booking_platform_id: values.booking_platform_id || null,
         sales_agent_id: values.sales_agent_id || null,
       };
@@ -364,6 +366,11 @@ export default function LeasingEditPage() {
             )}
           </Row>
           <div style={{ marginTop: 16 }}>
+            <Form.Item name="payment_receipt" valuePropName="checked" noStyle>
+              <Checkbox>Email tenant payment receipt</Checkbox>
+            </Form.Item>
+          </div>
+          <div style={{ marginTop: 8 }}>
             <Form.Item name="mark_past_paid" valuePropName="checked" noStyle>
               <Checkbox>Automatically mark all past invoices as paid</Checkbox>
             </Form.Item>

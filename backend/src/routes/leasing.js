@@ -395,7 +395,7 @@ router.post('/', authenticate, async (req, res) => {
       tenant_posted, landlord_posted, landlord_due, tenant_due,
       landlord_overdue, tenant_overdue, landlord_expired, landlord_expired_days,
       tenant_checkin, tenant_checkout, tenant_renewal, tenant_renewal_days,
-      tenant_deposit_posted,
+      tenant_deposit_posted, payment_receipt,
       // email
       email_template_id, access_setting, share_lease, all_past,
       mark_past_paid,
@@ -447,8 +447,8 @@ router.post('/', authenticate, async (req, res) => {
         tenant_posted, landlord_posted, landlord_due, tenant_due,
         landlord_overdue, tenant_overdue, landlord_expired, landlord_expired_days,
         tenant_checkin, tenant_checkout, tenant_renewal, tenant_renewal_days,
-        tenant_deposit_posted, email_template_id, booking_platform_id, sales_agent_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        tenant_deposit_posted, payment_receipt, email_template_id, booking_platform_id, sales_agent_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         leaseId.toString(), unit_id, tenant_id, start_date, end_date || null,
         price || 0, type || 0, invoicing || null,
@@ -464,7 +464,7 @@ router.post('/', authenticate, async (req, res) => {
         landlord_expired ? 1 : 0, landlord_expired_days || 0,
         tenant_checkin ? 1 : 0, tenant_checkout ? 1 : 0,
         tenant_renewal ? 1 : 0, tenant_renewal_days || 0,
-        tenant_deposit_posted ? 1 : 0, email_template_id || null,
+        tenant_deposit_posted ? 1 : 0, payment_receipt ? 1 : 0, email_template_id || null,
         booking_platform_id || null, sales_agent_id || null
       ]
     );
@@ -684,7 +684,8 @@ router.put('/:id', authenticate, async (req, res) => {
       contact_phone, first_invoice_date, status,
       additionalTenantIds,
       mark_past_paid,
-      booking_platform_id, sales_agent_id
+      booking_platform_id, sales_agent_id,
+      payment_receipt
     } = req.body;
 
     // Server-side overlap check on edit — check if new dates/unit conflict with other leases
@@ -745,6 +746,7 @@ router.put('/:id', authenticate, async (req, res) => {
     if (status !== undefined) { fields.push('status = ?'); params.push(status); }
     if (booking_platform_id !== undefined) { fields.push('booking_platform_id = ?'); params.push(booking_platform_id || null); }
     if (sales_agent_id !== undefined) { fields.push('sales_agent_id = ?'); params.push(sales_agent_id || null); }
+    if (payment_receipt !== undefined) { fields.push('payment_receipt = ?'); params.push(payment_receipt ? 1 : 0); }
     fields.push('updated_at = NOW()');
     params.push(id);
 

@@ -3,6 +3,8 @@ const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 
 const { generateSequenceCode } = require('../utils/sequenceCode');
+const { sendReceiptToTenant } = require('../services/emailService');
+const { generateReceiptPdfBuffer } = require('./pdf');
 
 // Helper: recalculate invoice status after payment changes
 // Finds all invoices linked to accounting_lines in the given transaction,
@@ -319,6 +321,35 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
 
     // Recalculate invoice statuses for any linked invoices
     await recalcInvoiceStatuses(req.pool, accountingId.toString(), orgId);
+
+    // Send receipt email (fire-and-forget) if lease has payment_receipt toggle on
+    if (lease_id && invoice_code) {
+      (async () => {
+        try {
+          // Look up payment method name
+          let paymentMethodName = '';
+          if (payment_setting_id) {
+            const [[pmRow]] = await req.pool.execute(
+              'SELECT payment_method FROM payment_method_setting WHERE id = ?', [payment_setting_id]
+            ).catch(() => [[null]]);
+            paymentMethodName = pmRow?.payment_method || '';
+          }
+
+          // Generate receipt PDF buffer
+          const pdfBuffer = await generateReceiptPdfBuffer(req.pool, accountingId.toString(), orgId);
+
+          await sendReceiptToTenant(req.pool, orgId, lease_id, {
+            paymentId: accountingId.toString(),
+            amount: totalAmount,
+            transactionCode: transaction_code,
+            paymentMethod: paymentMethodName,
+            invoiceCode: invoice_code,
+          }, pdfBuffer);
+        } catch (err) {
+          console.error('[Accounting] Receipt email error:', err.message);
+        }
+      })();
+    }
 
     res.json({ code: 200, message: 'Transaction created', data: { id: accountingId.toString(), transaction_code } });
   } catch (error) {

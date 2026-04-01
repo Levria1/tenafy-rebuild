@@ -329,9 +329,11 @@ export const pdf = {
   // Returns URL string — open in new tab or use as href for direct streaming
   invoiceUrl: (id) => `${API_URL}/api/pdf/invoice/${id}`,
   leaseUrl: (id) => `${API_URL}/api/pdf/lease/${id}`,
+  receiptUrl: (paymentId) => `${API_URL}/api/pdf/receipt/${paymentId}`,
   // Fetch as blob (for download with custom filename)
   fetchInvoice: (id) => api.get(`/api/pdf/invoice/${id}`, { responseType: 'blob' }),
   fetchLease: (id) => api.get(`/api/pdf/lease/${id}`, { responseType: 'blob' }),
+  fetchReceipt: (paymentId) => api.get(`/api/pdf/receipt/${paymentId}`, { responseType: 'blob' }),
 };
 
 export const file = {

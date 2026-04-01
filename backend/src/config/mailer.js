@@ -51,7 +51,7 @@ async function getTransporter() {
  * Send an email.
  * @param {object} options - { to, subject, html, text, from, cc, bcc, replyTo }
  */
-async function sendMail({ to, subject, html, text, from, cc, bcc, replyTo }) {
+async function sendMail({ to, subject, html, text, from, cc, bcc, replyTo, attachments }) {
   const transport = await getTransporter();
   const fromAddress = from || process.env.EMAIL_FROM || 'Tenafy <no-reply@tenafy.com>';
 
@@ -66,6 +66,7 @@ async function sendMail({ to, subject, html, text, from, cc, bcc, replyTo }) {
   if (cc) mailOptions.cc = Array.isArray(cc) ? cc.join(', ') : cc;
   if (bcc) mailOptions.bcc = Array.isArray(bcc) ? bcc.join(', ') : bcc;
   if (replyTo) mailOptions.replyTo = replyTo;
+  if (attachments) mailOptions.attachments = attachments;
 
   const info = await transport.sendMail(mailOptions);
 
@@ -90,7 +91,7 @@ const accountTransporters = new Map();
  * @param {object} account - { email, password, host, port, is_secure }
  * @param {object} options - { to, subject, html, text, from, cc, bcc, replyTo }
  */
-async function sendMailWithAccount(account, { to, subject, html, text, from, cc, bcc, replyTo }) {
+async function sendMailWithAccount(account, { to, subject, html, text, from, cc, bcc, replyTo, attachments }) {
   const cacheKey = account.email;
 
   if (!accountTransporters.has(cacheKey)) {
@@ -128,6 +129,7 @@ async function sendMailWithAccount(account, { to, subject, html, text, from, cc,
   if (cc) mailOptions.cc = Array.isArray(cc) ? cc.join(', ') : cc;
   if (bcc) mailOptions.bcc = Array.isArray(bcc) ? bcc.join(', ') : bcc;
   if (replyTo) mailOptions.replyTo = replyTo;
+  if (attachments) mailOptions.attachments = attachments;
 
   const info = await transport.sendMail(mailOptions);
   return { messageId: info.messageId };

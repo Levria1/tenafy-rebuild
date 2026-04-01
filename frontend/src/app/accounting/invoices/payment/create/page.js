@@ -216,6 +216,13 @@ function CreatePaymentPage() {
                 <DatePicker style={{ width: '100%' }} placeholder="Select payment date" />
               </Form.Item>
             </Col>
+            {invoiceData?.invoice_code && (
+              <Col xs={24} sm={12} md={6}>
+                <Form.Item label={optionalLabel('Invoice #')}>
+                  <Input value={invoiceData.invoice_code} disabled style={{ background: '#fafafa' }} />
+                </Form.Item>
+              </Col>
+            )}
           </Row>
 
           {/* Row 3: Outstanding, Amount, Category */}

@@ -54,6 +54,7 @@ const TEMPLATE_TYPES = [
   { value: 'Renewal-Tenant', label: 'Renewal (Tenant)' },
   { value: 'Leaseexpiry-Landlord', label: 'Lease Expiry (Landlord)' },
   { value: 'Deposit-Tenant', label: 'Deposit (Tenant)' },
+  { value: 'Receipt-Tenant', label: 'Payment Receipt (Tenant)' },
   { value: 'Inventory-Tenant', label: 'Inventory (Tenant)' },
 ];
 
@@ -67,6 +68,7 @@ const TOGGLE_MAP = {
   'Renewal-Tenant': 'tenant_renewal',
   'Leaseexpiry-Landlord': 'landlord_expired',
   'Deposit-Tenant': 'tenant_deposit_posted',
+  'Receipt-Tenant': 'payment_receipt',
 };
 
 // ---------------------------------------------------------------------------
@@ -94,6 +96,9 @@ const TEMPLATE_VARIABLES = [
   { key: '%Tenant Number%', description: 'Tenant phone number' },
   { key: '%Category%', description: 'Invoice category name' },
   { key: '%Invoice Number%', description: 'Invoice code (e.g. TRIV0000000001)' },
+  { key: '%Receipt Amount%', description: 'Payment receipt amount' },
+  { key: '%Transaction Code%', description: 'Payment transaction code' },
+  { key: '%Payment Method%', description: 'Payment method name' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -467,6 +472,8 @@ async function sendTemplateEmail(pool, orgId, {
   invoiceCode,
   invoiceId,
   toOverride,
+  extraVariables,
+  attachments,
 } = {}) {
   // 1. Load template
   const template = await loadTemplate(pool, orgId, templateType, templateId);
@@ -481,6 +488,11 @@ async function sendTemplateEmail(pool, orgId, {
     variables = await resolveVariables(pool, orgId, leaseId, { category, dueDate, overdueAmount, invoiceCode, invoiceId });
   } else {
     variables = getSampleVariables();
+  }
+
+  // 2b. Merge extra variables (e.g. receipt-specific ones)
+  if (extraVariables) {
+    Object.assign(variables, extraVariables);
   }
 
   // 3. Substitute in subject and body
@@ -560,6 +572,7 @@ async function sendTemplateEmail(pool, orgId, {
   if (template.cc) mailOpts.cc = template.cc;
   if (template.bcc) mailOpts.bcc = template.bcc;
   if (template.reply_to) mailOpts.replyTo = template.reply_to;
+  if (attachments && attachments.length > 0) mailOpts.attachments = attachments;
 
   // 6. Send — try matching SMTP account first, fall back to .env credentials
   let result;
@@ -715,6 +728,50 @@ async function sendLeaseExpiryToLandlord(pool, orgId, leaseId) {
   });
 }
 
+/**
+ * Send a payment receipt email with the receipt PDF attached.
+ * @param {object} pool - DB pool
+ * @param {string} orgId
+ * @param {string} leaseId - lease to check toggle & resolve variables
+ * @param {object} paymentInfo - { paymentId, amount, transactionCode, paymentMethod, invoiceCode }
+ * @param {Buffer} pdfBuffer - generated receipt PDF as a Buffer
+ */
+async function sendReceiptToTenant(pool, orgId, leaseId, paymentInfo = {}, pdfBuffer = null) {
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Receipt-Tenant');
+  if (!shouldSend) return null;
+
+  const sym = await (async () => {
+    try {
+      const [[row]] = await pool.execute(
+        `SELECT p.currency FROM leasing l JOIN unit u ON l.unit_id = u.id JOIN property p ON u.property_id = p.id WHERE l.id = ?`,
+        [leaseId]
+      );
+      return CURRENCY_SYMBOLS[row?.currency] || '$';
+    } catch { return '$'; }
+  })();
+
+  const extraVariables = {
+    '%Receipt Amount%': `${sym}${parseFloat(paymentInfo.amount || 0).toFixed(2)}`,
+    '%Transaction Code%': paymentInfo.transactionCode || '',
+    '%Payment Method%': paymentInfo.paymentMethod || '',
+    '%Invoice Number%': paymentInfo.invoiceCode || '',
+  };
+
+  const attachments = pdfBuffer ? [{
+    filename: `receipt-${paymentInfo.transactionCode || paymentInfo.paymentId || 'payment'}.pdf`,
+    content: pdfBuffer,
+    contentType: 'application/pdf',
+  }] : [];
+
+  return sendTemplateEmail(pool, orgId, {
+    templateType: 'Receipt-Tenant',
+    leaseId,
+    invoiceCode: paymentInfo.invoiceCode,
+    extraVariables,
+    attachments,
+  });
+}
+
 async function sendDepositToTenant(pool, orgId, leaseId) {
   const shouldSend = await shouldSendEmail(pool, leaseId, 'Deposit-Tenant');
   if (!shouldSend) return null;
@@ -782,4 +839,5 @@ module.exports = {
   sendRenewalToTenant,
   sendLeaseExpiryToLandlord,
   sendDepositToTenant,
+  sendReceiptToTenant,
 };

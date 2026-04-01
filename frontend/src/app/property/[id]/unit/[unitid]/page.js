@@ -106,7 +106,16 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
 
       {/* PAYMENT INFORMATION */}
       <Card size="small" title="PAYMENT INFORMATION" style={{ marginBottom: 16 }}>
-        <Text type="secondary">{unit?.payment_information || '--'}</Text>
+        <div style={{ marginBottom: 8 }}>
+          <Text strong style={{ fontSize: 12, color: '#999' }}>Bank Account Name</Text>
+          <br />
+          <Text type="secondary">{unit?.account_name || '--'}</Text>
+        </div>
+        <div>
+          <Text strong style={{ fontSize: 12, color: '#999' }}>Bank Details</Text>
+          <br />
+          <Text type="secondary" style={{ whiteSpace: 'pre-wrap' }}>{unit?.bank_details || '--'}</Text>
+        </div>
       </Card>
 
       {/* INTERNAL NOTES */}

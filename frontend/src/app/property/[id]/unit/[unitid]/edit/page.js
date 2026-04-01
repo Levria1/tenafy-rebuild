@@ -44,7 +44,8 @@ export default function UnitEditPage() {
           access_information: d.access_information || '',
           key_code: d.key_code || '',
           wifi_information: d.wifi_information || '',
-          payment_information: d.payment_information || '',
+          account_name: d.account_name || '',
+          bank_details: d.bank_details || '',
           internal_note: d.internal_note || '',
           rent_price_min: d.rent_price_min ? Number(d.rent_price_min) : undefined,
           rent_price_max: d.rent_price_max ? Number(d.rent_price_max) : undefined,
@@ -199,8 +200,15 @@ export default function UnitEditPage() {
             <Form.Item name="wifi_information" label="WiFi Information">
               <TextArea rows={2} placeholder="Network name, password..." />
             </Form.Item>
-            <Form.Item name="payment_information" label="Payment Information">
-              <TextArea rows={3} placeholder="Bank details, payment instructions..." />
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item name="account_name" label="Bank Account Name">
+                  <Input placeholder="e.g. John Smith, ABC Company Ltd" />
+                </Form.Item>
+              </Col>
+            </Row>
+            <Form.Item name="bank_details" label="Bank Details">
+              <TextArea rows={3} placeholder="Bank name, account number, routing info..." />
             </Form.Item>
             <Form.Item name="internal_note" label="Internal Notes">
               <TextArea rows={3} placeholder="Notes for internal use only..." />

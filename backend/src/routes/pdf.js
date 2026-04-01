@@ -272,4 +272,393 @@ router.get('/lease/:id', authenticate, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/pdf/receipt/:paymentId  —  Generate receipt PDF for a single payment
+// Each payment (accounting record) gets its own receipt
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/receipt/:paymentId', authenticate, async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const orgId = req.user.orgId;
+
+    // 1. Fetch the payment (accounting record) with its line items
+    const [paymentRows] = await req.pool.execute(
+      `SELECT a.*, a.transaction_code, a.payment_date, a.note AS payment_note, a.amount AS header_amount,
+              t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+              t.email AS tenant_email, t.phone AS tenant_phone,
+              t.company_name AS tenant_company_name, t.type AS tenant_type,
+              pms.payment_method AS payment_method_name
+       FROM accounting a
+       LEFT JOIN tenant t ON a.tenant_id = t.id
+       LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
+       WHERE a.id = ? AND a.org_id = ? AND a.deleted_at IS NULL`,
+      [paymentId, orgId]
+    );
+
+    if (paymentRows.length === 0) {
+      return res.status(404).json({ code: 404, message: 'Payment not found' });
+    }
+
+    const pmt = paymentRows[0];
+
+    // 2. Fetch all line items for this payment (each may link to a different invoice)
+    const [lines] = await req.pool.execute(
+      `SELECT al.amount, al.invoice_code,
+              i.id AS invoice_id, i.amount AS invoice_amount, i.status AS invoice_status, i.note AS invoice_note,
+              u.name AS unit_name, u.account_name AS unit_account_name,
+              p.display_name AS property_name, p.street_address AS property_address,
+              p.city AS property_city, p.state AS property_state,
+              p.currency AS property_currency
+       FROM accounting_line al
+       LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
+       LEFT JOIN unit u ON i.unit_id = u.id
+       LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
+       WHERE al.accounting_id = ? AND al.deleted_at IS NULL
+       ORDER BY al.id ASC`,
+      [orgId, paymentId]
+    );
+
+    // 3. Fetch org settings
+    const [orgRows] = await req.pool.execute(
+      'SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]
+    ).catch(() => [[]]);
+    const org = orgRows?.[0] || {};
+
+    // Use first line's unit account_name as company name, fallback to org
+    const companyName = (lines.length > 0 && lines[0].unit_account_name) || org.company_name || '';
+
+    // Use first line's property info for display
+    const firstLine = lines[0] || {};
+
+    // Currency
+    const currencyCode = firstLine.property_currency || org.default_currency || 'USD';
+    const currSymbol = { USD: '$', HKD: 'HK$', GBP: '\u00a3', EUR: '\u20ac', SGD: 'S$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$', MYR: 'RM', PHP: '\u20b1', THB: '\u0e3f', JPY: '\u00a5', CNY: '\u00a5', KRW: '\u20a9', INR: '\u20b9', AED: 'AED ' }[currencyCode] || (currencyCode + ' ');
+    const fmtCurr = (v) => `${currSymbol}${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';
+
+    // Receipt number: REC + transaction_code digits
+    const codeDigits = (pmt.transaction_code || '').replace(/^[A-Za-z-]+/, '');
+    const receiptNo = `REC${codeDigits}`;
+
+    // Payment amount (sum of lines, or header amount)
+    let paymentAmount = 0;
+    lines.forEach(l => { paymentAmount += parseFloat(l.amount) || 0; });
+    if (paymentAmount === 0) paymentAmount = parseFloat(pmt.header_amount) || 0;
+
+    // ── Build PDF ────────────────────────────────────────────────────────────
+    const doc = new PDFDocument({ margin: 0, size: 'A4' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="receipt-${receiptNo}.pdf"`);
+    doc.pipe(res);
+
+    const W = doc.page.width;   // 595
+    const M = 40;               // margin
+    const CW = W - M * 2;      // content width
+
+    // ── Company Logo ─────────────────────────────────────────────────────────
+    let y = 25;
+    if (org.logo) {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const logoPath = path.join(__dirname, '../../uploads', org.logo);
+        if (fs.existsSync(logoPath)) {
+          doc.image(logoPath, M, y, { height: 45 });
+        }
+      } catch (e) { /* skip logo on error */ }
+      y += 55;
+    } else {
+      y += 10;
+    }
+
+    // ── Header bar (light grey) ──────────────────────────────────────────────
+    doc.rect(0, y, W, 65).fill('#f0f0f0');
+
+    // Left side: RECEIPT title + company name
+    doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text('RECEIPT', M, y + 12);
+    if (companyName) {
+      doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
+    }
+
+    // Right side: receipt number + date
+    doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold')
+       .text(`# ${receiptNo}`, W - M - 160, y + 15, { width: 160, align: 'right' });
+    doc.fillColor('#666666').fontSize(9).font('Helvetica')
+       .text(`Date: ${fmtDate(pmt.payment_date || new Date())}`, W - M - 160, y + 32, { width: 160, align: 'right' });
+
+    y += 80;
+
+    // ── Status badge ─────────────────────────────────────────────────────────
+    doc.rect(M, y, 50, 18).fill('#52c41a');
+    doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold')
+       .text('PAID', M + 2, y + 4, { width: 46, align: 'center' });
+    y += 30;
+
+    // ── Info grid: Received From / Property ──────────────────────────────────
+    const halfW = CW / 2;
+    doc.rect(M, y, halfW - 2, 80).fill('#f8f9fb');
+    doc.rect(M + halfW + 2, y, halfW - 2, 80).fill('#f8f9fb');
+
+    // Left: Received From
+    doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('RECEIVED FROM', M + 12, y + 8);
+    const tenantName = pmt.tenant_type === 1
+      ? (pmt.tenant_company_name || `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim())
+      : `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim();
+    doc.fillColor('#333333').fontSize(9).font('Helvetica')
+       .text(tenantName || '-', M + 12, y + 22)
+       .text(pmt.tenant_email || '', M + 12, y + 35)
+       .text(pmt.tenant_phone || '', M + 12, y + 48);
+
+    // Right: Property / Unit
+    doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('PROPERTY / UNIT', M + halfW + 14, y + 8);
+    const addressParts = [firstLine.property_address, firstLine.property_city, firstLine.property_state].filter(Boolean).join(', ');
+    doc.fillColor('#333333').fontSize(9).font('Helvetica')
+       .text(firstLine.property_name || '-', M + halfW + 14, y + 22)
+       .text(firstLine.unit_name ? `Unit ${firstLine.unit_name}` : '', M + halfW + 14, y + 35)
+       .text(addressParts || '', M + halfW + 14, y + 48, { width: halfW - 30 });
+
+    y += 95;
+
+    // ── Items table ──────────────────────────────────────────────────────────
+    doc.rect(M, y, CW, 22).fill('#f0f0f0');
+    doc.fillColor('#333333').fontSize(9).font('Helvetica-Bold')
+       .text('DESCRIPTION', M + 10, y + 6)
+       .text('INVOICE #', M + CW * 0.55, y + 6)
+       .text('AMOUNT', M + CW - 80, y + 6, { width: 70, align: 'right' });
+    y += 22;
+
+    // One row per line item (usually 1, but could be multiple if payment covers multiple invoices)
+    const displayLines = lines.length > 0 ? lines : [{ amount: paymentAmount, invoice_code: pmt.invoice_code, invoice_note: null }];
+    displayLines.forEach((line, idx) => {
+      const bg = idx % 2 === 0 ? '#ffffff' : '#fafafa';
+      doc.rect(M, y, CW, 28).fill(bg);
+      const desc = pmt.payment_note || line.invoice_note || 'Payment';
+      doc.fillColor('#333333').fontSize(9).font('Helvetica')
+         .text(desc, M + 10, y + 8, { width: CW * 0.5 - 10 })
+         .text(line.invoice_code || '-', M + CW * 0.55, y + 8)
+         .font('Helvetica-Bold')
+         .text(fmtCurr(line.amount), M + CW - 80, y + 8, { width: 70, align: 'right' });
+      y += 28;
+    });
+
+    doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
+    y += 15;
+
+    // ── Totals (right-aligned) ───────────────────────────────────────────────
+    const totalsX = M + CW - 220;
+    const totalsW = 220;
+
+    const totalsRow = (label, value, bold) => {
+      const f = bold ? 'Helvetica-Bold' : 'Helvetica';
+      const sz = bold ? 12 : 10;
+      doc.fillColor(bold ? '#333333' : '#555555').fontSize(sz).font(f)
+         .text(label, totalsX, y, { width: totalsW / 2 })
+         .text(value, totalsX + totalsW / 2, y, { width: totalsW / 2, align: 'right' });
+      y += bold ? 22 : 16;
+    };
+
+    // Divider before total
+    doc.moveTo(totalsX, y).lineTo(totalsX + totalsW, y).strokeColor('#333333').lineWidth(1.5).stroke();
+    y += 8;
+    totalsRow('Total Received:', fmtCurr(paymentAmount), true);
+
+    y += 10;
+
+    // ── Payment details ──────────────────────────────────────────────────────
+    doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
+    y += 15;
+
+    const detailCols = [];
+    if (pmt.payment_method_name) {
+      detailCols.push({ label: 'PAYMENT METHOD', value: pmt.payment_method_name });
+    }
+    if (pmt.payment_date) {
+      detailCols.push({ label: 'PAYMENT DATE', value: fmtDate(pmt.payment_date) });
+    }
+    if (pmt.transaction_code) {
+      detailCols.push({ label: 'TRANSACTION CODE', value: pmt.transaction_code });
+    }
+
+    if (detailCols.length > 0) {
+      const colWidth = CW / detailCols.length;
+      detailCols.forEach((col, i) => {
+        const x = M + (i * colWidth);
+        doc.fillColor('#999999').fontSize(8).font('Helvetica-Bold').text(col.label, x, y);
+        doc.fillColor('#333333').fontSize(10).font('Helvetica').text(col.value, x, y + 12);
+      });
+    }
+
+    doc.end();
+  } catch (error) {
+    console.error('Generate receipt PDF error:', error);
+    if (!res.headersSent) res.status(500).json({ code: 500, message: 'Failed to generate receipt' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// generateReceiptPdfBuffer — same receipt PDF but returns a Buffer (for email)
+// ─────────────────────────────────────────────────────────────────────────────
+async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
+  // 1. Fetch payment
+  const [paymentRows] = await pool.execute(
+    `SELECT a.*, a.transaction_code, a.payment_date, a.note AS payment_note, a.amount AS header_amount,
+            t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+            t.email AS tenant_email, t.phone AS tenant_phone,
+            t.company_name AS tenant_company_name, t.type AS tenant_type,
+            pms.payment_method AS payment_method_name
+     FROM accounting a
+     LEFT JOIN tenant t ON a.tenant_id = t.id
+     LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
+     WHERE a.id = ? AND a.org_id = ? AND a.deleted_at IS NULL`,
+    [paymentId, orgId]
+  );
+  if (paymentRows.length === 0) return null;
+  const pmt = paymentRows[0];
+
+  // 2. Fetch lines
+  const [lines] = await pool.execute(
+    `SELECT al.amount, al.invoice_code,
+            i.id AS invoice_id, i.amount AS invoice_amount, i.note AS invoice_note,
+            u.name AS unit_name, u.account_name AS unit_account_name,
+            p.display_name AS property_name, p.street_address AS property_address,
+            p.city AS property_city, p.state AS property_state, p.currency AS property_currency
+     FROM accounting_line al
+     LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
+     LEFT JOIN unit u ON i.unit_id = u.id
+     LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
+     WHERE al.accounting_id = ? AND al.deleted_at IS NULL ORDER BY al.id ASC`,
+    [orgId, paymentId]
+  );
+
+  // 3. Org settings
+  const [orgRows] = await pool.execute(
+    'SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]
+  ).catch(() => [[]]);
+  const org = orgRows?.[0] || {};
+
+  const companyName = (lines.length > 0 && lines[0].unit_account_name) || org.company_name || '';
+  const firstLine = lines[0] || {};
+  const currencyCode = firstLine.property_currency || org.default_currency || 'USD';
+  const currSymbol = { USD: '$', HKD: 'HK$', GBP: '\u00a3', EUR: '\u20ac', SGD: 'S$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$' }[currencyCode] || (currencyCode + ' ');
+  const fmtCurr = (v) => `${currSymbol}${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';
+
+  const codeDigits = (pmt.transaction_code || '').replace(/^[A-Za-z-]+/, '');
+  const receiptNo = `REC${codeDigits}`;
+
+  let paymentAmount = 0;
+  lines.forEach(l => { paymentAmount += parseFloat(l.amount) || 0; });
+  if (paymentAmount === 0) paymentAmount = parseFloat(pmt.header_amount) || 0;
+
+  // Build PDF into buffer
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 0, size: 'A4' });
+    const chunks = [];
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    const W = doc.page.width;
+    const M = 40;
+    const CW = W - M * 2;
+
+    let y = 25;
+    if (org.logo) {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const logoPath = path.join(__dirname, '../../uploads', org.logo);
+        if (fs.existsSync(logoPath)) {
+          doc.image(logoPath, M, y, { height: 45 });
+        }
+      } catch (e) { /* skip */ }
+      y += 55;
+    } else {
+      y += 10;
+    }
+
+    // Header bar
+    doc.rect(0, y, W, 65).fill('#f0f0f0');
+    doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text('RECEIPT', M, y + 12);
+    if (companyName) doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
+    doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold').text(`# ${receiptNo}`, W - M - 160, y + 15, { width: 160, align: 'right' });
+    doc.fillColor('#666666').fontSize(9).font('Helvetica').text(`Date: ${fmtDate(pmt.payment_date || new Date())}`, W - M - 160, y + 32, { width: 160, align: 'right' });
+    y += 80;
+
+    // Status
+    doc.rect(M, y, 50, 18).fill('#52c41a');
+    doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold').text('PAID', M + 2, y + 4, { width: 46, align: 'center' });
+    y += 30;
+
+    // Info grid
+    const halfW = CW / 2;
+    doc.rect(M, y, halfW - 2, 80).fill('#f8f9fb');
+    doc.rect(M + halfW + 2, y, halfW - 2, 80).fill('#f8f9fb');
+    doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('RECEIVED FROM', M + 12, y + 8);
+    const tenantName = pmt.tenant_type === 1
+      ? (pmt.tenant_company_name || `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim())
+      : `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim();
+    doc.fillColor('#333333').fontSize(9).font('Helvetica')
+       .text(tenantName || '-', M + 12, y + 22)
+       .text(pmt.tenant_email || '', M + 12, y + 35)
+       .text(pmt.tenant_phone || '', M + 12, y + 48);
+    doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('PROPERTY / UNIT', M + halfW + 14, y + 8);
+    const addressParts = [firstLine.property_address, firstLine.property_city, firstLine.property_state].filter(Boolean).join(', ');
+    doc.fillColor('#333333').fontSize(9).font('Helvetica')
+       .text(firstLine.property_name || '-', M + halfW + 14, y + 22)
+       .text(firstLine.unit_name ? `Unit ${firstLine.unit_name}` : '', M + halfW + 14, y + 35)
+       .text(addressParts || '', M + halfW + 14, y + 48, { width: halfW - 30 });
+    y += 95;
+
+    // Items table
+    doc.rect(M, y, CW, 22).fill('#f0f0f0');
+    doc.fillColor('#333333').fontSize(9).font('Helvetica-Bold')
+       .text('DESCRIPTION', M + 10, y + 6)
+       .text('INVOICE #', M + CW * 0.55, y + 6)
+       .text('AMOUNT', M + CW - 80, y + 6, { width: 70, align: 'right' });
+    y += 22;
+    const displayLines = lines.length > 0 ? lines : [{ amount: paymentAmount, invoice_code: pmt.invoice_code, invoice_note: null }];
+    displayLines.forEach((line, idx) => {
+      const bg = idx % 2 === 0 ? '#ffffff' : '#fafafa';
+      doc.rect(M, y, CW, 28).fill(bg);
+      const desc = pmt.payment_note || line.invoice_note || 'Payment';
+      doc.fillColor('#333333').fontSize(9).font('Helvetica').text(desc, M + 10, y + 8, { width: CW * 0.5 - 10 })
+         .text(line.invoice_code || '-', M + CW * 0.55, y + 8)
+         .font('Helvetica-Bold').text(fmtCurr(line.amount), M + CW - 80, y + 8, { width: 70, align: 'right' });
+      y += 28;
+    });
+    doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
+    y += 15;
+
+    // Total
+    const totalsX = M + CW - 220;
+    const totalsW = 220;
+    doc.moveTo(totalsX, y).lineTo(totalsX + totalsW, y).strokeColor('#333333').lineWidth(1.5).stroke();
+    y += 8;
+    doc.fillColor('#333333').fontSize(12).font('Helvetica-Bold')
+       .text('Total Received:', totalsX, y, { width: totalsW / 2 })
+       .text(fmtCurr(paymentAmount), totalsX + totalsW / 2, y, { width: totalsW / 2, align: 'right' });
+    y += 22;
+
+    // Payment details
+    doc.moveTo(M, y + 10).lineTo(M + CW, y + 10).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
+    y += 25;
+    const detailCols = [];
+    if (pmt.payment_method_name) detailCols.push({ label: 'PAYMENT METHOD', value: pmt.payment_method_name });
+    if (pmt.payment_date) detailCols.push({ label: 'PAYMENT DATE', value: fmtDate(pmt.payment_date) });
+    if (pmt.transaction_code) detailCols.push({ label: 'TRANSACTION CODE', value: pmt.transaction_code });
+    if (detailCols.length > 0) {
+      const colWidth = CW / detailCols.length;
+      detailCols.forEach((col, i) => {
+        const x = M + (i * colWidth);
+        doc.fillColor('#999999').fontSize(8).font('Helvetica-Bold').text(col.label, x, y);
+        doc.fillColor('#333333').fontSize(10).font('Helvetica').text(col.value, x, y + 12);
+      });
+    }
+
+    doc.end();
+  });
+}
+
 module.exports = router;
+module.exports.generateReceiptPdfBuffer = generateReceiptPdfBuffer;
