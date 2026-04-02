@@ -272,8 +272,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
            u.smoking = ?, u.laundry = ?, u.parking = ?,
            u.amenity_detail = ?, u.access_information = ?, u.key_code = ?, u.wifi_information = ?, u.account_name = ?, u.bank_details = ?, u.internal_note = ?,
            u.rent_price_min = ?, u.rent_price_max = ?, u.deposit_price = ?,
-           u.charge_method = ?, u.fee = ?,
-           u.updated_at = NOW()
+           u.charge_method = ?, u.fee = ?
        WHERE u.id = ? AND p.org_id = ?`,
       [
         name || null, type || null, size ?? null, size_unit || null, beds ?? null, baths ?? null,
@@ -869,14 +868,20 @@ router.get('/unit/:unit_id/amenities', authenticate, async (req, res) => {
     const unitId = req.params.unit_id;
     // Get all amenities for the org, mark which ones this unit has
     const orgId = req.user.orgId;
+    // Get unit's amenity_type to filter amenities
+    const [unitRows] = await req.pool.execute(
+      'SELECT u.amenity_type FROM unit u JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ?',
+      [unitId, orgId]
+    );
+    const amenityType = unitRows.length > 0 ? unitRows[0].amenity_type : 1;
     const [amenities] = await req.pool.execute(
       `SELECT a.id, a.display_name, a.category, a.type,
               CASE WHEN ua.unit_id IS NOT NULL THEN 1 ELSE 0 END AS selected
        FROM amenity a
        LEFT JOIN unit_amenity ua ON ua.amenity_id = a.id AND ua.unit_id = ?
-       WHERE a.org_id = ? AND a.enabled = 1
-       ORDER BY a.category, a.order_id, a.display_name`,
-      [unitId, orgId]
+       WHERE a.org_id = ? AND a.enabled = 1 AND a.category = 1 AND a.type = ?
+       ORDER BY a.order_id, a.display_name`,
+      [unitId, orgId, amenityType]
     );
     res.json({ code: 200, data: amenities });
   } catch (error) {
@@ -894,8 +899,8 @@ router.put('/unit/:unit_id/amenities', authenticate, async (req, res) => {
     await req.pool.execute('DELETE FROM unit_amenity WHERE unit_id = ?', [unitId]);
     // Insert new
     if (amenityIds && amenityIds.length > 0) {
-      const values = amenityIds.map(aid => `(${pool.escape(unitId)}, ${pool.escape(aid)})`).join(',');
-      await req.pool.execute(`INSERT INTO unit_amenity (unit_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
+      await req.pool.execute(
+        `INSERT INTO unit_amenity (unit_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
         amenityIds.flatMap(aid => [unitId, aid])
       );
     }

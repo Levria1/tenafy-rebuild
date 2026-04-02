@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Form, Input, InputNumber, Select, Button, message, Row, Col, Switch } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import { Card, Form, Input, InputNumber, Select, Button, message, Row, Col, Switch, Checkbox, Spin } from 'antd';
+import { ArrowLeftOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../../components/Layout';
 import { property as propertyApi } from '../../../../../../lib/api';
 
@@ -16,6 +16,8 @@ export default function UnitEditPage() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [amenities, setAmenities] = useState([]);
+  const [selectedAmenityIds, setSelectedAmenityIds] = useState([]);
   const router = useRouter();
   const params = useParams();
   const propertyId = params.id;
@@ -27,9 +29,12 @@ export default function UnitEditPage() {
 
   const loadUnit = async () => {
     try {
-      const response = await propertyApi.getUnit(unitId);
-      if (response.data.code === 200) {
-        const d = response.data.data;
+      const [unitRes, amenRes] = await Promise.all([
+        propertyApi.getUnit(unitId),
+        propertyApi.getUnitAmenities(unitId),
+      ]);
+      if (unitRes.data.code === 200) {
+        const d = unitRes.data.data;
         form.setFieldsValue({
           name: d.name,
           type: d.type || undefined,
@@ -54,6 +59,11 @@ export default function UnitEditPage() {
           fee: d.fee ? Number(d.fee) : undefined,
         });
       }
+      if (amenRes.data.code === 200) {
+        const amenList = amenRes.data.data || [];
+        setAmenities(amenList);
+        setSelectedAmenityIds(amenList.filter(a => Number(a.selected) === 1).map(a => a.id.toString()));
+      }
     } catch (error) {
       message.error('Failed to load unit');
     } finally {
@@ -64,18 +74,28 @@ export default function UnitEditPage() {
   const onFinish = async (values) => {
     try {
       setLoading(true);
-      await propertyApi.updateUnit(unitId, {
-        ...values,
-        smoking: values.smoking ? 1 : 0,
-        laundry: values.laundry ? 1 : 0,
-      });
+      await Promise.all([
+        propertyApi.updateUnit(unitId, {
+          ...values,
+          smoking: values.smoking ? 1 : 0,
+          laundry: values.laundry ? 1 : 0,
+        }),
+        propertyApi.updateUnitAmenities(unitId, { amenityIds: selectedAmenityIds }),
+      ]);
       message.success('Unit updated successfully');
-      router.push(`/property/${unitId}`);
+      router.push(`/property/${propertyId}/unit/${unitId}`);
     } catch (error) {
       message.error('Failed to update unit');
     } finally {
       setLoading(false);
     }
+  };
+
+  const toggleAmenity = (amenityId) => {
+    const id = amenityId.toString();
+    setSelectedAmenityIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
   };
 
   return (
@@ -184,6 +204,37 @@ export default function UnitEditPage() {
               </Col>
             </Row>
           </div>
+
+          {/* INTERIOR AMENITIES */}
+          {amenities.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={sectionTitle}>Interior Amenities</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 24px' }}>
+                {amenities.map((a) => {
+                  const isSelected = selectedAmenityIds.includes(a.id.toString());
+                  return (
+                    <div
+                      key={a.id}
+                      onClick={() => toggleAmenity(a.id)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6, minWidth: 180,
+                        cursor: 'pointer', padding: '4px 8px', borderRadius: 4,
+                        background: isSelected ? '#f6ffed' : 'transparent',
+                        border: `1px solid ${isSelected ? '#b7eb8f' : '#d9d9d9'}`,
+                      }}
+                    >
+                      {isSelected ? (
+                        <CheckOutlined style={{ color: '#52c41a', fontSize: 12 }} />
+                      ) : (
+                        <CloseOutlined style={{ color: '#ff4d4f', fontSize: 12 }} />
+                      )}
+                      <span style={{ fontSize: 13, color: isSelected ? '#262626' : '#999' }}>{a.display_name}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* DETAILS */}
           <div style={sectionStyle}>

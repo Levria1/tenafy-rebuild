@@ -16,6 +16,8 @@ import { property as propertyApi, service as serviceApi } from '../../../../../l
 
 const { Text, Title } = Typography;
 
+const descStyle = { labelStyle: { color: '#000', fontWeight: 600 }, contentStyle: { color: '#000' } };
+
 // ===========================
 // GENERAL INFORMATION TAB
 // ===========================
@@ -28,18 +30,18 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
   return (
     <div>
       {/* GENERAL INFORMATION */}
-      <Card size="small" title="GENERAL INFORMATION" style={{ marginBottom: 16 }}>
-        <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
+      <Card size="small" title="GENERAL INFORMATION" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small" {...descStyle}>
           <Descriptions.Item label="Property Name">{propertyInfo?.display_name || '-'}</Descriptions.Item>
           <Descriptions.Item label="Year Built">{propertyInfo?.year_built || '-'}</Descriptions.Item>
           <Descriptions.Item label="Property ID#">{propertyInfo?.property_code || '-'}</Descriptions.Item>
         </Descriptions>
-        <Descriptions column={1} size="small">
+        <Descriptions column={1} size="small" {...descStyle}>
           <Descriptions.Item label="Address">
             {propertyInfo?.street_address || '-'}
           </Descriptions.Item>
         </Descriptions>
-        <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small">
+        <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small" {...descStyle}>
           <Descriptions.Item label="City">{propertyInfo?.city || '-'}</Descriptions.Item>
           <Descriptions.Item label="State / Province">{propertyInfo?.state || '-'}</Descriptions.Item>
           <Descriptions.Item label="Zip">{propertyInfo?.zip || '-'}</Descriptions.Item>
@@ -48,8 +50,8 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
       </Card>
 
       {/* UNIT INFORMATION */}
-      <Card size="small" title="UNIT INFORMATION" style={{ marginBottom: 16 }}>
-        <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small">
+      <Card size="small" title="UNIT INFORMATION" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small" {...descStyle}>
           <Descriptions.Item label="Type">{unit?.type || '-'}</Descriptions.Item>
           <Descriptions.Item label="Room Size">
             {unit?.size ? `${unit.size} ${unit.size_unit || 'sqft'}` : '-'}
@@ -57,7 +59,7 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
           <Descriptions.Item label="Bedrooms">{unit?.beds ?? '-'}</Descriptions.Item>
           <Descriptions.Item label="Bathrooms">{unit?.baths ?? '-'}</Descriptions.Item>
         </Descriptions>
-        <Descriptions column={{ xs: 1, sm: 3 }} size="small">
+        <Descriptions column={{ xs: 1, sm: 3 }} size="small" {...descStyle}>
           <Descriptions.Item label="Housing Status">{unit?.housing_status || 'NONE'}</Descriptions.Item>
           <Descriptions.Item label="Laundry">{unit?.laundry ? 'YES' : 'NONE'}</Descriptions.Item>
           <Descriptions.Item label="Smoking">{formatBool(unit?.smoking)}</Descriptions.Item>
@@ -65,17 +67,13 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
       </Card>
 
       {/* INTERIOR AMENITIES */}
-      <Card size="small" title="Interior Amenities" style={{ marginBottom: 16 }}>
-        {amenities && amenities.length > 0 ? (
+      <Card size="small" title="INTERIOR AMENITIES" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        {amenities && amenities.filter(a => Number(a.selected) === 1).length > 0 ? (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 24px' }}>
-            {amenities.map((a) => (
+            {amenities.filter(a => Number(a.selected) === 1).map((a) => (
               <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 180 }}>
-                {Number(a.selected) === 1 ? (
-                  <CheckOutlined style={{ color: '#52c41a', fontSize: 12 }} />
-                ) : (
-                  <CloseOutlined style={{ color: '#ff4d4f', fontSize: 12 }} />
-                )}
-                <Text style={{ fontSize: 13, color: Number(a.selected) === 1 ? '#262626' : '#999' }}>{a.display_name}</Text>
+                <CheckOutlined style={{ color: '#52c41a', fontSize: 12 }} />
+                <Text style={{ fontSize: 13 }}>{a.display_name}</Text>
               </div>
             ))}
           </div>
@@ -85,47 +83,47 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
       </Card>
 
       {/* AMENITY DETAILS */}
-      <Card size="small" title="AMENITY DETAILS" style={{ marginBottom: 16 }}>
-        <Text type="secondary">{unit?.amenity_detail || '--'}</Text>
+      <Card size="small" title="AMENITY DETAILS" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        <Text>{unit?.amenity_detail || '--'}</Text>
       </Card>
 
       {/* UNIT ACCESS INFORMATION */}
-      <Card size="small" title="UNIT ACCESS INFORMATION" style={{ marginBottom: 16 }}>
-        <Text type="secondary">{unit?.access_information || '--'}</Text>
+      <Card size="small" title="UNIT ACCESS INFORMATION" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        <Text>{unit?.access_information || '--'}</Text>
       </Card>
 
       {/* KEY CODES */}
-      <Card size="small" title="KEY CODES" style={{ marginBottom: 16 }}>
-        <Text type="secondary">{unit?.key_code || '--'}</Text>
+      <Card size="small" title="KEY CODES" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        <Text>{unit?.key_code || '--'}</Text>
       </Card>
 
       {/* WIFI INFORMATION */}
-      <Card size="small" title="WIFI INFORMATION" style={{ marginBottom: 16 }}>
-        <Text type="secondary">{unit?.wifi_information || '--'}</Text>
+      <Card size="small" title="WIFI INFORMATION" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        <Text>{unit?.wifi_information || '--'}</Text>
       </Card>
 
       {/* PAYMENT INFORMATION */}
-      <Card size="small" title="PAYMENT INFORMATION" style={{ marginBottom: 16 }}>
+      <Card size="small" title="PAYMENT INFORMATION" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
         <div style={{ marginBottom: 8 }}>
           <Text strong style={{ fontSize: 12, color: '#999' }}>Bank Account Name</Text>
           <br />
-          <Text type="secondary">{unit?.account_name || '--'}</Text>
+          <Text>{unit?.account_name || '--'}</Text>
         </div>
         <div>
           <Text strong style={{ fontSize: 12, color: '#999' }}>Bank Details</Text>
           <br />
-          <Text type="secondary" style={{ whiteSpace: 'pre-wrap' }}>{unit?.bank_details || '--'}</Text>
+          <Text style={{ whiteSpace: 'pre-wrap' }}>{unit?.bank_details || '--'}</Text>
         </div>
       </Card>
 
       {/* INTERNAL NOTES */}
-      <Card size="small" title="INTERNAL NOTES" style={{ marginBottom: 16 }}>
-        <Text type="secondary">{unit?.internal_note || '--'}</Text>
+      <Card size="small" title="INTERNAL NOTES" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        <Text>{unit?.internal_note || '--'}</Text>
       </Card>
 
       {/* RENT RANGE */}
-      <Card size="small" title="RENT RANGE" style={{ marginBottom: 16 }}>
-        <Text type="secondary">
+      <Card size="small" title="RENT RANGE" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        <Text>
           {unit?.rent_price_min || unit?.rent_price_max
             ? `${unit.rent_price_min ? '$' + Number(unit.rent_price_min).toLocaleString() : '-'} — ${unit.rent_price_max ? '$' + Number(unit.rent_price_max).toLocaleString() : '-'}`
             : '--'}
@@ -133,14 +131,14 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
       </Card>
 
       {/* ATTACHMENTS */}
-      <Card size="small" title="ATTACHMENTS" style={{ marginBottom: 16 }}>
-        <Text type="secondary">--</Text>
+      <Card size="small" title="ATTACHMENTS" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        <Text>--</Text>
       </Card>
 
       {/* CURRENT LEASE */}
-      <Card size="small" title="CURRENT LEASE" style={{ marginBottom: 16 }}>
+      <Card size="small" title="CURRENT LEASE" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
         {currentLease ? (
-          <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small">
+          <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small" {...descStyle}>
             <Descriptions.Item label="Tenant">
               {currentLease.first_name} {currentLease.last_name}
             </Descriptions.Item>
@@ -166,9 +164,9 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
       </Card>
 
       {/* NEXT LEASE */}
-      <Card size="small" title="NEXT LEASE" style={{ marginBottom: 0 }}>
+      <Card size="small" title="NEXT LEASE" style={{ marginBottom: 0 }} headStyle={{ color: '#000' }}>
         {nextLease ? (
-          <Descriptions column={3} size="small">
+          <Descriptions column={3} size="small" {...descStyle}>
             <Descriptions.Item label="Tenant">{nextLease.first_name} {nextLease.last_name}</Descriptions.Item>
             <Descriptions.Item label="Start Date">{nextLease.start_date ? new Date(nextLease.start_date).toLocaleDateString() : '-'}</Descriptions.Item>
             <Descriptions.Item label="End Date">{nextLease.end_date ? new Date(nextLease.end_date).toLocaleDateString() : '-'}</Descriptions.Item>
