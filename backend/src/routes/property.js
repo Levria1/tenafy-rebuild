@@ -226,7 +226,11 @@ router.get('/unit/:unit_id', authenticate, async (req, res) => {
     if (units.length === 0) {
       return res.status(404).json({ code: 404, message: 'Unit not found' });
     }
-    res.json({ code: 200, data: units[0] });
+    // Attach gallery
+    const [galleryRows] = await req.pool.execute(
+      'SELECT file_id, `order` FROM object_gallery WHERE object_id = ? ORDER BY `order`', [unit_id]
+    );
+    res.json({ code: 200, data: { ...units[0], gallery: galleryRows } });
   } catch (error) {
     console.error('Get unit error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get unit' });
@@ -262,7 +266,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
       smoking, laundry, parking,
       amenity_detail, access_information, key_code, wifi_information, account_name, bank_details, internal_note,
       rent_price_min, rent_price_max, deposit_price,
-      charge_method, fee,
+      charge_method, fee, photo, galleryFileIds,
     } = req.body;
     const orgId = req.user.orgId;
 
@@ -272,17 +276,31 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
            u.smoking = ?, u.laundry = ?, u.parking = ?,
            u.amenity_detail = ?, u.access_information = ?, u.key_code = ?, u.wifi_information = ?, u.account_name = ?, u.bank_details = ?, u.internal_note = ?,
            u.rent_price_min = ?, u.rent_price_max = ?, u.deposit_price = ?,
-           u.charge_method = ?, u.fee = ?
+           u.charge_method = ?, u.fee = ?, u.photo = ?
        WHERE u.id = ? AND p.org_id = ?`,
       [
         name || null, type || null, size ?? null, size_unit || null, beds ?? null, baths ?? null,
         smoking ?? null, laundry ?? null, parking ?? null,
         amenity_detail || null, access_information || null, key_code || null, wifi_information || null, account_name || null, bank_details || null, internal_note || null,
         rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
-        charge_method ?? null, fee ?? null,
+        charge_method ?? null, fee ?? null, photo || null,
         unit_id, orgId
       ]
     );
+
+    // Update gallery if provided
+    if (galleryFileIds !== undefined) {
+      await req.pool.execute('DELETE FROM object_gallery WHERE object_id = ?', [unit_id]);
+      if (galleryFileIds && galleryFileIds.length > 0) {
+        const galleryValues = galleryFileIds.map(() => '(?, ?, ?)').join(',');
+        const galleryParams = galleryFileIds.flatMap((fid, idx) => [unit_id, fid, idx]);
+        await req.pool.execute(
+          `INSERT INTO object_gallery (object_id, file_id, \`order\`) VALUES ${galleryValues}`,
+          galleryParams
+        );
+      }
+    }
+
     res.json({ code: 200, message: 'Unit updated' });
   } catch (error) {
     console.error('Update unit error:', error);
@@ -516,11 +534,14 @@ router.get('/:id', authenticate, async (req, res) => {
     if (properties.length === 0) {
       return res.status(404).json({ code: 404, message: 'Property not found' });
     }
-    // Attach selected amenity IDs
+    // Attach selected amenity IDs and gallery
     const [amenityRows] = await req.pool.execute(
       'SELECT amenity_id FROM property_amenity WHERE property_id = ?', [id]
     );
-    const data = { ...properties[0], amenity_ids: amenityRows.map(r => r.amenity_id) };
+    const [galleryRows] = await req.pool.execute(
+      'SELECT file_id, `order` FROM object_gallery WHERE object_id = ? ORDER BY `order`', [id]
+    );
+    const data = { ...properties[0], amenity_ids: amenityRows.map(r => r.amenity_id), gallery: galleryRows };
     res.json({ code: 200, data });
   } catch (error) {
     console.error('Get property error:', error);
@@ -532,18 +553,19 @@ router.get('/:id', authenticate, async (req, res) => {
 router.post('/', authenticate, async (req, res) => {
   try {
     const { display_name, street_address, city, state, country, zip_code, district,
-            type, status, currency, year_of_built, notes, payment_instructions, amenityIds } = req.body;
+            type, status, currency, year_of_built, notes, payment_instructions, amenityIds,
+            photo, galleryFileIds } = req.body;
     const orgId = req.user.orgId;
 
     const propertyId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
     await req.pool.execute(
       `INSERT INTO property (id, org_id, display_name, street_address, city, state, country,
-       zip_code, district, type, status, currency, year_of_built, notes, payment_instructions, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [propertyId, orgId, display_name, street_address, city, state, country, zip_code || null,
+       zip_code, district, type, status, currency, year_of_built, notes, payment_instructions, photo, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [propertyId, orgId, display_name || null, street_address || null, city || null, state || null, country || null, zip_code || null,
        district || null, type || 1, status ?? 1, currency || null,
-       year_of_built || null, notes || null, payment_instructions || null]
+       year_of_built || null, notes || null, payment_instructions || null, photo || null]
     );
 
     // Save amenities if provided
@@ -554,10 +576,20 @@ router.post('/', authenticate, async (req, res) => {
       );
     }
 
+    // Save gallery images if provided
+    if (galleryFileIds && galleryFileIds.length > 0) {
+      const galleryValues = galleryFileIds.map((fid, idx) => '(?, ?, ?)').join(',');
+      const galleryParams = galleryFileIds.flatMap((fid, idx) => [propertyId, fid, idx]);
+      await req.pool.execute(
+        `INSERT INTO object_gallery (object_id, file_id, \`order\`) VALUES ${galleryValues}`,
+        galleryParams
+      );
+    }
+
     res.json({ code: 200, message: 'Property created', data: { id: propertyId } });
   } catch (error) {
-    console.error('Create property error:', error);
-    res.status(500).json({ code: 500, message: 'Failed to create property' });
+    console.error('Create property error:', error.message, error.sql || '');
+    res.status(500).json({ code: 500, message: 'Failed to create property: ' + error.message });
   }
 });
 
@@ -566,18 +598,19 @@ router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { display_name, street_address, city, state, country, zip_code, district,
-            type, status, currency, year_of_built, mls, notes, payment_instructions, amenityIds } = req.body;
+            type, status, currency, year_of_built, mls, notes, payment_instructions, amenityIds,
+            photo, galleryFileIds } = req.body;
     const orgId = req.user.orgId;
 
     await req.pool.execute(
       `UPDATE property SET display_name = ?, street_address = ?, city = ?, state = ?,
        country = ?, zip_code = ?, district = ?, type = ?, status = ?, currency = ?,
-       year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, updated_at = NOW()
+       year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, photo = ?, updated_at = NOW()
        WHERE id = ? AND org_id = ?`,
       [display_name || null, street_address || null, city || null, state || null,
        country || null, zip_code || null, district || null, type ?? 1, status ?? 1,
        currency || null, year_of_built || null, mls || null, notes || null,
-       payment_instructions || null, id, orgId]
+       payment_instructions || null, photo || null, id, orgId]
     );
 
     // Update amenities if provided
@@ -587,6 +620,19 @@ router.put('/:id', authenticate, async (req, res) => {
         await req.pool.execute(
           `INSERT INTO property_amenity (property_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
           amenityIds.flatMap(aid => [id, aid])
+        );
+      }
+    }
+
+    // Update gallery if provided
+    if (galleryFileIds !== undefined) {
+      await req.pool.execute('DELETE FROM object_gallery WHERE object_id = ?', [id]);
+      if (galleryFileIds && galleryFileIds.length > 0) {
+        const galleryValues = galleryFileIds.map(() => '(?, ?, ?)').join(',');
+        const galleryParams = galleryFileIds.flatMap((fid, idx) => [id, fid, idx]);
+        await req.pool.execute(
+          `INSERT INTO object_gallery (object_id, file_id, \`order\`) VALUES ${galleryValues}`,
+          galleryParams
         );
       }
     }
@@ -671,7 +717,7 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
       smoking, laundry, amenity_detail, access_information, key_code,
       wifi_information, account_name, bank_details, internal_note,
       rent_price_min, rent_price_max, deposit_price, owner_id,
-      charge_method, fee, amenityIds
+      charge_method, fee, amenityIds, photo, galleryFileIds
     } = req.body;
     const orgId = req.user.orgId;
 
@@ -688,15 +734,15 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
        parking, smoking, laundry, amenity_detail, access_information, key_code,
        wifi_information, account_name, bank_details, internal_note,
        rent_price_min, rent_price_max, deposit_price, owner_id,
-       charge_method, fee, status, active_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
+       charge_method, fee, photo, status, active_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
       [unitId, property_id, name || null, type || null, amenity_type ?? 1,
        beds ?? null, baths ?? null, size ?? null, size_unit || 'sqft',
        parking ?? null, smoking ? 1 : 0, laundry ? 1 : 0,
        amenity_detail || null, access_information || null, key_code || null,
        wifi_information || null, account_name || null, bank_details || null, internal_note || null,
        rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
-       owner_id || null, charge_method || null, fee ?? null]
+       owner_id || null, charge_method || null, fee ?? null, photo || null]
     );
 
     // Save unit amenities if provided
@@ -704,6 +750,16 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
       await req.pool.execute(
         `INSERT INTO unit_amenity (unit_id, amenity_id) VALUES ${amenityIds.map(() => '(?, ?)').join(',')}`,
         amenityIds.flatMap(aid => [unitId, aid])
+      );
+    }
+
+    // Save gallery images if provided
+    if (galleryFileIds && galleryFileIds.length > 0) {
+      const galleryValues = galleryFileIds.map(() => '(?, ?, ?)').join(',');
+      const galleryParams = galleryFileIds.flatMap((fid, idx) => [unitId, fid, idx]);
+      await req.pool.execute(
+        `INSERT INTO object_gallery (object_id, file_id, \`order\`) VALUES ${galleryValues}`,
+        galleryParams
       );
     }
 

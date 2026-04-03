@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message } from 'antd';
-import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined } from '@ant-design/icons';
+import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider } from 'antd';
+import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import { leasing, pdf, utility } from '../../../../lib/api';
@@ -25,6 +25,10 @@ export default function LeasingDetailPage() {
   const [readings, setReadings] = useState([]);
   const [readingsLoading, setReadingsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [settlement, setSettlement] = useState(null);
+  const [settlementLoading, setSettlementLoading] = useState(false);
+  const [settlementNotes, setSettlementNotes] = useState('');
+  const [notesSaving, setNotesSaving] = useState(false);
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
@@ -47,6 +51,34 @@ export default function LeasingDetailPage() {
       message.error('Failed to load lease');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadSettlement = async () => {
+    if (settlement) return; // already loaded
+    setSettlementLoading(true);
+    try {
+      const res = await leasing.getSettlement(leaseId);
+      if (res.data.code === 200) {
+        setSettlement(res.data.data);
+        setSettlementNotes(res.data.data.settlement_notes || '');
+      }
+    } catch (err) {
+      message.error('Failed to load settlement data');
+    } finally {
+      setSettlementLoading(false);
+    }
+  };
+
+  const saveNotes = async () => {
+    setNotesSaving(true);
+    try {
+      await leasing.saveSettlementNotes(leaseId, settlementNotes);
+      message.success('Notes saved');
+    } catch (err) {
+      message.error('Failed to save notes');
+    } finally {
+      setNotesSaving(false);
     }
   };
 
@@ -75,6 +107,246 @@ export default function LeasingDetailPage() {
   const leaseStatus = lease?.lease_status ?? (lease?.status === 1 ? 1 : 0);
   const statusLabel = leaseStatus === 2 ? 'Upcoming' : leaseStatus === 1 ? 'Active' : 'Inactive';
   const statusColor = leaseStatus === 2 ? 'blue' : leaseStatus === 1 ? 'green' : 'red';
+
+  // Settlement tab content
+  const renderSettlement = () => {
+    if (settlementLoading) return <Card loading />;
+    if (!settlement) return <div style={{ padding: 24, textAlign: 'center', color: '#999' }}>Loading settlement data...</div>;
+
+    const s = settlement;
+    // Negative = green, -1% to 1.5% = yellow, above 1.5% = red
+    const pct = s.rent_diff_percent;
+    const rentDiffColor = pct < 0 ? '#fff' : pct <= 1.5 ? '#000' : '#fff';
+    const rentDiffBg = pct < 0 ? '#52c41a' : pct <= 1.5 ? '#ffffb8' : '#ff4d4f';
+
+    const STATUS_MAP = { 0: { text: 'Open', color: 'blue' }, 1: { text: 'Paid', color: 'green' }, 2: { text: 'Overdue', color: 'red' } };
+    const invoiceColumns = [
+      {
+        title: 'Status', dataIndex: 'status', key: 'status', width: 90,
+        render: v => { const s = STATUS_MAP[Number(v)] || { text: '-', color: 'default' }; return <Tag color={s.color}>{s.text}</Tag>; }
+      },
+      { title: 'Date', dataIndex: 'due_on', key: 'due_on', width: 110, render: v => formatDate(v) },
+      { title: 'Invoice #', dataIndex: 'invoice_code', key: 'invoice_code', width: 110 },
+      {
+        title: 'Category', dataIndex: 'category_name', key: 'category_name', width: 130,
+        render: v => v || '-'
+      },
+      {
+        title: 'Invoice Amount', dataIndex: 'amount', key: 'amount', width: 130, align: 'right',
+        render: (v, row) => {
+          const amt = Number(v);
+          const isOutflow = Number(row.type) === 1;
+          const display = formatCurrency(amt);
+          return isOutflow ? <span style={{ color: '#ff4d4f' }}>-{display}</span> : display;
+        }
+      },
+      {
+        title: 'Payment Method', key: 'payment_method', width: 130,
+        render: (_, row) => {
+          if (!row.payments || row.payments.length === 0) return '-';
+          return row.payments.map(p => p.payment_method_name || '-').join(', ');
+        }
+      },
+      {
+        title: 'Inflow / Outflow', key: 'inflow_outflow', width: 130, align: 'right',
+        render: (_, row) => {
+          if (!row.payments || row.payments.length === 0) return '-';
+          const total = row.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+          const isOutflow = Number(row.type) === 1;
+          const display = formatCurrency(total);
+          return isOutflow ? <span style={{ color: '#ff4d4f' }}>-{display}</span> : display;
+        }
+      },
+      { title: 'Notes', dataIndex: 'note', key: 'note', ellipsis: true, render: v => v || '-' },
+    ];
+
+    const labelStyle = { fontWeight: 'bold', width: 220, padding: '6px 12px' };
+    const valueStyle = { padding: '6px 12px' };
+
+    return (
+      <div>
+        {/* Header Info */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0', border: '1px solid #f0f0f0', borderRadius: 6, marginBottom: 24 }}>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Tenant:</div>
+            <div style={valueStyle}>{s.tenant}</div>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Move-In Date:</div>
+            <div style={valueStyle}>{formatDate(s.start_date)}</div>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Property:</div>
+            <div style={valueStyle}>{s.property}</div>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Move-Out Date:</div>
+            <div style={valueStyle}>{formatDate(s.end_date)}</div>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Unit:</div>
+            <div style={valueStyle}>{s.unit}</div>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Rental Days:</div>
+            <div style={valueStyle}>{s.rental_days}</div>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Monthly Rent:</div>
+            <div style={valueStyle}>{formatCurrency(s.monthly_rent)}</div>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Check In Meter:</div>
+            <div style={valueStyle}>{s.check_in_meter != null ? Number(s.check_in_meter).toLocaleString() : '-'}</div>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Check Out Meter:</div>
+            <div style={valueStyle}>{s.check_out_meter != null ? Number(s.check_out_meter).toLocaleString() : '-'}</div>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={labelStyle}>Average Unit $/rate:</div>
+            <div style={valueStyle}>{s.avg_unit_rate != null ? `$${s.avg_unit_rate.toFixed(2)}` : '-'}</div>
+          </div>
+          <div style={{ display: 'flex' }}>
+            <div style={labelStyle}>Utility Usage:</div>
+            <div style={valueStyle}>
+              {s.total_utility_usage != null
+                ? `${Number(s.total_utility_usage).toLocaleString()} kW`
+                : '-'}
+              {s.total_utility_cost != null ? ` (${formatCurrency(s.total_utility_cost)})` : ''}
+            </div>
+          </div>
+        </div>
+
+        {/* Invoices Table */}
+        <h4 style={{ fontWeight: 'bold', marginBottom: 12 }}>INVOICES</h4>
+        <Table
+          columns={invoiceColumns}
+          dataSource={s.invoices}
+          rowKey="id"
+          size="small"
+          pagination={false}
+          bordered
+          style={{ marginBottom: 24 }}
+          locale={{ emptyText: 'No invoices found for this lease' }}
+        />
+
+        {/* Summary Section */}
+        <div style={{ maxWidth: 600 }}>
+          {/* Estimated Total Rent */}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+            <div style={{ fontWeight: 'bold', width: 260 }}>ESTIMATED Total Rent:</div>
+            <div style={{ padding: '4px 12px', background: '#52c41a', color: '#fff', fontWeight: 'bold', minWidth: 120, textAlign: 'right' }}>
+              {formatCurrency(s.estimated_total_rent)}
+            </div>
+          </div>
+
+          {/* Rent Received */}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+            <div style={{ fontWeight: 'bold', width: 260 }}>RENT RECEIVED:</div>
+            <div style={{ padding: '4px 12px', minWidth: 120, textAlign: 'right' }}>
+              {formatCurrency(s.rent_received)}
+            </div>
+          </div>
+
+          {/* Rent Received Difference */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 2 }}>
+              <div style={{ fontWeight: 'bold', width: 260 }}>RENT RECEIVED DIFFERENCE:</div>
+              <div style={{
+                padding: '4px 12px',
+                background: rentDiffBg,
+                color: Math.abs(s.rent_diff_percent) > 1 ? rentDiffColor : '#000',
+                fontWeight: 'bold',
+                minWidth: 120,
+                textAlign: 'right',
+              }}>
+                {s.rent_diff_percent.toFixed(2)}%
+              </div>
+            </div>
+            {s.rent_diff_percent > 1.5 && (
+              <div style={{ marginLeft: 260, color: '#ff4d4f', fontSize: 12, fontStyle: 'italic' }}>
+                *Make sure this number is NOT ABOVE 1.5%, Highlight to Chris / Alex if not*
+              </div>
+            )}
+          </div>
+
+          <Divider style={{ margin: '12px 0' }} />
+
+          {/* Payments Received */}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+            <div style={{ fontWeight: 'bold', width: 260 }}>PAYMENTS RECEIVED:</div>
+            <div style={{ padding: '4px 12px', background: '#e6fffb', minWidth: 120, textAlign: 'right' }}>
+              {formatCurrency(s.payments_received)}
+            </div>
+          </div>
+
+          {/* Outstanding Payments */}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ fontWeight: 'bold', width: 260 }}>OUTSTANDING PAYMENTS:</div>
+            <div style={{ padding: '4px 12px', minWidth: 120, textAlign: 'right' }}>
+              {formatCurrency(s.outstanding_payments)}
+            </div>
+          </div>
+
+          <Divider style={{ margin: '12px 0' }} />
+
+          {/* Tenant Credits */}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+            <div style={{ fontWeight: 'bold', width: 260 }}>TENANT CREDITS:</div>
+            <div style={{ padding: '4px 12px', minWidth: 120, textAlign: 'right', color: s.tenant_credits < 0 ? '#ff4d4f' : undefined }}>
+              {s.tenant_credits < 0 ? `-${formatCurrency(Math.abs(s.tenant_credits))}` : formatCurrency(s.tenant_credits)}
+            </div>
+          </div>
+
+          {/* Security Deposit */}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+            <div style={{ fontWeight: 'bold', width: 260 }}>SECURITY DEPOSIT:</div>
+            <div style={{ padding: '4px 12px', background: '#e6fffb', minWidth: 120, textAlign: 'right' }}>
+              {formatCurrency(s.security_deposit)}
+            </div>
+          </div>
+
+          {/* Security Deposit Return */}
+          <div style={{ marginBottom: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 2 }}>
+              <div style={{ fontWeight: 'bold', width: 260 }}>SECURITY DEPOSIT RETURN:</div>
+              <div style={{ padding: '4px 12px', background: '#ffffb8', minWidth: 120, textAlign: 'right' }}>
+                {formatCurrency(s.security_deposit_return)}
+              </div>
+            </div>
+            {s.security_deposit_return > s.security_deposit && (
+              <div style={{ marginLeft: 260, color: '#ff4d4f', fontSize: 12, fontStyle: 'italic' }}>
+                *Security Deposit Return should ALMOST NEVER be more than the Security Deposit. Highlight to Chris / Alex if not*
+              </div>
+            )}
+          </div>
+        </div>
+
+        <Divider style={{ margin: '16px 0' }} />
+
+        {/* Notes Section */}
+        <h4 style={{ fontWeight: 'bold', marginBottom: 12 }}>NOTES</h4>
+        <Input.TextArea
+          rows={4}
+          value={settlementNotes}
+          onChange={e => setSettlementNotes(e.target.value)}
+          placeholder="Enter settlement notes..."
+          style={{ marginBottom: 12, maxWidth: 600 }}
+        />
+        <div>
+          <Button
+            type="primary"
+            icon={<SaveOutlined />}
+            onClick={saveNotes}
+            loading={notesSaving}
+          >
+            Save Notes
+          </Button>
+        </div>
+      </div>
+    );
+  };
 
   const tabItems = [
     {
@@ -130,19 +402,7 @@ export default function LeasingDetailPage() {
     {
       key: 'payments',
       label: 'Payments',
-      children: (
-        <Table
-          columns={[
-            { title: 'Date', dataIndex: 'payment_date', key: 'payment_date', render: (v) => formatDate(v) },
-            { title: 'Amount', dataIndex: 'amount', key: 'amount', render: (v) => formatCurrency(v) },
-            { title: 'Method', dataIndex: 'payment_method', key: 'payment_method', render: (v) => v || '-' },
-            { title: 'Status', dataIndex: 'status', key: 'status', render: (s) => <Tag color={s === 'PAID' ? 'green' : 'red'}>{s}</Tag> },
-          ]}
-          dataSource={lease?.payments || []}
-          rowKey="id"
-          locale={{ emptyText: 'No payments recorded' }}
-        />
-      ),
+      children: renderSettlement(),
     },
     {
       key: 'meter-readings',
@@ -196,7 +456,14 @@ export default function LeasingDetailPage() {
           </Space>
         </div>
         <Card title={`Lease ${leaseTitle}`} loading={loading}>
-          {lease && <Tabs items={tabItems} />}
+          {lease && (
+            <Tabs
+              items={tabItems}
+              onChange={(key) => {
+                if (key === 'payments') loadSettlement();
+              }}
+            />
+          )}
         </Card>
       </Space>
     </MainLayout>

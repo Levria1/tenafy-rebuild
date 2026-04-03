@@ -179,7 +179,7 @@ router.get('/download/:identifier', async (req, res) => {
 router.use(authenticate);
 
 // POST /api/file/image/upload - Upload image
-router.post('/image/upload', upload.single('file'), async (req, res) => {
+router.post('/image/upload', authenticate, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ code: 415, message: 'Please upload pictures in PNG, JPG, JPEG format' });
@@ -215,7 +215,7 @@ router.post('/image/upload', upload.single('file'), async (req, res) => {
 });
 
 // POST /api/file/upload - Upload any file
-router.post('/upload', upload.single('file'), async (req, res) => {
+router.post('/upload', authenticate, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ code: 400, message: 'No file uploaded' });

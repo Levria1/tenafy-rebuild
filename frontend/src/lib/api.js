@@ -144,6 +144,8 @@ export const leasing = {
   getAvailableUnits: (data) => api.post('/api/leasing/unit/available', data),
   checkConflict: (data) => api.post('/api/leasing/check-conflict', data),
   getCalendar: (params) => api.get('/api/leasing/calendar', { params }),
+  getSettlement: (id) => api.get(`/api/leasing/${id}/settlement`),
+  saveSettlementNotes: (id, notes) => api.put(`/api/leasing/${id}/settlement-notes`, { notes }),
 };
 
 export const accounting = {
@@ -415,6 +417,7 @@ export const utility = {
   generateInvoices: (id, data) => api.post(`/api/utility/bill/${id}/generate-invoices`, data || {}),
   getReport: () => api.get('/api/utility/report'),
   getHighestRate: (params) => api.get('/api/utility/highest-rate', { params }),
+  getCheckoutMeters: () => api.get('/api/utility/checkout-meters'),
   checkoutSettlement: (data) => api.post('/api/utility/checkout-settlement', data),
   getTenantHistory: (tenantId) => api.get(`/api/utility/tenant/${tenantId}/history`),
 };

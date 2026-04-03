@@ -1,10 +1,28 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import { Card, Form, Input, Button, Space, message, Select, Switch, Row, Col, Tag, InputNumber, Radio } from 'antd';
 import { ArrowLeftOutlined, CopyOutlined, EyeOutlined, SendOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../components/Layout';
 import { emailTemplate } from '../../../../../lib/api';
+
+const ReactQuill = dynamic(() => import('react-quill-new'), { ssr: false });
+import 'react-quill-new/dist/quill.snow.css';
+
+const quillModules = {
+  toolbar: [
+    [{ header: [1, 2, 3, false] }],
+    ['bold', 'italic', 'underline', 'strike'],
+    [{ color: [] }, { background: [] }],
+    [{ font: [] }],
+    [{ size: ['small', false, 'large', 'huge'] }],
+    [{ list: 'ordered' }, { list: 'bullet' }],
+    [{ align: [] }],
+    ['link', 'image'],
+    ['clean'],
+  ],
+};
 
 // Sample values for client-side preview
 const SAMPLE_VALUES = {
@@ -89,21 +107,16 @@ export default function EditEmailTemplatePage() {
   }, [templateId]);
 
   const insertVariable = (varKey) => {
-    const textarea = bodyRef.current?.resizableTextArea?.textArea;
-    if (!textarea) {
+    const quill = bodyRef.current?.getEditor?.();
+    if (quill) {
+      const range = quill.getSelection(true);
+      const pos = range ? range.index : quill.getLength() - 1;
+      quill.insertText(pos, varKey);
+      quill.setSelection(pos + varKey.length);
+    } else {
       const current = form.getFieldValue('body') || '';
       form.setFieldsValue({ body: current + varKey });
-      return;
     }
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const current = form.getFieldValue('body') || '';
-    const newValue = current.substring(0, start) + varKey + current.substring(end);
-    form.setFieldsValue({ body: newValue });
-    setTimeout(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start + varKey.length, start + varKey.length);
-    }, 0);
   };
 
   const onFinish = async (values) => {
@@ -267,8 +280,18 @@ export default function EditEmailTemplatePage() {
                       <div dangerouslySetInnerHTML={{ __html: substitutePreview(bodyValue) }} />
                     </div>
                   ) : (
-                    <Form.Item name="body" noStyle rules={[{ required: true, message: 'Please enter email body' }]}>
-                      <Input.TextArea ref={bodyRef} rows={16} />
+                    <Form.Item name="body" noStyle rules={[{ required: true, message: 'Please enter email body' }]}
+                      getValueFromEvent={(v) => v}
+                    >
+                      <ReactQuill
+                        ref={bodyRef}
+                        theme="snow"
+                        modules={quillModules}
+                        placeholder="Enter email content here. Click variables on the right to insert them."
+                        style={{ minHeight: 300, marginBottom: 42 }}
+                        value={bodyValue}
+                        onChange={(v) => form.setFieldsValue({ body: v })}
+                      />
                     </Form.Item>
                   )}
                 </div>

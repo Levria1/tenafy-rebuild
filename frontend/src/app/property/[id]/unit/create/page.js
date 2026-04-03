@@ -3,11 +3,13 @@
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import {
-  Form, Input, InputNumber, Select, Button, message, Switch, Radio, Checkbox, Spin, Row, Col,
+  Form, Input, InputNumber, Select, Button, message, Switch, Radio, Checkbox, Spin, Row, Col, Upload,
 } from 'antd';
-import { ArrowLeftOutlined, UploadOutlined, PlusOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, UploadOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../components/Layout';
-import { property as propertyApi } from '../../../../../lib/api';
+import { property as propertyApi, file as fileApi } from '../../../../../lib/api';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 const RESIDENTIAL_DESC = 'Residential Properties include single family homes where there is only one rental unit associated to the address, and also include houses, single condominium units, single mobile homes, co-ops, townhouses, duplexes, triple-deckers, quadplexes, high-value homes, multi-generational and vacation homes.';
 const COMMERCIAL_DESC  = 'Commercial property usually refers to buildings that house businesses, as well as larger residential rental properties. Commercial properties include properties such as retail properties (store fronts), offices, serviced offices, hotels, cafe, malls, and entire apartment building blocks.';
@@ -47,6 +49,9 @@ export default function PropertyUnitCreatePage() {
   const [amenities, setAmenities] = useState([]);
   const [amenitiesLoading, setAmenitiesLoading] = useState(false);
   const [selectedAmenityIds, setSelectedAmenityIds] = useState([]);
+  const [photoFileId, setPhotoFileId] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [galleryFiles, setGalleryFiles] = useState([]);
   const router = useRouter();
   const params = useParams();
   const propertyId = params.id;
@@ -89,10 +94,50 @@ export default function PropertyUnitCreatePage() {
     );
   };
 
+  const handlePhotoUpload = async (info) => {
+    const { file: f, onSuccess, onError } = info;
+    try {
+      const formData = new FormData();
+      formData.append('file', f);
+      const res = await fileApi.upload(formData);
+      if (res.data.code === 200) {
+        const uploaded = res.data.data;
+        const fid = uploaded.id || uploaded.fileId;
+        setPhotoFileId(fid);
+        setPhotoPreview(URL.createObjectURL(f));
+        onSuccess(uploaded);
+      } else { onError(new Error('Upload failed')); }
+    } catch (e) { onError(e); }
+  };
+
+  const handleGalleryUpload = async (info) => {
+    const { file: f, onSuccess, onError } = info;
+    try {
+      const formData = new FormData();
+      formData.append('file', f);
+      const res = await fileApi.upload(formData);
+      if (res.data.code === 200) {
+        const uploaded = res.data.data;
+        const fid = uploaded.id || uploaded.fileId;
+        setGalleryFiles(prev => [...prev, { fileId: fid, url: URL.createObjectURL(f), uid: f.uid }]);
+        onSuccess(uploaded);
+      } else { onError(new Error('Upload failed')); }
+    } catch (e) { onError(e); }
+  };
+
+  const removeGalleryFile = (uid) => {
+    setGalleryFiles(prev => prev.filter(g => g.uid !== uid));
+  };
+
   const onFinish = async (values) => {
     try {
       setLoading(true);
-      const res = await propertyApi.createUnit(propertyId, { ...values, amenityIds: selectedAmenityIds });
+      const res = await propertyApi.createUnit(propertyId, {
+        ...values,
+        amenityIds: selectedAmenityIds,
+        photo: photoFileId,
+        galleryFileIds: galleryFiles.map(g => g.fileId),
+      });
       if (res.data.code === 200) {
         message.success('Unit created successfully');
         router.push(`/property/${propertyId}/detail`);
@@ -167,24 +212,55 @@ export default function PropertyUnitCreatePage() {
                 border: '1px dashed #d9d9d9', borderRadius: 4,
                 display: 'flex', flexDirection: 'column',
                 alignItems: 'center', justifyContent: 'center', marginBottom: 10,
+                overflow: 'hidden',
               }}>
-                <div style={{ fontSize: 40, marginBottom: 8 }}>🏠</div>
-                <div style={{ fontSize: 12, color: '#999' }}>No photo uploaded</div>
+                {photoPreview ? (
+                  <img src={photoPreview} alt="Unit" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <>
+                    <div style={{ fontSize: 40, marginBottom: 8 }}>🏠</div>
+                    <div style={{ fontSize: 12, color: '#999' }}>No photo uploaded</div>
+                  </>
+                )}
               </div>
-              <Button icon={<UploadOutlined />} block>Upload Photo</Button>
+              <Upload showUploadList={false} customRequest={handlePhotoUpload} accept="image/*">
+                <Button icon={<UploadOutlined />} block>{photoFileId ? 'Change Photo' : 'Upload Photo'}</Button>
+              </Upload>
+              {photoFileId && (
+                <Button type="text" danger size="small" style={{ marginTop: 4, width: '100%' }}
+                  onClick={() => { setPhotoFileId(null); setPhotoPreview(null); }}>
+                  Remove Photo
+                </Button>
+              )}
             </PanelBody>
 
             {/* Gallery */}
             <PanelHeader>Gallery</PanelHeader>
             <PanelBody>
-              <div style={{
-                width: 64, height: 64, border: '1px dashed #d9d9d9',
-                borderRadius: 6, display: 'flex', flexDirection: 'column',
-                alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', color: '#999', fontSize: 11,
-              }}>
-                <PlusOutlined style={{ fontSize: 18, marginBottom: 4 }} />
-                Upload
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {galleryFiles.map(g => (
+                  <div key={g.uid} style={{ position: 'relative', width: 64, height: 64, borderRadius: 6, overflow: 'hidden', border: '1px solid #d9d9d9' }}>
+                    <img src={g.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <div onClick={() => removeGalleryFile(g.uid)} style={{
+                      position: 'absolute', top: 2, right: 2, width: 18, height: 18,
+                      background: 'rgba(0,0,0,0.5)', borderRadius: '50%', display: 'flex',
+                      alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                    }}>
+                      <DeleteOutlined style={{ color: '#fff', fontSize: 10 }} />
+                    </div>
+                  </div>
+                ))}
+                <Upload showUploadList={false} customRequest={handleGalleryUpload} accept="image/*" multiple>
+                  <div style={{
+                    width: 64, height: 64, border: '1px dashed #d9d9d9',
+                    borderRadius: 6, display: 'flex', flexDirection: 'column',
+                    alignItems: 'center', justifyContent: 'center',
+                    cursor: 'pointer', color: '#999', fontSize: 11,
+                  }}>
+                    <PlusOutlined style={{ fontSize: 18, marginBottom: 4 }} />
+                    Upload
+                  </div>
+                </Upload>
               </div>
             </PanelBody>
 

@@ -63,6 +63,7 @@ function UtilitiesPage() {
 function ReportTab() {
   const [reportData, setReportData] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
 
   const loadReport = useCallback(async () => {
     setLoading(true);
@@ -83,9 +84,24 @@ function ReportTab() {
 
   const INVOICE_STATUS = { 0: { color: 'blue', text: 'Open' }, 1: { color: 'green', text: 'Paid' }, 2: { color: 'red', text: 'Overdue' } };
 
+  const q = search.toLowerCase();
+  const filteredReport = q ? reportData.map(group => {
+    const groupMatch = (group.group_name || '').toLowerCase().includes(q);
+    const filteredUnits = (group.units || []).filter(u =>
+      (u.unit_name || '').toLowerCase().includes(q) ||
+      (u.tenant_name || '').toLowerCase().includes(q)
+    );
+    if (groupMatch) return group;
+    if (filteredUnits.length > 0) return { ...group, units: filteredUnits };
+    return null;
+  }).filter(Boolean) : reportData;
+
   return (
     <div>
-      {reportData.map(group => {
+      <div style={{ marginBottom: 16 }}>
+        <Input.Search placeholder="Search by group, unit, or tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: 350 }} />
+      </div>
+      {filteredReport.map(group => {
         const bills = group.bills || [];
         const units = group.units || [];
 
@@ -180,6 +196,7 @@ function GroupsTab() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [search, setSearch] = useState('');
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -284,16 +301,32 @@ function GroupsTab() {
     },
   ];
 
+  const gq = search.toLowerCase();
+  const filteredTableData = gq ? tableData.filter(row => {
+    if (row._type === 'property') {
+      // Keep property header if it or any of its units match
+      const propUnits = tableData.filter(r => r._type === 'unit' && r.property_id === row.id?.replace?.('prop-', ''));
+      return (row.display_name || '').toLowerCase().includes(gq) ||
+        propUnits.some(u => (u.unit_name || '').toLowerCase().includes(gq) || (u.tenant_name || '').toLowerCase().includes(gq));
+    }
+    return (row.unit_name || '').toLowerCase().includes(gq) ||
+      (row.tenant_name || '').toLowerCase().includes(gq) ||
+      (row.property_name || '').toLowerCase().includes(gq);
+  }) : tableData;
+
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Text strong>Assign units to billing groups</Text>
+        <Space>
+          <Text strong>Assign units to billing groups</Text>
+          <Input.Search placeholder="Search property, unit, tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: 300 }} />
+        </Space>
         <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!dirty}>
           Save
         </Button>
       </div>
       <Table
-        dataSource={tableData}
+        dataSource={filteredTableData}
         columns={columns}
         rowKey="id"
         size="small"
@@ -323,6 +356,7 @@ function SettingsTab() {
   const [meterForm] = Form.useForm();
 
   const [unitGroupMap, setUnitGroupMap] = useState({}); // unitId → groupId
+  const [settingsSearch, setSettingsSearch] = useState('');
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -473,7 +507,10 @@ function SettingsTab() {
         {/* Groups */}
         <Col span={selectedGroupForMeter ? 12 : 24}>
           <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text strong>Billing Groups</Text>
+            <Space>
+              <Text strong>Billing Groups</Text>
+              <Input.Search placeholder="Search groups, meters..." value={settingsSearch} onChange={e => setSettingsSearch(e.target.value)} allowClear style={{ width: 250 }} />
+            </Space>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => {
               setEditingGroup(null);
               groupForm.resetFields();
@@ -481,7 +518,7 @@ function SettingsTab() {
             }}>Add Group</Button>
           </div>
           <Table
-            dataSource={groups}
+            dataSource={settingsSearch ? groups.filter(g => (g.name || '').toLowerCase().includes(settingsSearch.toLowerCase())) : groups}
             columns={groupColumns}
             rowKey="id"
             size="small"
@@ -508,7 +545,7 @@ function SettingsTab() {
               </Space>
             </div>
             <Table
-              dataSource={meters}
+              dataSource={settingsSearch ? meters.filter(m => (m.meter_number || '').toLowerCase().includes(settingsSearch.toLowerCase()) || (m.unit_name || '').toLowerCase().includes(settingsSearch.toLowerCase())) : meters}
               columns={meterColumns}
               rowKey="id"
               size="small"
@@ -579,6 +616,7 @@ function MetersTab() {
   const [selectedMeter, setSelectedMeter] = useState(null);
   const [readings, setReadings] = useState([]);
   const [readingForm] = Form.useForm();
+  const [search, setSearch] = useState('');
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -708,16 +746,27 @@ function MetersTab() {
             allowClear
             options={groups.map(g => ({ label: g.name, value: g.id }))}
           />
+          <Input.Search placeholder="Search meter, unit, tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: 300 }} />
         </Space>
       </div>
-      <Table
-        dataSource={meters}
+      {(() => {
+        const mq = search.toLowerCase();
+        const filteredMeters = mq ? meters.filter(m =>
+          (m.meter_number || '').toLowerCase().includes(mq) ||
+          (m.unit_name || '').toLowerCase().includes(mq) ||
+          (m.property_name || '').toLowerCase().includes(mq) ||
+          (m.group_name || '').toLowerCase().includes(mq) ||
+          [m.tenant_first_name, m.tenant_last_name].filter(Boolean).join(' ').toLowerCase().includes(mq)
+        ) : meters;
+        return <Table
+        dataSource={filteredMeters}
         columns={columns}
         rowKey="id"
         size="small"
         loading={loading}
         pagination={false}
-      />
+      />;
+      })()}
 
       {/* Log Reading Modal */}
       <Modal
@@ -798,6 +847,7 @@ function BillingTab() {
   const [useHighestRate, setUseHighestRate] = useState(false);
   const [billForm] = Form.useForm();
   const [checkoutForm] = Form.useForm();
+  const [billSearch, setBillSearch] = useState('');
 
   const loadGroups = useCallback(async () => {
     try {
@@ -1169,22 +1219,18 @@ function BillingTab() {
     setUseHighestRate(false);
     setHighestRate(null);
 
-    // Load meters with tenants for the selected group (or all)
+    // Load all sub-meters with all tenant leases (current and past)
     try {
-      const params = selectedGroup ? { group_id: selectedGroup } : {};
-      const res = await utility.getMeters(params);
-      const allMeters = res.data?.data || [];
-      // Only sub-meters (category 1) with active tenants
-      // Include sub-meters with current OR past tenants
-      setCheckoutMeters(allMeters.filter(m => Number(m.meter_category) === 1 && m.tenant_first_name));
+      const res = await utility.getCheckoutMeters();
+      setCheckoutMeters(res.data?.data || []);
     } catch (err) {
       message.error('Failed to load meters');
     }
     setCheckoutModal(true);
   };
 
-  const handleCheckoutMeterChange = async (meterId) => {
-    const meter = checkoutMeters.find(m => m.id.toString() === meterId?.toString());
+  const handleCheckoutMeterChange = async (comboKey) => {
+    const meter = checkoutMeters.find(m => `${m.meter_id}_${m.leasing_id}` === comboKey);
     if (!meter) return;
     // Load highest rate for this meter's group
     try {
@@ -1196,14 +1242,14 @@ function BillingTab() {
   const handleCheckoutSettlement = async () => {
     try {
       const values = await checkoutForm.validateFields();
-      const meter = checkoutMeters.find(m => m.id.toString() === values.meter_id?.toString());
+      const meter = checkoutMeters.find(m => `${m.meter_id}_${m.leasing_id}` === values.meter_id?.toString());
       if (!meter) return message.error('Meter not found');
 
       setCheckoutLoading(true);
       const res = await utility.checkoutSettlement({
-        meter_id: values.meter_id,
-        tenant_id: meter.tenant_id || values.tenant_id,
-        leasing_id: meter.leasing_id || values.leasing_id,
+        meter_id: meter.meter_id,
+        tenant_id: meter.tenant_id,
+        leasing_id: meter.leasing_id,
         checkout_reading: values.checkout_reading,
         manual_rate: values.manual_rate,
         reading_date: values.reading_date?.format('YYYY-MM-DD') || undefined,
@@ -1216,6 +1262,13 @@ function BillingTab() {
       setCheckoutLoading(false);
     }
   };
+
+  const bq = billSearch.toLowerCase();
+  const filteredBills = bq ? bills.filter(b =>
+    (b.group_name || '').toLowerCase().includes(bq) ||
+    dayjs(b.period_start).format('MMM D, YYYY').toLowerCase().includes(bq) ||
+    dayjs(b.period_end).format('MMM D, YYYY').toLowerCase().includes(bq)
+  ) : bills;
 
   // Bill list view
   return (
@@ -1231,6 +1284,7 @@ function BillingTab() {
             options={groups.map(g => ({ label: g.name, value: g.id }))}
             allowClear
           />
+          <Input.Search placeholder="Search bills..." value={billSearch} onChange={e => setBillSearch(e.target.value)} allowClear style={{ width: 250 }} />
         </Space>
         <Space>
           <Button onClick={openCheckoutModal}>Checkout Settlement</Button>
@@ -1251,7 +1305,7 @@ function BillingTab() {
       </div>
 
       <Table
-        dataSource={bills}
+        dataSource={filteredBills}
         columns={billColumns}
         rowKey="id"
         size="small"
@@ -1316,8 +1370,8 @@ function BillingTab() {
                   const name = [m.tenant_first_name, m.tenant_last_name].filter(Boolean).join(' ');
                   const checkout = m.lease_end_date ? ` [${dayjs(m.lease_end_date).format('MMM D, YYYY')}]` : '';
                   return {
-                    label: `${name} — ${m.meter_number} (${m.property_name} - ${m.unit_name})${checkout}`,
-                    value: m.id,
+                    label: `${name} — ${m.unit_name} (${m.property_name} - ${m.meter_number})${checkout}`,
+                    value: `${m.meter_id}_${m.leasing_id}`,
                   };
                 })}
               />

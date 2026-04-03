@@ -25,3 +25,6 @@ Thumbs.db
 # Test files
 test.txt
 test2.txt
+
+# Uploaded files
+backend/uploads/

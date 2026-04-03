@@ -3,11 +3,13 @@
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import {
-  Form, Input, Button, Select, message, Spin, Checkbox, Radio,
+  Form, Input, Button, Select, message, Spin, Checkbox, Radio, Upload,
 } from 'antd';
-import { ArrowLeftOutlined, UploadOutlined, PlusOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, UploadOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
-import { property as propertyApi } from '../../../../lib/api';
+import { property as propertyApi, file as fileApi } from '../../../../lib/api';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 // ─── Blue panel header (matches original screenshot) ─────────────────────────
 const PanelHeader = ({ children }) => (
@@ -49,6 +51,9 @@ export default function PropertyEditPage() {
   const [propertyData, setPropertyData] = useState(null);
   const [amenities, setAmenities] = useState([]);
   const [selectedAmenityIds, setSelectedAmenityIds] = useState([]);
+  const [photoFileId, setPhotoFileId] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [galleryFiles, setGalleryFiles] = useState([]);
 
   useEffect(() => {
     if (params.id) loadAll();
@@ -64,6 +69,15 @@ export default function PropertyEditPage() {
       if (propRes.data.code === 200) {
         const d = propRes.data.data;
         setPropertyData(d);
+        if (d.photo) {
+          setPhotoFileId(d.photo);
+          setPhotoPreview(`${API_URL}/api/file/preview/${d.photo}`);
+        }
+        if (d.gallery && d.gallery.length > 0) {
+          setGalleryFiles(d.gallery.map((g, i) => ({
+            fileId: g.file_id, url: `${API_URL}/api/file/preview/${g.file_id}`, uid: `existing-${i}`,
+          })));
+        }
         form.setFieldsValue({
           display_name:          d.display_name,
           street_address:        d.street_address,
@@ -95,10 +109,50 @@ export default function PropertyEditPage() {
     }
   };
 
+  const handlePhotoUpload = async (info) => {
+    const { file: f, onSuccess, onError } = info;
+    try {
+      const formData = new FormData();
+      formData.append('file', f);
+      const res = await fileApi.upload(formData);
+      if (res.data.code === 200) {
+        const uploaded = res.data.data;
+        const fid = uploaded.id || uploaded.fileId;
+        setPhotoFileId(fid);
+        setPhotoPreview(URL.createObjectURL(f));
+        onSuccess(uploaded);
+      } else { onError(new Error('Upload failed')); }
+    } catch (e) { onError(e); }
+  };
+
+  const handleGalleryUpload = async (info) => {
+    const { file: f, onSuccess, onError } = info;
+    try {
+      const formData = new FormData();
+      formData.append('file', f);
+      const res = await fileApi.upload(formData);
+      if (res.data.code === 200) {
+        const uploaded = res.data.data;
+        const fid = uploaded.id || uploaded.fileId;
+        setGalleryFiles(prev => [...prev, { fileId: fid, url: URL.createObjectURL(f), uid: f.uid }]);
+        onSuccess(uploaded);
+      } else { onError(new Error('Upload failed')); }
+    } catch (e) { onError(e); }
+  };
+
+  const removeGalleryFile = (uid) => {
+    setGalleryFiles(prev => prev.filter(g => g.uid !== uid));
+  };
+
   const onFinish = async (values) => {
     try {
       setLoading(true);
-      const res = await propertyApi.update(params.id, { ...values, amenityIds: selectedAmenityIds });
+      const res = await propertyApi.update(params.id, {
+        ...values,
+        amenityIds: selectedAmenityIds,
+        photo: photoFileId,
+        galleryFileIds: galleryFiles.map(g => g.fileId),
+      });
       if (res.data.code === 200) {
         message.success('Property updated successfully');
         router.push(`/property/${params.id}/detail`);
@@ -186,24 +240,55 @@ export default function PropertyEditPage() {
                 border: '1px dashed #d9d9d9', borderRadius: 4,
                 display: 'flex', flexDirection: 'column',
                 alignItems: 'center', justifyContent: 'center', marginBottom: 10,
+                overflow: 'hidden',
               }}>
-                <div style={{ fontSize: 40, marginBottom: 8 }}>🏠</div>
-                <div style={{ fontSize: 12, color: '#999' }}>No photo uploaded</div>
+                {photoPreview ? (
+                  <img src={photoPreview} alt="Property" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <>
+                    <div style={{ fontSize: 40, marginBottom: 8 }}>🏠</div>
+                    <div style={{ fontSize: 12, color: '#999' }}>No photo uploaded</div>
+                  </>
+                )}
               </div>
-              <Button icon={<UploadOutlined />} block>Upload Photo</Button>
+              <Upload showUploadList={false} customRequest={handlePhotoUpload} accept="image/*">
+                <Button icon={<UploadOutlined />} block>{photoFileId ? 'Change Photo' : 'Upload Photo'}</Button>
+              </Upload>
+              {photoFileId && (
+                <Button type="text" danger size="small" style={{ marginTop: 4, width: '100%' }}
+                  onClick={() => { setPhotoFileId(null); setPhotoPreview(null); }}>
+                  Remove Photo
+                </Button>
+              )}
             </PanelBody>
 
             {/* Gallery */}
             <PanelHeader>Gallery</PanelHeader>
             <PanelBody>
-              <div style={{
-                width: 64, height: 64, border: '1px dashed #d9d9d9',
-                borderRadius: 6, display: 'flex', flexDirection: 'column',
-                alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', color: '#999', fontSize: 11,
-              }}>
-                <PlusOutlined style={{ fontSize: 18, marginBottom: 4 }} />
-                Upload
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {galleryFiles.map(g => (
+                  <div key={g.uid} style={{ position: 'relative', width: 64, height: 64, borderRadius: 6, overflow: 'hidden', border: '1px solid #d9d9d9' }}>
+                    <img src={g.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <div onClick={() => removeGalleryFile(g.uid)} style={{
+                      position: 'absolute', top: 2, right: 2, width: 18, height: 18,
+                      background: 'rgba(0,0,0,0.5)', borderRadius: '50%', display: 'flex',
+                      alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                    }}>
+                      <DeleteOutlined style={{ color: '#fff', fontSize: 10 }} />
+                    </div>
+                  </div>
+                ))}
+                <Upload showUploadList={false} customRequest={handleGalleryUpload} accept="image/*" multiple>
+                  <div style={{
+                    width: 64, height: 64, border: '1px dashed #d9d9d9',
+                    borderRadius: 6, display: 'flex', flexDirection: 'column',
+                    alignItems: 'center', justifyContent: 'center',
+                    cursor: 'pointer', color: '#999', fontSize: 11,
+                  }}>
+                    <PlusOutlined style={{ fontSize: 18, marginBottom: 4 }} />
+                    Upload
+                  </div>
+                </Upload>
               </div>
             </PanelBody>
 

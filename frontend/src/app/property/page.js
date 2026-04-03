@@ -208,7 +208,10 @@ function UnitRow({ unit, propId, router, isLast }) {
             }}>
               <UserOutlined style={{ fontSize: 16, color: '#ff4d4f' }} />
             </div>
-            <div style={{ fontSize: 12, color: '#333' }}>{tenantName}</div>
+            <div
+              style={{ fontSize: 12, color: '#1677ff', cursor: 'pointer' }}
+              onClick={() => unit.tenant_id && router.push(`/contacts/tenant/${unit.tenant_id}/detail`)}
+            >{tenantName}</div>
           </>
         ) : (
           <div style={{ color: '#ccc', fontSize: 12 }}>—</div>

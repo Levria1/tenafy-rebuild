@@ -785,12 +785,9 @@ router.put('/bill-line/:id', authenticate, async (req, res) => {
       const overlapEnd = leaseEnd < billEnd ? leaseEnd : billEnd;
       const overlapDays = daysBetween(overlapStart, overlapEnd);
 
-      if (overlapDays > 0 && overlapDays < totalPeriodDays) {
+      if (overlapDays > 0) {
         // Prorate: (monthly_credit * 12 / 365) * overlapping_days
         proratedCredit = Math.round((monthlyCredit * 12 / 365) * overlapDays * 100) / 100;
-      } else if (overlapDays >= totalPeriodDays) {
-        // Full credit
-        proratedCredit = monthlyCredit;
       }
     }
 
@@ -1128,6 +1125,36 @@ router.get('/highest-rate', authenticate, async (req, res) => {
 });
 
 // POST /api/utility/checkout-settlement — early checkout settlement for a tenant
+// GET /api/utility/checkout-meters — all sub-meters with all tenant leases (not just latest)
+router.get('/checkout-meters', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [rows] = await req.pool.execute(
+      `SELECT m.id AS meter_id, m.group_id, m.unit_id, m.meter_number, m.meter_type,
+              m.meter_category, m.current_reading,
+              g.name AS group_name,
+              u.name AS unit_name,
+              p.display_name AS property_name,
+              t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+              t.id AS tenant_id, l.id AS leasing_id,
+              l.start_date AS lease_start_date, l.end_date AS lease_end_date
+       FROM utility_meter m
+       JOIN utility_group g ON m.group_id = g.id
+       LEFT JOIN unit u ON m.unit_id = u.id
+       LEFT JOIN property p ON u.property_id = p.id
+       JOIN leasing l ON l.unit_id = m.unit_id AND l.deleted_at IS NULL
+       JOIN tenant t ON l.tenant_id = t.id
+       WHERE m.org_id = ? AND m.status = 1 AND m.meter_category = 1
+       ORDER BY t.first_name, t.last_name, m.meter_number, l.start_date DESC`,
+      [orgId]
+    );
+    res.json({ code: 200, data: rows });
+  } catch (error) {
+    console.error('Get checkout meters error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load checkout meters' });
+  }
+});
+
 router.post('/checkout-settlement', authenticate, async (req, res) => {
   try {
     const {

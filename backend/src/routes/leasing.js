@@ -129,6 +129,7 @@ router.post('/list', authenticate, async (req, res) => {
 
     // Sorting
     const allowedSortFields = {
+      lease_no: 'l.lease_no',
       tenant: 't.first_name',
       property: 'p.display_name',
       start_date: 'l.start_date',
@@ -137,7 +138,7 @@ router.post('/list', authenticate, async (req, res) => {
       price: 'l.amount',
       phone: 't.phone',
     };
-    let orderBy = 't.first_name ASC, t.last_name ASC';
+    let orderBy = 'l.start_date DESC';
     if (sortField && allowedSortFields[sortField]) {
       const dir = sortOrder === 'descend' ? 'DESC' : 'ASC';
       orderBy = `${allowedSortFields[sortField]} ${dir}`;
@@ -337,6 +338,215 @@ router.get('/:id', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Get lease error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get lease' });
+  }
+});
+
+// GET /api/leasing/:id/settlement - Get settlement summary for a lease
+router.get('/:id/settlement', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+
+    // 1. Get lease with tenant, unit, property info
+    const [leases] = await req.pool.execute(
+      `SELECT l.id, l.lease_no, l.unit_id, l.tenant_id, l.start_date, l.end_date,
+              l.amount, l.price, l.deposit, l.settlement_notes,
+              l.check_in_meter, l.check_out_meter,
+              u.name as unit_name, p.display_name as property_name, p.id as property_id,
+              t.first_name as tenant_first_name, t.last_name as tenant_last_name
+       FROM leasing l
+       LEFT JOIN unit u ON l.unit_id = u.id
+       LEFT JOIN property p ON u.property_id = p.id
+       LEFT JOIN tenant t ON l.tenant_id = t.id
+       WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL`,
+      [id, orgId]
+    );
+    if (leases.length === 0) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+    const lease = leases[0];
+    const monthlyRent = Number(lease.amount || lease.price || 0);
+    const startDate = lease.start_date;
+    const endDate = lease.end_date;
+
+    // 2. Rental days and estimated total rent
+    let rentalDays = 0;
+    let estimatedTotalRent = 0;
+    if (startDate && endDate) {
+      const msPerDay = 86400000;
+      rentalDays = Math.round((new Date(endDate) - new Date(startDate)) / msPerDay);
+      estimatedTotalRent = (rentalDays / 365) * monthlyRent * 12;
+    }
+
+    // 3. Average utility rate during stay
+    let avgUnitRate = null;
+    let totalUtilityUsage = null;
+    const checkIn = lease.check_in_meter != null ? Number(lease.check_in_meter) : null;
+    const checkOut = lease.check_out_meter != null ? Number(lease.check_out_meter) : null;
+    if (checkIn != null && checkOut != null) {
+      totalUtilityUsage = checkOut - checkIn;
+    }
+
+    // Get average rate from utility bills during the lease period
+    if (startDate && endDate && lease.unit_id) {
+      const [rates] = await req.pool.execute(
+        `SELECT AVG(b.rate_per_kw) as avg_rate
+         FROM utility_bill b
+         JOIN utility_bill_line bl ON bl.bill_id = b.id
+         WHERE bl.unit_id = ? AND b.org_id = ?
+           AND b.period_end >= ? AND b.period_start <= ?
+           AND b.status = 1`,
+        [lease.unit_id, orgId, startDate, endDate]
+      );
+      if (rates[0]?.avg_rate != null) {
+        avgUnitRate = Math.ceil(Number(rates[0].avg_rate) * 100) / 100;
+      }
+    }
+
+    let totalUtilityCost = null;
+    if (totalUtilityUsage != null && avgUnitRate != null) {
+      totalUtilityCost = Math.ceil(totalUtilityUsage * avgUnitRate * 100) / 100;
+    }
+
+    // 4. Get all invoices for this lease (inflow only — what tenant owes)
+    const [invoices] = await req.pool.execute(
+      `SELECT i.id, i.invoice_code, i.due_on, i.amount, i.type, i.status, i.note,
+              cs.name as category_name,
+              COALESCE(paid.total_paid, 0) as amount_paid,
+              CASE i.status
+                WHEN 1 THEN 0
+                ELSE IF(i.amount IS NULL, 0, i.amount - COALESCE(paid.total_paid, 0))
+              END as outstanding
+       FROM invoice i
+       LEFT JOIN category_setting cs ON i.category = cs.id
+       LEFT JOIN (
+         SELECT al.invoice_code, a.org_id, SUM(al.amount) as total_paid
+         FROM accounting_line al
+         JOIN accounting a ON al.accounting_id = a.id
+         WHERE a.deleted_at IS NULL AND al.deleted_at IS NULL
+         GROUP BY al.invoice_code, a.org_id
+       ) paid ON paid.invoice_code = i.invoice_code AND paid.org_id = i.org_id
+       WHERE i.leasing_id = ? AND i.org_id = ? AND i.deleted_at IS NULL
+       ORDER BY i.due_on ASC, i.invoice_code ASC`,
+      [id, orgId]
+    );
+
+    // 5. Get payment details for each invoice (for the Inflow/Outflow + Payment Method columns)
+    const invoiceWithPayments = [];
+    for (const inv of invoices) {
+      const [payments] = await req.pool.execute(
+        `SELECT a.payment_date, al.amount, pms.payment_method as payment_method_name, a.note as payment_note
+         FROM accounting_line al
+         JOIN accounting a ON al.accounting_id = a.id
+         LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
+         WHERE al.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL
+         ORDER BY a.payment_date ASC`,
+        [inv.invoice_code, orgId]
+      );
+      invoiceWithPayments.push({ ...inv, payments });
+    }
+
+    // 6. Compute summary values
+    // Rent received = sum of paid amounts on inflow invoices with "Rental" category
+    const rentReceived = invoices
+      .filter(i => Number(i.type) === 0 && (i.category_name || '').toLowerCase().includes('rental'))
+      .reduce((sum, i) => sum + Number(i.amount_paid), 0);
+
+    const rentDifference = estimatedTotalRent - rentReceived;
+    const rentDiffPercent = rentReceived > 0 ? (rentDifference / rentReceived) * 100 : 0;
+
+    // Payments received = sum of all amount_paid on inflow invoices
+    const paymentsReceived = invoices
+      .filter(i => Number(i.type) === 0)
+      .reduce((sum, i) => sum + Number(i.amount_paid), 0);
+
+    // Outstanding payments = sum of outstanding on inflow invoices that are not fully paid
+    const outstandingPayments = invoices
+      .filter(i => Number(i.type) === 0 && Number(i.status) !== 1)
+      .reduce((sum, i) => sum + Number(i.outstanding), 0);
+
+    // Tenant Credits = sum of inflow/outflow payments on "Credits" category invoices
+    const tenantCredits = invoices
+      .filter(i => (i.category_name || '').toLowerCase() === 'credits')
+      .reduce((sum, i) => {
+        const paid = Number(i.amount_paid);
+        return sum + (Number(i.type) === 1 ? -paid : paid);
+      }, 0);
+
+    // Security deposit = net of inflow and outflow deposit payments
+    const depositInflow = invoices
+      .filter(i => (i.category_name || '').toLowerCase().includes('deposit') && Number(i.type) === 0)
+      .reduce((sum, i) => sum + Number(i.amount_paid), 0);
+    const depositOutflow = invoices
+      .filter(i => (i.category_name || '').toLowerCase().includes('deposit') && Number(i.type) === 1)
+      .reduce((sum, i) => sum + Number(i.amount_paid), 0);
+    const securityDeposit = depositInflow - depositOutflow;
+
+    // Security deposit return = security deposit + tenant credits
+    const securityDepositReturn = securityDeposit + tenantCredits;
+
+    res.json({
+      code: 200,
+      data: {
+        tenant: [lease.tenant_first_name, lease.tenant_last_name].filter(Boolean).join(' '),
+        property: lease.property_name,
+        unit: lease.unit_name,
+        monthly_rent: monthlyRent,
+        start_date: startDate,
+        end_date: endDate,
+        rental_days: rentalDays,
+        check_in_meter: checkIn,
+        check_out_meter: checkOut,
+        avg_unit_rate: avgUnitRate,
+        total_utility_usage: totalUtilityUsage,
+        total_utility_cost: totalUtilityCost,
+        invoices: invoiceWithPayments,
+        estimated_total_rent: Math.round(estimatedTotalRent * 100) / 100,
+        rent_received: Math.round(rentReceived * 100) / 100,
+        rent_difference: Math.round(rentDifference * 100) / 100,
+        rent_diff_percent: Math.round(rentDiffPercent * 100) / 100,
+        payments_received: Math.round(paymentsReceived * 100) / 100,
+        outstanding_payments: Math.round(outstandingPayments * 100) / 100,
+        tenant_credits: Math.round(tenantCredits * 100) / 100,
+        security_deposit: securityDeposit,
+        security_deposit_return: Math.round(securityDepositReturn * 100) / 100,
+        settlement_notes: lease.settlement_notes || '',
+      }
+    });
+  } catch (error) {
+    console.error('Get settlement error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get settlement data' });
+  }
+});
+
+// PUT /api/leasing/:id/settlement-notes - Save settlement notes
+router.put('/:id/settlement-notes', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const { notes } = req.body;
+
+    // Verify lease exists and belongs to org
+    const [leases] = await req.pool.execute(
+      `SELECT l.id FROM leasing l
+       LEFT JOIN unit u ON l.unit_id = u.id
+       LEFT JOIN property p ON u.property_id = p.id
+       WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL`,
+      [id, orgId]
+    );
+    if (leases.length === 0) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+
+    await req.pool.execute(
+      'UPDATE leasing SET settlement_notes = ? WHERE id = ?',
+      [notes || null, id]
+    );
+
+    res.json({ code: 200, message: 'Settlement notes saved' });
+  } catch (error) {
+    console.error('Save settlement notes error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to save settlement notes' });
   }
 });
 

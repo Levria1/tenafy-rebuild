@@ -17,7 +17,7 @@ export default function LeasingPage() {
   const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
   const [search, setSearch] = useState('');
   const [dateRange, setDateRange] = useState(null);
-  const [sorter, setSorter] = useState({ field: null, order: null });
+  const [sorter, setSorter] = useState({ field: 'start_date', order: 'descend' });
   const [properties, setProperties] = useState([]);
   const router = useRouter();
   const { hasPermission } = useAuth();
@@ -234,6 +234,11 @@ export default function LeasingPage() {
 
   const columns = [
     {
+      title: 'Lease #', dataIndex: 'lease_no', key: 'lease_no', width: 120,
+      sorter: true,
+      render: (v, r) => <Link href={`/leasing/${r.id}/detail`} style={{ color: '#1890ff' }}>{v || '-'}</Link>,
+    },
+    {
       title: 'Tenants', key: 'tenant', width: 200,
       sorter: true,
       render: (_, r) => {
@@ -251,7 +256,7 @@ export default function LeasingPage() {
     },
     {
       title: 'Start Date', dataIndex: 'start_date', key: 'start_date', width: 120,
-      sorter: true,
+      sorter: true, defaultSortOrder: 'descend',
       render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '-',
     },
     {

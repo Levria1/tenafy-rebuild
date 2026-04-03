@@ -9,7 +9,9 @@ const { startScheduler } = require('./services/scheduler');
 
 const app = express();
 
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 app.use(cors({
   origin: [config.frontendUrl, 'http://localhost:3000', 'http://192.168.1.31:3000'],
   credentials: true
