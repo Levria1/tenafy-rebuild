@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "backend",
-      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeExecutable": "node",
       "runtimeArgs": ["src/index.js"],
       "port": 3001,
       "autoPort": false,
@@ -11,8 +11,8 @@
     },
     {
       "name": "frontend",
-      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
-      "runtimeArgs": ["./node_modules/next/dist/bin/next", "dev"],
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "npx next dev"],
       "port": 3000,
       "autoPort": false,
       "cwd": "frontend"
