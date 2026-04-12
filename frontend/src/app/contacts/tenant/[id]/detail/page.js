@@ -173,7 +173,7 @@ function TenantDetailPage() {
     const paid = Number(r.amount_paid) || 0;
     return amt > paid;
   };
-  const hasActiveLease = leases.some(l => l.status === 1);
+  const hasActiveLease = leases.some(l => l.lease_status === 1);
   const fmt = (v) => v != null ? `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : '—';
 
   const handleDeleteTenant = () => {

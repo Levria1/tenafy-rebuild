@@ -287,10 +287,14 @@ function AccountingPage() {
   // === Table columns ===
   const ellipsisCell = (text, maxLen = 30) => {
     if (!text) return '-';
+    const handleCopy = (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(text).then(() => message.success('Copied to clipboard'));
+    };
     if (text.length <= maxLen) return <span style={{ whiteSpace: 'nowrap' }}>{text}</span>;
     return (
-      <Tooltip title={text}>
-        <span style={{ whiteSpace: 'nowrap', cursor: 'default' }}>{text.substring(0, maxLen)}...</span>
+      <Tooltip title={<>{text}<br/><span style={{ fontSize: 11, color: '#aaa' }}>Click to copy</span></>}>
+        <span style={{ whiteSpace: 'nowrap', cursor: 'pointer' }} onClick={handleCopy}>{text.substring(0, maxLen)}...</span>
       </Tooltip>
     );
   };

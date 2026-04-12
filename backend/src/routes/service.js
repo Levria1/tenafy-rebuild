@@ -81,7 +81,8 @@ router.post('/list', authenticate, async (req, res) => {
     };
     const resolvedSortField = ALLOWED_SORT_FIELDS[sortField] || 's.created_at';
     const resolvedSortOrder = sortOrder === 'ASC' ? 'ASC' : 'DESC';
-    const orderByClause = `ORDER BY ${resolvedSortField} IS NULL, ${resolvedSortField} ${resolvedSortOrder}`;
+    const secondarySort = resolvedSortField !== 's.created_at' ? `, s.created_at ${resolvedSortOrder}` : '';
+    const orderByClause = `ORDER BY ${resolvedSortField} IS NULL, ${resolvedSortField} ${resolvedSortOrder}${secondarySort}`;
 
     // Count query needs same JOINs for property/unit/tenant filters
     const joinClause = `FROM service s

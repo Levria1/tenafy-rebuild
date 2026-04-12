@@ -106,11 +106,8 @@ export default function ServicesPage() {
     try {
       const payload = { [field]: value };
       await service.patch(record.id, payload);
-      // Update local state immediately
-      setServices(prev => prev.map(s =>
-        s.id === record.id ? { ...s, [field]: value } : s
-      ));
       message.success('Updated');
+      loadServices();
     } catch (error) {
       message.error('Failed to update');
     }
@@ -341,8 +338,8 @@ export default function ServicesPage() {
                   setSortField('service_date_start');
                   setSortOrder('DESC');
                 } else if (tab.key === '0') {
-                  setSortField('created_at');
-                  setSortOrder('DESC');
+                  setSortField('service_date_start');
+                  setSortOrder('ASC');
                 } else {
                   setSortField('created_at');
                   setSortOrder('DESC');
@@ -380,8 +377,8 @@ export default function ServicesPage() {
                   setSortField('service_date_start');
                   setSortOrder('DESC');
                 } else if (statusFilter === '0') {
-                  setSortField('created_at');
-                  setSortOrder('DESC');
+                  setSortField('service_date_start');
+                  setSortOrder('ASC');
                 } else {
                   setSortField('created_at');
                   setSortOrder('DESC');

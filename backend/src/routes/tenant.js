@@ -370,8 +370,20 @@ router.get('/:id/leases', authenticate, async (req, res) => {
       [id]
     );
 
-    // For each lease, calculate next_invoice_date and fetch additional tenants
+    // For each lease, compute date-based status and calculate next_invoice_date
+    const today = new Date().toISOString().split('T')[0];
     for (const lease of leases) {
+      // Compute lease status from dates (same logic as leasing.js)
+      if (Number(lease.status) === 0) {
+        lease.lease_status = 0; // manually terminated
+      } else {
+        const start = lease.start_date ? (typeof lease.start_date === 'string' ? lease.start_date.slice(0, 10) : new Date(lease.start_date).toISOString().split('T')[0]) : null;
+        const end = lease.end_date ? (typeof lease.end_date === 'string' ? lease.end_date.slice(0, 10) : new Date(lease.end_date).toISOString().split('T')[0]) : null;
+        if (start && start > today) lease.lease_status = 2; // upcoming
+        else if (end && end < today) lease.lease_status = 0; // inactive/past
+        else lease.lease_status = 1; // active
+      }
+
       if (lease.status === 1 && lease.invoicing) {
         const [[lastInv]] = await req.pool.execute(
           'SELECT due_on FROM invoice WHERE leasing_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
@@ -406,8 +418,13 @@ router.get('/:id/leases/sum', authenticate, async (req, res) => {
     const { id } = req.params;
     const [[sum]] = await req.pool.execute(
       `SELECT COUNT(*) as total,
-              SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) as active,
-              SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END) as expired
+              SUM(CASE WHEN status = 0 THEN 0
+                       WHEN start_date > CURDATE() THEN 0
+                       WHEN end_date IS NOT NULL AND end_date < CURDATE() THEN 0
+                       ELSE 1 END) as active,
+              SUM(CASE WHEN status = 0 THEN 1
+                       WHEN end_date IS NOT NULL AND end_date < CURDATE() THEN 1
+                       ELSE 0 END) as expired
        FROM leasing WHERE tenant_id = ? AND deleted_at IS NULL`,
       [id]
     );

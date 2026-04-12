@@ -90,6 +90,9 @@ function CalendarInner() {
     return result;
   }, [dateRange]);
 
+  // Normalize date to date-only dayjs (strips time/timezone to avoid leaking across months)
+  const toDate = (d) => dayjs(dayjs(d).format('YYYY-MM-DD'));
+
   // For each unit+month, determine cell status and info
   const getCellInfo = (unit, month) => {
     const monthStart = month.startOf('month');
@@ -98,8 +101,8 @@ function CalendarInner() {
 
     // Find leases that overlap this month
     const overlapping = (unit.leases || []).filter(l => {
-      const ls = dayjs(l.start_date);
-      const le = l.end_date ? dayjs(l.end_date) : null;
+      const ls = toDate(l.start_date);
+      const le = l.end_date ? toDate(l.end_date) : null;
       return ls.isBefore(monthEnd.add(1, 'day')) && (!le || le.isAfter(monthStart.subtract(1, 'day')));
     });
 
@@ -109,40 +112,40 @@ function CalendarInner() {
 
     // Check if fully covered for the month
     const hasExpiring = overlapping.some(l => {
-      const le = l.end_date ? dayjs(l.end_date) : null;
+      const le = l.end_date ? toDate(l.end_date) : null;
       return le && le.isBefore(monthEnd.add(1, 'day')) && le.isAfter(monthStart.subtract(1, 'day'));
     });
 
     const hasStarting = overlapping.some(l => {
-      const ls = dayjs(l.start_date);
+      const ls = toDate(l.start_date);
       return ls.isAfter(monthStart) && ls.isBefore(monthEnd.add(1, 'day'));
     });
 
     // Check for gap: a lease ends this month and next lease starts after a gap
     const sortedByEnd = overlapping
       .filter(l => l.end_date)
-      .sort((a, b) => dayjs(a.end_date).diff(dayjs(b.end_date)));
+      .sort((a, b) => toDate(a.end_date).diff(toDate(b.end_date)));
 
     const allLeasesSorted = (unit.leases || [])
       .slice()
-      .sort((a, b) => dayjs(a.start_date).diff(dayjs(b.start_date)));
+      .sort((a, b) => toDate(a.start_date).diff(toDate(b.start_date)));
 
     let hasGap = false;
     let expiringNoNext = false;
 
     for (const lease of sortedByEnd) {
-      const leaseEnd = dayjs(lease.end_date);
+      const leaseEnd = toDate(lease.end_date);
       if (leaseEnd.isBefore(monthStart) || leaseEnd.isAfter(monthEnd)) continue;
 
       // Find next lease for this unit after this one ends
       const nextLease = allLeasesSorted.find(l =>
-        l.id !== lease.id && dayjs(l.start_date).isAfter(leaseEnd)
+        l.id !== lease.id && toDate(l.start_date).isAfter(leaseEnd)
       );
 
       if (nextLease) {
         // There's a gap if next lease doesn't start the day after
         const dayAfterEnd = leaseEnd.add(1, 'day');
-        if (dayjs(nextLease.start_date).isAfter(dayAfterEnd)) {
+        if (toDate(nextLease.start_date).isAfter(dayAfterEnd)) {
           hasGap = true;
         }
       } else {
@@ -160,8 +163,8 @@ function CalendarInner() {
     } else {
       // Check if fully booked for the entire month
       const coversFullMonth = overlapping.some(l => {
-        const ls = dayjs(l.start_date);
-        const le = l.end_date ? dayjs(l.end_date) : monthEnd.add(1, 'year'); // no end = indefinite
+        const ls = toDate(l.start_date);
+        const le = l.end_date ? toDate(l.end_date) : monthEnd.add(1, 'year'); // no end = indefinite
         return (ls.isBefore(monthStart.add(1, 'day')) || ls.isSame(monthStart, 'day')) &&
                (le.isAfter(monthEnd) || le.isSame(monthEnd, 'day'));
       });
@@ -189,8 +192,8 @@ function CalendarInner() {
         if (statusFilter === 'vacant' || statusFilter === 'occupied') {
           const refDate = dateRange[0];
           const hasLeaseOnDate = (unit.leases || []).some(l => {
-            const ls = dayjs(l.start_date);
-            const le = l.end_date ? dayjs(l.end_date) : null;
+            const ls = toDate(l.start_date);
+            const le = l.end_date ? toDate(l.end_date) : null;
             return ls.isBefore(refDate.add(1, 'day')) && (!le || le.isAfter(refDate.subtract(1, 'day')));
           });
           return statusFilter === 'vacant' ? !hasLeaseOnDate : hasLeaseOnDate;
@@ -211,8 +214,8 @@ function CalendarInner() {
     return (
       <div style={{ maxWidth: 280 }}>
         {cellInfo.leases.map((l, i) => {
-          const ls = dayjs(l.start_date);
-          const le = l.end_date ? dayjs(l.end_date) : null;
+          const ls = toDate(l.start_date);
+          const le = l.end_date ? toDate(l.end_date) : null;
           const monthStart = month.startOf('month');
           const monthEnd = month.endOf('month');
           const isMovingIn = ls.isAfter(monthStart) && ls.isBefore(monthEnd.add(1, 'day'));
@@ -246,8 +249,8 @@ function CalendarInner() {
     let best = cellInfo.leases[0];
     let bestDays = 0;
     for (const l of cellInfo.leases) {
-      const ls = dayjs(l.start_date);
-      const le = l.end_date ? dayjs(l.end_date) : monthEnd;
+      const ls = toDate(l.start_date);
+      const le = l.end_date ? toDate(l.end_date) : monthEnd;
       const start = ls.isAfter(monthStart) ? ls : monthStart;
       const end = le.isBefore(monthEnd) ? le : monthEnd;
       const days = end.diff(start, 'day') + 1;
@@ -268,7 +271,6 @@ function CalendarInner() {
         <h1 style={{ marginBottom: 16 }}>Lease Calendar</h1>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <DatePicker.RangePicker
-            picker="month"
             value={dateRange}
             onChange={(val) => { if (val && val[0] && val[1]) setDateRange([val[0].startOf('month'), val[1].endOf('month')]); }}
             style={{ width: 260 }}
@@ -361,6 +363,31 @@ function CalendarInner() {
               </tr>
             </thead>
             <tbody>
+              {/* Count row */}
+              <tr style={{ background: '#fafafa', borderBottom: '2px solid #e8e8e8' }}>
+                <td colSpan={3} style={{ position: 'sticky', left: 0, zIndex: 1, background: '#fafafa', padding: '4px 12px', borderRight: '2px solid #e8e8e8', fontSize: 11, fontWeight: 600, color: '#666' }}>
+                  {statusFilter ? `${statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)} Count` : 'Unit Count'}
+                </td>
+                {months.map((m, mi) => {
+                  let count = 0;
+                  filteredData.forEach(prop => {
+                    prop.units.forEach(unit => {
+                      const cellInfo = getCellInfo(unit, m);
+                      if (!statusFilter || cellInfo.status === statusFilter ||
+                          (statusFilter === 'occupied' && cellInfo.leases.length > 0) ||
+                          (statusFilter === 'vacant' && cellInfo.leases.length === 0)) {
+                        count++;
+                      }
+                    });
+                  });
+                  const isCurrentMonth = m.isSame(dayjs(), 'month');
+                  return (
+                    <td key={mi} style={{ padding: '4px 8px', borderRight: '1px solid #f0f0f0', fontSize: 11, fontWeight: 600, textAlign: 'center', color: '#333', background: isCurrentMonth ? '#e6f7ff' : '#fafafa' }}>
+                      {count}
+                    </td>
+                  );
+                })}
+              </tr>
               {filteredData.map((prop) => (
                 prop.units.map((unit, ui) => (
                   <tr key={unit.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
