@@ -60,10 +60,10 @@ function advanceInvoiceDate(date, schedule, dueDay) {
   return next;
 }
 
-// Helper: compute lease status from dates
-// 0=Inactive (past or manually terminated), 1=Active (current), 2=Upcoming (future)
+// Helper: compute lease status purely from dates
+// 0=Inactive (past end date), 1=Active (current), 2=Upcoming (future start date)
+// Note: stored leasing.status column is NOT used — deleted_at handles termination
 function computeLeaseStatus(lease) {
-  if (Number(lease.status) === 0) return 0; // manually terminated
   const today = new Date().toISOString().split('T')[0];
   const start = lease.start_date ? (typeof lease.start_date === 'string' ? lease.start_date.slice(0, 10) : new Date(lease.start_date).toISOString().split('T')[0]) : null;
   const end = lease.end_date ? (typeof lease.end_date === 'string' ? lease.end_date.slice(0, 10) : new Date(lease.end_date).toISOString().split('T')[0]) : null;
@@ -73,8 +73,8 @@ function computeLeaseStatus(lease) {
 }
 
 // SQL expression for computed lease status (for filtering/sorting)
+// Purely date-based — stored status column is not used
 const COMPUTED_STATUS_SQL = `CASE
-  WHEN l.status = 0 THEN 0
   WHEN l.start_date > CURDATE() THEN 2
   WHEN l.end_date IS NOT NULL AND l.end_date < CURDATE() THEN 0
   ELSE 1

@@ -157,7 +157,21 @@ export default function LeasingDetailPage() {
           return isOutflow ? <span style={{ color: '#ff4d4f' }}>-{display}</span> : display;
         }
       },
-      { title: 'Notes', dataIndex: 'note', key: 'note', ellipsis: true, render: v => v || '-' },
+      {
+        title: 'Notes', key: 'note', width: 200,
+        render: (_, row) => {
+          const notes = (row.payments || [])
+            .map(p => p.payment_note)
+            .filter(Boolean);
+          if (notes.length === 0) return <span style={{ color: '#ccc' }}>-</span>;
+          const text = notes.join(' | ');
+          return (
+            <div style={{ maxHeight: 60, overflowY: 'auto', fontSize: 12, lineHeight: '1.4' }}>
+              {text}
+            </div>
+          );
+        }
+      },
     ];
 
     const labelStyle = { fontWeight: 'bold', width: 220, padding: '6px 12px' };
