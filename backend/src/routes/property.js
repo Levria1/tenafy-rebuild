@@ -46,7 +46,10 @@ router.post('/list', authenticate, async (req, res) => {
     const [properties] = await req.pool.execute(
       `SELECT p.*,
               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units,
-              (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units
+              (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND EXISTS (
+                SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+                  AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+              )) as occupied_units
        FROM property p
        WHERE ${whereClause}
        ${havingClause}
@@ -61,7 +64,10 @@ router.post('/list', authenticate, async (req, res) => {
       countQuery = `SELECT COUNT(*) as total FROM (
         SELECT p.id,
                (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units,
-               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units
+               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND EXISTS (
+                SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+                  AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+              )) as occupied_units
         FROM property p WHERE ${whereClause} ${havingClause}
       ) sub`;
     } else {
@@ -121,7 +127,10 @@ router.get('/unit/unoccupied', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [units] = await req.pool.execute(
-      'SELECT u.*, p.display_name as property_name FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1 AND u.status = 0 ORDER BY p.display_name, u.name',
+      `SELECT u.*, p.display_name as property_name FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1 AND NOT EXISTS (
+        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+          AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+      ) ORDER BY p.display_name, u.name`,
       [orgId]
     );
     res.json({ code: 200, data: units });
@@ -136,7 +145,10 @@ router.get('/unit/active/occupancy/rate', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [result] = await req.pool.execute(
-      'SELECT COUNT(*) as total, SUM(CASE WHEN u.status = 1 THEN 1 ELSE 0 END) as occupied FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1',
+      `SELECT COUNT(*) as total, SUM(CASE WHEN EXISTS (
+        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+          AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+      ) THEN 1 ELSE 0 END) as occupied FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1`,
       [orgId]
     );
     const total = result[0].total || 0;
@@ -529,7 +541,10 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const [properties] = await req.pool.execute(
-      'SELECT p.*, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND u.status = 1) as occupied_units FROM property p WHERE p.id = ? AND p.org_id = ?',
+      `SELECT p.*, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND EXISTS (
+        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+          AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+      )) as occupied_units FROM property p WHERE p.id = ? AND p.org_id = ?`,
       [id, orgId]
     );
     if (properties.length === 0) {

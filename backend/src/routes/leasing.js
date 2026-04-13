@@ -1145,7 +1145,10 @@ router.post('/unit/available', authenticate, async (req, res) => {
     const [units] = await req.pool.execute(
       `SELECT u.*, p.display_name as property_name FROM unit u
        LEFT JOIN property p ON u.property_id = p.id
-       WHERE p.org_id = ? AND u.active_status = 1 AND u.status = 0
+       WHERE p.org_id = ? AND u.active_status = 1 AND NOT EXISTS (
+         SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+           AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+       )
        ORDER BY p.display_name, u.name`,
       [orgId]
     );
