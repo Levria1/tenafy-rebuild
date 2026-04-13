@@ -348,7 +348,7 @@ router.get('/initialization-payer', authenticate, async (req, res) => {
     const params = [orgId];
 
     if (unitId) {
-      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0)';
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.unit_id = ? AND l.deleted_at IS NULL)';
       params.push(unitId);
     }
     if (leaseId) {
@@ -391,7 +391,7 @@ router.get('/initialization-leasing', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { tenantId, unitId, propertyId } = req.query;
 
-    let whereClause = 'p.org_id = ? AND l.deleted_at IS NULL AND l.status != 0';
+    let whereClause = 'p.org_id = ? AND l.deleted_at IS NULL';
     const params = [orgId];
 
     if (tenantId) {
@@ -440,7 +440,7 @@ router.get('/initialization-unit', authenticate, async (req, res) => {
       params.push(propertyId);
     }
     if (tenantId) {
-      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.tenant_id = ? AND l.deleted_at IS NULL AND l.status != 0)';
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.tenant_id = ? AND l.deleted_at IS NULL)';
       params.push(tenantId);
     }
 

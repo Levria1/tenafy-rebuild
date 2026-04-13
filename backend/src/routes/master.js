@@ -157,7 +157,7 @@ router.get('/organizations/:id/stats', authenticateMaster, async (req, res) => {
     const [[userCount]] = await orgPool.execute('SELECT COUNT(*) as count FROM user WHERE org_id = ?', [id]);
     const [[propertyCount]] = await orgPool.execute('SELECT COUNT(*) as count FROM property WHERE org_id = ?', [id]);
     const [[tenantCount]] = await orgPool.execute('SELECT COUNT(*) as count FROM tenant WHERE org_id = ? AND category = 1', [id]);
-    const [[leaseCount]] = await orgPool.execute('SELECT COUNT(*) as count FROM leasing WHERE status != 0 AND deleted_at IS NULL AND start_date <= CURDATE() AND (end_date >= CURDATE() OR end_date IS NULL)');
+    const [[leaseCount]] = await orgPool.execute('SELECT COUNT(*) as count FROM leasing WHERE deleted_at IS NULL AND start_date <= CURDATE() AND (end_date >= CURDATE() OR end_date IS NULL)');
 
     res.json({
       code: 200,

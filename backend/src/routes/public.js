@@ -45,7 +45,6 @@ router.get('/units/available', async (req, res) => {
        LEFT JOIN leasing active_lease
          ON active_lease.unit_id = u.id
          AND active_lease.deleted_at IS NULL
-         AND active_lease.status != 0
          AND active_lease.start_date <= ?
          AND (active_lease.end_date >= ? OR active_lease.end_date IS NULL)
        LEFT JOIN (
@@ -100,7 +99,7 @@ router.get('/properties', async (req, res) => {
          SUM(CASE
            WHEN u.active_status = 1 AND NOT EXISTS (
              SELECT 1 FROM leasing l
-             WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+             WHERE l.unit_id = u.id AND l.deleted_at IS NULL
                AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)
            ) THEN 1 ELSE 0
          END) AS available_units

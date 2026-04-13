@@ -89,7 +89,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     );
     const [[{ occupiedUnits }]] = await req.pool.execute(
       `SELECT COUNT(*) as occupiedUnits FROM unit u JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1 AND EXISTS (
-        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
           AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
       )`,
       [orgId]
@@ -104,7 +104,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        FROM unit u
        JOIN property p ON u.property_id = p.id
        WHERE p.org_id = ? AND u.active_status = 1
-         AND NOT EXISTS (SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.status != 0 AND l.deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
            AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL))
        ORDER BY p.display_name, u.name
        LIMIT 20`,
@@ -208,7 +208,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        JOIN unit u ON l.unit_id = u.id
        JOIN property p ON u.property_id = p.id
        LEFT JOIN tenant t ON l.tenant_id = t.id
-       WHERE p.org_id = ? AND l.deleted_at IS NULL AND l.status != 0
+       WHERE p.org_id = ? AND l.deleted_at IS NULL
          AND l.end_date IS NOT NULL
          AND DATEDIFF(l.end_date, CURDATE()) BETWEEN 0 AND ?
        ORDER BY l.end_date ASC
@@ -219,7 +219,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
       `SELECT COUNT(*) AS expiringCount FROM leasing l
        JOIN unit u ON l.unit_id = u.id
        JOIN property p ON u.property_id = p.id
-       WHERE p.org_id = ? AND l.deleted_at IS NULL AND l.status != 0
+       WHERE p.org_id = ? AND l.deleted_at IS NULL
          AND l.end_date IS NOT NULL
          AND DATEDIFF(l.end_date, CURDATE()) BETWEEN 0 AND ?`,
       [orgId, expiringDays]
@@ -233,7 +233,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        FROM leasing l
        JOIN unit u ON l.unit_id = u.id
        JOIN property p ON u.property_id = p.id
-       WHERE p.org_id = ? AND l.deleted_at IS NULL AND l.status != 0
+       WHERE p.org_id = ? AND l.deleted_at IS NULL
          AND l.end_date IS NOT NULL
          AND DATEDIFF(l.end_date, CURDATE()) BETWEEN 0 AND ?
          AND NOT EXISTS (
@@ -248,7 +248,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
       `SELECT COUNT(*) AS upcomingVacantCount FROM leasing l
        JOIN unit u ON l.unit_id = u.id
        JOIN property p ON u.property_id = p.id
-       WHERE p.org_id = ? AND l.deleted_at IS NULL AND l.status != 0
+       WHERE p.org_id = ? AND l.deleted_at IS NULL
          AND l.end_date IS NOT NULL
          AND DATEDIFF(l.end_date, CURDATE()) BETWEEN 0 AND ?
          AND NOT EXISTS (

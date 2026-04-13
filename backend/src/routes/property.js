@@ -47,7 +47,7 @@ router.post('/list', authenticate, async (req, res) => {
       `SELECT p.*,
               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units,
               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND EXISTS (
-                SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+                SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
                   AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
               )) as occupied_units
        FROM property p
@@ -65,7 +65,7 @@ router.post('/list', authenticate, async (req, res) => {
         SELECT p.id,
                (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units,
                (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND EXISTS (
-                SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+                SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
                   AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
               )) as occupied_units
         FROM property p WHERE ${whereClause} ${havingClause}
@@ -128,7 +128,7 @@ router.get('/unit/unoccupied', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const [units] = await req.pool.execute(
       `SELECT u.*, p.display_name as property_name FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1 AND NOT EXISTS (
-        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
           AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
       ) ORDER BY p.display_name, u.name`,
       [orgId]
@@ -146,7 +146,7 @@ router.get('/unit/active/occupancy/rate', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const [result] = await req.pool.execute(
       `SELECT COUNT(*) as total, SUM(CASE WHEN EXISTS (
-        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
           AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
       ) THEN 1 ELSE 0 END) as occupied FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1`,
       [orgId]
@@ -258,7 +258,7 @@ router.get('/unit/tenant/:id', authenticate, async (req, res) => {
       `SELECT u.*, p.display_name as property_name
        FROM unit u
        LEFT JOIN property p ON u.property_id = p.id
-       LEFT JOIN leasing l ON l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+       LEFT JOIN leasing l ON l.unit_id = u.id AND l.deleted_at IS NULL
          AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
        WHERE l.tenant_id = ? AND p.org_id = ? AND u.active_status = 1`,
       [id, orgId]
@@ -542,7 +542,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const [properties] = await req.pool.execute(
       `SELECT p.*, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units, (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND EXISTS (
-        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+        SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
           AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
       )) as occupied_units FROM property p WHERE p.id = ? AND p.org_id = ?`,
       [id, orgId]
@@ -670,7 +670,7 @@ router.delete('/:id', authenticate, async (req, res) => {
     const [[{ active_count }]] = await req.pool.execute(
       `SELECT COUNT(*) as active_count FROM leasing l
        JOIN unit u ON l.unit_id = u.id
-       WHERE u.property_id = ? AND l.status != 0 AND l.deleted_at IS NULL
+       WHERE u.property_id = ? AND l.deleted_at IS NULL
          AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)`,
       [id]
     );
@@ -712,7 +712,7 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
                 ROW_NUMBER() OVER (PARTITION BY l.unit_id ORDER BY l.start_date DESC) AS rn
          FROM leasing l
          JOIN tenant t ON l.tenant_id = t.id
-         WHERE l.status != 0 AND l.deleted_at IS NULL
+         WHERE l.deleted_at IS NULL
            AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
        ) lt ON lt.unit_id = u.id AND lt.rn = 1
        WHERE u.property_id = ? AND p.org_id = ? AND u.active_status = 1
@@ -1066,7 +1066,7 @@ router.get('/unit/:unit_id/current-lease', authenticate, async (req, res) => {
        LEFT JOIN tenant t ON l.tenant_id = t.id
        LEFT JOIN unit u ON l.unit_id = u.id
        LEFT JOIN property p ON u.property_id = p.id
-       WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0
+       WHERE l.unit_id = ? AND l.deleted_at IS NULL
          AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
        ORDER BY l.start_date DESC LIMIT 1`,
       [unitId]
@@ -1076,7 +1076,7 @@ router.get('/unit/:unit_id/current-lease', authenticate, async (req, res) => {
       `SELECT l.*, t.first_name, t.last_name
        FROM leasing l
        LEFT JOIN tenant t ON l.tenant_id = t.id
-       WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0 AND l.start_date > CURDATE()
+       WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.start_date > CURDATE()
        ORDER BY l.start_date ASC LIMIT 1`,
       [unitId]
     );
@@ -1101,7 +1101,7 @@ router.get('/unit/:unit_id/services', authenticate, async (req, res) => {
     const [services] = await req.pool.execute(
       `SELECT s.*, t.first_name AS tenant_first, t.last_name AS tenant_last, t.phone AS tenant_phone
        FROM service s
-       LEFT JOIN leasing l ON l.unit_id = s.unit_id AND l.status != 0 AND l.deleted_at IS NULL
+       LEFT JOIN leasing l ON l.unit_id = s.unit_id AND l.deleted_at IS NULL
          AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
        LEFT JOIN tenant t ON l.tenant_id = t.id
        WHERE ${whereClause}

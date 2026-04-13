@@ -281,7 +281,7 @@ router.delete('/:id', authenticate, async (req, res) => {
 
 // Helper: calculate next invoice date from last due date + invoicing schedule
 function calcNextInvoiceDate(lastDueOn, lease) {
-  if (!lease.invoicing || !lease.amount || lease.status !== 1) return null;
+  if (!lease.invoicing || !lease.amount) return null;
 
   const inv = String(lease.invoicing).toLowerCase();
   const base = lastDueOn ? new Date(lastDueOn)
@@ -380,7 +380,7 @@ router.get('/:id/leases', authenticate, async (req, res) => {
       else if (end && end < today) lease.lease_status = 0; // inactive/past
       else lease.lease_status = 1; // active
 
-      if (lease.status === 1 && lease.invoicing) {
+      if (lease.lease_status === 1 && lease.invoicing) {
         const [[lastInv]] = await req.pool.execute(
           'SELECT due_on FROM invoice WHERE leasing_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
           [lease.id]

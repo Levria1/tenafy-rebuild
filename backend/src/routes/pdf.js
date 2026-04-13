@@ -193,7 +193,11 @@ router.get('/lease/:id', authenticate, async (req, res) => {
     let y = 100;
 
     // ── Status ──────────────────────────────────────────────────────────────
-    const isActive = lease.status === 1 && !lease.deleted_at;
+    // Compute active status from dates, not stored status column
+    const today = new Date().toISOString().split('T')[0];
+    const start = lease.start_date ? new Date(lease.start_date).toISOString().split('T')[0] : null;
+    const end = lease.end_date ? new Date(lease.end_date).toISOString().split('T')[0] : null;
+    const isActive = !lease.deleted_at && (!start || start <= today) && (!end || end >= today);
     doc.rect(50, y, 70, 18).fill(isActive ? '#52c41a' : '#ff4d4f');
     doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold')
        .text(isActive ? 'ACTIVE LEASE' : 'INACTIVE', 52, y + 4, { width: 66, align: 'center' });

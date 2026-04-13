@@ -560,7 +560,7 @@ router.post('/check-conflict', authenticate, async (req, res) => {
 
     let query = `SELECT l.id, l.start_date, l.end_date, t.first_name, t.last_name, l.lease_no
       FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
-      WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0
+      WHERE l.unit_id = ? AND l.deleted_at IS NULL
         AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`;
     const params = [unit_id, end_date || '2099-12-31', start_date];
 
@@ -620,7 +620,7 @@ router.post('/', authenticate, async (req, res) => {
       const [conflicts] = await req.pool.execute(
         `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
          FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
-         WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0
+         WHERE l.unit_id = ? AND l.deleted_at IS NULL
            AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`,
         [unit_id, overlapEnd, start_date]
       );
@@ -916,7 +916,7 @@ router.put('/:id', authenticate, async (req, res) => {
         const [conflicts] = await req.pool.execute(
           `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
            FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
-           WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0 AND l.id != ?
+           WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.id != ?
              AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`,
           [effectiveUnit, id, effectiveEnd, effectiveStartStr]
         );
@@ -1029,7 +1029,7 @@ router.get('/unit/lease/:unit_id', authenticate, async (req, res) => {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
     const [leases] = await req.pool.execute(
-      'SELECT l.*, t.first_name, t.last_name, t.email, t.phone FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0',
+      'SELECT l.*, t.first_name, t.last_name, t.email, t.phone FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id WHERE l.unit_id = ? AND l.deleted_at IS NULL',
       [unit_id]
     );
     res.json({ code: 200, data: leases });
@@ -1056,10 +1056,10 @@ router.get('/list/expiring', authenticate, async (req, res) => {
        LEFT JOIN unit u ON l.unit_id = u.id
        LEFT JOIN property p ON u.property_id = p.id
        LEFT JOIN tenant t ON l.tenant_id = t.id
-       WHERE p.org_id = ? AND l.deleted_at IS NULL AND l.status = ?
+       WHERE p.org_id = ? AND l.deleted_at IS NULL
          AND DATEDIFF(l.end_date, NOW()) BETWEEN 0 AND 30
        ORDER BY l.end_date ASC LIMIT ${limit} OFFSET ${offset}`,
-      [orgId, status]
+      [orgId]
     );
 
     res.json({ code: 200, data: { content: leases, totalElements: leases.length } });
@@ -1146,7 +1146,7 @@ router.post('/unit/available', authenticate, async (req, res) => {
       `SELECT u.*, p.display_name as property_name FROM unit u
        LEFT JOIN property p ON u.property_id = p.id
        WHERE p.org_id = ? AND u.active_status = 1 AND NOT EXISTS (
-         SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL AND l.status != 0
+         SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
            AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
        )
        ORDER BY p.display_name, u.name`,
