@@ -4,6 +4,29 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Complete Stored Status Removal, Unit Occupied/Vacant Fix, Tenant Edit Fix
+
+### Stored Status Column Removal (leasing.status & unit.status)
+- **Root cause**: The old Java system stored `leasing.status` (0/1) and `unit.status` (0/1) columns that were never updated by the new Node.js system. Many leases had stored `status=0` despite being date-active, causing them to be invisible to queries.
+- Removed `l.status != 0` from **all** lease queries across 10 backend files (property.js, leasing.js, user.js, invoice.js, public.js, storage.js, tenantPortal.js, tenant.js, pdf.js, master.js)
+- Removed stored status check from `computeLeaseStatus()` and `COMPUTED_STATUS_SQL` in leasing.js — now purely date-based
+- Removed `WHEN status = 0` from tenant lease summary SQL
+- Lease filtering now uses only `deleted_at IS NULL` (termination) + date checks (active/inactive/upcoming)
+
+### Unit Occupied/Vacant on Property Page
+- Replaced `u.status = 0/1` (stored) with `EXISTS (SELECT 1 FROM leasing...)` date-based subqueries for occupied counts across property.js, leasing.js, user.js
+- Frontend: Unit badge now uses `!!unit.tenant_id` (from lease JOIN) instead of stored `unit.status`
+- Colors fixed: **Occupied = green**, **Vacant = red** (was backwards)
+- Header count colors: Occupied = green `#52c41a`, Vacant = red `#ff4d4f`
+
+### Other Fixes
+- **Tenant edit failing**: Removed `lead_source_id` from tenant INSERT/UPDATE queries — column doesn't exist in tenant table
+- **Click-to-copy on HTTP**: Added `document.execCommand('copy')` fallback for droplet (navigator.clipboard only works on HTTPS/localhost)
+- **Lease detail payments**: Notes column now shows `payment_note` from payment transactions instead of invoice note
+- **Memory.md**: Updated server management rule — just tell user in bold caps, don't attempt server operations
+
+---
+
 ## Session: Permission Guards, SQL Fixes, File Preview, Master Dashboard, UI Fixes
 
 - **Permission guards**: Added `hasPermission()` checks across 12+ pages to hide/show Edit/Delete buttons based on role permissions
