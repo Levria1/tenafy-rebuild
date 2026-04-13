@@ -289,7 +289,19 @@ function AccountingPage() {
     if (!text) return '-';
     const handleCopy = (e) => {
       e.stopPropagation();
-      navigator.clipboard.writeText(text).then(() => message.success('Copied to clipboard'));
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(() => message.success('Copied to clipboard'));
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        message.success('Copied to clipboard');
+      }
     };
     if (text.length <= maxLen) return <span style={{ whiteSpace: 'nowrap' }}>{text}</span>;
     return (
