@@ -101,7 +101,8 @@ router.get('/dashboard', authenticate, async (req, res) => {
        FROM leasing l
        JOIN unit u ON l.unit_id = u.id
        JOIN property p ON u.property_id = p.id
-       WHERE l.tenant_id = ? AND p.org_id = ? AND l.status = 1 AND l.deleted_at IS NULL`,
+       WHERE l.tenant_id = ? AND p.org_id = ? AND l.status != 0 AND l.deleted_at IS NULL
+         AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)`,
       [tenantId, orgId]
     );
 

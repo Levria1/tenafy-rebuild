@@ -467,7 +467,7 @@ router.get('/:id/profile/sum', authenticate, async (req, res) => {
     );
 
     const [[leaseCount]] = await req.pool.execute(
-      'SELECT COUNT(*) as total FROM leasing WHERE tenant_id = ? AND deleted_at IS NULL AND status = 1',
+      'SELECT COUNT(*) as total FROM leasing WHERE tenant_id = ? AND deleted_at IS NULL AND status != 0',
       [id]
     );
 

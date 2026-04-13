@@ -560,7 +560,7 @@ router.post('/check-conflict', authenticate, async (req, res) => {
 
     let query = `SELECT l.id, l.start_date, l.end_date, t.first_name, t.last_name, l.lease_no
       FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
-      WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status = 1
+      WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0
         AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`;
     const params = [unit_id, end_date || '2099-12-31', start_date];
 
@@ -620,7 +620,7 @@ router.post('/', authenticate, async (req, res) => {
       const [conflicts] = await req.pool.execute(
         `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
          FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
-         WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status = 1
+         WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0
            AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`,
         [unit_id, overlapEnd, start_date]
       );
@@ -916,7 +916,7 @@ router.put('/:id', authenticate, async (req, res) => {
         const [conflicts] = await req.pool.execute(
           `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
            FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
-           WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status = 1 AND l.id != ?
+           WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0 AND l.id != ?
              AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`,
           [effectiveUnit, id, effectiveEnd, effectiveStartStr]
         );
@@ -1029,7 +1029,7 @@ router.get('/unit/lease/:unit_id', authenticate, async (req, res) => {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
     const [leases] = await req.pool.execute(
-      'SELECT l.*, t.first_name, t.last_name, t.email, t.phone FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status = 1',
+      'SELECT l.*, t.first_name, t.last_name, t.email, t.phone FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.status != 0',
       [unit_id]
     );
     res.json({ code: 200, data: leases });
