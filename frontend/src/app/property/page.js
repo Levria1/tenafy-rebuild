@@ -82,8 +82,8 @@ function PropertyCard({ prop, router }) {
         <div style={{ textAlign: 'left', minWidth: 180 }}>
           <div style={{ fontWeight: 500, marginBottom: 4 }}>Units: {totalUnits}</div>
           <div style={{ display: 'flex', gap: 24 }}>
-            <span style={{ color: '#1890ff', fontWeight: 500 }}>{occupiedUnits} OCCUPIED</span>
-            <span style={{ color: '#d4760a', fontWeight: 500 }}>{vacantUnits} VACANT</span>
+            <span style={{ color: '#52c41a', fontWeight: 500 }}>{occupiedUnits} OCCUPIED</span>
+            <span style={{ color: '#ff4d4f', fontWeight: 500 }}>{vacantUnits} VACANT</span>
           </div>
         </div>
 
@@ -148,7 +148,7 @@ function PropertyCard({ prop, router }) {
 // Unit row inside expanded property
 // ---------------------------------------------------------------------------
 function UnitRow({ unit, propId, router, isLast }) {
-  const isOccupied = unit.status === 1;
+  const isOccupied = !!unit.tenant_id;
   const tenantName = (unit.tenant_first_name || unit.tenant_last_name)
     ? `${unit.tenant_first_name || ''} ${unit.tenant_last_name || ''}`.trim()
     : null;
@@ -179,7 +179,7 @@ function UnitRow({ unit, propId, router, isLast }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <span style={{ fontWeight: 600, fontSize: 14 }}>{unit.name}</span>
-          <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 11, lineHeight: '18px' }}>
+          <Tag color={isOccupied ? 'green' : 'red'} style={{ fontSize: 11, lineHeight: '18px' }}>
             {isOccupied ? 'Occupied' : 'Vacant'}
           </Tag>
         </div>
