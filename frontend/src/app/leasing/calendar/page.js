@@ -257,7 +257,9 @@ function CalendarInner() {
       if (days > bestDays) { bestDays = days; best = l; }
     }
     const ct = CONTRACT_TYPE_MAP[best.contract_type];
-    return ct ? `${best.tenant_name} (${ct})` : best.tenant_name;
+    const endLabel = best.end_date ? `[${toDate(best.end_date).format('MMM D').toUpperCase()}]` : '';
+    const parts = [best.tenant_name, endLabel, ct ? `(${ct})` : ''].filter(Boolean);
+    return parts.join(' ');
   };
 
   const headerHeight = 36;
