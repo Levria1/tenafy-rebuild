@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { Table, Input, Select, DatePicker, Tag, Card, Space, Button, Tooltip, Typography } from 'antd';
 import { SearchOutlined, ReloadOutlined, ExpandOutlined } from '@ant-design/icons';
 import { activityLog } from '../../../lib/api';
+import useIsMobile from '../../../hooks/useIsMobile';
+import MobileCardList from '../../../components/mobile/MobileCardList';
 import dayjs from 'dayjs';
 
 const { RangePicker } = DatePicker;
@@ -39,6 +41,7 @@ export default function UserLogsPage() {
   const [users, setUsers] = useState([]);
   const [entityTypes, setEntityTypes] = useState([]);
   const [expandedRow, setExpandedRow] = useState(null);
+  const { isMobile } = useIsMobile();
 
   const loadLogs = useCallback(async () => {
     try {
@@ -142,41 +145,76 @@ export default function UserLogsPage() {
     },
   ];
 
+  const renderLogCard = (record) => {
+    return (
+      <Card size="small" style={{ borderRadius: 8 }} bodyStyle={{ padding: '12px 16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <Tag color={ACTION_COLORS[record.action] || 'default'}>{record.action}</Tag>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {record.created_at ? dayjs(record.created_at).format('MMM D, YYYY HH:mm') : '-'}
+          </Text>
+        </div>
+        <div style={{ marginBottom: 4 }}>
+          <Text strong>{record.username || '-'}</Text>
+        </div>
+        <div style={{ marginBottom: 4 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Type: </Text>
+          <Text style={{ fontSize: 13 }}>{ENTITY_LABELS[record.entity_type] || record.entity_type}</Text>
+        </div>
+        {record.description && (
+          <div style={{ marginBottom: 4, fontSize: 13, color: '#555' }}>
+            {record.description}
+          </div>
+        )}
+        {record.entity_id && (
+          <div style={{ fontSize: 11, color: '#999' }}>
+            ID: {record.entity_id}
+          </div>
+        )}
+      </Card>
+    );
+  };
+
   return (
     <div style={{ padding: 0 }}>
       <h1 style={{ marginBottom: 20, fontSize: 22 }}>User Logs</h1>
 
       <Card size="small" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
+        <div style={isMobile
+          ? { display: 'flex', flexDirection: 'column', gap: 8 }
+          : { display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }
+        }>
           <Input.Search
             placeholder="Search by user, description, or entity ID..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onSearch={handleSearch}
-            style={{ width: 300 }}
+            style={{ width: isMobile ? '100%' : 300 }}
             allowClear
             enterButton={<SearchOutlined />}
           />
-          <Select
-            placeholder="Action"
-            value={actionFilter}
-            onChange={(v) => { setActionFilter(v); setPage(1); }}
-            allowClear
-            style={{ width: 130 }}
-            options={[
-              { label: 'Create', value: 'CREATE' },
-              { label: 'Update', value: 'UPDATE' },
-              { label: 'Delete', value: 'DELETE' },
-            ]}
-          />
-          <Select
-            placeholder="Type"
-            value={entityFilter}
-            onChange={(v) => { setEntityFilter(v); setPage(1); }}
-            allowClear
-            style={{ width: 140 }}
-            options={entityTypes.map(t => ({ label: ENTITY_LABELS[t] || t, value: t }))}
-          />
+          <div style={isMobile ? { display: 'flex', gap: 8 } : { display: 'contents' }}>
+            <Select
+              placeholder="Action"
+              value={actionFilter}
+              onChange={(v) => { setActionFilter(v); setPage(1); }}
+              allowClear
+              style={{ width: isMobile ? '50%' : 130 }}
+              options={[
+                { label: 'Create', value: 'CREATE' },
+                { label: 'Update', value: 'UPDATE' },
+                { label: 'Delete', value: 'DELETE' },
+              ]}
+            />
+            <Select
+              placeholder="Type"
+              value={entityFilter}
+              onChange={(v) => { setEntityFilter(v); setPage(1); }}
+              allowClear
+              style={{ width: isMobile ? '50%' : 140 }}
+              options={entityTypes.map(t => ({ label: ENTITY_LABELS[t] || t, value: t }))}
+            />
+          </div>
           <Select
             placeholder="User"
             value={userFilter}
@@ -184,48 +222,64 @@ export default function UserLogsPage() {
             allowClear
             showSearch
             optionFilterProp="label"
-            style={{ width: 220 }}
+            style={{ width: isMobile ? '100%' : 220 }}
             options={users.map(u => ({ label: u.username, value: String(u.user_id) }))}
           />
           <RangePicker
             value={dateRange}
             onChange={(v) => { setDateRange(v); setPage(1); }}
-            style={{ width: 260 }}
+            style={{ width: isMobile ? '100%' : 260 }}
           />
-          <Button icon={<ReloadOutlined />} onClick={handleReset}>Reset</Button>
+          <Button icon={<ReloadOutlined />} onClick={handleReset} block={isMobile}>Reset</Button>
         </div>
       </Card>
 
-      <Table
-        columns={columns}
-        dataSource={logs}
-        rowKey="id"
-        loading={loading}
-        size="small"
-        pagination={{
-          current: page,
-          pageSize: pageSize,
-          total: total,
-          showSizeChanger: true,
-          pageSizeOptions: ['25', '50', '100'],
-          showTotal: (t) => `${t} total logs`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
-        }}
-        expandable={{
-          expandedRowRender: (record) => {
-            if (!record.details) return <Text type="secondary">No additional details</Text>;
-            let parsed;
-            try { parsed = typeof record.details === 'string' ? JSON.parse(record.details) : record.details; } catch { parsed = record.details; }
-            return (
-              <pre style={{ fontSize: 12, background: '#f5f5f5', padding: 12, borderRadius: 4, maxHeight: 300, overflow: 'auto', margin: 0 }}>
-                {typeof parsed === 'object' ? JSON.stringify(parsed, null, 2) : String(parsed)}
-              </pre>
-            );
-          },
-          rowExpandable: (record) => !!record.details,
-        }}
-        scroll={{ x: 1100 }}
-      />
+      {isMobile ? (
+        <MobileCardList
+          dataSource={logs}
+          renderCard={renderLogCard}
+          loading={loading}
+          pagination={{
+            current: page,
+            pageSize: pageSize,
+            total: total,
+            onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          }}
+          rowKey="id"
+          emptyText="No logs found"
+        />
+      ) : (
+        <Table
+          columns={columns}
+          dataSource={logs}
+          rowKey="id"
+          loading={loading}
+          size="small"
+          pagination={{
+            current: page,
+            pageSize: pageSize,
+            total: total,
+            showSizeChanger: true,
+            pageSizeOptions: ['25', '50', '100'],
+            showTotal: (t) => `${t} total logs`,
+            onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          }}
+          expandable={{
+            expandedRowRender: (record) => {
+              if (!record.details) return <Text type="secondary">No additional details</Text>;
+              let parsed;
+              try { parsed = typeof record.details === 'string' ? JSON.parse(record.details) : record.details; } catch { parsed = record.details; }
+              return (
+                <pre style={{ fontSize: 12, background: '#f5f5f5', padding: 12, borderRadius: 4, maxHeight: 300, overflow: 'auto', margin: 0 }}>
+                  {typeof parsed === 'object' ? JSON.stringify(parsed, null, 2) : String(parsed)}
+                </pre>
+              );
+            },
+            rowExpandable: (record) => !!record.details,
+          }}
+          scroll={{ x: 1100 }}
+        />
+      )}
     </div>
   );
 }

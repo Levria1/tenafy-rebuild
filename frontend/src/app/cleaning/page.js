@@ -2,9 +2,11 @@
 
 import { Suspense, useEffect, useState, useCallback } from 'react';
 import { Tabs, Table, Button, Select, DatePicker, Tag, Space, Input, Modal, Form, message, Popconfirm, Card, Typography } from 'antd';
-import { SaveOutlined, PlusOutlined, DeleteOutlined, ThunderboltOutlined, EditOutlined } from '@ant-design/icons';
+import { SaveOutlined, PlusOutlined, DeleteOutlined, ThunderboltOutlined, EditOutlined, FilterOutlined } from '@ant-design/icons';
 import MainLayout from '../../components/Layout';
 import { cleaning, user } from '../../lib/api';
+import useIsMobile from '../../hooks/useIsMobile';
+import MobileCardList from '../../components/mobile/MobileCardList';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 dayjs.extend(isoWeek);
@@ -42,6 +44,7 @@ function CleaningPage() {
 // ─── TAB 1: Weekly Cleaning ──────────────────────────────────────────────────
 
 function WeeklyCleaningTab() {
+  const { isMobile } = useIsMobile();
   const [configs, setConfigs] = useState([]);
   const [cleaners, setCleaners] = useState([]);
   const [overrides, setOverrides] = useState({});
@@ -348,9 +351,114 @@ function WeeklyCleaningTab() {
     },
   ];
 
+  const renderWeeklyCard = (record) => {
+    if (record._type === 'property') {
+      return (
+        <div style={{ background: '#f5f5f5', padding: '8px 12px', borderRadius: 4, fontWeight: 600 }}>
+          {record.property_name}
+          <Input
+            size="small"
+            placeholder="Property notes for this week..."
+            value={weekNotes[record.property_id.toString()] || ''}
+            onChange={e => setWeekNotes(prev => ({ ...prev, [record.property_id.toString()]: e.target.value }))}
+            onBlur={e => handlePropertyNotes(record.property_id, e.target.value)}
+            style={{ marginTop: 6, fontWeight: 'bold' }}
+          />
+        </div>
+      );
+    }
+    const co = checkoutMap[record.unit_id.toString()];
+    const o = overrides[record.unit_id.toString()];
+    return (
+      <Card size="small">
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+          <Text strong>{record.unit_name}</Text>
+          <div>
+            {co && <Tag color="orange" style={{ marginRight: 0 }}>退房 {dayjs(co.cleaning_date).format('M/D')}</Tag>}
+          </div>
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 8, color: '#666' }}>
+          {record.tenant_name || <Text type="secondary">Vacant</Text>}
+          {record.tenant_cleaning_notes && <div style={{ fontSize: 12, color: '#999' }}>{record.tenant_cleaning_notes}</div>}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+          <div>
+            <Text type="secondary" style={{ fontSize: 11 }}>Day</Text>
+            <Select
+              value={record.cleaning_day !== null && record.cleaning_day !== undefined ? Number(record.cleaning_day) : undefined}
+              onChange={v => handleConfigChange(record.unit_id, 'cleaning_day', v)}
+              options={DAY_OPTIONS}
+              placeholder="Day"
+              allowClear
+              style={{ width: '100%' }}
+              size="small"
+            />
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: 11 }}>Cleaner</Text>
+            <Select
+              value={record.cleaner_id ? record.cleaner_id.toString() : undefined}
+              onChange={v => handleConfigChange(record.unit_id, 'cleaner_id', v)}
+              options={cleaners.map(c => ({ label: c.name, value: c.id.toString() }))}
+              placeholder="Cleaner"
+              allowClear
+              style={{ width: '100%' }}
+              size="small"
+            />
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div>
+            <Text type="secondary" style={{ fontSize: 11 }}>Change (wk {dayjs(selectedWeek).format('M/D')})</Text>
+            <Select
+              value={getOverrideValue(record.unit_id)}
+              onChange={v => handleOverrideChange(record.unit_id, v)}
+              style={{ width: '100%' }}
+              size="small"
+              options={[
+                { label: 'Normal', value: 'normal' },
+                { label: 'No Cleaning', value: 'skip' },
+                ...DAY_OPTIONS.map(d => ({ label: `Move → ${d.label}`, value: d.value })),
+              ]}
+            />
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: 11 }}>Notes</Text>
+            <Input
+              size="small"
+              placeholder="Notes..."
+              value={o?.notes || ''}
+              onChange={e => {
+                setOverrides(prev => ({
+                  ...prev,
+                  [record.unit_id.toString()]: { ...prev[record.unit_id.toString()], notes: e.target.value },
+                }));
+              }}
+              onBlur={e => handleOverrideNotes(record.unit_id, e.target.value)}
+            />
+          </div>
+        </div>
+      </Card>
+    );
+  };
+
+  // Build table data rows (shared between mobile & desktop)
+  const tableData = (() => {
+    const rows = [];
+    let lastProp = null;
+    for (const c of configs) {
+      if (c.property_id?.toString() !== lastProp) {
+        lastProp = c.property_id?.toString();
+        rows.push({ _type: 'property', property_id: c.property_id, property_name: c.property_name, unit_id: `prop-${c.property_id}` });
+      }
+      rows.push(c);
+    }
+    return rows;
+  })();
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 16, flexDirection: isMobile ? 'column' : 'row', gap: 8 }}>
         <Space>
           <Text>Override week:</Text>
           <DatePicker
@@ -360,24 +468,20 @@ function WeeklyCleaningTab() {
             size="small"
           />
         </Space>
-        <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!dirty}>
+        <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!dirty} block={isMobile}>
           Save Config
         </Button>
       </div>
+      {isMobile ? (
+        <MobileCardList
+          dataSource={tableData}
+          renderCard={renderWeeklyCard}
+          loading={loading}
+          rowKey="unit_id"
+        />
+      ) : (
       <Table
-        dataSource={(() => {
-          // Insert property header rows before each property group
-          const rows = [];
-          let lastProp = null;
-          for (const c of configs) {
-            if (c.property_id?.toString() !== lastProp) {
-              lastProp = c.property_id?.toString();
-              rows.push({ _type: 'property', property_id: c.property_id, property_name: c.property_name, unit_id: `prop-${c.property_id}` });
-            }
-            rows.push(c);
-          }
-          return rows;
-        })()}
+        dataSource={tableData}
         columns={columns.map(col => {
           if (col.dataIndex === 'property_name') {
             return {
@@ -445,6 +549,7 @@ function WeeklyCleaningTab() {
         scroll={{ y: 600 }}
         rowClassName={(record) => record._type === 'property' ? 'cleaning-property-row' : ''}
       />
+      )}
       <style>{`.cleaning-property-row td { background: #f5f5f5 !important; }`}</style>
     </div>
   );
@@ -453,6 +558,7 @@ function WeeklyCleaningTab() {
 // ─── TAB 2: Checkout Cleaning ────────────────────────────────────────────────
 
 function CheckoutCleaningTab() {
+  const { isMobile } = useIsMobile();
   const [data, setData] = useState([]);
   const [cleaners, setCleaners] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -549,6 +655,48 @@ function CheckoutCleaningTab() {
     },
   ];
 
+  const renderCheckoutCleaningCard = (record) => (
+    <Card size="small" style={{ borderLeft: '3px solid #fa8c16' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+        <Text strong>{record.property_name}</Text>
+        <Tag>{record.unit_name}</Tag>
+      </div>
+      <div style={{ fontSize: 13, marginBottom: 6 }}>
+        <Text type="secondary">Tenant:</Text> {[record.first_name, record.last_name].filter(Boolean).join(' ')}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 13, marginBottom: 8 }}>
+        <div><Text type="secondary">Lease End:</Text> {record.lease_end_date ? dayjs(record.lease_end_date).format('MMM D') : '-'}</div>
+        <div><Text type="secondary">Next Lease:</Text> {record.next_lease_start ? dayjs(record.next_lease_start).format('MMM D') : 'None'}</div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+        <div style={{ flex: 1 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Cleaning Date</Text>
+          <DatePicker
+            value={record.cleaning_date ? dayjs(record.cleaning_date) : null}
+            onChange={d => handleUpdate(record.id, 'cleaning_date', d ? d.format('YYYY-MM-DD') : null)}
+            size="small"
+            style={{ width: '100%' }}
+          />
+        </div>
+        <div style={{ flex: 1 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Cleaner</Text>
+          <Select
+            value={record.cleaner_id ? record.cleaner_id.toString() : undefined}
+            onChange={val => handleUpdate(record.id, 'cleaner_id', val)}
+            options={cleaners.map(c => ({ label: c.name, value: c.id.toString() }))}
+            placeholder="Assign"
+            allowClear
+            style={{ width: '100%' }}
+            size="small"
+          />
+        </div>
+      </div>
+      {record.next_tenant_name && (
+        <div style={{ fontSize: 12, color: '#999' }}>Next: {record.next_tenant_name}</div>
+      )}
+    </Card>
+  );
+
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -561,15 +709,25 @@ function CheckoutCleaningTab() {
           size="small"
         />
       </div>
-      <Table
-        dataSource={data}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        size="small"
-        pagination={false}
-        scroll={{ y: 600 }}
-      />
+      {isMobile ? (
+        <MobileCardList
+          dataSource={data}
+          renderCard={renderCheckoutCleaningCard}
+          loading={loading}
+          rowKey="id"
+          emptyText="No checkout cleaning this month"
+        />
+      ) : (
+        <Table
+          dataSource={data}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          size="small"
+          pagination={false}
+          scroll={{ y: 600 }}
+        />
+      )}
     </div>
   );
 }
@@ -577,6 +735,7 @@ function CheckoutCleaningTab() {
 // ─── TAB 3: Weekly Schedule ──────────────────────────────────────────────────
 
 function WeeklyScheduleTab() {
+  const { isMobile } = useIsMobile();
   const [schedule, setSchedule] = useState([]);
   const [cleaners, setCleaners] = useState([]);
   const [selectedCleaner, setSelectedCleaner] = useState(null);
@@ -662,49 +821,88 @@ function WeeklyScheduleTab() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Space>
-          <Text strong>Month:</Text>
-          <DatePicker
-            value={selectedMonth}
-            onChange={d => {
-              if (!d) return;
-              // Find first Monday of that month
-              let first = d.startOf('month');
-              while (first.day() !== 1) first = first.add(1, 'day');
-              setSelectedMonday(first.format('YYYY-MM-DD'));
-            }}
-            picker="month"
-            size="small"
-          />
-        </Space>
-        <Space>
-          <Text>Cleaner:</Text>
-          <Select
-            value={selectedCleaner}
-            onChange={v => setSelectedCleaner(v)}
-            options={[
-              { label: 'All Cleaners', value: null },
-              ...cleaners.map(c => ({ label: c.name, value: c.id.toString() })),
-            ]}
-            placeholder="All Cleaners"
-            allowClear
-            onClear={() => setSelectedCleaner(null)}
-            style={{ width: 150 }}
-            size="small"
-          />
-          <Text>Week of:</Text>
-          <Select
-            value={selectedMonday}
-            onChange={v => setSelectedMonday(v)}
-            options={mondays.map(m => ({ label: `Wk ${dayjs(m).isoWeek()} — ${dayjs(m).format('MMM D')}`, value: m }))}
-            style={{ width: 180 }}
-            size="small"
-          />
-          <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={generating}>
-            Generate
-          </Button>
-        </Space>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 16, flexDirection: isMobile ? 'column' : 'row', gap: 8 }}>
+        {isMobile ? (
+          <>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <DatePicker
+                value={selectedMonth}
+                onChange={d => {
+                  if (!d) return;
+                  let first = d.startOf('month');
+                  while (first.day() !== 1) first = first.add(1, 'day');
+                  setSelectedMonday(first.format('YYYY-MM-DD'));
+                }}
+                picker="month"
+                size="small"
+                style={{ flex: 1 }}
+              />
+              <Select
+                value={selectedMonday}
+                onChange={v => setSelectedMonday(v)}
+                options={mondays.map(m => ({ label: `Wk ${dayjs(m).isoWeek()} — ${dayjs(m).format('MMM D')}`, value: m }))}
+                style={{ flex: 1 }}
+                size="small"
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Select
+                value={selectedCleaner}
+                onChange={v => setSelectedCleaner(v)}
+                options={[{ label: 'All Cleaners', value: null }, ...cleaners.map(c => ({ label: c.name, value: c.id.toString() }))]}
+                placeholder="All Cleaners"
+                allowClear
+                onClear={() => setSelectedCleaner(null)}
+                style={{ flex: 1 }}
+                size="small"
+              />
+              <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={generating}>
+                Generate
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <Space>
+              <Text strong>Month:</Text>
+              <DatePicker
+                value={selectedMonth}
+                onChange={d => {
+                  if (!d) return;
+                  let first = d.startOf('month');
+                  while (first.day() !== 1) first = first.add(1, 'day');
+                  setSelectedMonday(first.format('YYYY-MM-DD'));
+                }}
+                picker="month"
+                size="small"
+              />
+            </Space>
+            <Space>
+              <Text>Cleaner:</Text>
+              <Select
+                value={selectedCleaner}
+                onChange={v => setSelectedCleaner(v)}
+                options={[{ label: 'All Cleaners', value: null }, ...cleaners.map(c => ({ label: c.name, value: c.id.toString() }))]}
+                placeholder="All Cleaners"
+                allowClear
+                onClear={() => setSelectedCleaner(null)}
+                style={{ width: 150 }}
+                size="small"
+              />
+              <Text>Week of:</Text>
+              <Select
+                value={selectedMonday}
+                onChange={v => setSelectedMonday(v)}
+                options={mondays.map(m => ({ label: `Wk ${dayjs(m).isoWeek()} — ${dayjs(m).format('MMM D')}`, value: m }))}
+                style={{ width: 180 }}
+                size="small"
+              />
+              <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={generating}>
+                Generate
+              </Button>
+            </Space>
+          </>
+        )}
       </div>
 
       {loading ? (
@@ -813,6 +1011,7 @@ function WeeklyScheduleTab() {
 // ─── TAB 4: Settings (Cleaners) ──────────────────────────────────────────────
 
 function CleanerSettingsTab() {
+  const { isMobile } = useIsMobile();
   const [cleaners, setCleaners] = useState([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -922,14 +1121,37 @@ function CleanerSettingsTab() {
           Add Cleaner
         </Button>
       </div>
-      <Table
-        dataSource={cleaners}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        size="small"
-        pagination={false}
-      />
+      {isMobile ? (
+        <MobileCardList
+          dataSource={cleaners}
+          loading={loading}
+          rowKey="id"
+          renderCard={(record) => (
+            <Card size="small" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <Text strong>{record.name}</Text>
+                {' '}
+                {Number(record.status) === 1 ? <Tag color="green">Active</Tag> : <Tag color="red">Inactive</Tag>}
+              </div>
+              <Space>
+                <Button type="link" size="small" icon={<EditOutlined />} onClick={() => { setEditingCleaner(record); form.setFieldsValue({ name: record.name }); setModalOpen(true); }}>Edit</Button>
+                <Popconfirm title="Delete?" onConfirm={() => handleDelete(record.id)} okText="Yes" cancelText="No">
+                  <Button type="link" size="small" danger icon={<DeleteOutlined />}>Delete</Button>
+                </Popconfirm>
+              </Space>
+            </Card>
+          )}
+        />
+      ) : (
+        <Table
+          dataSource={cleaners}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          size="small"
+          pagination={false}
+        />
+      )}
       <Modal
         title={editingCleaner ? 'Edit Cleaner' : 'Add Cleaner'}
         open={modalOpen}
@@ -950,6 +1172,7 @@ function CleanerSettingsTab() {
 // ─── TAB: Checkout Notes ─────────────────────────────────────────────────────
 
 function CheckoutNotesTab() {
+  const { isMobile } = useIsMobile();
   const [data, setData] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -1075,42 +1298,126 @@ function CheckoutNotesTab() {
     },
   ];
 
+  // ── Mobile card renderer ──
+  const renderCheckoutCard = (record) => (
+    <Card size="small" style={{ borderLeft: '3px solid #1890ff' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+        <Text strong>{record.property_name}</Text>
+        <Tag color="blue">{record.unit_name}</Tag>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 13, marginBottom: 8 }}>
+        <div><Text type="secondary">Lease End:</Text> {record.lease_end ? dayjs(record.lease_end).format('MMM D') : '-'}</div>
+        <div><Text type="secondary">Check Out:</Text> {record.checkout_date ? dayjs(record.checkout_date).format('MMM D') : '-'}</div>
+        <div><Text type="secondary">Next Check-In:</Text> {record.next_checkin ? dayjs(record.next_checkin).format('MMM D') : '-'}</div>
+        <div><Text type="secondary">Old Code:</Text> {record.old_code || '-'}</div>
+        <div><Text type="secondary">New Code:</Text> {record.new_code || '-'}</div>
+      </div>
+      <div style={{ marginBottom: 6 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>Assigned To</Text>
+        <Select
+          size="small"
+          style={{ width: '100%' }}
+          value={record.assigned_user_id ? record.assigned_user_id.toString() : undefined}
+          placeholder="Select user"
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          options={users.map(u => ({
+            label: [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username,
+            value: u.id.toString(),
+          }))}
+          onChange={v => {
+            setData(prev => prev.map(r => r.id === record.id ? { ...r, assigned_user_id: v || null } : r));
+            handleUpdate(record.id, 'assigned_user_id', v || null);
+          }}
+        />
+      </div>
+      <div>
+        <Text type="secondary" style={{ fontSize: 12 }}>Notes</Text>
+        <Input
+          size="small"
+          value={notesLocal[record.id] !== undefined ? notesLocal[record.id] : (record.notes || '')}
+          onChange={e => setNotesLocal(prev => ({ ...prev, [record.id]: e.target.value }))}
+          placeholder="Add notes..."
+        />
+      </div>
+    </Card>
+  );
+
+  // ── Filters (shared between mobile & desktop) ──
+  const filtersBar = isMobile ? (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Text style={{ flexShrink: 0, fontSize: 13 }}>Week:</Text>
+        <DatePicker
+          value={dayjs(selectedWeek)}
+          onChange={d => d && setSelectedWeek(d.startOf('week').add(1, 'day').format('YYYY-MM-DD'))}
+          picker="week"
+          size="small"
+          style={{ flex: 1 }}
+        />
+        <Tag color="blue" style={{ flexShrink: 0 }}>{weekLabel}</Tag>
+      </div>
+      <Select
+        size="small"
+        style={{ width: '100%' }}
+        value={propertyFilter}
+        onChange={v => setPropertyFilter(v)}
+        allowClear
+        placeholder="All Properties"
+        options={propertyOptions.map(p => ({ label: p, value: p }))}
+      />
+    </div>
+  ) : (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+      <Space>
+        <Text>Checkout Week:</Text>
+        <DatePicker
+          value={dayjs(selectedWeek)}
+          onChange={d => d && setSelectedWeek(d.startOf('week').add(1, 'day').format('YYYY-MM-DD'))}
+          picker="week"
+          size="small"
+        />
+        <Tag color="blue">{weekLabel}</Tag>
+      </Space>
+      <Space>
+        <Text>Property:</Text>
+        <Select
+          size="small"
+          style={{ width: 180 }}
+          value={propertyFilter}
+          onChange={v => setPropertyFilter(v)}
+          allowClear
+          placeholder="All Properties"
+          options={propertyOptions.map(p => ({ label: p, value: p }))}
+        />
+      </Space>
+    </div>
+  );
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
-        <Space>
-          <Text>Checkout Week:</Text>
-          <DatePicker
-            value={dayjs(selectedWeek)}
-            onChange={d => d && setSelectedWeek(d.startOf('week').add(1, 'day').format('YYYY-MM-DD'))}
-            picker="week"
-            size="small"
-          />
-          <Tag color="blue">{weekLabel}</Tag>
-        </Space>
-        <Space>
-          <Text>Property:</Text>
-          <Select
-            size="small"
-            style={{ width: 180 }}
-            value={propertyFilter}
-            onChange={v => setPropertyFilter(v)}
-            allowClear
-            placeholder="All Properties"
-            options={propertyOptions.map(p => ({ label: p, value: p }))}
-          />
-        </Space>
-      </div>
-      <Table
-        dataSource={filteredData}
-        columns={columns}
-        rowKey="id"
-        size="small"
-        loading={loading}
-        pagination={false}
-        scroll={{ x: 1200 }}
-        locale={{ emptyText: 'No checkouts this week' }}
-      />
+      {filtersBar}
+      {isMobile ? (
+        <MobileCardList
+          dataSource={filteredData}
+          renderCard={renderCheckoutCard}
+          loading={loading}
+          rowKey="id"
+          emptyText="No checkouts this week"
+        />
+      ) : (
+        <Table
+          dataSource={filteredData}
+          columns={columns}
+          rowKey="id"
+          size="small"
+          loading={loading}
+          pagination={false}
+          scroll={{ x: 1200 }}
+          locale={{ emptyText: 'No checkouts this week' }}
+        />
+      )}
       {filteredData.length > 0 && (
         <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
           <Button

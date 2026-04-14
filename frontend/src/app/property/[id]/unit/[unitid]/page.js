@@ -12,6 +12,8 @@ import {
   PlusOutlined, DeleteOutlined, SearchOutlined, MailOutlined, FilterOutlined,
 } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
+import useIsMobile from '../../../../../hooks/useIsMobile';
+import MobileCardList from '../../../../../components/mobile/MobileCardList';
 import { property as propertyApi, service as serviceApi } from '../../../../../lib/api';
 
 const { Text, Title } = Typography;
@@ -182,7 +184,7 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
 // ===========================
 // FURNISHING TAB
 // ===========================
-function FurnishingTab({ unitId }) {
+function FurnishingTab({ unitId, isMobile }) {
   const { hasPermission } = useAuth();
   const canEditProp = hasPermission ? hasPermission('LANDLORD/PROPERTY_EDIT') : false;
   const canDeleteProp = hasPermission ? hasPermission('LANDLORD/PROPERTY_DELETE') : false;
@@ -320,10 +322,34 @@ function FurnishingTab({ unitId }) {
     _isNew: true,
   }];
 
+  const renderFurnishingCard = (record) => (
+    <div style={{ background: '#fff', border: '1px solid #f0f0f0', borderRadius: 8, padding: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+        <Text strong style={{ fontSize: 13 }}>{record.item_name}</Text>
+        <Text style={{ color: '#1677ff', fontSize: 12 }}>
+          {record.item_price != null ? `HK$${Number(record.item_price).toLocaleString()}` : '-'}
+        </Text>
+      </div>
+      <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#666', marginBottom: 6 }}>
+        <span>Qty: <strong>{record.quantity}</strong></span>
+        <span>Updated: {record.updated_at ? new Date(record.updated_at).toLocaleDateString() : '-'}</span>
+      </div>
+      {record.note && <div style={{ fontSize: 12, color: '#888' }}>{record.note}</div>}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        {canEditProp && <Button type="link" size="small" style={{ padding: 0 }} onClick={() => handleEdit(record)}>Edit</Button>}
+        {canDeleteProp && (
+          <Popconfirm title="Delete this item?" onConfirm={() => handleDelete(record.id)}>
+            <Button type="link" size="small" danger style={{ padding: 0 }}>Delete</Button>
+          </Popconfirm>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div>
       {/* Header with total + search */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: isMobile ? 'wrap' : 'nowrap', gap: isMobile ? 8 : 0 }}>
         <Text strong>Total Sum: <Text style={{ color: '#1677ff' }}>HK$ {Number(totalSum).toLocaleString()}</Text></Text>
         <Space>
           <Input
@@ -332,58 +358,88 @@ function FurnishingTab({ unitId }) {
             value={search}
             onChange={e => setSearch(e.target.value)}
             onPressEnter={() => loadData()}
-            style={{ width: 200 }}
+            style={{ width: isMobile ? 160 : 200 }}
             allowClear
             size="small"
           />
         </Space>
       </div>
 
-      {/* Table with inline add row */}
-      <Table
-        columns={[
-          {
-            title: 'Item Name', key: 'item_name', width: 220,
-            render: (_, r) => r._isNew ? r.item_name : undefined,
-            dataIndex: 'item_name',
-          },
-          {
-            title: 'Quantity', key: 'quantity', width: 100,
-            render: (_, r) => r._isNew ? r.quantity : undefined,
-            dataIndex: 'quantity',
-          },
-          {
-            title: 'Item Price', key: 'item_price', width: 120,
-            render: (_, r) => r._isNew ? r.item_price : undefined,
-            dataIndex: 'item_price',
-          },
-          { title: 'Last Updated', key: 'updated_at', width: 180, render: () => '' },
-          {
-            title: 'Notes', key: 'note',
-            render: (_, r) => r._isNew ? r.note : undefined,
-            dataIndex: 'note',
-          },
-          {
-            title: 'Operation', key: 'actions', width: 140,
-            render: () => <Button type="link" size="small" onClick={handleAdd}>Add</Button>,
-          },
-        ]}
-        dataSource={addRowData}
-        rowKey="id"
-        pagination={false}
-        size="small"
-        showHeader={false}
-        style={{ marginBottom: 0 }}
-      />
-      <Table
-        columns={columns}
-        dataSource={items}
-        rowKey="id"
-        loading={loading}
-        size="small"
-        pagination={false}
-        locale={{ emptyText: 'No furnishing items' }}
-      />
+      {isMobile ? (
+        <>
+          {/* Mobile add form */}
+          <div style={{ background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <Input size="small" placeholder="Item name" value={newRow.item_name}
+                onChange={e => setNewRow(p => ({ ...p, item_name: e.target.value }))} />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <InputNumber size="small" min={1} value={newRow.quantity} placeholder="Qty"
+                  onChange={v => setNewRow(p => ({ ...p, quantity: v }))} style={{ flex: 1 }} />
+                <InputNumber size="small" min={0} value={newRow.item_price} placeholder="Price" prefix="$"
+                  onChange={v => setNewRow(p => ({ ...p, item_price: v }))} style={{ flex: 1 }} />
+              </div>
+              <Input size="small" placeholder="Note" value={newRow.note}
+                onChange={e => setNewRow(p => ({ ...p, note: e.target.value }))} />
+              <Button type="primary" size="small" onClick={handleAdd}>Add Item</Button>
+            </div>
+          </div>
+          <MobileCardList
+            dataSource={items}
+            renderCard={renderFurnishingCard}
+            loading={loading}
+            rowKey="id"
+            emptyText="No furnishing items"
+          />
+        </>
+      ) : (
+        <>
+          {/* Table with inline add row */}
+          <Table
+            columns={[
+              {
+                title: 'Item Name', key: 'item_name', width: 220,
+                render: (_, r) => r._isNew ? r.item_name : undefined,
+                dataIndex: 'item_name',
+              },
+              {
+                title: 'Quantity', key: 'quantity', width: 100,
+                render: (_, r) => r._isNew ? r.quantity : undefined,
+                dataIndex: 'quantity',
+              },
+              {
+                title: 'Item Price', key: 'item_price', width: 120,
+                render: (_, r) => r._isNew ? r.item_price : undefined,
+                dataIndex: 'item_price',
+              },
+              { title: 'Last Updated', key: 'updated_at', width: 180, render: () => '' },
+              {
+                title: 'Notes', key: 'note',
+                render: (_, r) => r._isNew ? r.note : undefined,
+                dataIndex: 'note',
+              },
+              {
+                title: 'Operation', key: 'actions', width: 140,
+                render: () => <Button type="link" size="small" onClick={handleAdd}>Add</Button>,
+              },
+            ]}
+            dataSource={addRowData}
+            rowKey="id"
+            pagination={false}
+            size="small"
+            showHeader={false}
+            style={{ marginBottom: 0 }}
+          />
+          <Table
+            columns={columns}
+            dataSource={items}
+            rowKey="id"
+            loading={loading}
+            size="small"
+            pagination={false}
+            locale={{ emptyText: 'No furnishing items' }}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -391,7 +447,7 @@ function FurnishingTab({ unitId }) {
 // ===========================
 // SERVICE HISTORY TAB
 // ===========================
-function ServiceHistoryTab({ unitId }) {
+function ServiceHistoryTab({ unitId, isMobile }) {
   const router = useRouter();
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -463,20 +519,44 @@ function ServiceHistoryTab({ unitId }) {
     },
   ];
 
+  const renderServiceCard = (record) => {
+    const cfg = statusMap[record.status] || { text: 'Unknown', color: 'default' };
+    const tenant = record.tenant_first ? `${record.tenant_first} ${record.tenant_last}` : '-';
+    return (
+      <div style={{ background: '#fff', border: '1px solid #f0f0f0', borderRadius: 8, padding: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <Text strong style={{ fontSize: 13 }}>{record.code || '-'}</Text>
+          <Tag color={cfg.color}>{cfg.text}</Tag>
+        </div>
+        <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
+          Category: <strong>{record.category || '-'}</strong>
+        </div>
+        <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#666', marginBottom: 4, flexWrap: 'wrap' }}>
+          <span>Submitted: {record.created_at ? new Date(record.created_at).toLocaleDateString() : '-'}</span>
+          <span>Preferred: {record.preferred_date_first_start ? new Date(record.preferred_date_first_start).toLocaleDateString() : '-'}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: '#666' }}>Tenant: {tenant}</span>
+          <Button type="link" size="small" onClick={() => router.push(`/service?id=${record.id}`)}>View</Button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: isMobile ? 'wrap' : 'nowrap', gap: isMobile ? 8 : 0 }}>
         <Text strong>{services.length} Total</Text>
         <Space>
           <Input placeholder="Type here to search..." prefix={<SearchOutlined />} value={search}
-            onChange={e => setSearch(e.target.value)} style={{ width: 200 }} size="small" allowClear />
+            onChange={e => setSearch(e.target.value)} style={{ width: isMobile ? 140 : 200 }} size="small" allowClear />
           <Button type="primary" size="small" onClick={() => router.push(`/service/create?unitId=${unitId}`)}>
-            Add Request
+            {isMobile ? 'Add' : 'Add Request'}
           </Button>
         </Space>
       </div>
       <div style={{ marginBottom: 12 }}>
-        <Space>
+        <Space wrap>
           {[undefined, 0, 1, 2].map(s => (
             <Button key={String(s)} type={statusFilter === s ? 'primary' : 'text'} size="small"
               onClick={() => setStatusFilter(s)}>
@@ -485,15 +565,25 @@ function ServiceHistoryTab({ unitId }) {
           ))}
         </Space>
       </div>
-      <Table
-        columns={columns}
-        dataSource={services}
-        rowKey="id"
-        loading={loading}
-        size="small"
-        pagination={{ pageSize: 20 }}
-        locale={{ emptyText: <Empty description="No Data" /> }}
-      />
+      {isMobile ? (
+        <MobileCardList
+          dataSource={services}
+          renderCard={renderServiceCard}
+          loading={loading}
+          rowKey="id"
+          emptyText="No Data"
+        />
+      ) : (
+        <Table
+          columns={columns}
+          dataSource={services}
+          rowKey="id"
+          loading={loading}
+          size="small"
+          pagination={{ pageSize: 20 }}
+          locale={{ emptyText: <Empty description="No Data" /> }}
+        />
+      )}
     </div>
   );
 }
@@ -501,7 +591,7 @@ function ServiceHistoryTab({ unitId }) {
 // ===========================
 // SERVICE COST TAB
 // ===========================
-function ServiceCostTab({ unitId }) {
+function ServiceCostTab({ unitId, isMobile }) {
   const router = useRouter();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -585,22 +675,54 @@ function ServiceCostTab({ unitId }) {
     },
   ];
 
+  const renderCostCard = (record) => {
+    const tenant = record.tenant_first ? `${record.tenant_first} ${record.tenant_last}` : '-';
+    const isOutflow = record.line_type === 0;
+    const amount = Number(record.line_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 });
+    return (
+      <div style={{ background: '#fff', border: '1px solid #f0f0f0', borderRadius: 8, padding: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <Text strong style={{ fontSize: 13 }}>
+            {record.payment_date ? new Date(record.payment_date).toLocaleDateString() : '-'}
+          </Text>
+          <Text style={{ fontWeight: 600, color: isOutflow ? '#ff4d4f' : '#3f8600', fontSize: 13 }}>
+            {isOutflow ? '-' : '+'}${amount}
+          </Text>
+        </div>
+        <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
+          {record.description || '-'}
+        </div>
+        <div style={{ display: 'flex', gap: 12, fontSize: 12, color: '#888', flexWrap: 'wrap', marginBottom: 4 }}>
+          <span>Tenant: {tenant}</span>
+          {record.category_name && <span>Cat: {record.category_name}</span>}
+          {record.account_name && <span>Acc: {record.account_name}</span>}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: '#999' }}>
+            {record.property_name ? `${record.property_name}(${record.unit_name || ''})` : '-'}
+          </span>
+          <Button type="link" size="small" onClick={() => router.push(`/accounting/${record.id}`)}>View</Button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: isMobile ? 'wrap' : 'nowrap', gap: isMobile ? 8 : 0 }}>
         <Text strong>{pagination.total} Total</Text>
         <Space>
           <Input placeholder="Type here to search..." prefix={<SearchOutlined />} value={search}
-            onChange={e => setSearch(e.target.value)} style={{ width: 200 }} size="small" allowClear />
+            onChange={e => setSearch(e.target.value)} style={{ width: isMobile ? 140 : 200 }} size="small" allowClear />
           <Button type="primary" size="small" onClick={() => router.push('/accounting/create')}>
-            Add Inflow / Outflow
+            {isMobile ? 'Add' : 'Add Inflow / Outflow'}
           </Button>
         </Space>
       </div>
       {/* Period filters */}
       <div style={{ marginBottom: 12 }}>
-        <Space>
+        <Space wrap>
           {periodOptions.map(opt => (
             <Button key={String(opt.value)} type={period === opt.value ? 'link' : 'text'} size="small"
               onClick={() => setPeriod(opt.value)}
@@ -612,35 +734,51 @@ function ServiceCostTab({ unitId }) {
       </div>
       {/* Summary row */}
       <div style={{
-        display: 'flex', gap: 0, marginBottom: 16, borderRadius: 6, overflow: 'hidden', border: '1px solid #f0f0f0',
+        display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 0, marginBottom: 16, borderRadius: 6, overflow: 'hidden', border: '1px solid #f0f0f0',
       }}>
-        <div style={{ flex: 1, padding: '12px 24px', borderRight: '1px solid #f0f0f0' }}>
+        <div style={{ flex: 1, padding: isMobile ? '10px 14px' : '12px 24px', borderRight: isMobile ? 'none' : '1px solid #f0f0f0', borderBottom: isMobile ? '1px solid #f0f0f0' : 'none' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>Outflow (DR)</Text>
           <div><Text type="danger" strong>${Number(summary.outflow).toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text></div>
         </div>
-        <div style={{ flex: 1, padding: '12px 24px', borderRight: '1px solid #f0f0f0' }}>
+        <div style={{ flex: 1, padding: isMobile ? '10px 14px' : '12px 24px', borderRight: isMobile ? 'none' : '1px solid #f0f0f0', borderBottom: isMobile ? '1px solid #f0f0f0' : 'none' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>Inflow (CR)</Text>
           <div><Text style={{ color: '#3f8600', fontWeight: 600 }}>${Number(summary.inflow).toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text></div>
         </div>
-        <div style={{ flex: 1, padding: '12px 24px' }}>
+        <div style={{ flex: 1, padding: isMobile ? '10px 14px' : '12px 24px' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>Balance</Text>
           <div><Text strong>${Number(summary.balance).toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text></div>
         </div>
       </div>
-      {/* Table */}
-      <Table
-        columns={columns}
-        dataSource={rows}
-        rowKey={(r, i) => r.id + '-' + i}
-        loading={loading}
-        size="small"
-        pagination={{
-          ...pagination,
-          onChange: (page) => loadData(page),
-          showSizeChanger: false,
-        }}
-        locale={{ emptyText: <Empty description="No Data" /> }}
-      />
+      {/* Table / Cards */}
+      {isMobile ? (
+        <MobileCardList
+          dataSource={rows}
+          renderCard={renderCostCard}
+          loading={loading}
+          rowKey={(r, i) => r.id + '-' + i}
+          emptyText="No Data"
+          pagination={{
+            current: pagination.current,
+            pageSize: pagination.pageSize,
+            total: pagination.total,
+            onChange: (page) => loadData(page),
+          }}
+        />
+      ) : (
+        <Table
+          columns={columns}
+          dataSource={rows}
+          rowKey={(r, i) => r.id + '-' + i}
+          loading={loading}
+          size="small"
+          pagination={{
+            ...pagination,
+            onChange: (page) => loadData(page),
+            showSizeChanger: false,
+          }}
+          locale={{ emptyText: <Empty description="No Data" /> }}
+        />
+      )}
     </div>
   );
 }
@@ -650,6 +788,7 @@ function ServiceCostTab({ unitId }) {
 // ===========================
 export default function UnitDetailPage() {
   const { hasPermission } = useAuth();
+  const { isMobile } = useIsMobile();
   const canEditUnit = hasPermission ? hasPermission('LANDLORD/UNIT_EDIT') : false;
   const [unit, setUnit] = useState(null);
   const [propertyInfo, setPropertyInfo] = useState(null);
@@ -696,17 +835,17 @@ export default function UnitDetailPage() {
     {
       key: 'furnishing',
       label: 'Furnishing',
-      children: <FurnishingTab unitId={unitId} />,
+      children: <FurnishingTab unitId={unitId} isMobile={isMobile} />,
     },
     {
       key: 'service-history',
       label: 'Service History',
-      children: <ServiceHistoryTab unitId={unitId} />,
+      children: <ServiceHistoryTab unitId={unitId} isMobile={isMobile} />,
     },
     {
       key: 'service-cost',
       label: 'Service Cost',
-      children: <ServiceCostTab unitId={unitId} />,
+      children: <ServiceCostTab unitId={unitId} isMobile={isMobile} />,
     },
   ];
 

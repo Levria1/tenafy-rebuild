@@ -6,6 +6,8 @@ import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Di
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
+import useIsMobile from '../../../../hooks/useIsMobile';
+import MobileCardList from '../../../../components/mobile/MobileCardList';
 import { leasing, pdf, utility } from '../../../../lib/api';
 
 const LEASE_TYPE_MAP = { 0: 'Fixed', 1: 'Month-to-Month' };
@@ -32,6 +34,7 @@ export default function LeasingDetailPage() {
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
+  const { isMobile } = useIsMobile();
   const canEdit = hasPermission ? hasPermission('LANDLORD/LEASING_EDIT') : false;
   const leaseId = params.id;
 
@@ -174,13 +177,13 @@ export default function LeasingDetailPage() {
       },
     ];
 
-    const labelStyle = { fontWeight: 'bold', width: 220, padding: '6px 12px' };
-    const valueStyle = { padding: '6px 12px' };
+    const labelStyle = { fontWeight: 'bold', width: isMobile ? 140 : 220, padding: '6px 12px', fontSize: isMobile ? 12 : undefined };
+    const valueStyle = { padding: '6px 12px', fontSize: isMobile ? 12 : undefined };
 
     return (
       <div>
         {/* Header Info */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0', border: '1px solid #f0f0f0', borderRadius: 6, marginBottom: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0', border: '1px solid #f0f0f0', borderRadius: 6, marginBottom: 24 }}>
           <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
             <div style={labelStyle}>Tenant:</div>
             <div style={valueStyle}>{s.tenant}</div>
@@ -234,52 +237,81 @@ export default function LeasingDetailPage() {
 
         {/* Invoices Table */}
         <h4 style={{ fontWeight: 'bold', marginBottom: 12 }}>INVOICES</h4>
-        <Table
-          columns={invoiceColumns}
-          dataSource={s.invoices}
-          rowKey="id"
-          size="small"
-          pagination={false}
-          bordered
-          style={{ marginBottom: 24 }}
-          locale={{ emptyText: 'No invoices found for this lease' }}
-        />
+        {isMobile ? (
+          <MobileCardList
+            dataSource={s.invoices}
+            rowKey="id"
+            emptyText="No invoices found for this lease"
+            style={{ marginBottom: 24 }}
+            renderCard={(row) => {
+              const st = STATUS_MAP[Number(row.status)] || { text: '-', color: 'default' };
+              const isOutflow = Number(row.type) === 1;
+              const amt = formatCurrency(Number(row.amount));
+              return (
+                <Card size="small" styles={{ body: { padding: 12 } }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <Tag color={st.color}>{st.text}</Tag>
+                    <span style={{ fontWeight: 500, color: isOutflow ? '#ff4d4f' : undefined }}>{isOutflow ? `-${amt}` : amt}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#666' }}>
+                    <div>{row.invoice_code} {row.category_name ? `- ${row.category_name}` : ''}</div>
+                    <div>{formatDate(row.due_on)}</div>
+                    {row.payments && row.payments.length > 0 && (
+                      <div style={{ marginTop: 4 }}><strong>Method:</strong> {row.payments.map(p => p.payment_method_name || '-').join(', ')}</div>
+                    )}
+                  </div>
+                </Card>
+              );
+            }}
+          />
+        ) : (
+          <Table
+            columns={invoiceColumns}
+            dataSource={s.invoices}
+            rowKey="id"
+            size="small"
+            pagination={false}
+            bordered
+            style={{ marginBottom: 24 }}
+            locale={{ emptyText: 'No invoices found for this lease' }}
+          />
+        )}
 
         {/* Summary Section */}
-        <div style={{ maxWidth: 600 }}>
+        <div style={{ maxWidth: isMobile ? '100%' : 600 }}>
           {/* Estimated Total Rent */}
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-            <div style={{ fontWeight: 'bold', width: 260 }}>ESTIMATED Total Rent:</div>
-            <div style={{ padding: '4px 12px', background: '#52c41a', color: '#fff', fontWeight: 'bold', minWidth: 120, textAlign: 'right' }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6, flexWrap: isMobile ? 'wrap' : undefined }}>
+            <div style={{ fontWeight: 'bold', width: isMobile ? '100%' : 260, fontSize: isMobile ? 13 : undefined }}>ESTIMATED Total Rent:</div>
+            <div style={{ padding: '4px 12px', background: '#52c41a', color: '#fff', fontWeight: 'bold', minWidth: isMobile ? 0 : 120, textAlign: 'right' }}>
               {formatCurrency(s.estimated_total_rent)}
             </div>
           </div>
 
           {/* Rent Received */}
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-            <div style={{ fontWeight: 'bold', width: 260 }}>RENT RECEIVED:</div>
-            <div style={{ padding: '4px 12px', minWidth: 120, textAlign: 'right' }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6, flexWrap: isMobile ? 'wrap' : undefined }}>
+            <div style={{ fontWeight: 'bold', width: isMobile ? '100%' : 260, fontSize: isMobile ? 13 : undefined }}>RENT RECEIVED:</div>
+            <div style={{ padding: '4px 12px', minWidth: isMobile ? 0 : 120, textAlign: 'right' }}>
               {formatCurrency(s.rent_received)}
             </div>
           </div>
 
           {/* Rent Received Difference */}
           <div style={{ marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 2 }}>
-              <div style={{ fontWeight: 'bold', width: 260 }}>RENT RECEIVED DIFFERENCE:</div>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 2, flexWrap: isMobile ? 'wrap' : undefined }}>
+              <div style={{ fontWeight: 'bold', width: isMobile ? '100%' : 260, fontSize: isMobile ? 13 : undefined }}>RENT RECEIVED DIFFERENCE:</div>
               <div style={{
                 padding: '4px 12px',
                 background: rentDiffBg,
                 color: Math.abs(s.rent_diff_percent) > 1 ? rentDiffColor : '#000',
                 fontWeight: 'bold',
-                minWidth: 120,
+                minWidth: isMobile ? 0 : 120,
                 textAlign: 'right',
               }}>
                 {s.rent_diff_percent.toFixed(2)}%
               </div>
             </div>
             {s.rent_diff_percent > 1.5 && (
-              <div style={{ marginLeft: 260, color: '#ff4d4f', fontSize: 12, fontStyle: 'italic' }}>
+              <div style={{ marginLeft: isMobile ? 0 : 260, color: '#ff4d4f', fontSize: 12, fontStyle: 'italic' }}>
                 *Make sure this number is NOT ABOVE 1.5%, Highlight to Chris / Alex if not*
               </div>
             )}
@@ -288,17 +320,17 @@ export default function LeasingDetailPage() {
           <Divider style={{ margin: '12px 0' }} />
 
           {/* Payments Received */}
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-            <div style={{ fontWeight: 'bold', width: 260 }}>PAYMENTS RECEIVED:</div>
-            <div style={{ padding: '4px 12px', background: '#e6fffb', minWidth: 120, textAlign: 'right' }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6, flexWrap: isMobile ? 'wrap' : undefined }}>
+            <div style={{ fontWeight: 'bold', width: isMobile ? '100%' : 260, fontSize: isMobile ? 13 : undefined }}>PAYMENTS RECEIVED:</div>
+            <div style={{ padding: '4px 12px', background: '#e6fffb', minWidth: isMobile ? 0 : 120, textAlign: 'right' }}>
               {formatCurrency(s.payments_received)}
             </div>
           </div>
 
           {/* Outstanding Payments */}
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
-            <div style={{ fontWeight: 'bold', width: 260 }}>OUTSTANDING PAYMENTS:</div>
-            <div style={{ padding: '4px 12px', minWidth: 120, textAlign: 'right' }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16, flexWrap: isMobile ? 'wrap' : undefined }}>
+            <div style={{ fontWeight: 'bold', width: isMobile ? '100%' : 260, fontSize: isMobile ? 13 : undefined }}>OUTSTANDING PAYMENTS:</div>
+            <div style={{ padding: '4px 12px', minWidth: isMobile ? 0 : 120, textAlign: 'right' }}>
               {formatCurrency(s.outstanding_payments)}
             </div>
           </div>
@@ -306,31 +338,31 @@ export default function LeasingDetailPage() {
           <Divider style={{ margin: '12px 0' }} />
 
           {/* Tenant Credits */}
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-            <div style={{ fontWeight: 'bold', width: 260 }}>TENANT CREDITS:</div>
-            <div style={{ padding: '4px 12px', minWidth: 120, textAlign: 'right', color: s.tenant_credits < 0 ? '#ff4d4f' : undefined }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6, flexWrap: isMobile ? 'wrap' : undefined }}>
+            <div style={{ fontWeight: 'bold', width: isMobile ? '100%' : 260, fontSize: isMobile ? 13 : undefined }}>TENANT CREDITS:</div>
+            <div style={{ padding: '4px 12px', minWidth: isMobile ? 0 : 120, textAlign: 'right', color: s.tenant_credits < 0 ? '#ff4d4f' : undefined }}>
               {s.tenant_credits < 0 ? `-${formatCurrency(Math.abs(s.tenant_credits))}` : formatCurrency(s.tenant_credits)}
             </div>
           </div>
 
           {/* Security Deposit */}
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-            <div style={{ fontWeight: 'bold', width: 260 }}>SECURITY DEPOSIT:</div>
-            <div style={{ padding: '4px 12px', background: '#e6fffb', minWidth: 120, textAlign: 'right' }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6, flexWrap: isMobile ? 'wrap' : undefined }}>
+            <div style={{ fontWeight: 'bold', width: isMobile ? '100%' : 260, fontSize: isMobile ? 13 : undefined }}>SECURITY DEPOSIT:</div>
+            <div style={{ padding: '4px 12px', background: '#e6fffb', minWidth: isMobile ? 0 : 120, textAlign: 'right' }}>
               {formatCurrency(s.security_deposit)}
             </div>
           </div>
 
           {/* Security Deposit Return */}
           <div style={{ marginBottom: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 2 }}>
-              <div style={{ fontWeight: 'bold', width: 260 }}>SECURITY DEPOSIT RETURN:</div>
-              <div style={{ padding: '4px 12px', background: '#ffffb8', minWidth: 120, textAlign: 'right' }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 2, flexWrap: isMobile ? 'wrap' : undefined }}>
+              <div style={{ fontWeight: 'bold', width: isMobile ? '100%' : 260, fontSize: isMobile ? 13 : undefined }}>SECURITY DEPOSIT RETURN:</div>
+              <div style={{ padding: '4px 12px', background: '#ffffb8', minWidth: isMobile ? 0 : 120, textAlign: 'right' }}>
                 {formatCurrency(s.security_deposit_return)}
               </div>
             </div>
             {s.security_deposit_return > s.security_deposit && (
-              <div style={{ marginLeft: 260, color: '#ff4d4f', fontSize: 12, fontStyle: 'italic' }}>
+              <div style={{ marginLeft: isMobile ? 0 : 260, color: '#ff4d4f', fontSize: 12, fontStyle: 'italic' }}>
                 *Security Deposit Return should ALMOST NEVER be more than the Security Deposit. Highlight to Chris / Alex if not*
               </div>
             )}
@@ -346,7 +378,7 @@ export default function LeasingDetailPage() {
           value={settlementNotes}
           onChange={e => setSettlementNotes(e.target.value)}
           placeholder="Enter settlement notes..."
-          style={{ marginBottom: 12, maxWidth: 600 }}
+          style={{ marginBottom: 12, maxWidth: isMobile ? '100%' : 600 }}
         />
         <div>
           <Button
@@ -367,7 +399,7 @@ export default function LeasingDetailPage() {
       key: 'details',
       label: 'Details',
       children: (
-        <Descriptions bordered column={2}>
+        <Descriptions bordered column={isMobile ? 1 : 2}>
           <Descriptions.Item label="Lease No">{lease?.lease_no || '-'}</Descriptions.Item>
           <Descriptions.Item label="Property">{lease?.property_name || '-'}</Descriptions.Item>
           <Descriptions.Item label="Unit">{lease?.unit_name || '-'}</Descriptions.Item>
@@ -425,7 +457,7 @@ export default function LeasingDetailPage() {
         <div>
           {(lease?.check_in_meter != null || lease?.check_out_meter != null) && (
             <div style={{ marginBottom: 16, padding: 12, background: '#fafafa', borderRadius: 6 }}>
-              <Space size="large">
+              <Space size={isMobile ? 'middle' : 'large'} direction={isMobile ? 'vertical' : 'horizontal'}>
                 {lease?.check_in_meter != null && (
                   <span><strong>Check In Meter:</strong> {Number(lease.check_in_meter).toLocaleString()}</span>
                 )}
@@ -438,20 +470,42 @@ export default function LeasingDetailPage() {
               </Space>
             </div>
           )}
-          <Table
-            columns={[
-              { title: 'Date', dataIndex: 'reading_date', key: 'date', render: v => dayjs(v).format('MMM D, YYYY') },
-              { title: 'Meter #', dataIndex: 'meter_number', key: 'meter' },
-              { title: 'Reading', dataIndex: 'reading_value', key: 'value', render: v => Number(v).toLocaleString() },
-              { title: 'Type', dataIndex: 'reading_type', key: 'type', render: v => <Tag>{READING_TYPE_LABELS[Number(v)] || '-'}</Tag> },
-              { title: 'Notes', dataIndex: 'notes', key: 'notes', render: v => v || '-' },
-            ]}
-            dataSource={readings}
-            rowKey="id"
-            size="small"
-            loading={readingsLoading}
-            locale={{ emptyText: 'No meter readings recorded' }}
-          />
+          {isMobile ? (
+            <MobileCardList
+              dataSource={readings}
+              rowKey="id"
+              loading={readingsLoading}
+              emptyText="No meter readings recorded"
+              renderCard={(row) => (
+                <Card size="small" styles={{ body: { padding: 12 } }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <span style={{ fontWeight: 500 }}>{dayjs(row.reading_date).format('MMM D, YYYY')}</span>
+                    <Tag>{READING_TYPE_LABELS[Number(row.reading_type)] || '-'}</Tag>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#666' }}>
+                    <div><strong>Meter #:</strong> {row.meter_number}</div>
+                    <div><strong>Reading:</strong> {Number(row.reading_value).toLocaleString()}</div>
+                    {row.notes && <div><strong>Notes:</strong> {row.notes}</div>}
+                  </div>
+                </Card>
+              )}
+            />
+          ) : (
+            <Table
+              columns={[
+                { title: 'Date', dataIndex: 'reading_date', key: 'date', render: v => dayjs(v).format('MMM D, YYYY') },
+                { title: 'Meter #', dataIndex: 'meter_number', key: 'meter' },
+                { title: 'Reading', dataIndex: 'reading_value', key: 'value', render: v => Number(v).toLocaleString() },
+                { title: 'Type', dataIndex: 'reading_type', key: 'type', render: v => <Tag>{READING_TYPE_LABELS[Number(v)] || '-'}</Tag> },
+                { title: 'Notes', dataIndex: 'notes', key: 'notes', render: v => v || '-' },
+              ]}
+              dataSource={readings}
+              rowKey="id"
+              size="small"
+              loading={readingsLoading}
+              locale={{ emptyText: 'No meter readings recorded' }}
+            />
+          )}
         </div>
       ),
     },
@@ -462,9 +516,9 @@ export default function LeasingDetailPage() {
   return (
     <MainLayout>
       <Space direction="vertical" style={{ width: '100%' }} size="large">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 8 : 0 }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/leasing')}>Back to Leases</Button>
-          <Space>
+          <Space wrap>
             <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.leaseUrl(leaseId), '_blank')}>View PDF</Button>
             {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/leasing/${leaseId}/edit`)}>Edit Lease</Button>}
           </Space>

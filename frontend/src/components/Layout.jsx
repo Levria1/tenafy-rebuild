@@ -3,7 +3,7 @@
 import { Suspense, useState, createContext, useContext, useEffect, useCallback } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { Layout, Menu, Avatar, Dropdown, Badge, Button, List, Typography, Empty, Popover, Spin, Tag } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Badge, Button, List, Typography, Empty, Popover, Spin, Tag, Drawer } from 'antd';
 import {
   DashboardOutlined,
   HomeOutlined,
@@ -30,6 +30,8 @@ import {
 } from '@ant-design/icons';
 import Cookies from 'js-cookie';
 import { notification as notificationApi } from '../lib/api';
+import useIsMobile from '../hooks/useIsMobile';
+import MobileBottomNav from './mobile/MobileBottomNav';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -457,6 +459,7 @@ function MainLayout({ children }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, hasPermission, isSuperAdmin } = useAuth();
+  const { isMobile } = useIsMobile();
 
   const searchParams = useSearchParams();
   const tab = searchParams.get('tab');
@@ -529,6 +532,57 @@ function MainLayout({ children }) {
     },
   ];
 
+  const allMenuItems = buildMenuItems(hasPermission || (() => false), isSuperAdmin);
+
+  // ── Mobile layout ──
+  if (isMobile) {
+    return (
+      <Layout style={{ minHeight: '100vh' }}>
+        {/* Compact mobile header */}
+        <Header
+          style={{
+            padding: '0 12px',
+            background: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            height: 48,
+            lineHeight: '48px',
+            borderBottom: '1px solid #f0f0f0',
+            position: 'sticky',
+            top: 0,
+            zIndex: 999,
+          }}
+        >
+          <h1 style={{ margin: 0, fontSize: 16, fontWeight: 'bold', color: '#1890ff' }}>Tenafy</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <NotificationBell />
+            <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
+              <Avatar icon={<UserOutlined />} size={28} style={{ cursor: 'pointer' }} />
+            </Dropdown>
+          </div>
+        </Header>
+
+        {/* Content with bottom padding for nav bar */}
+        <Content
+          style={{
+            margin: 0,
+            padding: 12,
+            background: '#fff',
+            minHeight: 'calc(100vh - 48px - 60px)',
+            paddingBottom: 72,
+          }}
+        >
+          {children}
+        </Content>
+
+        {/* Bottom tab navigation */}
+        <MobileBottomNav menuItems={allMenuItems} />
+      </Layout>
+    );
+  }
+
+  // ── Desktop layout (unchanged) ──
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider
@@ -571,7 +625,7 @@ function MainLayout({ children }) {
           selectedKeys={getSelectedKeys()}
           openKeys={openKeys}
           onOpenChange={setOpenKeys}
-          items={buildMenuItems(hasPermission || (() => false), isSuperAdmin)}
+          items={allMenuItems}
           style={{ background: '#001529' }}
         />
       </Sider>

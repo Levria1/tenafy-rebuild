@@ -6,6 +6,8 @@ import { PlusOutlined, FilterOutlined, PrinterOutlined, EditOutlined, DeleteOutl
 import { useRouter, useSearchParams } from 'next/navigation';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../components/Layout';
+import useIsMobile from '../../hooks/useIsMobile';
+import MobileCardList from '../../components/mobile/MobileCardList';
 import { accounting, accountingApi } from '../../lib/api';
 
 const { RangePicker } = DatePicker;
@@ -16,6 +18,7 @@ export default function AccountingPageWrapper() {
 
 function AccountingPage() {
   const { hasPermission } = useAuth();
+  const { isMobile } = useIsMobile();
   const canCreate = hasPermission('LANDLORD/ACCOUNTING_CREATE');
   const canEdit = hasPermission('LANDLORD/ACCOUNTING_EDIT');
   const canDelete = hasPermission('LANDLORD/ACCOUNTING_DELETE');
@@ -464,6 +467,57 @@ function AccountingPage() {
     },
   ];
 
+  // === Mobile card renderers ===
+  const renderAccountCard = (record) => {
+    const contact = [record.tenant_first_name, record.tenant_last_name].filter(Boolean).join(' ') || '-';
+    let property = record.property_name || '';
+    if (record.unit_name) property += ` (${record.unit_name})`;
+    const isInflow = record.type === 0;
+    return (
+      <Card size="small" style={{ marginBottom: 8, borderLeft: `3px solid ${isInflow ? '#389e0d' : '#cf1322'}` }} onClick={() => openDrawer(record)}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{contact}</div>
+          <Tag color={isInflow ? 'green' : 'red'} style={{ marginRight: 0 }}>{isInflow ? 'Inflow' : 'Outflow'}</Tag>
+        </div>
+        <div style={{ color: '#666', fontSize: 12, marginBottom: 4 }}>{record.payment_date ? dayjs(record.payment_date).format('YYYY-MM-DD') : '-'}</div>
+        {property && <div style={{ fontSize: 12, marginBottom: 4 }}>{property}</div>}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+          <span style={{ fontSize: 12, color: '#888' }}>{record.category_name || '-'}</span>
+          <span style={{ fontWeight: 600, fontSize: 15, color: isInflow ? '#389e0d' : '#cf1322' }}>
+            {isInflow ? '' : '- '}{formatCurrency(record.amount)}
+          </span>
+        </div>
+        {record.account_name && <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>{record.account_name}{record.payment_method_name ? ` / ${record.payment_method_name}` : ''}</div>}
+        {record.note && <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>{record.note.length > 60 ? record.note.substring(0, 60) + '...' : record.note}</div>}
+      </Card>
+    );
+  };
+
+  const renderLineCard = (record) => {
+    const contact = [record.tenant_first_name, record.tenant_last_name].filter(Boolean).join(' ') || '-';
+    let property = record.property_name || '';
+    if (record.unit_name) property += ` (${record.unit_name})`;
+    const isInflow = record.type === 0;
+    return (
+      <Card size="small" style={{ marginBottom: 8, borderLeft: `3px solid ${isInflow ? '#389e0d' : '#cf1322'}` }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{contact}</div>
+          <Tag color={isInflow ? 'green' : 'red'} style={{ marginRight: 0 }}>{isInflow ? 'Inflow' : 'Outflow'}</Tag>
+        </div>
+        <div style={{ color: '#666', fontSize: 12, marginBottom: 4 }}>{record.payment_date ? dayjs(record.payment_date).format('YYYY-MM-DD') : '-'}</div>
+        {property && <div style={{ fontSize: 12, marginBottom: 4 }}>{property}</div>}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+          <span style={{ fontSize: 12, color: '#888' }}>{record.category_name || '-'}</span>
+          <span style={{ fontWeight: 600, fontSize: 15, color: isInflow ? '#389e0d' : '#cf1322' }}>
+            {isInflow ? '' : '- '}{formatCurrency(record.amount)}
+          </span>
+        </div>
+        {record.account_name && <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>{record.account_name}{record.payment_method_name ? ` / ${record.payment_method_name}` : ''}</div>}
+        {record.transaction_note && <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>{record.transaction_note.length > 60 ? record.transaction_note.substring(0, 60) + '...' : record.transaction_note}</div>}
+      </Card>
+    );
+  };
+
   const quickDateButtons = [
     { label: 'ALL', key: 'ALL' },
     { label: '+/- 2M', key: '2M' },
@@ -490,53 +544,62 @@ function AccountingPage() {
       {activeTab === 'accounts' && (
         <>
           {/* Filters Row */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+          <div style={isMobile
+            ? { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }
+            : { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }
+          }>
             <div style={{ color: '#666' }}>{pagination.total} Total</div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={isMobile
+              ? { display: 'flex', flexDirection: 'column', gap: 8 }
+              : { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }
+            }>
               <Select
                 placeholder="All Accounts"
                 mode="multiple"
                 allowClear
                 maxTagCount={1}
                 maxTagTextLength={12}
-                style={{ minWidth: 160, maxWidth: 300 }}
+                style={isMobile ? { width: '100%' } : { minWidth: 160, maxWidth: 300 }}
                 value={selectedAccounts}
                 onChange={(v) => { setSelectedAccounts(v); setPagination(p => ({ ...p, current: 1 })); }}
                 options={accounts.map(a => ({ label: a.name, value: a.id }))}
               />
               <Input.Search
                 placeholder="Type here to search"
-                style={{ width: 200 }}
+                style={isMobile ? { width: '100%' } : { width: 200 }}
                 allowClear
                 onSearch={(v) => { setSearch(v); setPagination(p => ({ ...p, current: 1 })); }}
               />
-              <Popover
-                content={filterContent}
-                title="Filters"
-                trigger="click"
-                open={filterOpen}
-                onOpenChange={setFilterOpen}
-                placement="bottomRight"
-              >
-                <Button icon={<FilterOutlined />}>
-                  Filter {activeFilterCount > 0 ? activeFilterCount : ''}
-                </Button>
-              </Popover>
+              <div style={isMobile ? { display: 'flex', gap: 8 } : { display: 'contents' }}>
+                <Popover
+                  content={filterContent}
+                  title="Filters"
+                  trigger="click"
+                  open={filterOpen}
+                  onOpenChange={setFilterOpen}
+                  placement="bottomRight"
+                >
+                  <Button icon={<FilterOutlined />} style={isMobile ? { flex: 1 } : {}}>
+                    Filter {activeFilterCount > 0 ? activeFilterCount : ''}
+                  </Button>
+                </Popover>
+                {canCreate && (
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')} style={isMobile ? { flex: 1 } : {}}>
+                    {isMobile ? 'Add' : 'Add Inflow / Outflow'}
+                  </Button>
+                )}
+              </div>
               <RangePicker
                 value={dateRange}
                 onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
                 placeholder={['Start date', 'End date']}
+                style={isMobile ? { width: '100%' } : {}}
               />
-              {canCreate && (
-                <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')}>
-                  Add Inflow / Outflow
-                </Button>
-              )}
             </div>
           </div>
 
           {/* Quick date filters */}
-          <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
+          <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {quickDateButtons.map(b => (
               <a key={b.key} onClick={() => handleQuickDateFilter(b.key)} style={{
                 cursor: 'pointer', fontSize: 12, color: '#1890ff',
@@ -550,103 +613,128 @@ function AccountingPage() {
 
           {/* Summary Cards */}
           <Row gutter={0} style={{ marginBottom: 16 }}>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Card size="small" style={{ borderRadius: 0 }}>
-                <div style={{ fontSize: 13, color: '#666' }}>Account Balance (No Filter)</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: accountBalance >= 0 ? '#389e0d' : '#cf1322' }}>{formatCurrency(accountBalance)}</div>
+                <div style={{ fontSize: isMobile ? 11 : 13, color: '#666' }}>Account Balance (No Filter)</div>
+                <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: accountBalance >= 0 ? '#389e0d' : '#cf1322' }}>{formatCurrency(accountBalance)}</div>
               </Card>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Card size="small" style={{ borderRadius: 0 }}>
-                <div style={{ fontSize: 13, color: '#666' }}>Outflow (DR)</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#cf1322' }}>- {formatCurrency(summary.outflow)}</div>
+                <div style={{ fontSize: isMobile ? 11 : 13, color: '#666' }}>Outflow (DR)</div>
+                <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: '#cf1322' }}>- {formatCurrency(summary.outflow)}</div>
               </Card>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Card size="small" style={{ borderRadius: 0 }}>
-                <div style={{ fontSize: 13, color: '#666' }}>Inflow (CR)</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#389e0d' }}>{formatCurrency(summary.inflow)}</div>
+                <div style={{ fontSize: isMobile ? 11 : 13, color: '#666' }}>Inflow (CR)</div>
+                <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: '#389e0d' }}>{formatCurrency(summary.inflow)}</div>
               </Card>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Card size="small" style={{ borderRadius: 0 }}>
-                <div style={{ fontSize: 13, color: '#666' }}>Balance</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#1890ff' }}>{formatCurrency(summary.net)}</div>
+                <div style={{ fontSize: isMobile ? 11 : 13, color: '#666' }}>Balance</div>
+                <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: '#1890ff' }}>{formatCurrency(summary.net)}</div>
               </Card>
             </Col>
           </Row>
 
-          {/* Transactions Table */}
-          <Table
-            columns={accountColumns}
-            dataSource={transactions}
-            rowKey="id"
-            loading={loading}
-            scroll={{ x: 1500 }}
-            onChange={(pag, _filters, sorter) => {
-              setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
-              setSortInfo(sorter.order ? { field: sorter.columnKey || sorter.field, order: sorter.order } : { field: null, order: null });
-            }}
-            pagination={{
-              ...pagination,
-              showSizeChanger: true,
-              pageSizeOptions: ['20', '50', '100'],
-              showTotal: (total) => `${total} items`,
-            }}
-          />
+          {/* Transactions Table / Mobile Cards */}
+          {isMobile ? (
+            <MobileCardList
+              dataSource={transactions}
+              renderCard={renderAccountCard}
+              loading={loading}
+              rowKey="id"
+              emptyText="No transactions"
+              pagination={{
+                current: pagination.current,
+                pageSize: pagination.pageSize,
+                total: pagination.total,
+                onChange: (page, pageSize) => setPagination(p => ({ ...p, current: page, pageSize })),
+              }}
+            />
+          ) : (
+            <Table
+              columns={accountColumns}
+              dataSource={transactions}
+              rowKey="id"
+              loading={loading}
+              scroll={{ x: 1500 }}
+              onChange={(pag, _filters, sorter) => {
+                setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
+                setSortInfo(sorter.order ? { field: sorter.columnKey || sorter.field, order: sorter.order } : { field: null, order: null });
+              }}
+              pagination={{
+                ...pagination,
+                showSizeChanger: true,
+                pageSizeOptions: ['20', '50', '100'],
+                showTotal: (total) => `${total} items`,
+              }}
+            />
+          )}
         </>
       )}
 
       {activeTab === 'lines' && (
         <>
           {/* Filters Row */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+          <div style={isMobile
+            ? { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }
+            : { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }
+          }>
             <div style={{ color: '#666' }}>{linePagination.total} Total</div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={isMobile
+              ? { display: 'flex', flexDirection: 'column', gap: 8 }
+              : { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }
+            }>
               <Select
                 placeholder="All Accounts"
                 mode="multiple"
                 allowClear
                 maxTagCount={1}
                 maxTagTextLength={12}
-                style={{ minWidth: 160, maxWidth: 300 }}
+                style={isMobile ? { width: '100%' } : { minWidth: 160, maxWidth: 300 }}
                 value={selectedAccounts}
                 onChange={(v) => { setSelectedAccounts(v); setLinePagination(p => ({ ...p, current: 1 })); }}
                 options={accounts.map(a => ({ label: a.name, value: a.id }))}
               />
               <Input.Search
                 placeholder="Type here to search"
-                style={{ width: 200 }}
+                style={isMobile ? { width: '100%' } : { width: 200 }}
                 allowClear
                 onSearch={(v) => { setSearch(v); setLinePagination(p => ({ ...p, current: 1 })); }}
               />
-              <Popover
-                content={filterContent}
-                title="Filters"
-                trigger="click"
-                open={filterOpen}
-                onOpenChange={setFilterOpen}
-                placement="bottomRight"
-              >
-                <Button icon={<FilterOutlined />}>
-                  Filter {activeFilterCount > 0 ? activeFilterCount : ''}
-                </Button>
-              </Popover>
+              <div style={isMobile ? { display: 'flex', gap: 8 } : { display: 'contents' }}>
+                <Popover
+                  content={filterContent}
+                  title="Filters"
+                  trigger="click"
+                  open={filterOpen}
+                  onOpenChange={setFilterOpen}
+                  placement="bottomRight"
+                >
+                  <Button icon={<FilterOutlined />} style={isMobile ? { flex: 1 } : {}}>
+                    Filter {activeFilterCount > 0 ? activeFilterCount : ''}
+                  </Button>
+                </Popover>
+                {canCreate && (
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')} style={isMobile ? { flex: 1 } : {}}>
+                    {isMobile ? 'Add' : 'Add Inflow / Outflow'}
+                  </Button>
+                )}
+              </div>
               <RangePicker
                 value={dateRange}
                 onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
                 placeholder={['Start date', 'End date']}
+                style={isMobile ? { width: '100%' } : {}}
               />
-              {canCreate && (
-                <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/accounting/accounts/create')}>
-                  Add Inflow / Outflow
-                </Button>
-              )}
             </div>
           </div>
 
           {/* Quick date filters */}
-          <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
+          <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {quickDateButtons.map(b => (
               <a key={b.key} onClick={() => handleQuickDateFilter(b.key)} style={{
                 cursor: 'pointer', fontSize: 12, color: '#1890ff',
@@ -660,44 +748,60 @@ function AccountingPage() {
 
           {/* Summary Cards */}
           <Row gutter={0} style={{ marginBottom: 16 }}>
-            <Col span={8}>
+            <Col xs={24} sm={8}>
               <Card size="small" style={{ borderRadius: 0 }}>
-                <div style={{ fontSize: 13, color: '#666' }}>Outflow (DR)</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#cf1322' }}>- {formatCurrency(lineSummary.outflow)}</div>
+                <div style={{ fontSize: isMobile ? 11 : 13, color: '#666' }}>Outflow (DR)</div>
+                <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: '#cf1322' }}>- {formatCurrency(lineSummary.outflow)}</div>
               </Card>
             </Col>
-            <Col span={8}>
+            <Col xs={12} sm={8}>
               <Card size="small" style={{ borderRadius: 0 }}>
-                <div style={{ fontSize: 13, color: '#666' }}>Inflow (CR)</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#389e0d' }}>{formatCurrency(lineSummary.inflow)}</div>
+                <div style={{ fontSize: isMobile ? 11 : 13, color: '#666' }}>Inflow (CR)</div>
+                <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: '#389e0d' }}>{formatCurrency(lineSummary.inflow)}</div>
               </Card>
             </Col>
-            <Col span={8}>
+            <Col xs={12} sm={8}>
               <Card size="small" style={{ borderRadius: 0 }}>
-                <div style={{ fontSize: 13, color: '#666' }}>Balance</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#1890ff' }}>{formatCurrency(lineSummary.net)}</div>
+                <div style={{ fontSize: isMobile ? 11 : 13, color: '#666' }}>Balance</div>
+                <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: '#1890ff' }}>{formatCurrency(lineSummary.net)}</div>
               </Card>
             </Col>
           </Row>
 
-          {/* Lines Table */}
-          <Table
-            columns={lineColumns}
-            dataSource={lines}
-            rowKey="id"
-            loading={loading}
-            scroll={{ x: 1500 }}
-            onChange={(pag, _filters, sorter) => {
-              setLinePagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
-              setSortInfo(sorter.order ? { field: sorter.columnKey || sorter.field, order: sorter.order } : { field: null, order: null });
-            }}
-            pagination={{
-              ...linePagination,
-              showSizeChanger: true,
-              pageSizeOptions: ['20', '50', '100'],
-              showTotal: (total) => `${total} items`,
-            }}
-          />
+          {/* Lines Table / Mobile Cards */}
+          {isMobile ? (
+            <MobileCardList
+              dataSource={lines}
+              renderCard={renderLineCard}
+              loading={loading}
+              rowKey="id"
+              emptyText="No account lines"
+              pagination={{
+                current: linePagination.current,
+                pageSize: linePagination.pageSize,
+                total: linePagination.total,
+                onChange: (page, pageSize) => setLinePagination(p => ({ ...p, current: page, pageSize })),
+              }}
+            />
+          ) : (
+            <Table
+              columns={lineColumns}
+              dataSource={lines}
+              rowKey="id"
+              loading={loading}
+              scroll={{ x: 1500 }}
+              onChange={(pag, _filters, sorter) => {
+                setLinePagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
+                setSortInfo(sorter.order ? { field: sorter.columnKey || sorter.field, order: sorter.order } : { field: null, order: null });
+              }}
+              pagination={{
+                ...linePagination,
+                showSizeChanger: true,
+                pageSizeOptions: ['20', '50', '100'],
+                showTotal: (total) => `${total} items`,
+              }}
+            />
+          )}
         </>
       )}
 

@@ -14,6 +14,8 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
+import useIsMobile from '../../../../../hooks/useIsMobile';
+import MobileCardList from '../../../../../components/mobile/MobileCardList';
 import { tenant, invoice, utility, settings } from '../../../../../lib/api';
 
 const { Text } = Typography;
@@ -62,6 +64,7 @@ export default function TenantDetailPageWrapper() {
 }
 
 function TenantDetailPage() {
+  const { isMobile } = useIsMobile();
   const { hasPermission } = useAuth();
   const canDelete = hasPermission ? hasPermission('LANDLORD/TENANT_DELETE') : false;
   const canEdit = hasPermission ? hasPermission('LANDLORD/TENANT_EDIT') : false;
@@ -252,7 +255,7 @@ function TenantDetailPage() {
     <div>
       {/* GENERAL INFORMATION */}
       <SectionHeader title="General Information" />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0 24px' }}>
         <FieldValue label="First Name" value={tenantData?.first_name} />
         <FieldValue label="Last Name" value={tenantData?.last_name} />
         <FieldValue label="Middle Name" value={tenantData?.middle_name} />
@@ -260,32 +263,32 @@ function TenantDetailPage() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0 24px' }}>
         <FieldValue label="Company Name" value={tenantData?.company_name} />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0 24px' }}>
         <FieldValue label="Date of Birth" value={tenantData?.birth_date || '—'} />
         <FieldValue label="Age" value={calcAge(tenantData?.birth_date)} />
         <FieldValue label="Gender" value={GENDER_MAP[tenantData?.sex] || '—'} />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0 24px' }}>
         <FieldValue label="Email" value={tenantData?.email} />
         <FieldValue label="Secondary Email" value={tenantData?.secondary_email} />
         <FieldValue label="Phone" value={tenantData?.phone} />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0 24px' }}>
         <FieldValue label="ID / Passport" value={tenantData?.id_card} />
         <FieldValue label="Lead Source" value={leadSources.find(s => String(s.id) === String(tenantData?.lead_source_id))?.name} />
       </div>
 
       {/* ADDITIONAL INFORMATION */}
       <SectionHeader title="Additional Information" />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0 24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)', gap: '0 24px' }}>
         <FieldValue label="Profession" value={tenantData?.profession} />
         <FieldValue label="Budget" value={tenantData?.budget} />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0 24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)', gap: '0 24px' }}>
         <FieldValue label="Employer" value={tenantData?.employer} />
         <FieldValue label="Salary" value={tenantData?.salary} />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0 24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)', gap: '0 24px' }}>
         <FieldValue label="Emergency Contact" value={tenantData?.emergency_contact} />
         <FieldValue label="Referral" value={tenantData?.referral} />
       </div>
@@ -327,7 +330,7 @@ function TenantDetailPage() {
           <div key={lease.id} style={{ marginBottom: 32 }}>
             {/* UNIT INFORMATION */}
             <SectionHeader title="Unit Information" />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0 24px' }}>
               <FieldValue label="Property Name" value={lease.property_name} />
               <FieldValue label="Unit Name" value={lease.unit_name} />
               <FieldValue label="Unit Type" value={capitalize(lease.unit_type)} />
@@ -338,17 +341,17 @@ function TenantDetailPage() {
 
             {/* LEASE DETAILS */}
             <SectionHeader title="Lease Details" />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0 24px' }}>
               <FieldValue label="Lease#" value={lease.lease_no} />
               <FieldValue label="Start Date" value={lease.start_date ? dayjs(lease.start_date).format('YYYY-MM-DD') : '—'} />
               <FieldValue label="End Date" value={lease.end_date ? dayjs(lease.end_date).format('YYYY-MM-DD') : '—'} />
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0 24px' }}>
               <FieldValue label="Lease Type" value={lease.type === 1 ? 'Month-to-Month' : 'Fixed'} />
               <FieldValue label="Invoicing" value={INVOICING_MAP[String(lease.invoicing)] || capitalize(lease.invoicing)} />
               <FieldValue label="Contract Type" value={CONTRACT_TYPES[lease.contract_type] || '—'} />
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0 24px' }}>
               <FieldValue label="Rent" value={lease.amount ? fmt(lease.amount) : '—'} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0 24px' }}>
@@ -368,11 +371,11 @@ function TenantDetailPage() {
         {activeLease && (
           <div>
             <SectionHeader title="Lease Transactions" />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0 24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)', gap: '0 24px' }}>
               <FieldValue label="Rent" value={activeLease.amount ? fmt(activeLease.amount) : '—'} />
               <FieldValue label="Due Date" value={activeLease.due_date ? `${activeLease.due_date}${getOrdinalSuffix(activeLease.due_date)}` : '—'} />
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0 24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)', gap: '0 24px' }}>
               <FieldValue label="First Rent Invoice Date" value={activeLease.first_invoice_date ? dayjs(activeLease.first_invoice_date).format('YYYY-MM-DD') : '—'} />
               <FieldValue label="Next Invoice Publish Date" value={activeLease.next_invoice_date ? dayjs(activeLease.next_invoice_date).format('YYYY-MM-DD') : '—'} />
             </div>
@@ -561,16 +564,16 @@ function TenantDetailPage() {
     <div>
       {/* Summary cards matching original: Outstanding Outflow | Outstanding Inflow | Paid */}
       <div style={{
-        display: 'flex', border: '1px solid #e8e8e8', borderRadius: 6,
+        display: 'flex', flexDirection: isMobile ? 'column' : 'row', border: '1px solid #e8e8e8', borderRadius: 6,
         marginBottom: 16, background: '#fafafa',
       }}>
-        <div style={{ flex: 1, padding: '12px 20px', borderRight: '1px solid #e8e8e8' }}>
+        <div style={{ flex: 1, padding: '12px 20px', borderRight: isMobile ? 'none' : '1px solid #e8e8e8', borderBottom: isMobile ? '1px solid #e8e8e8' : 'none' }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>Outstanding Outflow</div>
           <div style={{ fontSize: 16, fontWeight: 600, color: '#cf1322', marginTop: 4 }}>
             {fmtCur(accountingSum?.outstanding_outflow || 0, 'HK$ ')}
           </div>
         </div>
-        <div style={{ flex: 1, padding: '12px 20px', borderRight: '1px solid #e8e8e8' }}>
+        <div style={{ flex: 1, padding: '12px 20px', borderRight: isMobile ? 'none' : '1px solid #e8e8e8', borderBottom: isMobile ? '1px solid #e8e8e8' : 'none' }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>Outstanding Inflow</div>
           <div style={{ fontSize: 16, fontWeight: 600, color: '#cf1322', marginTop: 4 }}>
             {fmtCur(accountingSum?.outstanding_inflow || 0, 'HK$ ')}
@@ -584,22 +587,77 @@ function TenantDetailPage() {
         </div>
       </div>
 
-      <Table
-        columns={invoiceColumns}
-        dataSource={invoices}
-        rowKey="id"
-        loading={invoicesLoading}
-        size="small"
-        scroll={{ x: 1300 }}
-        pagination={{
-          ...invoicePagination,
-          onChange: (page) => loadInvoices(page),
-          showSizeChanger: false,
-          showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}`,
-          pageSize: 10,
-        }}
-        locale={{ emptyText: 'No invoices found' }}
-      />
+      {isMobile ? (
+        <MobileCardList
+          dataSource={invoices}
+          loading={invoicesLoading}
+          rowKey="id"
+          emptyText="No invoices found"
+          pagination={{
+            current: invoicePagination.current,
+            pageSize: invoicePagination.pageSize,
+            total: invoicePagination.total,
+            onChange: (page) => loadInvoices(page),
+          }}
+          renderCard={(r) => {
+            const cfg = getEffectiveStatus(r);
+            const sym = getCurSymbol(r.property_currency);
+            const amt = Number(r.amount) || 0;
+            const paid = Number(r.amount_paid) || 0;
+            const outstanding = Number(r.status) === 1 ? 0 : Math.max(amt - paid, 0);
+            const isInflow = Number(r.type) === 0 || r.type === null || r.type === undefined;
+            return (
+              <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <Tag color={cfg.color}>{cfg.text}</Tag>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {r.due_on ? dayjs(r.due_on).format('YYYY-MM-DD') : '—'}
+                  </Text>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{getContactName(r)}</div>
+                <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                  {r.property_name && r.unit_name ? `${r.property_name} (${r.unit_name})` : r.property_name || r.unit_name || '—'}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <Text style={{ color: isInflow ? '#389e0d' : '#cf1322', fontWeight: 500 }}>
+                    {isInflow ? '+' : '-'} {sym}{amt.toLocaleString(undefined, { minimumFractionDigits: 0 })} / {sym}{paid.toLocaleString(undefined, { minimumFractionDigits: 0 })}
+                  </Text>
+                  <Text style={{ fontSize: 12 }}>Owed: {fmtCur(outstanding, sym)}</Text>
+                </div>
+                {r.category_name && (
+                  <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>{r.category_name}</div>
+                )}
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <Button size="small" disabled={!hasOutstanding(r)}
+                    onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${r.id}`)}>
+                    Pay
+                  </Button>
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => openInvoiceDrawer(r)}>
+                    View &gt;
+                  </Button>
+                </div>
+              </div>
+            );
+          }}
+        />
+      ) : (
+        <Table
+          columns={invoiceColumns}
+          dataSource={invoices}
+          rowKey="id"
+          loading={invoicesLoading}
+          size="small"
+          scroll={{ x: 1300 }}
+          pagination={{
+            ...invoicePagination,
+            onChange: (page) => loadInvoices(page),
+            showSizeChanger: false,
+            showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}`,
+            pageSize: 10,
+          }}
+          locale={{ emptyText: 'No invoices found' }}
+        />
+      )}
     </div>
   );
 
@@ -718,7 +776,7 @@ function TenantDetailPage() {
     return (
       <div>
         {/* Tenant Utility Info Header */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px', marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0 24px', marginBottom: 16 }}>
           <div>
             <FieldValue label="Tenant Name" value={`${tenantData?.first_name || ''} ${tenantData?.last_name || ''}`.trim() || '—'} />
             <FieldValue label="Property & Unit" value={primaryLease ? `${primaryLease.property_name} - ${primaryLease.unit_name}` : '—'} />
@@ -742,7 +800,7 @@ function TenantDetailPage() {
             value={searchText}
             onChange={e => setSearchText(e.target.value)}
             allowClear
-            style={{ width: 200 }}
+            style={{ width: isMobile ? '100%' : 200 }}
           />
           <Select
             placeholder="Filter by property"
@@ -750,28 +808,65 @@ function TenantDetailPage() {
             onChange={v => setFilterProperty(v)}
             allowClear
             options={propertyOptions}
-            style={{ width: 200 }}
+            style={{ width: isMobile ? '100%' : 200 }}
           />
           <DatePicker.RangePicker
             value={filterDates}
             onChange={v => setFilterDates(v)}
-            style={{ width: 260 }}
+            style={{ width: isMobile ? '100%' : 260 }}
           />
         </div>
-        <Table
-          dataSource={filteredBilling}
-          columns={billingColumns}
-          rowKey="key"
-          size="small"
-          pagination={{
-            pageSize: 20,
-            showSizeChanger: true,
-            pageSizeOptions: ['20', '50', '100'],
-            showTotal: (total) => `${total} items`,
-          }}
-          scroll={{ x: 1200 }}
-          locale={{ emptyText: 'No billing history' }}
-        />
+        {isMobile ? (
+          <MobileCardList
+            dataSource={filteredBilling}
+            rowKey="key"
+            emptyText="No billing history"
+            renderCard={(row) => (
+              <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <Tag color={row.type === 'Checkout' ? 'orange' : 'blue'}>{row.type}</Tag>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{row.period}</Text>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                  {row.property_name} - {row.unit_name}
+                </div>
+                <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                  Meter: {row.meter_number} | {row.starting_reading.toLocaleString()} → {row.ending_reading.toLocaleString()} ({row.kw_used.toLocaleString()} kW)
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <Text>Rate: ${row.rate.toFixed(2)}</Text>
+                  <Text>Gross: ${row.gross_amount.toFixed(2)}</Text>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <Text>Credit: {row.credit > 0 ? `-$${row.credit.toFixed(2)}` : '-'}</Text>
+                  <Text strong style={{ color: row.net_amount > 0 ? '#cf1322' : '#52c41a' }}>Net: ${row.net_amount.toFixed(2)}</Text>
+                </div>
+                {row.invoice_code && (
+                  <div style={{ marginTop: 4 }}>
+                    <Tag color={INV_STATUS[Number(row.invoice_status)]?.color || 'blue'}>
+                      {row.invoice_code} - {INV_STATUS[Number(row.invoice_status)]?.text || 'Open'}
+                    </Tag>
+                  </div>
+                )}
+              </div>
+            )}
+          />
+        ) : (
+          <Table
+            dataSource={filteredBilling}
+            columns={billingColumns}
+            rowKey="key"
+            size="small"
+            pagination={{
+              pageSize: 20,
+              showSizeChanger: true,
+              pageSizeOptions: ['20', '50', '100'],
+              showTotal: (total) => `${total} items`,
+            }}
+            scroll={{ x: 1200 }}
+            locale={{ emptyText: 'No billing history' }}
+          />
+        )}
       </div>
     );
   }
@@ -792,7 +887,7 @@ function TenantDetailPage() {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 24, borderBottom: '1px solid #e8e8e8', marginBottom: 24 }}>
+      <div style={{ display: 'flex', gap: isMobile ? 16 : 24, borderBottom: '1px solid #e8e8e8', marginBottom: isMobile ? 16 : 24, overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
         {tabs.map(t => (
           <div
             key={t.key}
@@ -804,6 +899,7 @@ function TenantDetailPage() {
               fontWeight: activeTab === t.key ? 600 : 400,
               color: activeTab === t.key ? '#1890ff' : '#888',
               borderBottom: activeTab === t.key ? '2px solid #1890ff' : '2px solid transparent',
+              whiteSpace: 'nowrap',
             }}
           >
             {t.label}
@@ -812,18 +908,18 @@ function TenantDetailPage() {
       </div>
 
       {/* Two-column layout */}
-      <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
+      <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 16 : 24, alignItems: 'flex-start' }}>
         {/* LEFT SIDEBAR */}
-        <div style={{ width: 380, flexShrink: 0 }}>
+        <div style={{ width: isMobile ? '100%' : 380, flexShrink: 0 }}>
           <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, overflow: 'hidden' }}>
             {/* Avatar area */}
-            <div style={{ background: '#f5f5f5', padding: '40px 20px 30px', textAlign: 'center' }}>
+            <div style={{ background: '#f5f5f5', padding: isMobile ? '24px 16px 20px' : '40px 20px 30px', textAlign: 'center' }}>
               <div style={{
-                width: 180, height: 180, margin: '0 auto 20px', borderRadius: 8,
+                width: isMobile ? 120 : 180, height: isMobile ? 120 : 180, margin: '0 auto 20px', borderRadius: 8,
                 background: '#eee', display: 'flex', alignItems: 'center', justifyContent: 'center',
                 border: '2px solid #ddd',
               }}>
-                <UserOutlined style={{ fontSize: 80, color: '#bbb' }} />
+                <UserOutlined style={{ fontSize: isMobile ? 50 : 80, color: '#bbb' }} />
               </div>
 
               {/* Name + status dot */}
@@ -946,7 +1042,7 @@ function TenantDetailPage() {
 
         {/* RIGHT CONTENT */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: '20px 28px' }}>
+          <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: isMobile ? '16px 12px' : '20px 28px' }}>
             {activeTab === 'profile' && <ProfileContent />}
             {activeTab === 'leases' && <LeasesContent />}
             {activeTab === 'accounting' && <AccountingContent />}
@@ -969,7 +1065,7 @@ function TenantDetailPage() {
           </div>
         }
         placement="right"
-        width={440}
+        width={isMobile ? '100%' : 440}
         onClose={closeDrawer}
         open={drawerOpen}
         footer={selectedInvoice ? (

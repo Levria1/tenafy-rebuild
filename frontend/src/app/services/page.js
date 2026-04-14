@@ -3,12 +3,17 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
   Table, Button, Input, Popover, Checkbox, Row, Col, Select, Badge, message, DatePicker,
+  Card, Tag, Typography, Space,
 } from 'antd';
 import { PlusOutlined, SearchOutlined, FilterOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import MainLayout from '../../components/Layout';
+import useIsMobile from '../../hooks/useIsMobile';
+import MobileCardList from '../../components/mobile/MobileCardList';
 import { service } from '../../lib/api';
+
+const { Text } = Typography;
 
 const STATUS_MAP = {
   0: { label: 'Pending' },
@@ -58,6 +63,7 @@ export default function ServicesPage() {
   const [properties, setProperties] = useState([]);
 
   const router = useRouter();
+  const { isMobile } = useIsMobile();
 
   // Load dropdown data on mount
   useEffect(() => {
@@ -255,6 +261,65 @@ export default function ServicesPage() {
     },
   ];
 
+  // ─── Mobile card renderer ──────────────────────────────────────────────────
+  const STATUS_COLOR_MAP = { 0: 'orange', 1: 'blue', 2: 'green', 3: 'red' };
+
+  const renderServiceCard = (record) => {
+    const prop = record.property_name || '';
+    const unit = record.unit_name || '';
+    const propertyLabel = prop && unit ? `${prop} / ${unit}` : prop || unit || '-';
+    const statusInfo = STATUS_MAP[record.status] || { label: 'Unknown' };
+    const v1 = (record.assignee_name || '').trim();
+    const v2 = (record.assignee_2_name || '').trim();
+    const assignedTo = v1 && v2 ? `${v1}, ${v2}` : v1 || v2 || '-';
+
+    return (
+      <Card
+        size="small"
+        hoverable
+        onClick={() => router.push(`/services/${record.id}/detail`)}
+        style={{ borderRadius: 8 }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+          <Text strong style={{ fontSize: 14, flex: 1, marginRight: 8 }}>{propertyLabel}</Text>
+          <Tag color={STATUS_COLOR_MAP[record.status] || 'default'}>{statusInfo.label}</Tag>
+        </div>
+
+        {record.category && (
+          <div style={{ marginBottom: 6 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>Category: </Text>
+            <Text style={{ fontSize: 12 }}>{record.category.toUpperCase()}</Text>
+          </div>
+        )}
+
+        <div style={{ marginBottom: 4 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Assigned: </Text>
+          <Text style={{ fontSize: 12 }}>{assignedTo}</Text>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+          <div>
+            <Text type="secondary" style={{ fontSize: 11 }}>Submitted: </Text>
+            <Text style={{ fontSize: 11 }}>{record.created_at ? dayjs(record.created_at).format('YYYY-MM-DD') : '-'}</Text>
+          </div>
+          {record.service_date_start && (
+            <div>
+              <Text type="secondary" style={{ fontSize: 11 }}>Started: </Text>
+              <Text style={{ fontSize: 11 }}>{dayjs(record.service_date_start).format('YYYY-MM-DD')}</Text>
+            </div>
+          )}
+        </div>
+
+        {record.reported_by_name && (
+          <div style={{ marginTop: 4 }}>
+            <Text type="secondary" style={{ fontSize: 11 }}>Reported by: </Text>
+            <Text style={{ fontSize: 11 }}>{record.reported_by_name.trim()}</Text>
+          </div>
+        )}
+      </Card>
+    );
+  };
+
   return (
     <MainLayout>
       <h1 style={{ marginBottom: 16 }}>Service</h1>
@@ -263,25 +328,36 @@ export default function ServicesPage() {
         {/* ── Top bar: Total + Search + Filter + Add Request ── */}
         <div style={{
           padding: '12px 20px',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          display: 'flex',
+          flexDirection: isMobile ? 'column' : 'row',
+          alignItems: isMobile ? 'stretch' : 'center',
+          justifyContent: 'space-between',
+          gap: isMobile ? 10 : 0,
           borderBottom: '1px solid #f0f0f0',
         }}>
           {/* Left: total count */}
-          <div>
-            <span style={{ color: '#1890ff', fontSize: 16, fontWeight: 700, marginRight: 4 }}>
-              {pagination.total}
-            </span>
-            <span style={{ fontWeight: 500 }}>Total</span>
+          <div style={{ display: 'flex', justifyContent: isMobile ? 'space-between' : 'flex-start', alignItems: 'center' }}>
+            <div>
+              <span style={{ color: '#1890ff', fontSize: 16, fontWeight: 700, marginRight: 4 }}>
+                {pagination.total}
+              </span>
+              <span style={{ fontWeight: 500 }}>Total</span>
+            </div>
+            {isMobile && (
+              <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => router.push('/services/create')}>
+                Add Request
+              </Button>
+            )}
           </div>
 
           {/* Right: search + filter + buttons */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
             {/* Search with column checkboxes */}
             <Popover content={searchPopoverContent} trigger="click" placement="bottomRight">
               <Input
                 placeholder="Type here to search"
                 suffix={<SearchOutlined style={{ color: '#bbb' }} />}
-                style={{ width: 220 }}
+                style={{ width: isMobile ? '100%' : 220, flex: isMobile ? 1 : undefined }}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 onPressEnter={() => setPagination(prev => ({ ...prev, current: 1 }))}
@@ -312,17 +388,21 @@ export default function ServicesPage() {
               </Badge>
             </Popover>
 
-            {/* Add Request */}
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/services/create')}>
-              Add Request
-            </Button>
+            {/* Add Request — desktop only */}
+            {!isMobile && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/services/create')}>
+                Add Request
+              </Button>
+            )}
           </div>
         </div>
 
         {/* ── Status tabs: ALL | Pending | In Progress | Completed | Cancelled ── */}
         <div style={{
-          padding: '8px 20px', display: 'flex', gap: 20,
+          padding: '8px 20px', display: 'flex', gap: isMobile ? 12 : 20,
           borderBottom: '1px solid #f0f0f0', background: '#fafafa',
+          overflowX: isMobile ? 'auto' : 'visible',
+          whiteSpace: 'nowrap',
         }}>
           {STATUS_TABS.map(tab => (
             <span
@@ -357,7 +437,26 @@ export default function ServicesPage() {
           ))}
         </div>
 
-        {/* ── Table ── */}
+        {/* ── Table / Mobile Cards ── */}
+        {isMobile ? (
+          <div style={{ padding: 12 }}>
+            <MobileCardList
+              dataSource={services}
+              renderCard={renderServiceCard}
+              loading={loading}
+              pagination={{
+                current: pagination.current,
+                pageSize: pagination.pageSize,
+                total: pagination.total,
+                onChange: (page, pageSize) => {
+                  setPagination(prev => ({ ...prev, current: page, pageSize }));
+                },
+              }}
+              rowKey="id"
+              emptyText="No services found"
+            />
+          </div>
+        ) : (
         <Table
           columns={columns}
           dataSource={services}
@@ -400,6 +499,7 @@ export default function ServicesPage() {
           scroll={{ x: 1300 }}
           size="small"
         />
+        )}
       </div>
     </MainLayout>
   );

@@ -5,6 +5,8 @@ import { useRouter, useParams } from 'next/navigation';
 import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Row, Col, Statistic, Divider } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, DollarOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../../../components/Layout';
+import useIsMobile from '../../../../hooks/useIsMobile';
+import MobileCardList from '../../../../components/mobile/MobileCardList';
 import { invoice, pdf } from '../../../../lib/api';
 
 const STATUS_MAP = {
@@ -22,6 +24,7 @@ export default function InvoiceDetailPage() {
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
+  const { isMobile } = useIsMobile();
   const canEdit = hasPermission ? hasPermission('LANDLORD/INVOICE_EDIT') : false;
   const invoiceId = params.id;
 
@@ -68,31 +71,31 @@ export default function InvoiceDetailPage() {
   return (
     <MainLayout>
       <Space direction="vertical" style={{ width: '100%' }} size="large">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 8 : 0 }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/invoices')}>Back to Invoices</Button>
-          <Space>
+          <Space wrap>
             <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.invoiceUrl(invoiceId), '_blank')}>View PDF</Button>
             {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/invoices/${invoiceId}/edit`)}>Edit Invoice</Button>}
           </Space>
         </div>
 
-        <Row gutter={16}>
-          <Col span={6}>
+        <Row gutter={[16, isMobile ? 8 : 16]}>
+          <Col xs={12} sm={12} md={6}>
             <Card loading={loading}>
               <Statistic title="Invoice Amount" value={inv?.amount || 0} prefix="$" />
             </Card>
           </Col>
-          <Col span={6}>
+          <Col xs={12} sm={12} md={6}>
             <Card loading={loading}>
               <Statistic title="Amount Paid" value={inv?.amount_paid || 0} prefix="$" valueStyle={{ color: '#3f8600' }} />
             </Card>
           </Col>
-          <Col span={6}>
+          <Col xs={12} sm={12} md={6}>
             <Card loading={loading}>
               <Statistic title="Outstanding" value={inv?.outstanding || 0} prefix="$" valueStyle={{ color: (inv?.outstanding || 0) > 0 ? '#cf1322' : '#3f8600' }} />
             </Card>
           </Col>
-          <Col span={6}>
+          <Col xs={12} sm={12} md={6}>
             <Card loading={loading}>
               <Statistic title="Status" value={statusInfo.label} valueStyle={{ color: statusInfo.color === 'green' ? '#3f8600' : statusInfo.color === 'red' ? '#cf1322' : '#d48806' }} />
             </Card>
@@ -101,7 +104,7 @@ export default function InvoiceDetailPage() {
 
         <Card title={`Invoice ${inv?.invoice_code || '#' + invoiceId}`} loading={loading}>
           {inv && (
-            <Descriptions bordered column={2}>
+            <Descriptions bordered column={isMobile ? 1 : 2}>
               <Descriptions.Item label="Invoice Code">{inv.invoice_code || '-'}</Descriptions.Item>
               <Descriptions.Item label="Status"><Tag color={statusInfo.color}>{statusInfo.label}</Tag></Descriptions.Item>
               <Descriptions.Item label="Tenant">{[inv.tenant_first_name, inv.tenant_last_name].filter(Boolean).join(' ') || '-'}</Descriptions.Item>
@@ -119,61 +122,90 @@ export default function InvoiceDetailPage() {
 
         {inv?.payments && inv.payments.length > 0 && (
           <Card title={<span><DollarOutlined /> Payment History</span>}>
-            <Table
-              dataSource={inv.payments}
-              rowKey={(r, i) => r.id + '-' + i}
-              pagination={false}
-              size="small"
-              columns={[
-                {
-                  title: 'Date',
-                  dataIndex: 'payment_date',
-                  render: (d) => formatDate(d),
-                },
-                {
-                  title: 'Transaction ID',
-                  dataIndex: 'transaction_code',
-                },
-                {
-                  title: 'Contact',
-                  render: (_, r) => [r.contact_first_name, r.contact_last_name].filter(Boolean).join(' ') || '-',
-                },
-                {
-                  title: 'Payment Method',
-                  dataIndex: 'payment_method_name',
-                  render: (v) => v || '-',
-                },
-                {
-                  title: 'Category',
-                  dataIndex: 'payment_category_name',
-                  render: (v) => v || '-',
-                },
-                {
-                  title: 'Amount',
-                  dataIndex: 'amount',
-                  render: (v) => formatCurrency(v),
-                  align: 'right',
-                },
-                {
-                  title: '',
-                  key: 'receipt',
-                  width: 80,
-                  render: (_, r) => (
-                    <Button type="link" size="small" icon={<FilePdfOutlined />}
-                      style={{ color: '#52c41a', padding: 0 }}
-                      onClick={() => openReceipt(r.id)}>
-                      Receipt
-                    </Button>
-                  ),
-                },
-              ]}
-            />
+            {isMobile ? (
+              <MobileCardList
+                dataSource={inv.payments}
+                rowKey={(r, i) => r.id + '-' + i}
+                emptyText="No payments"
+                renderCard={(r) => (
+                  <Card size="small" styles={{ body: { padding: 12 } }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ fontWeight: 500 }}>{formatDate(r.payment_date)}</span>
+                      <span style={{ fontWeight: 600 }}>{formatCurrency(r.amount)}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: '#666' }}>
+                      {r.transaction_code && <div><strong>Txn:</strong> {r.transaction_code}</div>}
+                      <div><strong>Contact:</strong> {[r.contact_first_name, r.contact_last_name].filter(Boolean).join(' ') || '-'}</div>
+                      <div><strong>Method:</strong> {r.payment_method_name || '-'}</div>
+                      {r.payment_category_name && <div><strong>Category:</strong> {r.payment_category_name}</div>}
+                    </div>
+                    <div style={{ marginTop: 6 }}>
+                      <Button type="link" size="small" icon={<FilePdfOutlined />}
+                        style={{ color: '#52c41a', padding: 0 }}
+                        onClick={() => openReceipt(r.id)}>
+                        Receipt
+                      </Button>
+                    </div>
+                  </Card>
+                )}
+              />
+            ) : (
+              <Table
+                dataSource={inv.payments}
+                rowKey={(r, i) => r.id + '-' + i}
+                pagination={false}
+                size="small"
+                columns={[
+                  {
+                    title: 'Date',
+                    dataIndex: 'payment_date',
+                    render: (d) => formatDate(d),
+                  },
+                  {
+                    title: 'Transaction ID',
+                    dataIndex: 'transaction_code',
+                  },
+                  {
+                    title: 'Contact',
+                    render: (_, r) => [r.contact_first_name, r.contact_last_name].filter(Boolean).join(' ') || '-',
+                  },
+                  {
+                    title: 'Payment Method',
+                    dataIndex: 'payment_method_name',
+                    render: (v) => v || '-',
+                  },
+                  {
+                    title: 'Category',
+                    dataIndex: 'payment_category_name',
+                    render: (v) => v || '-',
+                  },
+                  {
+                    title: 'Amount',
+                    dataIndex: 'amount',
+                    render: (v) => formatCurrency(v),
+                    align: 'right',
+                  },
+                  {
+                    title: '',
+                    key: 'receipt',
+                    width: 80,
+                    render: (_, r) => (
+                      <Button type="link" size="small" icon={<FilePdfOutlined />}
+                        style={{ color: '#52c41a', padding: 0 }}
+                        onClick={() => openReceipt(r.id)}>
+                        Receipt
+                      </Button>
+                    ),
+                  },
+                ]}
+              />
+            )}
             <Divider style={{ margin: '12px 0' }} />
             <Row>
-              <Col span={12}>
+              <Col xs={24} md={12}>
                 <strong>Total Paid: </strong>{formatCurrency(inv.amount_paid)}
               </Col>
-              <Col span={12} style={{ textAlign: 'right' }}>
+              <Col xs={24} md={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
                 <strong>Outstanding: </strong>
                 <span style={{ color: inv.outstanding > 0 ? '#cf1322' : '#3f8600' }}>
                   {formatCurrency(inv.outstanding)}

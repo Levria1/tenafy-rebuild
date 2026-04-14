@@ -7,6 +7,8 @@ import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutli
 import MainLayout, { useAuth } from '../../components/Layout';
 import { settings, user, amenity, role, emailTemplate, smtpAccount, bookingPlatform, salesAgent } from '../../lib/api';
 import { useCallback } from 'react';
+import useIsMobile from '../../hooks/useIsMobile';
+import MobileCardList from '../../components/mobile/MobileCardList';
 
 export default function SettingsPageWrapper() {
   return <Suspense fallback={<div />}><SettingsPage /></Suspense>;
@@ -14,6 +16,7 @@ export default function SettingsPageWrapper() {
 
 function SettingsPage() {
   const { hasPermission } = useAuth();
+  const { isMobile } = useIsMobile();
   const router = useRouter();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
@@ -126,6 +129,82 @@ function SettingsPage() {
     )},
   ];
 
+  // --- Mobile renderCard functions for inline tables ---
+  const renderCategoryCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontWeight: 500 }}>{r.name}</span>
+        <Button type="link" danger icon={<DeleteOutlined />} onClick={async () => {
+          try { await settings.deleteCategory(r.id); message.success('Deleted'); loadData(); }
+          catch (error) { message.error('Failed to delete'); }
+        }}>Delete</Button>
+      </div>
+    </Card>
+  );
+
+  const renderPaymentCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontWeight: 500 }}>{r.name}</span>
+        <Button type="link" danger icon={<DeleteOutlined />} onClick={async () => {
+          try { await settings.deletePaymentMethod(r.id); message.success('Deleted'); loadData(); }
+          catch (error) { message.error('Failed to delete'); }
+        }}>Delete</Button>
+      </div>
+    </Card>
+  );
+
+  const renderTemplateCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ fontWeight: 500, marginBottom: 4 }}>{r.name}</div>
+      <div style={{ color: '#666', fontSize: 13, marginBottom: 4 }}>{r.subject}</div>
+      {r.type && <Tag>{r.type}</Tag>}
+      <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+        {canEditTemplate && <Button type="link" style={{ padding: 0 }} onClick={() => router.push(`/settings/email-templates/${r.id}/edit`)}>Edit</Button>}
+        {canDeleteTemplate && <Button type="link" danger style={{ padding: 0 }} onClick={async () => {
+          try { await emailTemplate.delete(r.id); message.success('Deleted'); loadData(); }
+          catch (error) { message.error('Failed to delete'); }
+        }}>Delete</Button>}
+      </div>
+    </Card>
+  );
+
+  const renderUserCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ fontWeight: 500, marginBottom: 4 }}>{[r.first_name, r.last_name].filter(Boolean).join(' ') || '—'}</div>
+      <div style={{ fontSize: 13, color: '#666', marginBottom: 2 }}>{r.username}</div>
+      <div style={{ fontSize: 13, color: '#666', marginBottom: 4 }}>{r.email}</div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        {r.role_name && <Tag>{r.role_name}</Tag>}
+        <Tag color={r.status === 1 ? 'green' : 'red'}>{r.status === 1 ? 'Active' : 'Inactive'}</Tag>
+      </div>
+      {canEditUser && (
+        <div style={{ marginTop: 8 }}>
+          <Button type="link" style={{ padding: 0 }} onClick={() => router.push(`/settings/users/${r.id}/edit`)}>Edit</Button>
+        </div>
+      )}
+    </Card>
+  );
+
+  const renderRoleCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ fontWeight: 500, marginBottom: 4 }}>{r.display_name}</div>
+          {r.description && <div style={{ fontSize: 13, color: '#666', marginBottom: 4 }}>{r.description}</div>}
+          <Tag color={r.status === 1 ? 'green' : 'red'}>{r.status === 1 ? 'Active' : 'Inactive'}</Tag>
+        </div>
+      </div>
+      <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+        {canEditRole && <Button type="link" style={{ padding: 0 }} onClick={() => router.push(`/settings/role/${r.id}/edit`)}>Edit</Button>}
+        {canDeleteRole && <Button type="link" danger style={{ padding: 0 }} onClick={async () => {
+          try { await role.delete(r.id); message.success('Deleted'); loadData(); }
+          catch (error) { message.error('Failed to delete'); }
+        }}>Delete</Button>}
+      </div>
+    </Card>
+  );
+
   const canSeeUsers = hasPermission ? hasPermission('LANDLORD/USER_LIST') : false;
   const canSeeRoles = hasPermission ? hasPermission('LANDLORD/ROLE_LIST') : false;
   const canCreateTemplate = hasPermission ? hasPermission('LANDLORD/EMAIL_TEMPLATE_CREATE') : false;
@@ -137,81 +216,101 @@ function SettingsPage() {
 
   // Group tabs by section — each sidebar link only shows its own tabs
   const accountTabs = [
-    { key: 'personal', label: 'Personal Info', children: <PersonalSettings /> },
-    { key: 'landlord', label: 'Landlord Info', children: <LandlordSettings /> },
+    { key: 'personal', label: 'Personal Info', children: <PersonalSettings isMobile={isMobile} /> },
+    { key: 'landlord', label: 'Landlord Info', children: <LandlordSettings isMobile={isMobile} /> },
   ];
 
   const accountingTabs = [
     { key: 'categories', label: 'Categories', children: (
       <Card>
         <div style={{ marginBottom: 16 }}>
-          <Form layout="inline" onFinish={async (values) => {
+          <Form layout={isMobile ? 'vertical' : 'inline'} onFinish={async (values) => {
             try { await settings.createCategory(values); message.success('Created'); loadData(); }
             catch (error) { message.error('Failed'); }
           }}>
             <Form.Item name="name" rules={[{ required: true }]}><Input placeholder="Category name" /></Form.Item>
-            <Form.Item><Button type="primary" htmlType="submit">Add</Button></Form.Item>
+            <Form.Item><Button type="primary" htmlType="submit" block={isMobile}>Add</Button></Form.Item>
           </Form>
         </div>
-        <Table columns={categoryColumns} dataSource={categories} rowKey="id" loading={loading} pagination={false} />
+        {isMobile ? (
+          <MobileCardList dataSource={categories} renderCard={renderCategoryCard} loading={loading} rowKey="id" />
+        ) : (
+          <Table columns={categoryColumns} dataSource={categories} rowKey="id" loading={loading} pagination={false} />
+        )}
       </Card>
     )},
     { key: 'payment', label: 'Payment Methods', children: (
       <Card>
         <div style={{ marginBottom: 16 }}>
-          <Form layout="inline" onFinish={async (values) => {
+          <Form layout={isMobile ? 'vertical' : 'inline'} onFinish={async (values) => {
             try { await settings.createPaymentMethod(values); message.success('Created'); loadData(); }
             catch (error) { message.error('Failed'); }
           }}>
             <Form.Item name="name" rules={[{ required: true }]}><Input placeholder="Payment method name" /></Form.Item>
-            <Form.Item><Button type="primary" htmlType="submit">Add</Button></Form.Item>
+            <Form.Item><Button type="primary" htmlType="submit" block={isMobile}>Add</Button></Form.Item>
           </Form>
         </div>
-        <Table columns={paymentColumns} dataSource={paymentMethods} rowKey="id" loading={loading} pagination={false} />
+        {isMobile ? (
+          <MobileCardList dataSource={paymentMethods} renderCard={renderPaymentCard} loading={loading} rowKey="id" />
+        ) : (
+          <Table columns={paymentColumns} dataSource={paymentMethods} rowKey="id" loading={loading} pagination={false} />
+        )}
       </Card>
     )},
-    { key: 'accounts', label: 'Accounts', children: <AccountSettings /> },
-    { key: 'sequences', label: 'Sequences', children: <SequenceSettings /> },
+    { key: 'accounts', label: 'Accounts', children: <AccountSettings isMobile={isMobile} /> },
+    { key: 'sequences', label: 'Sequences', children: <SequenceSettings isMobile={isMobile} /> },
   ];
 
   const amenityTabs = [
-    { key: 'amenities', label: 'Amenities', children: <AmenitySettings /> },
+    { key: 'amenities', label: 'Amenities', children: <AmenitySettings isMobile={isMobile} /> },
   ];
 
   const emailTabs = [
     { key: 'emailTemplates', label: 'Email Templates', children: (
       <Card>
-        {canCreateTemplate && <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/email-templates/create')}>Add Template</Button></div>}
-        <Table columns={templateColumns} dataSource={emailTemplates} rowKey="id" loading={loading} pagination={false} />
+        {canCreateTemplate && <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/email-templates/create')} block={isMobile}>Add Template</Button></div>}
+        {isMobile ? (
+          <MobileCardList dataSource={emailTemplates} renderCard={renderTemplateCard} loading={loading} rowKey="id" />
+        ) : (
+          <Table columns={templateColumns} dataSource={emailTemplates} rowKey="id" loading={loading} pagination={false} />
+        )}
       </Card>
     )},
-    { key: 'smtpAccounts', label: 'SMTP Accounts', children: <SmtpAccountSettings /> },
+    { key: 'smtpAccounts', label: 'SMTP Accounts', children: <SmtpAccountSettings isMobile={isMobile} /> },
     { key: 'emailSettings', label: 'Settings', children: <EmailWhitelistSettings /> },
   ];
 
   const userTabs = [
     ...(canSeeUsers ? [{ key: 'users', label: 'User Management', children: (
       <Card>
-        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/users/create')}>Add User</Button></div>
-        <Table columns={userColumns} dataSource={users} rowKey="id" loading={loading} pagination={false} />
+        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/users/create')} block={isMobile}>Add User</Button></div>
+        {isMobile ? (
+          <MobileCardList dataSource={users} renderCard={renderUserCard} loading={loading} rowKey="id" />
+        ) : (
+          <Table columns={userColumns} dataSource={users} rowKey="id" loading={loading} pagination={false} />
+        )}
       </Card>
     )}] : []),
     ...(canSeeRoles ? [{ key: 'roles', label: 'Roles', children: (
       <Card>
-        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/role/create')}>Add Role</Button></div>
-        <Table columns={roleColumns} dataSource={roles} rowKey="id" loading={loading} pagination={false} />
+        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/role/create')} block={isMobile}>Add Role</Button></div>
+        {isMobile ? (
+          <MobileCardList dataSource={roles} renderCard={renderRoleCard} loading={loading} rowKey="id" />
+        ) : (
+          <Table columns={roleColumns} dataSource={roles} rowKey="id" loading={loading} pagination={false} />
+        )}
       </Card>
     )}] : []),
   ];
 
   const apiKeyTabs = [
-    { key: 'apiKeys', label: 'API Keys', children: <ApiKeySettings /> },
+    { key: 'apiKeys', label: 'API Keys', children: <ApiKeySettings isMobile={isMobile} /> },
   ];
 
   const bookingCommissionTabs = [
-    { key: 'bookingPlatforms', label: 'Booking Platforms', children: <BookingPlatformSettings /> },
-    { key: 'salesAgents', label: 'Sales Agents', children: <SalesAgentSettings /> },
-    { key: 'leadSources', label: 'Lead Sources', children: <LeadSourceSettings /> },
+    { key: 'bookingPlatforms', label: 'Booking Platforms', children: <BookingPlatformSettings isMobile={isMobile} /> },
+    { key: 'salesAgents', label: 'Sales Agents', children: <SalesAgentSettings isMobile={isMobile} /> },
+    { key: 'leadSources', label: 'Lead Sources', children: <LeadSourceSettings isMobile={isMobile} /> },
   ];
 
   // Determine which group the active tab belongs to
@@ -255,7 +354,7 @@ function SettingsPage() {
   );
 }
 
-function PersonalSettings() {
+function PersonalSettings({ isMobile }) {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -284,7 +383,7 @@ function PersonalSettings() {
   );
 }
 
-function LandlordSettings() {
+function LandlordSettings({ isMobile }) {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [currencies, setCurrencies] = useState([]);
@@ -321,23 +420,23 @@ function LandlordSettings() {
 
   return (
     <Card>
-      <Form form={form} layout="vertical" onFinish={onFinish} style={{ maxWidth: 700 }}>
+      <Form form={form} layout="vertical" onFinish={onFinish} style={{ maxWidth: isMobile ? '100%' : 700 }}>
         <Row gutter={16}>
-          <Col span={12}><Form.Item name="company_name" label="Company Name"><Input /></Form.Item></Col>
-          <Col span={12}><Form.Item name="contact_person" label="Contact Person"><Input /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="company_name" label="Company Name"><Input /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="contact_person" label="Contact Person"><Input /></Form.Item></Col>
         </Row>
         <Form.Item name="address" label="Address"><Input.TextArea rows={2} /></Form.Item>
         <Row gutter={16}>
-          <Col span={12}><Form.Item name="phone" label="Phone"><Input /></Form.Item></Col>
-          <Col span={12}><Form.Item name="email" label="Email"><Input type="email" /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="phone" label="Phone"><Input /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="email" label="Email"><Input type="email" /></Form.Item></Col>
         </Row>
         <Row gutter={16}>
-          <Col span={12}>
+          <Col xs={24} sm={12}>
             <Form.Item name="invoice_prefix" label="Invoice Prefix">
               <Input placeholder="e.g. INV-" />
             </Form.Item>
           </Col>
-          <Col span={12}>
+          <Col xs={24} sm={12}>
             <Form.Item name="default_currency" label="Default Currency">
               <Select options={currencies.length ? currencies : [
                 { label: 'USD', value: 'USD' }, { label: 'EUR', value: 'EUR' }, { label: 'GBP', value: 'GBP' }
@@ -357,7 +456,7 @@ function LandlordSettings() {
 // Account Settings (Bank / Payment Accounts)
 // ---------------------------------------------------------------------------
 
-function AccountSettings() {
+function AccountSettings({ isMobile }) {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
@@ -461,6 +560,30 @@ function AccountSettings() {
     },
   ];
 
+  const renderAccountCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      {String(r.id) === String(editingId) ? (
+        <div>
+          <Input value={editName} onChange={(e) => setEditName(e.target.value)} onPressEnter={handleEditSave} autoFocus style={{ marginBottom: 8 }} />
+          <Space>
+            <Button type="link" style={{ padding: 0 }} onClick={handleEditSave}>Save</Button>
+            <Button type="link" style={{ padding: 0 }} onClick={handleEditCancel}>Cancel</Button>
+          </Space>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontWeight: 500 }}>{r.name}</span>
+          <Space>
+            <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
+            <Popconfirm title="Delete this account?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
+            </Popconfirm>
+          </Space>
+        </div>
+      )}
+    </Card>
+  );
+
   return (
     <Card>
       <h3 style={{ marginBottom: 4 }}>Accounts</h3>
@@ -468,21 +591,25 @@ function AccountSettings() {
         Manage bank and payment accounts used for accounting transactions.
       </p>
       <div style={{ marginBottom: 16 }}>
-        <Form layout="inline" onFinish={handleAdd}>
+        <Form layout={isMobile ? 'vertical' : 'inline'} onFinish={handleAdd}>
           <Form.Item name="name" rules={[{ required: true, message: 'Enter account name' }]}>
-            <Input placeholder="Account name" style={{ width: 250 }} />
+            <Input placeholder="Account name" style={{ width: isMobile ? '100%' : 250 }} />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" icon={<PlusOutlined />}>Add Account</Button>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} block={isMobile}>Add Account</Button>
           </Form.Item>
         </Form>
       </div>
-      <Table columns={columns} dataSource={accounts} rowKey="id" loading={loading} pagination={false} size="middle" />
+      {isMobile ? (
+        <MobileCardList dataSource={accounts} renderCard={renderAccountCard} loading={loading} rowKey="id" />
+      ) : (
+        <Table columns={columns} dataSource={accounts} rowKey="id" loading={loading} pagination={false} size="middle" />
+      )}
     </Card>
   );
 }
 
-function SequenceSettings() {
+function SequenceSettings({ isMobile }) {
   const [sequences, setSequences] = useState([]);
   const [edited, setEdited] = useState({});
   const [loading, setLoading] = useState(true);
@@ -566,15 +693,37 @@ function SequenceSettings() {
     },
   ];
 
+  const renderSequenceCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ fontWeight: 500, marginBottom: 8 }}>{r.name}</div>
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Pattern</div>
+        <Input value={getVal(r, 'pattern')} onChange={(e) => handleChange(r.id, 'pattern', e.target.value)} />
+      </div>
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Next Number</div>
+        <InputNumber value={Number(getVal(r, 'seq_next')) || 1} min={1} style={{ width: '100%' }} onChange={(v) => handleChange(r.id, 'seq_next', v)} />
+      </div>
+      <div>
+        <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Preview</div>
+        <Tag>{buildExample(r)}</Tag>
+      </div>
+    </Card>
+  );
+
   return (
     <Card>
       <p style={{ marginBottom: 16, color: '#666' }}>
         Configure numbering sequences for invoices, leases, transactions, and services.
         The pattern uses <code>{'{#,010}'}</code> for the sequence number and <code>{'{d,yyyyMMdd}'}</code> for the date.
       </p>
-      <Table columns={columns} dataSource={sequences} rowKey="id" loading={loading} pagination={false} />
+      {isMobile ? (
+        <MobileCardList dataSource={sequences} renderCard={renderSequenceCard} loading={loading} rowKey="id" />
+      ) : (
+        <Table columns={columns} dataSource={sequences} rowKey="id" loading={loading} pagination={false} />
+      )}
       <div style={{ marginTop: 16, textAlign: 'right' }}>
-        <Button type="primary" onClick={handleSave} loading={saving} disabled={!hasChanges}>
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={!hasChanges} block={isMobile}>
           Save Changes
         </Button>
       </div>
@@ -602,7 +751,7 @@ function getTypeLabel(cat, type) {
   return typeLabel ? `${typeLabel} ${catLabel}` : catLabel;
 }
 
-function AmenitySettings() {
+function AmenitySettings({ isMobile }) {
   const router = useRouter();
   const [data, setData] = useState([]);
   const [total, setTotal] = useState(0);
@@ -679,36 +828,86 @@ function AmenitySettings() {
     },
   ];
 
+  const renderAmenityCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ fontWeight: 500, marginBottom: 4 }}>{r.display_name}</div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <Tag>{getCategoryLabel(r.category)}</Tag>
+        <Tag>{getTypeLabel(r.category, r.type)}</Tag>
+      </div>
+      <Space>
+        <Button type="link" style={{ padding: 0 }} onClick={() => router.push(`/settings/amenity/${r.id}`)}>Edit</Button>
+        <Button type="link" danger style={{ padding: 0 }} onClick={() => handleDelete(r.id)}>Delete</Button>
+      </Space>
+    </Card>
+  );
+
   return (
     <>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Tag style={{ fontSize: 14, padding: '4px 12px' }}>{total} Total</Tag>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      {isMobile ? (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <Tag style={{ fontSize: 14, padding: '4px 12px' }}>{total} Total</Tag>
+            <Popover content={filterContent} trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
+              <Badge count={activeFilters} size="small">
+                <Button icon={<FilterOutlined />}>Filter</Button>
+              </Badge>
+            </Popover>
+          </div>
           <Input
             placeholder="Type here to search"
             prefix={<SearchOutlined />}
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            style={{ width: 220 }}
+            style={{ width: '100%', marginBottom: 8 }}
             allowClear
           />
-          <Popover content={filterContent} trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
-            <Badge count={activeFilters} size="small">
-              <Button icon={<FilterOutlined />}>Filter</Button>
-            </Badge>
-          </Popover>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/amenity/create')}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/amenity/create')} block>
             CREATE AMENITY
           </Button>
         </div>
-      </div>
-      <Table columns={columns} dataSource={data} rowKey="id" loading={loading}
-        pagination={false} size="middle" />
-      {total > limit && (
-        <div style={{ marginTop: 16, textAlign: 'right' }}>
-          <Pagination current={page} total={total} pageSize={limit}
-            onChange={(p) => setPage(p)} showSizeChanger={false} />
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <Tag style={{ fontSize: 14, padding: '4px 12px' }}>{total} Total</Tag>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Input
+              placeholder="Type here to search"
+              prefix={<SearchOutlined />}
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              style={{ width: 220 }}
+              allowClear
+            />
+            <Popover content={filterContent} trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
+              <Badge count={activeFilters} size="small">
+                <Button icon={<FilterOutlined />}>Filter</Button>
+              </Badge>
+            </Popover>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/amenity/create')}>
+              CREATE AMENITY
+            </Button>
+          </div>
         </div>
+      )}
+      {isMobile ? (
+        <MobileCardList
+          dataSource={data}
+          renderCard={renderAmenityCard}
+          loading={loading}
+          rowKey="id"
+          pagination={{ current: page, pageSize: limit, total, onChange: (p) => setPage(p) }}
+        />
+      ) : (
+        <>
+          <Table columns={columns} dataSource={data} rowKey="id" loading={loading}
+            pagination={false} size="middle" />
+          {total > limit && (
+            <div style={{ marginTop: 16, textAlign: 'right' }}>
+              <Pagination current={page} total={total} pageSize={limit}
+                onChange={(p) => setPage(p)} showSizeChanger={false} />
+            </div>
+          )}
+        </>
       )}
     </>
   );
@@ -718,7 +917,7 @@ function AmenitySettings() {
 // SMTP Account Settings
 // ---------------------------------------------------------------------------
 
-function SmtpAccountSettings() {
+function SmtpAccountSettings({ isMobile }) {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -831,6 +1030,23 @@ function SmtpAccountSettings() {
     )},
   ];
 
+  const renderSmtpCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ fontWeight: 500, marginBottom: 2 }}>{r.email}</div>
+      {r.display_name && <div style={{ fontSize: 13, color: '#666', marginBottom: 2 }}>{r.display_name}</div>}
+      <div style={{ fontSize: 13, color: '#666', marginBottom: 4 }}>{r.host}:{r.port}</div>
+      <div style={{ marginBottom: 8 }}>
+        {r.is_default ? <Tag color="blue">Default</Tag> : null}
+      </div>
+      <Space>
+        <Button type="link" style={{ padding: 0 }} onClick={() => openEdit(r)}>Edit</Button>
+        <Popconfirm title="Delete this SMTP account?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+          <Button type="link" danger style={{ padding: 0 }}>Delete</Button>
+        </Popconfirm>
+      </Space>
+    </Card>
+  );
+
   return (
     <>
       <Card>
@@ -839,9 +1055,13 @@ function SmtpAccountSettings() {
           Add SMTP accounts for each email address you send from. When a template uses a specific &quot;From&quot; address, the matching SMTP credentials will be used automatically.
         </p>
         <div style={{ marginBottom: 16 }}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>Add SMTP Account</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate} block={isMobile}>Add SMTP Account</Button>
         </div>
-        <Table columns={columns} dataSource={accounts} rowKey="id" loading={loading} pagination={false} size="middle" />
+        {isMobile ? (
+          <MobileCardList dataSource={accounts} renderCard={renderSmtpCard} loading={loading} rowKey="id" />
+        ) : (
+          <Table columns={columns} dataSource={accounts} rowKey="id" loading={loading} pagination={false} size="middle" />
+        )}
       </Card>
 
       <Modal
@@ -866,24 +1086,24 @@ function SmtpAccountSettings() {
             <Input placeholder="e.g. Tane Residence" />
           </Form.Item>
           <Row gutter={16}>
-            <Col span={16}>
+            <Col xs={24} sm={16}>
               <Form.Item name="host" label="SMTP Host">
                 <Input placeholder="smtp.titan.email" />
               </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col xs={24} sm={8}>
               <Form.Item name="port" label="Port">
                 <InputNumber style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>
           <Row gutter={16}>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="is_secure" label="SSL/TLS" valuePropName="checked">
                 <Switch />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="is_default" label="Default Account" valuePropName="checked">
                 <Switch />
               </Form.Item>
@@ -899,7 +1119,7 @@ function SmtpAccountSettings() {
 // API Key Settings (Super Admin only)
 // ---------------------------------------------------------------------------
 
-function ApiKeySettings() {
+function ApiKeySettings({ isMobile }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [apiEnabled, setApiEnabled] = useState(false);
@@ -1044,6 +1264,35 @@ function ApiKeySettings() {
     },
   ];
 
+  const renderApiKeyCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ fontWeight: 500, marginBottom: 4 }}>{r.name}</div>
+      <div style={{ marginBottom: 4 }}>
+        <Space>
+          <code style={{ fontSize: 12 }}>{r.api_key.substring(0, 12)}...{r.api_key.substring(r.api_key.length - 6)}</code>
+          <Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copyToClipboard(r.api_key)} />
+        </Space>
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+        <Switch
+          checked={Number(r.status) === 1}
+          checkedChildren="Active"
+          unCheckedChildren="Disabled"
+          onChange={() => handleToggleStatus(r)}
+          size="small"
+        />
+      </div>
+      <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>
+        Last used: {r.last_used_at ? new Date(r.last_used_at).toLocaleDateString() : 'Never'}
+        {' | '}
+        Created: {r.created_at ? new Date(r.created_at).toLocaleDateString() : '-'}
+      </div>
+      <Popconfirm title="Delete this API key?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+        <Button type="link" danger style={{ padding: 0 }}>Delete</Button>
+      </Popconfirm>
+    </Card>
+  );
+
   return (
     <>
       <Card>
@@ -1052,11 +1301,15 @@ function ApiKeySettings() {
           Manage API keys for external integrations. Use these keys to access your organization&apos;s public data via the API.
         </p>
         <div style={{ marginBottom: 16 }}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setModalOpen(true); }}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setModalOpen(true); }} block={isMobile}>
             Create API Key
           </Button>
         </div>
-        <Table columns={columns} dataSource={keys} rowKey="id" loading={loading} pagination={false} size="middle" />
+        {isMobile ? (
+          <MobileCardList dataSource={keys} renderCard={renderApiKeyCard} loading={loading} rowKey="id" />
+        ) : (
+          <Table columns={columns} dataSource={keys} rowKey="id" loading={loading} pagination={false} size="middle" />
+        )}
       </Card>
 
       {/* New key reveal */}
@@ -1195,7 +1448,7 @@ function EmailWhitelistSettings() {
   );
 }
 
-function BookingPlatformSettings() {
+function BookingPlatformSettings({ isMobile }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
@@ -1269,6 +1522,30 @@ function BookingPlatformSettings() {
     },
   ];
 
+  const renderPlatformCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      {String(r.id) === String(editingId) ? (
+        <div>
+          <Input value={editName} onChange={(e) => setEditName(e.target.value)} onPressEnter={handleEditSave} autoFocus style={{ marginBottom: 8 }} />
+          <Space>
+            <Button type="link" style={{ padding: 0 }} onClick={handleEditSave}>Save</Button>
+            <Button type="link" style={{ padding: 0 }} onClick={handleEditCancel}>Cancel</Button>
+          </Space>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontWeight: 500 }}>{r.name}</span>
+          <Space>
+            <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
+            <Popconfirm title="Delete this platform?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
+            </Popconfirm>
+          </Space>
+        </div>
+      )}
+    </Card>
+  );
+
   return (
     <Card>
       <h3 style={{ marginBottom: 4 }}>Booking Platforms</h3>
@@ -1276,21 +1553,25 @@ function BookingPlatformSettings() {
         Manage booking platforms (e.g. Airbnb, Booking.com, Direct) to track where tenants come from.
       </p>
       <div style={{ marginBottom: 16 }}>
-        <Form layout="inline" onFinish={handleAdd}>
+        <Form layout={isMobile ? 'vertical' : 'inline'} onFinish={handleAdd}>
           <Form.Item name="name" rules={[{ required: true, message: 'Enter platform name' }]}>
-            <Input placeholder="Platform name" style={{ width: 250 }} />
+            <Input placeholder="Platform name" style={{ width: isMobile ? '100%' : 250 }} />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" icon={<PlusOutlined />}>Add Platform</Button>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} block={isMobile}>Add Platform</Button>
           </Form.Item>
         </Form>
       </div>
-      <Table columns={columns} dataSource={items} rowKey="id" loading={loading} pagination={false} size="middle" />
+      {isMobile ? (
+        <MobileCardList dataSource={items} renderCard={renderPlatformCard} loading={loading} rowKey="id" />
+      ) : (
+        <Table columns={columns} dataSource={items} rowKey="id" loading={loading} pagination={false} size="middle" />
+      )}
     </Card>
   );
 }
 
-function SalesAgentSettings() {
+function SalesAgentSettings({ isMobile }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
@@ -1364,6 +1645,30 @@ function SalesAgentSettings() {
     },
   ];
 
+  const renderAgentCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      {String(r.id) === String(editingId) ? (
+        <div>
+          <Input value={editName} onChange={(e) => setEditName(e.target.value)} onPressEnter={handleEditSave} autoFocus style={{ marginBottom: 8 }} />
+          <Space>
+            <Button type="link" style={{ padding: 0 }} onClick={handleEditSave}>Save</Button>
+            <Button type="link" style={{ padding: 0 }} onClick={handleEditCancel}>Cancel</Button>
+          </Space>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontWeight: 500 }}>{r.name}</span>
+          <Space>
+            <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
+            <Popconfirm title="Delete this agent?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
+            </Popconfirm>
+          </Space>
+        </div>
+      )}
+    </Card>
+  );
+
   return (
     <Card>
       <h3 style={{ marginBottom: 4 }}>Sales Agents</h3>
@@ -1371,21 +1676,25 @@ function SalesAgentSettings() {
         Manage sales agents for commission tracking. Agents assigned to leases will be tagged on all generated invoices.
       </p>
       <div style={{ marginBottom: 16 }}>
-        <Form layout="inline" onFinish={handleAdd}>
+        <Form layout={isMobile ? 'vertical' : 'inline'} onFinish={handleAdd}>
           <Form.Item name="name" rules={[{ required: true, message: 'Enter agent name' }]}>
-            <Input placeholder="Agent name" style={{ width: 250 }} />
+            <Input placeholder="Agent name" style={{ width: isMobile ? '100%' : 250 }} />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" icon={<PlusOutlined />}>Add Agent</Button>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} block={isMobile}>Add Agent</Button>
           </Form.Item>
         </Form>
       </div>
-      <Table columns={columns} dataSource={items} rowKey="id" loading={loading} pagination={false} size="middle" />
+      {isMobile ? (
+        <MobileCardList dataSource={items} renderCard={renderAgentCard} loading={loading} rowKey="id" />
+      ) : (
+        <Table columns={columns} dataSource={items} rowKey="id" loading={loading} pagination={false} size="middle" />
+      )}
     </Card>
   );
 }
 
-function LeadSourceSettings() {
+function LeadSourceSettings({ isMobile }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
@@ -1459,6 +1768,30 @@ function LeadSourceSettings() {
     },
   ];
 
+  const renderLeadSourceCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      {String(r.id) === String(editingId) ? (
+        <div>
+          <Input value={editName} onChange={(e) => setEditName(e.target.value)} onPressEnter={handleEditSave} autoFocus style={{ marginBottom: 8 }} />
+          <Space>
+            <Button type="link" style={{ padding: 0 }} onClick={handleEditSave}>Save</Button>
+            <Button type="link" style={{ padding: 0 }} onClick={handleEditCancel}>Cancel</Button>
+          </Space>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontWeight: 500 }}>{r.name}</span>
+          <Space>
+            <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
+            <Popconfirm title="Delete this lead source?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
+              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
+            </Popconfirm>
+          </Space>
+        </div>
+      )}
+    </Card>
+  );
+
   return (
     <Card>
       <h3 style={{ marginBottom: 4 }}>Lead Sources</h3>
@@ -1466,16 +1799,20 @@ function LeadSourceSettings() {
         Manage lead sources to track how contacts found you (e.g. Walk-in, Referral, Facebook, Google).
       </p>
       <div style={{ marginBottom: 16 }}>
-        <Form layout="inline" onFinish={handleAdd}>
+        <Form layout={isMobile ? 'vertical' : 'inline'} onFinish={handleAdd}>
           <Form.Item name="name" rules={[{ required: true, message: 'Enter lead source name' }]}>
-            <Input placeholder="Lead source name" style={{ width: 250 }} />
+            <Input placeholder="Lead source name" style={{ width: isMobile ? '100%' : 250 }} />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" icon={<PlusOutlined />}>Add Lead Source</Button>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} block={isMobile}>Add Lead Source</Button>
           </Form.Item>
         </Form>
       </div>
-      <Table columns={columns} dataSource={items} rowKey="id" loading={loading} pagination={false} size="middle" />
+      {isMobile ? (
+        <MobileCardList dataSource={items} renderCard={renderLeadSourceCard} loading={loading} rowKey="id" />
+      ) : (
+        <Table columns={columns} dataSource={items} rowKey="id" loading={loading} pagination={false} size="middle" />
+      )}
     </Card>
   );
 }

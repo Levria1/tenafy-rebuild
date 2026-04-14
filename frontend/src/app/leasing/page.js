@@ -1,15 +1,18 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Table, Button, Space, Input, Select, DatePicker, Popover, Radio, Divider, message, Modal } from 'antd';
+import { Table, Button, Space, Input, Select, DatePicker, Popover, Radio, Divider, message, Modal, Card, Tag, Typography } from 'antd';
 import { PlusOutlined, FilterOutlined, CalendarOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
 import MainLayout, { useAuth } from '../../components/Layout';
 import { leasing, property as propertyApi } from '../../lib/api';
+import useIsMobile from '../../hooks/useIsMobile';
+import MobileCardList from '../../components/mobile/MobileCardList';
 
 const { RangePicker } = DatePicker;
+const { Text } = Typography;
 
 export default function LeasingPage() {
   const [leases, setLeases] = useState([]);
@@ -21,6 +24,7 @@ export default function LeasingPage() {
   const [properties, setProperties] = useState([]);
   const router = useRouter();
   const { hasPermission } = useAuth();
+  const { isMobile } = useIsMobile();
   const canEdit = hasPermission ? hasPermission('LANDLORD/LEASING_EDIT') : false;
   const canDelete = hasPermission ? hasPermission('LANDLORD/LEASING_DELETE') : false;
   const canCreate = hasPermission ? hasPermission('LANDLORD/LEASING_CREATE') : false;
@@ -232,6 +236,61 @@ export default function LeasingPage() {
     </div>
   );
 
+  const getStatusTag = (s) => {
+    if (s === 2) return <Tag color="blue">Upcoming</Tag>;
+    if (s === 1) return <Tag color="green">Active</Tag>;
+    return <Tag>Inactive</Tag>;
+  };
+
+  const renderLeaseCard = (record) => {
+    const tenantName = [record.tenant_first_name, record.tenant_last_name].filter(Boolean).join(' ');
+    const propertyUnit = record.property_name ? `${record.property_name}/${record.unit_name || ''}` : '-';
+    const startDate = record.start_date ? dayjs(record.start_date).format('YYYY-MM-DD') : '-';
+    const endDate = record.end_date ? dayjs(record.end_date).format('YYYY-MM-DD') : '-';
+    const price = record.price ? `HK$${Number(record.price).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : '-';
+
+    return (
+      <Card
+        size="small"
+        style={{ borderRadius: 8 }}
+        bodyStyle={{ padding: '12px 16px' }}
+        onClick={() => router.push(`/leasing/${record.id}/detail`)}
+      >
+        {/* Top row: lease number + status */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <Text strong style={{ fontSize: 14, color: '#1890ff' }}>{record.lease_no || '-'}</Text>
+          {getStatusTag(record.lease_status)}
+        </div>
+
+        {/* Tenant name */}
+        {tenantName && (
+          <div style={{ marginBottom: 4 }}>
+            <Text style={{ color: '#333' }}>{tenantName}</Text>
+          </div>
+        )}
+
+        {/* Property / Unit */}
+        <div style={{ marginBottom: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>{propertyUnit}</Text>
+        </div>
+
+        {/* Dates */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>{startDate} &rarr; {endDate}</Text>
+        </div>
+
+        {/* Amount + actions */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+          <Text style={{ fontWeight: 500 }}>{price}</Text>
+          <Space size="small">
+            {canEdit && <Button type="link" size="small" onClick={(e) => { e.stopPropagation(); router.push(`/leasing/${record.id}/edit`); }}>Edit</Button>}
+            {canDelete && <Button type="link" size="small" danger onClick={(e) => { e.stopPropagation(); handleDelete(record.id); }}>Delete</Button>}
+          </Space>
+        </div>
+      </Card>
+    );
+  };
+
   const columns = [
     {
       title: 'Lease #', dataIndex: 'lease_no', key: 'lease_no', width: 120,
@@ -300,48 +359,97 @@ export default function LeasingPage() {
       <h1 style={{ marginBottom: 16 }}>Leasing</h1>
 
       {/* Filters Row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
-        <div style={{ color: '#666' }}>{pagination.total} Total</div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ color: '#666' }}>{pagination.total} Total</div>
+            <Space size="small">
+              {canCreate && (
+                <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => router.push('/leasing/create')}>
+                  Add
+                </Button>
+              )}
+              <Button icon={<CalendarOutlined />} size="small" onClick={() => router.push('/leasing/calendar')} />
+            </Space>
+          </div>
           <Input.Search
             placeholder="Type here to search"
-            style={{ width: 200 }}
             allowClear
             onSearch={(v) => { setSearch(v); setPagination(p => ({ ...p, current: 1 })); }}
           />
-          <RangePicker
-            value={dateRange}
-            onChange={setDateRange}
-            placeholder={['Start date', 'End date']}
-          />
-          <Popover content={filterContent} trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
-            <Button icon={<FilterOutlined />}>Filter {activeFilterCount > 0 ? activeFilterCount : '0'}</Button>
-          </Popover>
-          <Button icon={<CalendarOutlined />} onClick={() => router.push('/leasing/calendar')}>
-            Calendar View
-          </Button>
-          {canCreate && <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/leasing/create')}>
-            ADD LEASE
-          </Button>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <RangePicker
+              value={dateRange}
+              onChange={setDateRange}
+              placeholder={['Start', 'End']}
+              style={{ flex: 1 }}
+              size="small"
+            />
+            <Popover content={filterContent} trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
+              <Button icon={<FilterOutlined />} size="small">Filter {activeFilterCount > 0 ? activeFilterCount : '0'}</Button>
+            </Popover>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ color: '#666' }}>{pagination.total} Total</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Input.Search
+              placeholder="Type here to search"
+              style={{ width: 200 }}
+              allowClear
+              onSearch={(v) => { setSearch(v); setPagination(p => ({ ...p, current: 1 })); }}
+            />
+            <RangePicker
+              value={dateRange}
+              onChange={setDateRange}
+              placeholder={['Start date', 'End date']}
+            />
+            <Popover content={filterContent} trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
+              <Button icon={<FilterOutlined />}>Filter {activeFilterCount > 0 ? activeFilterCount : '0'}</Button>
+            </Popover>
+            <Button icon={<CalendarOutlined />} onClick={() => router.push('/leasing/calendar')}>
+              Calendar View
+            </Button>
+            {canCreate && <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/leasing/create')}>
+              ADD LEASE
+            </Button>}
+          </div>
+        </div>
+      )}
 
-      {/* Table */}
-      <Table
-        columns={columns}
-        dataSource={leases}
-        rowKey="id"
-        loading={loading}
-        scroll={{ x: 1200 }}
-        onChange={handleTableChange}
-        pagination={{
-          current: pagination.current,
-          pageSize: pagination.pageSize,
-          total: pagination.total,
-          showSizeChanger: true,
-          showTotal: (total) => `${total} items`,
-        }}
-      />
+      {/* Table / Mobile Cards */}
+      {isMobile ? (
+        <MobileCardList
+          dataSource={leases}
+          renderCard={renderLeaseCard}
+          loading={loading}
+          pagination={{
+            current: pagination.current,
+            pageSize: pagination.pageSize,
+            total: pagination.total,
+            onChange: (page) => setPagination(p => ({ ...p, current: page })),
+          }}
+          rowKey="id"
+          emptyText="No leases found"
+        />
+      ) : (
+        <Table
+          columns={columns}
+          dataSource={leases}
+          rowKey="id"
+          loading={loading}
+          scroll={{ x: 1200 }}
+          onChange={handleTableChange}
+          pagination={{
+            current: pagination.current,
+            pageSize: pagination.pageSize,
+            total: pagination.total,
+            showSizeChanger: true,
+            showTotal: (total) => `${total} items`,
+          }}
+        />
+      )}
     </MainLayout>
   );
 }

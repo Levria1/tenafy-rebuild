@@ -5,6 +5,8 @@ import { Tabs, Table, Button, Select, Input, InputNumber, Modal, Form, Row, Col,
 import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined, CheckCircleOutlined, FileTextOutlined, HistoryOutlined, EditOutlined, WarningOutlined } from '@ant-design/icons';
 import MainLayout from '../../components/Layout';
 import { utility, property } from '../../lib/api';
+import useIsMobile from '../../hooks/useIsMobile';
+import MobileCardList from '../../components/mobile/MobileCardList';
 import dayjs from 'dayjs';
 
 const { Title, Text } = Typography;
@@ -64,6 +66,7 @@ function ReportTab() {
   const [reportData, setReportData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
+  const { isMobile } = useIsMobile();
 
   const loadReport = useCallback(async () => {
     setLoading(true);
@@ -96,93 +99,152 @@ function ReportTab() {
     return null;
   }).filter(Boolean) : reportData;
 
-  return (
-    <div>
-      <div style={{ marginBottom: 16 }}>
-        <Input.Search placeholder="Search by group, unit, or tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: 350 }} />
-      </div>
+  // Mobile: render each unit as a card with per-bill data stacked
+  const renderMobileReport = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {filteredReport.map(group => {
         const bills = group.bills || [];
         const units = group.units || [];
-
         return (
-          <div key={group.group_id} style={{ marginBottom: 32 }}>
-            {/* Group header */}
-            <div style={{ background: '#f5f5f5', padding: '8px 12px', border: '1px solid #d9d9d9', marginBottom: 0, fontWeight: 600, fontSize: 16 }}>
+          <div key={group.group_id}>
+            <div style={{ background: '#f5f5f5', padding: '8px 12px', border: '1px solid #d9d9d9', fontWeight: 600, fontSize: 15, marginBottom: 8, borderRadius: 4 }}>
               {group.group_name}
             </div>
-
-            {/* Bill header row */}
-            <div style={{ display: 'flex', borderBottom: '2px solid #d9d9d9' }}>
-              <div style={{ width: 280, minWidth: 280, padding: '6px 12px', fontWeight: 600, borderRight: '1px solid #d9d9d9' }}>
-                <Row>
-                  <Col span={8}><Text strong style={{ fontSize: 11 }}>Unit</Text></Col>
-                  <Col span={8}><Text strong style={{ fontSize: 11 }}>Tenant</Text></Col>
-                  <Col span={8}>
-                    <div style={{ background: '#fa8c16', padding: '2px 4px', color: '#fff', fontSize: 10, textAlign: 'center' }}>
-                      <div>Bill Amount</div>
-                      <div>KWH Used</div>
-                      <div>$/kW</div>
-                    </div>
-                  </Col>
-                </Row>
-              </div>
-              {bills.map(b => (
-                <div key={b.id} style={{ flex: 1, padding: '4px 8px', borderRight: '1px solid #f0f0f0', textAlign: 'center', fontSize: 11, background: '#fafafa' }}>
-                  <div style={{ fontWeight: 600 }}>{dayjs(b.period_start).format('MMM YYYY')}</div>
-                  <div style={{ fontSize: 10, color: '#888' }}>{dayjs(b.period_start).format('MMM D')} - {dayjs(b.period_end).format('MMM D')}</div>
-                  <div style={{ marginTop: 2, fontSize: 10, color: '#666' }}>
-                    ${b.total_amount.toFixed(0)} | {b.total_kw.toLocaleString()} kW | ${b.rate_per_kw.toFixed(2)}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {units.map((unit, idx) => (
+                <Card key={idx} size="small" style={{ borderRadius: 8 }} bodyStyle={{ padding: '10px 14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <Text strong>{unit.unit_name}</Text>
+                    {unit.tenant_name ? (
+                      <Text style={{ fontSize: 13 }}>{unit.tenant_name}</Text>
+                    ) : (
+                      <Text type="secondary" style={{ fontStyle: 'italic', fontSize: 13 }}>Vacant</Text>
+                    )}
                   </div>
-                </div>
+                  {bills.map(b => {
+                    const m = unit.months[b.id.toString()];
+                    if (!m) return null;
+                    const s = m.invoice_status !== null ? INVOICE_STATUS[m.invoice_status] || INVOICE_STATUS[0] : null;
+                    return (
+                      <div key={b.id} style={{ background: '#fafafa', borderRadius: 4, padding: '6px 10px', marginBottom: 4, fontSize: 12 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                          <Text strong style={{ fontSize: 12 }}>{dayjs(b.period_start).format('MMM YYYY')}</Text>
+                          {s && <Tag color={s.color} style={{ fontSize: 10, padding: '0 4px', margin: 0 }}>{s.text}</Tag>}
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, color: '#666' }}>
+                          <span>Meter: {m.meter_reading.toLocaleString()}</span>
+                          <span>kWh: {m.kw_used.toLocaleString()}</span>
+                          <span>Gross: ${m.gross_amount.toFixed(2)}</span>
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, color: '#666' }}>
+                          {Number(m.utility_credit) > 0 && <span>Credit: ${m.utility_credit.toFixed(0)}</span>}
+                          <span style={{ fontWeight: m.fees_due > 0 ? 600 : 400, color: m.fees_due > 0 ? '#cf1322' : '#52c41a' }}>
+                            Due: ${m.fees_due.toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </Card>
               ))}
             </div>
-
-            {/* Unit rows */}
-            {units.map((unit, idx) => (
-              <div key={idx} style={{ display: 'flex', borderBottom: '1px dashed #e8e8e8' }}>
-                <div style={{ width: 280, minWidth: 280, padding: '6px 12px', borderRight: '1px solid #d9d9d9' }}>
-                  <Row>
-                    <Col span={8}><Text strong style={{ fontSize: 12 }}>{unit.unit_name}</Text></Col>
-                    <Col span={8}><Text style={{ fontSize: 11 }}>{unit.tenant_name || <span style={{ color: '#bbb', fontStyle: 'italic' }}>Vacant</span>}</Text></Col>
-                    <Col span={8}>
-                      <div style={{ background: '#52c41a', padding: '2px 4px', color: '#fff', fontSize: 9, textAlign: 'center' }}>
-                        <div>Meter</div>
-                        <div>KWH</div>
-                        <div>Credit</div>
-                        <div>Gross</div>
-                        <div>Fees Due</div>
-                        <div>Status</div>
-                      </div>
-                    </Col>
-                  </Row>
-                </div>
-                {bills.map(b => {
-                  const m = unit.months[b.id.toString()];
-                  if (!m) {
-                    return <div key={b.id} style={{ flex: 1, padding: '4px 8px', borderRight: '1px solid #f0f0f0', textAlign: 'center', fontSize: 11, color: '#ddd' }}>-</div>;
-                  }
-                  const s = m.invoice_status !== null ? INVOICE_STATUS[m.invoice_status] || INVOICE_STATUS[0] : null;
-                  return (
-                    <div key={b.id} style={{ flex: 1, padding: '4px 8px', borderRight: '1px solid #f0f0f0', textAlign: 'center', fontSize: 11 }}>
-                      <div>{m.meter_reading.toLocaleString()}</div>
-                      <div>{m.kw_used.toLocaleString()}</div>
-                      <div>${m.utility_credit.toFixed(0)}</div>
-                      <div>${m.gross_amount.toFixed(2)}</div>
-                      <div style={{ fontWeight: m.fees_due > 0 ? 600 : 400, color: m.fees_due > 0 ? '#cf1322' : '#52c41a' }}>
-                        ${m.fees_due.toFixed(2)}
-                      </div>
-                      <div>
-                        {s ? <Tag color={s.color} style={{ fontSize: 10, padding: '0 4px', margin: 0 }}>{s.text}</Tag> : <Text type="secondary" style={{ fontSize: 10 }}>-</Text>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
           </div>
         );
       })}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <Input.Search placeholder="Search by group, unit, or tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: isMobile ? '100%' : 350 }} />
+      </div>
+      {isMobile ? renderMobileReport() : (
+        <>
+          {filteredReport.map(group => {
+            const bills = group.bills || [];
+            const units = group.units || [];
+
+            return (
+              <div key={group.group_id} style={{ marginBottom: 32 }}>
+                {/* Group header */}
+                <div style={{ background: '#f5f5f5', padding: '8px 12px', border: '1px solid #d9d9d9', marginBottom: 0, fontWeight: 600, fontSize: 16 }}>
+                  {group.group_name}
+                </div>
+
+                {/* Bill header row */}
+                <div style={{ display: 'flex', borderBottom: '2px solid #d9d9d9' }}>
+                  <div style={{ width: 280, minWidth: 280, padding: '6px 12px', fontWeight: 600, borderRight: '1px solid #d9d9d9' }}>
+                    <Row>
+                      <Col span={8}><Text strong style={{ fontSize: 11 }}>Unit</Text></Col>
+                      <Col span={8}><Text strong style={{ fontSize: 11 }}>Tenant</Text></Col>
+                      <Col span={8}>
+                        <div style={{ background: '#fa8c16', padding: '2px 4px', color: '#fff', fontSize: 10, textAlign: 'center' }}>
+                          <div>Bill Amount</div>
+                          <div>KWH Used</div>
+                          <div>$/kW</div>
+                        </div>
+                      </Col>
+                    </Row>
+                  </div>
+                  {bills.map(b => (
+                    <div key={b.id} style={{ flex: 1, padding: '4px 8px', borderRight: '1px solid #f0f0f0', textAlign: 'center', fontSize: 11, background: '#fafafa' }}>
+                      <div style={{ fontWeight: 600 }}>{dayjs(b.period_start).format('MMM YYYY')}</div>
+                      <div style={{ fontSize: 10, color: '#888' }}>{dayjs(b.period_start).format('MMM D')} - {dayjs(b.period_end).format('MMM D')}</div>
+                      <div style={{ marginTop: 2, fontSize: 10, color: '#666' }}>
+                        ${b.total_amount.toFixed(0)} | {b.total_kw.toLocaleString()} kW | ${b.rate_per_kw.toFixed(2)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Unit rows */}
+                {units.map((unit, idx) => (
+                  <div key={idx} style={{ display: 'flex', borderBottom: '1px dashed #e8e8e8' }}>
+                    <div style={{ width: 280, minWidth: 280, padding: '6px 12px', borderRight: '1px solid #d9d9d9' }}>
+                      <Row>
+                        <Col span={8}><Text strong style={{ fontSize: 12 }}>{unit.unit_name}</Text></Col>
+                        <Col span={8}><Text style={{ fontSize: 11 }}>{unit.tenant_name || <span style={{ color: '#bbb', fontStyle: 'italic' }}>Vacant</span>}</Text></Col>
+                        <Col span={8}>
+                          <div style={{ background: '#52c41a', padding: '2px 4px', color: '#fff', fontSize: 9, textAlign: 'center' }}>
+                            <div>Meter</div>
+                            <div>KWH</div>
+                            <div>Credit</div>
+                            <div>Gross</div>
+                            <div>Fees Due</div>
+                            <div>Status</div>
+                          </div>
+                        </Col>
+                      </Row>
+                    </div>
+                    {bills.map(b => {
+                      const m = unit.months[b.id.toString()];
+                      if (!m) {
+                        return <div key={b.id} style={{ flex: 1, padding: '4px 8px', borderRight: '1px solid #f0f0f0', textAlign: 'center', fontSize: 11, color: '#ddd' }}>-</div>;
+                      }
+                      const s = m.invoice_status !== null ? INVOICE_STATUS[m.invoice_status] || INVOICE_STATUS[0] : null;
+                      return (
+                        <div key={b.id} style={{ flex: 1, padding: '4px 8px', borderRight: '1px solid #f0f0f0', textAlign: 'center', fontSize: 11 }}>
+                          <div>{m.meter_reading.toLocaleString()}</div>
+                          <div>{m.kw_used.toLocaleString()}</div>
+                          <div>${m.utility_credit.toFixed(0)}</div>
+                          <div>${m.gross_amount.toFixed(2)}</div>
+                          <div style={{ fontWeight: m.fees_due > 0 ? 600 : 400, color: m.fees_due > 0 ? '#cf1322' : '#52c41a' }}>
+                            ${m.fees_due.toFixed(2)}
+                          </div>
+                          <div>
+                            {s ? <Tag color={s.color} style={{ fontSize: 10, padding: '0 4px', margin: 0 }}>{s.text}</Tag> : <Text type="secondary" style={{ fontSize: 10 }}>-</Text>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </>
+      )}
     </div>
   );
 }
@@ -197,6 +259,7 @@ function GroupsTab() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [search, setSearch] = useState('');
+  const { isMobile } = useIsMobile();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -314,26 +377,82 @@ function GroupsTab() {
       (row.property_name || '').toLowerCase().includes(gq);
   }) : tableData;
 
+  const renderGroupAssignmentCard = (record) => {
+    if (record._type === 'property') {
+      return (
+        <Card size="small" style={{ borderRadius: 8, background: '#fafafa' }} bodyStyle={{ padding: '10px 16px' }}>
+          <Text strong style={{ fontSize: 14 }}>{record.display_name}</Text>
+          <Text type="secondary" style={{ marginLeft: 8 }}>{record.unit_count} units</Text>
+        </Card>
+      );
+    }
+    return (
+      <Card size="small" style={{ borderRadius: 8, marginLeft: 8 }} bodyStyle={{ padding: '10px 16px' }}>
+        <div style={{ marginBottom: 6 }}>
+          <Text strong>{record.unit_name}</Text>
+          {record.tenant_name ? (
+            <Text style={{ marginLeft: 8, fontSize: 13 }}>{record.tenant_name}</Text>
+          ) : (
+            <Text type="secondary" style={{ fontStyle: 'italic', marginLeft: 8, fontSize: 13 }}>Vacant</Text>
+          )}
+        </div>
+        <Select
+          style={{ width: '100%' }}
+          placeholder="Select group"
+          value={assignments[record.unit_id.toString()] || undefined}
+          onChange={v => handleChange(record.unit_id, v)}
+          allowClear
+          options={groups.map(g => ({ label: g.name, value: g.id.toString() }))}
+        />
+      </Card>
+    );
+  };
+
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Space>
-          <Text strong>Assign units to billing groups</Text>
-          <Input.Search placeholder="Search property, unit, tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: 300 }} />
-        </Space>
-        <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!dirty}>
-          Save
-        </Button>
+      <div style={isMobile
+        ? { marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 8 }
+        : { marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }
+      }>
+        {isMobile ? (
+          <>
+            <Text strong>Assign units to billing groups</Text>
+            <Input.Search placeholder="Search property, unit, tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: '100%' }} />
+            <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!dirty} block>
+              Save
+            </Button>
+          </>
+        ) : (
+          <>
+            <Space>
+              <Text strong>Assign units to billing groups</Text>
+              <Input.Search placeholder="Search property, unit, tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: 300 }} />
+            </Space>
+            <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!dirty}>
+              Save
+            </Button>
+          </>
+        )}
       </div>
-      <Table
-        dataSource={filteredTableData}
-        columns={columns}
-        rowKey="id"
-        size="small"
-        loading={loading}
-        pagination={false}
-        rowClassName={(row) => row._type === 'property' ? 'utility-property-row' : ''}
-      />
+      {isMobile ? (
+        <MobileCardList
+          dataSource={filteredTableData}
+          renderCard={renderGroupAssignmentCard}
+          loading={loading}
+          rowKey="id"
+          emptyText="No units found"
+        />
+      ) : (
+        <Table
+          dataSource={filteredTableData}
+          columns={columns}
+          rowKey="id"
+          size="small"
+          loading={loading}
+          pagination={false}
+          rowClassName={(row) => row._type === 'property' ? 'utility-property-row' : ''}
+        />
+      )}
       <style>{`.utility-property-row td { background: #fafafa !important; }`}</style>
     </div>
   );
@@ -357,6 +476,7 @@ function SettingsTab() {
 
   const [unitGroupMap, setUnitGroupMap] = useState({}); // unitId → groupId
   const [settingsSearch, setSettingsSearch] = useState('');
+  const { isMobile } = useIsMobile();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -501,59 +621,151 @@ function SettingsTab() {
 
   const selectedGroup = groups.find(g => g.id === selectedGroupForMeter);
 
+  const renderSettingsGroupCard = (record) => (
+    <Card size="small" style={{ borderRadius: 8, background: record.id === selectedGroupForMeter ? '#e6f4ff' : undefined, cursor: 'pointer' }}
+      bodyStyle={{ padding: '10px 16px' }}
+      onClick={() => { setSelectedGroupForMeter(record.id); loadMeters(record.id); }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <Text strong>{record.name}</Text>
+          <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>{record.meter_count} meters</Text>
+        </div>
+        <Space size="small">
+          <Button size="small" onClick={(e) => { e.stopPropagation(); setEditingGroup(record); groupForm.setFieldsValue({ name: record.name }); setGroupModal(true); }}>Edit</Button>
+          <Popconfirm title="Delete this group?" onConfirm={() => handleDeleteGroup(record.id)}>
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={(e) => e.stopPropagation()} />
+          </Popconfirm>
+        </Space>
+      </div>
+    </Card>
+  );
+
+  const renderSettingsMeterCard = (record) => {
+    const isMaster = Number(record.meter_category) === 0;
+    return (
+      <Card size="small" style={{ borderRadius: 8 }} bodyStyle={{ padding: '10px 16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <Text strong>{record.meter_number}</Text>
+          {isMaster ? <Tag color="gold">Master</Tag> : <Tag>Sub-meter</Tag>}
+        </div>
+        <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
+          {METER_TYPE_LABELS[record.meter_type] || 'Electric'}
+          {' | '}
+          {isMaster ? <Tag color="blue" style={{ fontSize: 10 }}>Master</Tag> : (record.unit_name ? `${record.property_name} - ${record.unit_name}` : <Tag color="blue" style={{ fontSize: 10 }}>Common Area</Tag>)}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Last: {Number(record.last_reading ?? record.current_reading).toLocaleString()}</Text>
+          <Popconfirm title="Delete this meter?" onConfirm={() => handleDeleteMeter(record.id)}>
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </div>
+      </Card>
+    );
+  };
+
+  const filteredGroups = settingsSearch ? groups.filter(g => (g.name || '').toLowerCase().includes(settingsSearch.toLowerCase())) : groups;
+  const filteredSettingsMeters = settingsSearch ? meters.filter(m => (m.meter_number || '').toLowerCase().includes(settingsSearch.toLowerCase()) || (m.unit_name || '').toLowerCase().includes(settingsSearch.toLowerCase())) : meters;
+
   return (
     <div>
-      <Row gutter={24}>
-        {/* Groups */}
-        <Col span={selectedGroupForMeter ? 12 : 24}>
-          <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Space>
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Groups section */}
+          <div>
+            <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
               <Text strong>Billing Groups</Text>
-              <Input.Search placeholder="Search groups, meters..." value={settingsSearch} onChange={e => setSettingsSearch(e.target.value)} allowClear style={{ width: 250 }} />
-            </Space>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => {
-              setEditingGroup(null);
-              groupForm.resetFields();
-              setGroupModal(true);
-            }}>Add Group</Button>
+              <Input.Search placeholder="Search groups, meters..." value={settingsSearch} onChange={e => setSettingsSearch(e.target.value)} allowClear style={{ width: '100%' }} />
+              <Button type="primary" icon={<PlusOutlined />} block onClick={() => {
+                setEditingGroup(null);
+                groupForm.resetFields();
+                setGroupModal(true);
+              }}>Add Group</Button>
+            </div>
+            <MobileCardList
+              dataSource={filteredGroups}
+              renderCard={renderSettingsGroupCard}
+              loading={loading}
+              rowKey="id"
+              emptyText="No groups"
+            />
           </div>
-          <Table
-            dataSource={settingsSearch ? groups.filter(g => (g.name || '').toLowerCase().includes(settingsSearch.toLowerCase())) : groups}
-            columns={groupColumns}
-            rowKey="id"
-            size="small"
-            loading={loading}
-            pagination={false}
-            onRow={(record) => ({
-              style: { cursor: 'pointer', background: record.id === selectedGroupForMeter ? '#e6f4ff' : undefined },
-            })}
-          />
-        </Col>
 
-        {/* Meters for selected group */}
-        {selectedGroupForMeter && (
-          <Col span={12}>
+          {/* Meters for selected group */}
+          {selectedGroupForMeter && (
+            <div>
+              <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <Text strong>Meters in: {selectedGroup?.name}</Text>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button type="primary" icon={<PlusOutlined />} style={{ flex: 1 }} onClick={() => {
+                    meterForm.resetFields();
+                    setMeterCategoryValue(1);
+                    setMeterModal(true);
+                  }}>Add Meter</Button>
+                  <Button style={{ flex: 1 }} onClick={() => { setSelectedGroupForMeter(null); setMeters([]); }}>Close</Button>
+                </div>
+              </div>
+              <MobileCardList
+                dataSource={filteredSettingsMeters}
+                renderCard={renderSettingsMeterCard}
+                rowKey="id"
+                emptyText="No meters"
+              />
+            </div>
+          )}
+        </div>
+      ) : (
+        <Row gutter={24}>
+          {/* Groups */}
+          <Col span={selectedGroupForMeter ? 12 : 24}>
             <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text strong>Meters in: {selectedGroup?.name}</Text>
               <Space>
-                <Button type="primary" icon={<PlusOutlined />} onClick={() => {
-                  meterForm.resetFields();
-                  setMeterCategoryValue(1);
-                  setMeterModal(true);
-                }}>Add Meter</Button>
-                <Button onClick={() => { setSelectedGroupForMeter(null); setMeters([]); }}>Close</Button>
+                <Text strong>Billing Groups</Text>
+                <Input.Search placeholder="Search groups, meters..." value={settingsSearch} onChange={e => setSettingsSearch(e.target.value)} allowClear style={{ width: 250 }} />
               </Space>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+                setEditingGroup(null);
+                groupForm.resetFields();
+                setGroupModal(true);
+              }}>Add Group</Button>
             </div>
             <Table
-              dataSource={settingsSearch ? meters.filter(m => (m.meter_number || '').toLowerCase().includes(settingsSearch.toLowerCase()) || (m.unit_name || '').toLowerCase().includes(settingsSearch.toLowerCase())) : meters}
-              columns={meterColumns}
+              dataSource={filteredGroups}
+              columns={groupColumns}
               rowKey="id"
               size="small"
+              loading={loading}
               pagination={false}
+              onRow={(record) => ({
+                style: { cursor: 'pointer', background: record.id === selectedGroupForMeter ? '#e6f4ff' : undefined },
+              })}
             />
           </Col>
-        )}
-      </Row>
+
+          {/* Meters for selected group */}
+          {selectedGroupForMeter && (
+            <Col span={12}>
+              <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text strong>Meters in: {selectedGroup?.name}</Text>
+                <Space>
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+                    meterForm.resetFields();
+                    setMeterCategoryValue(1);
+                    setMeterModal(true);
+                  }}>Add Meter</Button>
+                  <Button onClick={() => { setSelectedGroupForMeter(null); setMeters([]); }}>Close</Button>
+                </Space>
+              </div>
+              <Table
+                dataSource={filteredSettingsMeters}
+                columns={meterColumns}
+                rowKey="id"
+                size="small"
+                pagination={false}
+              />
+            </Col>
+          )}
+        </Row>
+      )}
 
       {/* Group Modal */}
       <Modal
@@ -617,6 +829,7 @@ function MetersTab() {
   const [readings, setReadings] = useState([]);
   const [readingForm] = Form.useForm();
   const [search, setSearch] = useState('');
+  const { isMobile } = useIsMobile();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -733,9 +946,75 @@ function MetersTab() {
 
   const lastReading = selectedMeter ? Number(selectedMeter.last_reading ?? selectedMeter.current_reading) : 0;
 
+  const renderMeterCard = (record) => {
+    const isMaster = Number(record.meter_category) === 0;
+    const tenantName = [record.tenant_first_name, record.tenant_last_name].filter(Boolean).join(' ');
+    const isCurrent = Number(record.is_current_tenant) === 1;
+    return (
+      <Card size="small" style={{ borderRadius: 8 }} bodyStyle={{ padding: '12px 16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <Text strong style={{ fontSize: 14 }}>{record.meter_number}</Text>
+          {isMaster ? <Tag color="gold">Master</Tag> : <Tag>Sub-meter</Tag>}
+        </div>
+        <div style={{ marginBottom: 4 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Type: </Text>
+          <Text style={{ fontSize: 13 }}>{METER_TYPE_LABELS[record.meter_type] || 'Electric'}</Text>
+          {record.group_name && (
+            <Text type="secondary" style={{ fontSize: 12, marginLeft: 12 }}>Group: {record.group_name}</Text>
+          )}
+        </div>
+        <div style={{ marginBottom: 4 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Unit: </Text>
+          {isMaster ? <Tag color="blue" style={{ fontSize: 11 }}>Master</Tag> : (
+            record.unit_name ? <Text style={{ fontSize: 13 }}>{record.property_name || ''} - {record.unit_name}</Text> : <Tag color="blue" style={{ fontSize: 11 }}>Common Area</Tag>
+          )}
+        </div>
+        {!isMaster && (
+          <div style={{ marginBottom: 4 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>Tenant: </Text>
+            {tenantName ? (
+              <Text style={{ fontSize: 13 }}>{tenantName} {!isCurrent && <Tag color="orange" style={{ fontSize: 10 }}>Past</Tag>}</Text>
+            ) : (
+              <Text type="secondary" style={{ fontStyle: 'italic', fontSize: 13 }}>Vacant</Text>
+            )}
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12 }}>Last: </Text>
+            <Text strong>{Number(record.last_reading ?? record.current_reading).toLocaleString()}</Text>
+            {record.last_reading_date && (
+              <Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>({dayjs(record.last_reading_date).format('MMM D')})</Text>
+            )}
+          </div>
+          <Space size="small">
+            <Button size="small" icon={<EditOutlined />} onClick={(e) => { e.stopPropagation(); setSelectedMeter(record); readingForm.resetFields(); readingForm.setFieldsValue({ reading_date: dayjs(), reading_type: 3 }); setReadingModal(true); }}>Log</Button>
+            <Button size="small" icon={<HistoryOutlined />} onClick={(e) => { e.stopPropagation(); loadHistory(record); }}>History</Button>
+          </Space>
+        </div>
+      </Card>
+    );
+  };
+
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
+      <div style={isMobile
+        ? { marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 8 }
+        : { marginBottom: 16 }
+      }>
+        {isMobile ? (
+          <>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="All groups"
+              value={filterGroup}
+              onChange={v => setFilterGroup(v)}
+              allowClear
+              options={groups.map(g => ({ label: g.name, value: g.id }))}
+            />
+            <Input.Search placeholder="Search meter, unit, tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: '100%' }} />
+          </>
+        ) : (
         <Space>
           <Text strong>Filter by group:</Text>
           <Select
@@ -748,6 +1027,7 @@ function MetersTab() {
           />
           <Input.Search placeholder="Search meter, unit, tenant..." value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ width: 300 }} />
         </Space>
+        )}
       </div>
       {(() => {
         const mq = search.toLowerCase();
@@ -758,14 +1038,24 @@ function MetersTab() {
           (m.group_name || '').toLowerCase().includes(mq) ||
           [m.tenant_first_name, m.tenant_last_name].filter(Boolean).join(' ').toLowerCase().includes(mq)
         ) : meters;
-        return <Table
-        dataSource={filteredMeters}
-        columns={columns}
-        rowKey="id"
-        size="small"
-        loading={loading}
-        pagination={false}
-      />;
+        return isMobile ? (
+          <MobileCardList
+            dataSource={filteredMeters}
+            renderCard={renderMeterCard}
+            loading={loading}
+            rowKey="id"
+            emptyText="No meters found"
+          />
+        ) : (
+          <Table
+            dataSource={filteredMeters}
+            columns={columns}
+            rowKey="id"
+            size="small"
+            loading={loading}
+            pagination={false}
+          />
+        );
       })()}
 
       {/* Log Reading Modal */}
@@ -848,6 +1138,7 @@ function BillingTab() {
   const [billForm] = Form.useForm();
   const [checkoutForm] = Form.useForm();
   const [billSearch, setBillSearch] = useState('');
+  const { isMobile } = useIsMobile();
 
   const loadGroups = useCallback(async () => {
     try {
@@ -1270,48 +1561,114 @@ function BillingTab() {
     dayjs(b.period_end).format('MMM D, YYYY').toLowerCase().includes(bq)
   ) : bills;
 
+  const renderBillCard = (record) => {
+    const isFinalized = Number(record.status) === 1;
+    return (
+      <Card size="small" style={{ borderRadius: 8 }} bodyStyle={{ padding: '12px 16px' }}
+        onClick={() => { setSelectedBill(record.id); loadBillDetail(record.id); }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <Text strong style={{ fontSize: 14 }}>{record.group_name}</Text>
+          {isFinalized ? <Tag color="green">Finalized</Tag> : <Tag color="orange">Draft</Tag>}
+        </div>
+        <div style={{ marginBottom: 4, fontSize: 13 }}>
+          {dayjs(record.period_start).format('MMM D, YYYY')} - {dayjs(record.period_end).format('MMM D, YYYY')}
+        </div>
+        <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#666' }}>
+          <span>Total: <Text strong>${Number(record.total_amount).toFixed(2)}</Text></span>
+          <span>kW: <Text strong>{Number(record.total_kw).toLocaleString()}</Text></span>
+          <span>Rate: <Text strong>${Number(record.rate_per_kw).toFixed(2)}</Text></span>
+        </div>
+      </Card>
+    );
+  };
+
   // Bill list view
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Space>
-          <Text strong>Filter by group:</Text>
-          <Select
-            style={{ width: 300 }}
-            placeholder="All groups"
-            value={selectedGroup}
-            onChange={v => { setSelectedGroup(v); setSelectedBill(null); setBillDetail(null); }}
-            options={groups.map(g => ({ label: g.name, value: g.id }))}
-            allowClear
-          />
-          <Input.Search placeholder="Search bills..." value={billSearch} onChange={e => setBillSearch(e.target.value)} allowClear style={{ width: 250 }} />
-        </Space>
-        <Space>
-          <Button onClick={openCheckoutModal}>Checkout Settlement</Button>
-          {selectedGroup && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={async () => {
-              billForm.resetFields();
-              try {
-                const res = await utility.getLastBillDate({ group_id: selectedGroup });
-                const data = res.data?.data;
-                if (data?.next_start) {
-                  billForm.setFieldsValue({ start_date: dayjs(data.next_start) });
-                }
-              } catch (err) { /* ignore */ }
-              setBillModal(true);
-            }}>New Bill</Button>
-          )}
-        </Space>
+      <div style={isMobile
+        ? { marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 8 }
+        : { marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }
+      }>
+        {isMobile ? (
+          <>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="All groups"
+              value={selectedGroup}
+              onChange={v => { setSelectedGroup(v); setSelectedBill(null); setBillDetail(null); }}
+              options={groups.map(g => ({ label: g.name, value: g.id }))}
+              allowClear
+            />
+            <Input.Search placeholder="Search bills..." value={billSearch} onChange={e => setBillSearch(e.target.value)} allowClear style={{ width: '100%' }} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button onClick={openCheckoutModal} style={{ flex: 1 }}>Checkout Settlement</Button>
+              {selectedGroup && (
+                <Button type="primary" icon={<PlusOutlined />} style={{ flex: 1 }} onClick={async () => {
+                  billForm.resetFields();
+                  try {
+                    const res = await utility.getLastBillDate({ group_id: selectedGroup });
+                    const data = res.data?.data;
+                    if (data?.next_start) {
+                      billForm.setFieldsValue({ start_date: dayjs(data.next_start) });
+                    }
+                  } catch (err) { /* ignore */ }
+                  setBillModal(true);
+                }}>New Bill</Button>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <Space>
+              <Text strong>Filter by group:</Text>
+              <Select
+                style={{ width: 300 }}
+                placeholder="All groups"
+                value={selectedGroup}
+                onChange={v => { setSelectedGroup(v); setSelectedBill(null); setBillDetail(null); }}
+                options={groups.map(g => ({ label: g.name, value: g.id }))}
+                allowClear
+              />
+              <Input.Search placeholder="Search bills..." value={billSearch} onChange={e => setBillSearch(e.target.value)} allowClear style={{ width: 250 }} />
+            </Space>
+            <Space>
+              <Button onClick={openCheckoutModal}>Checkout Settlement</Button>
+              {selectedGroup && (
+                <Button type="primary" icon={<PlusOutlined />} onClick={async () => {
+                  billForm.resetFields();
+                  try {
+                    const res = await utility.getLastBillDate({ group_id: selectedGroup });
+                    const data = res.data?.data;
+                    if (data?.next_start) {
+                      billForm.setFieldsValue({ start_date: dayjs(data.next_start) });
+                    }
+                  } catch (err) { /* ignore */ }
+                  setBillModal(true);
+                }}>New Bill</Button>
+              )}
+            </Space>
+          </>
+        )}
       </div>
 
-      <Table
-        dataSource={filteredBills}
-        columns={billColumns}
-        rowKey="id"
-        size="small"
-        loading={loading}
-        pagination={false}
-      />
+      {isMobile ? (
+        <MobileCardList
+          dataSource={filteredBills}
+          renderCard={renderBillCard}
+          loading={loading}
+          rowKey="id"
+          emptyText="No bills found"
+        />
+      ) : (
+        <Table
+          dataSource={filteredBills}
+          columns={billColumns}
+          rowKey="id"
+          size="small"
+          loading={loading}
+          pagination={false}
+        />
+      )}
 
       {/* New Bill Modal */}
       <Modal

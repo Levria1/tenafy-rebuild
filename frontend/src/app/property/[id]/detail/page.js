@@ -8,6 +8,7 @@ import {
   RightOutlined, EditOutlined, DeleteOutlined, CopyOutlined, EllipsisOutlined,
 } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../../../components/Layout';
+import useIsMobile from '../../../../hooks/useIsMobile';
 import { property, accounting } from '../../../../lib/api';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -86,10 +87,47 @@ function OccupancyDonut({ occupied, vacant, total }) {
 // ---------------------------------------------------------------------------
 // Unit Card Row
 // ---------------------------------------------------------------------------
-function UnitCard({ unit, propertyId, router }) {
+function UnitCard({ unit, propertyId, router, isMobile }) {
   const isOccupied = unit.status === 1;
   const tenantName = [unit.tenant_first_name, unit.tenant_last_name].filter(Boolean).join(' ');
   const sizeText = unit.size ? `${unit.size} ${unit.size_unit || 'sqft'}` : '';
+
+  if (isMobile) {
+    return (
+      <div style={{ padding: '12px 14px', borderBottom: '1px solid #f0f0f0' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <div style={{ width: 44, height: 36, borderRadius: 6, overflow: 'hidden', flexShrink: 0, background: '#f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {unit.photo
+              ? <img src={`${API_URL}/api/file/preview/${unit.photo}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              : <HomeOutlined style={{ fontSize: 16, color: '#ccc' }} />}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>{unit.name}</span>
+              <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 10, lineHeight: '16px' }}>{isOccupied ? 'Occupied' : 'Vacant'}</Tag>
+            </div>
+            <div style={{ color: '#888', fontSize: 11 }}>{unit.type ? unit.type.charAt(0).toUpperCase() + unit.type.slice(1) : 'Apartment'}</div>
+          </div>
+          {tenantName && (
+            <div style={{ fontSize: 11, color: '#333', textAlign: 'right', flexShrink: 0 }}>
+              <UserOutlined style={{ marginRight: 4, color: '#ff4d4f' }} />{tenantName}
+            </div>
+          )}
+        </div>
+        <div style={{ color: '#666', fontSize: 11, display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+          {sizeText && <span>Size: <strong>{sizeText}</strong></span>}
+          <span>Bed: <strong>{unit.beds ?? '-'}</strong></span>
+          <span>Bath: <strong>{unit.baths ?? '-'}</strong></span>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button size="small" style={{ fontSize: 11, flex: 1 }}>Listing</Button>
+          <Button size="small" style={{ fontSize: 11, flex: 1 }} onClick={() => router.push(`/leasing/create?unit=${unit.id}&property=${propertyId}`)}>Lease</Button>
+          <Button size="small" type="primary" ghost style={{ fontSize: 11, flex: 1 }} onClick={() => router.push(`/property/${propertyId}/unit/${unit.id}`)}>View <RightOutlined style={{ fontSize: 9 }} /></Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', padding: '14px 20px', gap: 16, borderBottom: '1px solid #f0f0f0' }}>
       <div style={{ width: 56, height: 45, borderRadius: 6, overflow: 'hidden', flexShrink: 0, background: '#f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -132,7 +170,7 @@ function UnitCard({ unit, propertyId, router }) {
 // ---------------------------------------------------------------------------
 // Property Information tab
 // ---------------------------------------------------------------------------
-function PropertyInfoTab({ propertyData, amenities }) {
+function PropertyInfoTab({ propertyData, amenities, isMobile }) {
   const SectionHeader = ({ title }) => (
     <div style={{ fontSize: 11, fontWeight: 700, color: '#888', letterSpacing: 1, marginBottom: 14, marginTop: 28, borderBottom: '1px solid #f0f0f0', paddingBottom: 6 }}>
       {title}
@@ -144,7 +182,7 @@ function PropertyInfoTab({ propertyData, amenities }) {
 
       {/* General Information */}
       <SectionHeader title="GENERAL INFORMATION" />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '18px 24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: isMobile ? '12px 16px' : '18px 24px' }}>
         {[
           { label: 'PROPERTY NAME',   value: propertyData.display_name },
           { label: 'YEAR BUILT',      value: propertyData.year_of_built },
@@ -176,7 +214,7 @@ function PropertyInfoTab({ propertyData, amenities }) {
         return selected.length === 0 ? (
           <div style={{ color: '#bbb', fontSize: 13 }}>No amenities selected.</div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px 0' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)', gap: '8px 0' }}>
             {selected.map(a => (
               <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
                 <span style={{ color: '#52c41a', fontWeight: 700, fontSize: 15 }}>✓</span>
@@ -213,6 +251,7 @@ export default function PropertyDetailPage() {
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
+  const { isMobile } = useIsMobile();
   const canEdit = hasPermission ? hasPermission('LANDLORD/PROPERTY_EDIT') : false;
   const canDelete = hasPermission ? hasPermission('LANDLORD/PROPERTY_DELETE') : false;
   const [loading, setLoading] = useState(true);
@@ -312,7 +351,7 @@ export default function PropertyDetailPage() {
       </div>
 
       {/* Top 3-column grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr 0.8fr', gap: 16, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1.5fr 0.8fr', gap: 16, marginBottom: 16 }}>
         {/* Photo card */}
         <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, overflow: 'hidden', textAlign: 'center' }}>
           <div style={{ width: '100%', aspectRatio: '4/3', background: '#f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
@@ -362,14 +401,14 @@ export default function PropertyDetailPage() {
                 <div>
                   {units.length === 0
                     ? <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>No units found</div>
-                    : units.map(unit => <UnitCard key={unit.id} unit={unit} propertyId={params.id} router={router} />)}
+                    : units.map(unit => <UnitCard key={unit.id} unit={unit} propertyId={params.id} router={router} isMobile={isMobile} />)}
                 </div>
               ),
             },
             {
               key: 'info',
               label: 'Property Information',
-              children: <PropertyInfoTab propertyData={propertyData} amenities={amenities} />,
+              children: <PropertyInfoTab propertyData={propertyData} amenities={amenities} isMobile={isMobile} />,
             },
           ]}
         />

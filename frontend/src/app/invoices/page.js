@@ -1,15 +1,18 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Table, Button, Space, Tag, Input, Select, DatePicker, Drawer, Descriptions, Divider, Spin, Popover, Radio, Checkbox, Tooltip, message, Modal } from 'antd';
+import { Table, Button, Space, Tag, Input, Select, DatePicker, Drawer, Descriptions, Divider, Spin, Popover, Radio, Checkbox, Tooltip, message, Modal, Card, Typography } from 'antd';
 import { PlusOutlined, FilterOutlined, FileTextOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ExclamationCircleOutlined, MailOutlined, FilePdfOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
 import MainLayout, { useAuth } from '../../components/Layout';
 import { invoice, accountingApi, property as propertyApi, pdf } from '../../lib/api';
+import useIsMobile from '../../hooks/useIsMobile';
+import MobileCardList from '../../components/mobile/MobileCardList';
 
 const { confirm } = Modal;
+const { Text } = Typography;
 
 const { RangePicker } = DatePicker;
 
@@ -35,6 +38,7 @@ export default function InvoicesPage() {
   const [summary, setSummary] = useState({ outstanding_outflow: 0, outstanding_inflow: 0, paid: 0 });
   const router = useRouter();
   const { hasPermission } = useAuth();
+  const { isMobile } = useIsMobile();
   const canDelete = hasPermission('LANDLORD/INVOICE_DELETE');
   const canEdit = hasPermission('LANDLORD/INVOICE_EDIT');
   const canCreate = hasPermission('LANDLORD/INVOICE_CREATE');
@@ -440,15 +444,97 @@ export default function InvoicesPage() {
     },
   ];
 
+  // Mobile card renderer
+  const renderInvoiceCard = (record) => {
+    const st = getStatusLabel(record.status, record);
+    const contactName = [record.tenant_first_name, record.tenant_last_name].filter(Boolean).join(' ');
+    const prop = record.property_name || '';
+    const unit = record.unit_name ? `(${record.unit_name})` : '';
+    const outstanding = Number(record.outstanding || 0);
+    const canPay = hasOutstanding(record);
+
+    return (
+      <Card
+        size="small"
+        style={{ borderRadius: 8 }}
+        bodyStyle={{ padding: '12px 16px' }}
+        onClick={() => openDrawer(record)}
+      >
+        {/* Top row: invoice code + status */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <Text strong style={{ fontSize: 14, color: '#1890ff' }}>{record.invoice_code || '-'}</Text>
+          <Tag color={st.color} style={{ margin: 0 }}>{st.text}</Tag>
+        </div>
+
+        {/* Contact name */}
+        {contactName && (
+          <div style={{ marginBottom: 4 }}>
+            <Text style={{ color: '#333' }}>{contactName}</Text>
+          </div>
+        )}
+
+        {/* Property / Unit */}
+        {prop && (
+          <div style={{ marginBottom: 8 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>{prop} {unit}</Text>
+          </div>
+        )}
+
+        {/* Amount row */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12 }}>Total: </Text>
+            <Text style={{ fontWeight: 500 }}>{formatCurrency(record.amount)}</Text>
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12 }}>Outstanding: </Text>
+            <Text style={{ fontWeight: 600, color: outstanding > 0 ? '#cf1322' : '#389e0d' }}>
+              {formatCurrency(outstanding)}
+            </Text>
+          </div>
+        </div>
+
+        {/* Due date + pay button */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Due: {record.due_on ? dayjs(record.due_on).format('YYYY-MM-DD') : '-'}
+          </Text>
+          <Button
+            size="small"
+            disabled={!canPay}
+            onClick={(e) => {
+              e.stopPropagation();
+              router.push(`/accounting/invoices/payment/create?invoiceId=${record.id}`);
+            }}
+            style={{
+              borderRadius: 4, padding: '0 10px', fontSize: 12,
+              color: !canPay ? '#ccc' : '#666',
+              borderColor: !canPay ? '#eee' : '#d9d9d9',
+              background: 'transparent',
+            }}
+          >
+            Pay
+          </Button>
+        </div>
+      </Card>
+    );
+  };
+
   return (
     <MainLayout>
       <h1 style={{ marginBottom: 16 }}>Invoices</h1>
 
       {/* Filters Row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-        <div style={{ color: '#666' }}>{pagination.total} Total</div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {/* Search input with column-selection dropdown */}
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ color: '#666' }}>{pagination.total} Total</div>
+            {canCreate && (
+              <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => router.push('/invoices/create')}>
+                Create
+              </Button>
+            )}
+          </div>
           <Popover
             content={searchFieldContent}
             trigger="click"
@@ -458,30 +544,64 @@ export default function InvoicesPage() {
           >
             <Input.Search
               placeholder="Type here to search"
-              style={{ width: 250 }}
+              style={{ width: '100%' }}
               allowClear
               onSearch={doSearch}
               onFocus={() => setSearchDropdownOpen(true)}
             />
           </Popover>
-          <RangePicker
-            value={dateRange}
-            onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
-            placeholder={['Start date', 'End date']}
-          />
-          <Popover content={filterContent} title="Filters" trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
-            <Button icon={<FilterOutlined />}>Filter {activeFilterCount > 0 ? activeFilterCount : '0'}</Button>
-          </Popover>
-          {canCreate && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/invoices/create')}>
-              Create Invoice
-            </Button>
-          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <RangePicker
+              value={dateRange}
+              onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
+              placeholder={['Start', 'End']}
+              style={{ flex: 1 }}
+              size="small"
+            />
+            <Popover content={filterContent} title="Filters" trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
+              <Button icon={<FilterOutlined />} size="small">Filter {activeFilterCount > 0 ? activeFilterCount : '0'}</Button>
+            </Popover>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ color: '#666' }}>{pagination.total} Total</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* Search input with column-selection dropdown */}
+            <Popover
+              content={searchFieldContent}
+              trigger="click"
+              placement="bottomLeft"
+              open={searchDropdownOpen}
+              onOpenChange={setSearchDropdownOpen}
+            >
+              <Input.Search
+                placeholder="Type here to search"
+                style={{ width: 250 }}
+                allowClear
+                onSearch={doSearch}
+                onFocus={() => setSearchDropdownOpen(true)}
+              />
+            </Popover>
+            <RangePicker
+              value={dateRange}
+              onChange={(v) => { setDateRange(v); setActiveDateFilter(null); }}
+              placeholder={['Start date', 'End date']}
+            />
+            <Popover content={filterContent} title="Filters" trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
+              <Button icon={<FilterOutlined />}>Filter {activeFilterCount > 0 ? activeFilterCount : '0'}</Button>
+            </Popover>
+            {canCreate && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/invoices/create')}>
+                Create Invoice
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Quick date filters */}
-      <div style={{ marginBottom: 16, display: 'flex', gap: 12 }}>
+      <div style={{ marginBottom: 16, display: 'flex', gap: 12, overflowX: isMobile ? 'auto' : 'visible', whiteSpace: isMobile ? 'nowrap' : 'normal' }}>
         {quickDateButtons.map(b => (
           <a key={b.key} onClick={() => handleQuickDateFilter(b.key)} style={{
             cursor: 'pointer', fontSize: 12, color: '#1890ff',
@@ -494,44 +614,63 @@ export default function InvoicesPage() {
       </div>
 
       {/* Summary Cards */}
-      <div style={{ display: 'flex', gap: 0, marginBottom: 20, border: '1px solid #f0f0f0', borderRadius: 4 }}>
-        <div style={{ flex: 1, padding: '16px 24px', borderRight: '1px solid #f0f0f0' }}>
-          <div style={{ color: '#666', fontSize: 13, marginBottom: 4 }}>Outstanding Outflow</div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: '#cf1322' }}>{formatCurrency(summary.outstanding_outflow)}</div>
+      <div style={isMobile
+        ? { display: 'flex', gap: 0, marginBottom: 20, border: '1px solid #f0f0f0', borderRadius: 4, overflowX: 'auto' }
+        : { display: 'flex', gap: 0, marginBottom: 20, border: '1px solid #f0f0f0', borderRadius: 4 }
+      }>
+        <div style={{ flex: isMobile ? 'none' : 1, minWidth: isMobile ? 140 : undefined, padding: isMobile ? '12px 16px' : '16px 24px', borderRight: '1px solid #f0f0f0' }}>
+          <div style={{ color: '#666', fontSize: isMobile ? 11 : 13, marginBottom: 4 }}>Outstanding Outflow</div>
+          <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: '#cf1322' }}>{formatCurrency(summary.outstanding_outflow)}</div>
         </div>
-        <div style={{ flex: 1, padding: '16px 24px', borderRight: '1px solid #f0f0f0' }}>
-          <div style={{ color: '#666', fontSize: 13, marginBottom: 4 }}>Outstanding Inflow</div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: '#d48806' }}>{formatCurrency(summary.outstanding_inflow)}</div>
+        <div style={{ flex: isMobile ? 'none' : 1, minWidth: isMobile ? 140 : undefined, padding: isMobile ? '12px 16px' : '16px 24px', borderRight: '1px solid #f0f0f0' }}>
+          <div style={{ color: '#666', fontSize: isMobile ? 11 : 13, marginBottom: 4 }}>Outstanding Inflow</div>
+          <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: '#d48806' }}>{formatCurrency(summary.outstanding_inflow)}</div>
         </div>
-        <div style={{ flex: 1, padding: '16px 24px' }}>
-          <div style={{ color: '#666', fontSize: 13, marginBottom: 4 }}>Paid</div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: '#389e0d' }}>{formatCurrency(summary.paid)}</div>
+        <div style={{ flex: isMobile ? 'none' : 1, minWidth: isMobile ? 140 : undefined, padding: isMobile ? '12px 16px' : '16px 24px' }}>
+          <div style={{ color: '#666', fontSize: isMobile ? 11 : 13, marginBottom: 4 }}>Paid</div>
+          <div style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: '#389e0d' }}>{formatCurrency(summary.paid)}</div>
         </div>
       </div>
 
-      {/* Table */}
-      <Table
-        columns={columns}
-        dataSource={invoices}
-        rowKey="id"
-        loading={loading}
-        scroll={{ x: 1400 }}
-        onChange={(pag, _filters, sorter) => {
-          setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
-          if (sorter && sorter.field) {
-            setSortInfo({ field: sorter.field, order: sorter.order || 'descend' });
-          } else if (sorter && !sorter.order) {
-            // User clicked to remove sort — revert to default
-            setSortInfo({ field: 'due_on', order: 'descend' });
-          }
-        }}
-        pagination={{
-          ...pagination,
-          showSizeChanger: true,
-          pageSizeOptions: ['20', '50', '100'],
-          showTotal: (total) => `${total} items`,
-        }}
-      />
+      {/* Table / Mobile Cards */}
+      {isMobile ? (
+        <MobileCardList
+          dataSource={invoices}
+          renderCard={renderInvoiceCard}
+          loading={loading}
+          pagination={{
+            current: pagination.current,
+            pageSize: pagination.pageSize,
+            total: pagination.total,
+            onChange: (page) => setPagination(p => ({ ...p, current: page })),
+          }}
+          rowKey="id"
+          emptyText="No invoices found"
+        />
+      ) : (
+        <Table
+          columns={columns}
+          dataSource={invoices}
+          rowKey="id"
+          loading={loading}
+          scroll={{ x: 1400 }}
+          onChange={(pag, _filters, sorter) => {
+            setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
+            if (sorter && sorter.field) {
+              setSortInfo({ field: sorter.field, order: sorter.order || 'descend' });
+            } else if (sorter && !sorter.order) {
+              // User clicked to remove sort — revert to default
+              setSortInfo({ field: 'due_on', order: 'descend' });
+            }
+          }}
+          pagination={{
+            ...pagination,
+            showSizeChanger: true,
+            pageSizeOptions: ['20', '50', '100'],
+            showTotal: (total) => `${total} items`,
+          }}
+        />
+      )}
 
       {/* Invoice Detail Drawer */}
       <Drawer

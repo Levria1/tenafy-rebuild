@@ -4,14 +4,15 @@ import { Suspense, useEffect, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Input, Button, Space, Avatar, Empty, Spin, Pagination, Badge,
-  Typography, Tooltip, Popover, Radio, Select, message,
+  Typography, Tooltip, Popover, Radio, Select, message, Card, Tag,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, UserOutlined, MailOutlined,
   FileTextOutlined, DollarOutlined, ProfileOutlined, FilterOutlined,
-  SendOutlined,
+  SendOutlined, RightOutlined, EllipsisOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
+import useIsMobile from '../../../hooks/useIsMobile';
 import { tenant, property } from '../../../lib/api';
 
 const { Text, Title } = Typography;
@@ -104,6 +105,67 @@ function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
 }
 
 // ---------------------------------------------------------------------------
+// Mobile tenant card component
+// ---------------------------------------------------------------------------
+function MobileTenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasLease = data.has_active_lease === 1 || data.has_active_lease === true;
+
+  return (
+    <Card
+      size="small"
+      style={{ marginBottom: 8, borderRadius: 8 }}
+      bodyStyle={{ padding: '12px 14px' }}
+      onClick={() => setExpanded(!expanded)}
+    >
+      {/* Top row: avatar + name + status */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <Avatar size={40} icon={<UserOutlined />} style={{ backgroundColor: '#e6f4ff', flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Text strong style={{ fontSize: 14 }}>
+              {data.first_name} {data.last_name}
+            </Text>
+            <Tag
+              color={hasLease ? 'green' : 'default'}
+              style={{ fontSize: 10, lineHeight: '18px', margin: 0 }}
+            >
+              {hasLease ? 'Active' : 'Inactive'}
+            </Tag>
+          </div>
+          {data.email && (
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {data.email}
+            </Text>
+          )}
+        </div>
+        <RightOutlined style={{ color: '#bbb', fontSize: 12, flexShrink: 0, transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }} />
+      </div>
+
+      {/* Expanded actions */}
+      {expanded && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Button size="small" icon={<UserOutlined />} onClick={(e) => { e.stopPropagation(); onProfile(); }}>
+              Profile
+            </Button>
+            <Button size="small" icon={<MailOutlined />} onClick={(e) => { e.stopPropagation(); onEmail(); }}>
+              Email
+            </Button>
+            <Button size="small" icon={<DollarOutlined />} onClick={(e) => { e.stopPropagation(); onInvoice(); }}>
+              + Invoice
+            </Button>
+            <Button size="small" icon={<SendOutlined />} onClick={(e) => { e.stopPropagation(); onInvite(); }}>
+              Invite
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Tenants page
 // ---------------------------------------------------------------------------
 export default function TenantsPageWrapper() {
@@ -114,6 +176,7 @@ function TenantsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const propertyIdParam = searchParams.get('propertyId');
+  const { isMobile } = useIsMobile();
 
   const [tenants, setTenants] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -278,71 +341,143 @@ function TenantsPage() {
       <h1 style={{ marginBottom: 16 }}>Tenants</h1>
 
       {/* Top bar: total, search, filter, email all, add tenant */}
-      <div style={{
-        background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: '12px 20px',
-        marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      }}>
-        <div style={{ fontWeight: 500, fontSize: 15 }}>
-          <span style={{ color: '#1890ff', fontSize: 18, fontWeight: 700, marginRight: 6 }}>{pagination.total}</span>
-          Total
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      {isMobile ? (
+        <div style={{
+          background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: '12px 14px',
+          marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 10,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ fontWeight: 500, fontSize: 15 }}>
+              <span style={{ color: '#1890ff', fontSize: 18, fontWeight: 700, marginRight: 6 }}>{pagination.total}</span>
+              Total
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => router.push('/contacts/tenant/create')}>
+                Add
+              </Button>
+              <Button icon={<MailOutlined />} size="small" onClick={handleEmailAll} />
+            </div>
+          </div>
           <Input
-            placeholder="Type here to search"
+            placeholder="Search tenants..."
             prefix={<SearchOutlined style={{ color: '#bbb' }} />}
-            style={{ width: 220 }}
+            style={{ width: '100%' }}
             allowClear
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onPressEnter={() => loadData(1)}
           />
-          <Popover content={filterContent} trigger="click" open={filterVisible} onOpenChange={setFilterVisible} placement="bottomRight">
-            <Badge count={filterCount} size="small" offset={[-4, 0]}>
-              <Button icon={<FilterOutlined />}>Filter</Button>
-            </Badge>
-          </Popover>
-          <Button icon={<MailOutlined />} onClick={handleEmailAll}>
-            Email All
-          </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/contacts/tenant/create')}>
-            + Add Tenant
-          </Button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Popover content={filterContent} trigger="click" open={filterVisible} onOpenChange={setFilterVisible} placement="bottomRight">
+              <Badge count={filterCount} size="small" offset={[-4, 0]}>
+                <Button icon={<FilterOutlined />} size="small" block>Filter</Button>
+              </Badge>
+            </Popover>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div style={{
+          background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: '12px 20px',
+          marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <div style={{ fontWeight: 500, fontSize: 15 }}>
+            <span style={{ color: '#1890ff', fontSize: 18, fontWeight: 700, marginRight: 6 }}>{pagination.total}</span>
+            Total
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Input
+              placeholder="Type here to search"
+              prefix={<SearchOutlined style={{ color: '#bbb' }} />}
+              style={{ width: 220 }}
+              allowClear
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onPressEnter={() => loadData(1)}
+            />
+            <Popover content={filterContent} trigger="click" open={filterVisible} onOpenChange={setFilterVisible} placement="bottomRight">
+              <Badge count={filterCount} size="small" offset={[-4, 0]}>
+                <Button icon={<FilterOutlined />}>Filter</Button>
+              </Badge>
+            </Popover>
+            <Button icon={<MailOutlined />} onClick={handleEmailAll}>
+              Email All
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/contacts/tenant/create')}>
+              + Add Tenant
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Tenant list */}
-      <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8 }}>
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center' }}><Spin size="large" /></div>
-        ) : tenants.length === 0 ? (
-          <Empty description="No tenants found" style={{ padding: 48 }} />
-        ) : (
-          <>
-            {tenants.map((t) => (
-              <TenantRow
-                key={t.id}
-                data={t}
-                onEmail={() => handleEmail(t)}
-                onInvoice={() => handleInvoice(t)}
-                onInvite={() => handleInvite(t)}
-                onProfile={() => handleProfile(t)}
-              />
-            ))}
-            {pagination.total > pagination.pageSize && (
-              <div style={{ padding: '16px', textAlign: 'center' }}>
-                <Pagination
-                  current={pagination.current}
-                  total={pagination.total}
-                  pageSize={pagination.pageSize}
-                  onChange={(page) => loadData(page)}
-                  showTotal={(total) => `Total ${total} tenants`}
-                  showSizeChanger={false}
+      {isMobile ? (
+        <div>
+          {loading ? (
+            <div style={{ padding: 48, textAlign: 'center' }}><Spin size="large" /></div>
+          ) : tenants.length === 0 ? (
+            <Empty description="No tenants found" style={{ padding: 48 }} />
+          ) : (
+            <>
+              {tenants.map((t) => (
+                <MobileTenantRow
+                  key={t.id}
+                  data={t}
+                  onEmail={() => handleEmail(t)}
+                  onInvoice={() => handleInvoice(t)}
+                  onInvite={() => handleInvite(t)}
+                  onProfile={() => handleProfile(t)}
                 />
-              </div>
-            )}
-          </>
-        )}
-      </div>
+              ))}
+              {pagination.total > pagination.pageSize && (
+                <div style={{ padding: '12px 0', textAlign: 'center' }}>
+                  <Pagination
+                    current={pagination.current}
+                    total={pagination.total}
+                    pageSize={pagination.pageSize}
+                    onChange={(page) => loadData(page)}
+                    size="small"
+                    simple
+                    showSizeChanger={false}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      ) : (
+        <div style={{ background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8 }}>
+          {loading ? (
+            <div style={{ padding: 48, textAlign: 'center' }}><Spin size="large" /></div>
+          ) : tenants.length === 0 ? (
+            <Empty description="No tenants found" style={{ padding: 48 }} />
+          ) : (
+            <>
+              {tenants.map((t) => (
+                <TenantRow
+                  key={t.id}
+                  data={t}
+                  onEmail={() => handleEmail(t)}
+                  onInvoice={() => handleInvoice(t)}
+                  onInvite={() => handleInvite(t)}
+                  onProfile={() => handleProfile(t)}
+                />
+              ))}
+              {pagination.total > pagination.pageSize && (
+                <div style={{ padding: '16px', textAlign: 'center' }}>
+                  <Pagination
+                    current={pagination.current}
+                    total={pagination.total}
+                    pageSize={pagination.pageSize}
+                    onChange={(page) => loadData(page)}
+                    showTotal={(total) => `Total ${total} tenants`}
+                    showSizeChanger={false}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </MainLayout>
   );
 }

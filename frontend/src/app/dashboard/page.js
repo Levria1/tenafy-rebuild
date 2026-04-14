@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Card, Row, Col, Typography, Table, Tag, Select, Spin, Empty } from 'antd';
+import { Card, Row, Col, Typography, Table, Tag, Select, Spin, Empty, Space } from 'antd';
 import MainLayout from '../../components/Layout';
+import useIsMobile from '../../hooks/useIsMobile';
+import MobileCardList from '../../components/mobile/MobileCardList';
 import { user } from '../../lib/api';
 
 const { Text, Title } = Typography;
@@ -53,6 +55,7 @@ function Widget({ title, extra, children, bodyStyle, style }) {
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { isMobile } = useIsMobile();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [expiringDays, setExpiringDays] = useState(30);
@@ -112,28 +115,47 @@ export default function DashboardPage() {
         {/* Vacant Units */}
         <Col xs={24} lg={8}>
           <Widget title={`Vacant Units : ${vacantUnits.length}`} extra={showMore()}>
-            <Table
-              dataSource={vacantUnits}
-              rowKey="unit_id"
-              size="small"
-              pagination={false}
-              scroll={{ y: 180 }}
-              columns={[
-                {
-                  title: 'Property', dataIndex: 'property', key: 'property',
-                  render: (v, r) => <a style={linkStyle} onClick={() => router.push(`/property/${r.property_id}`)}>{v} {r.unit_name}</a>,
-                },
-                { title: 'Unit Type', dataIndex: 'unit_type', key: 'type', width: 100, render: v => v ? v.charAt(0).toUpperCase() + v.slice(1) : '-' },
-                {
-                  title: 'Rent', key: 'rent', width: 160,
-                  render: (_, r) => {
-                    if (!r.rent_price_min && !r.rent_price_max) return <Text type="secondary">--</Text>;
-                    return `HK$${Number(r.rent_price_min || 0).toLocaleString()} — HK$${Number(r.rent_price_max || 0).toLocaleString()}`;
+            {isMobile ? (
+              <MobileCardList
+                dataSource={vacantUnits}
+                rowKey="unit_id"
+                emptyText="No vacant units"
+                renderCard={(r) => (
+                  <Card size="small" style={{ borderLeft: '3px solid #1890ff' }}>
+                    <a style={linkStyle} onClick={() => router.push(`/property/${r.property_id}`)}>{r.property} {r.unit_name}</a>
+                    <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Tag>{r.unit_type ? r.unit_type.charAt(0).toUpperCase() + r.unit_type.slice(1) : '-'}</Tag>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {(!r.rent_price_min && !r.rent_price_max) ? '--' : `HK$${Number(r.rent_price_min || 0).toLocaleString()} — HK$${Number(r.rent_price_max || 0).toLocaleString()}`}
+                      </Text>
+                    </div>
+                  </Card>
+                )}
+              />
+            ) : (
+              <Table
+                dataSource={vacantUnits}
+                rowKey="unit_id"
+                size="small"
+                pagination={false}
+                scroll={{ y: 180 }}
+                columns={[
+                  {
+                    title: 'Property', dataIndex: 'property', key: 'property',
+                    render: (v, r) => <a style={linkStyle} onClick={() => router.push(`/property/${r.property_id}`)}>{v} {r.unit_name}</a>,
                   },
-                },
-              ]}
-              locale={{ emptyText: <Empty description="No vacant units" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-            />
+                  { title: 'Unit Type', dataIndex: 'unit_type', key: 'type', width: 100, render: v => v ? v.charAt(0).toUpperCase() + v.slice(1) : '-' },
+                  {
+                    title: 'Rent', key: 'rent', width: 160,
+                    render: (_, r) => {
+                      if (!r.rent_price_min && !r.rent_price_max) return <Text type="secondary">--</Text>;
+                      return `HK$${Number(r.rent_price_min || 0).toLocaleString()} — HK$${Number(r.rent_price_max || 0).toLocaleString()}`;
+                    },
+                  },
+                ]}
+                locale={{ emptyText: <Empty description="No vacant units" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+              />
+            )}
           </Widget>
         </Col>
 
@@ -143,26 +165,46 @@ export default function DashboardPage() {
             title={<span>Overdue Rental Amount : <Text style={{ color: '#cf1322' }}>{fmtMoney(overdueRent.total)}</Text><br /><Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>Overdue Rent : {overdueRent.count}</Text></span>}
             extra={showMore()}
           >
-            <Table
-              dataSource={overdueRent.items}
-              rowKey="id"
-              size="small"
-              pagination={false}
-              scroll={{ y: 160 }}
-              columns={[
-                {
-                  title: 'Property', key: 'property', width: 140,
-                  render: (_, r) => <a style={linkStyle}>{r.property} {r.unit_name || ''}</a>,
-                },
-                { title: 'Due Date', dataIndex: 'due_on', key: 'due', width: 100, render: fmtDate },
-                { title: 'Outstanding', dataIndex: 'outstanding', key: 'out', width: 110, render: fmtMoney },
-                {
-                  title: 'Days Late', dataIndex: 'days_late', key: 'late', width: 80,
-                  render: (v) => <Text style={{ color: '#cf1322' }}>{v}</Text>,
-                },
-              ]}
-              locale={{ emptyText: <Empty description="No overdue rentals" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-            />
+            {isMobile ? (
+              <MobileCardList
+                dataSource={overdueRent.items}
+                rowKey="id"
+                emptyText="No overdue rentals"
+                renderCard={(r) => (
+                  <Card size="small" style={{ borderLeft: '3px solid #cf1322' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <a style={linkStyle}>{r.property} {r.unit_name || ''}</a>
+                      <Text style={{ color: '#cf1322', fontWeight: 600, fontSize: 13 }}>{fmtMoney(r.outstanding)}</Text>
+                    </div>
+                    <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between' }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>Due: {fmtDate(r.due_on)}</Text>
+                      <Text style={{ color: '#cf1322', fontSize: 12 }}>{r.days_late} days late</Text>
+                    </div>
+                  </Card>
+                )}
+              />
+            ) : (
+              <Table
+                dataSource={overdueRent.items}
+                rowKey="id"
+                size="small"
+                pagination={false}
+                scroll={{ y: 160 }}
+                columns={[
+                  {
+                    title: 'Property', key: 'property', width: 140,
+                    render: (_, r) => <a style={linkStyle}>{r.property} {r.unit_name || ''}</a>,
+                  },
+                  { title: 'Due Date', dataIndex: 'due_on', key: 'due', width: 100, render: fmtDate },
+                  { title: 'Outstanding', dataIndex: 'outstanding', key: 'out', width: 110, render: fmtMoney },
+                  {
+                    title: 'Days Late', dataIndex: 'days_late', key: 'late', width: 80,
+                    render: (v) => <Text style={{ color: '#cf1322' }}>{v}</Text>,
+                  },
+                ]}
+                locale={{ emptyText: <Empty description="No overdue rentals" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+              />
+            )}
           </Widget>
         </Col>
 
@@ -172,26 +214,46 @@ export default function DashboardPage() {
             title={<span>Overdue Payments Amount : <Text style={{ color: '#cf1322' }}>{fmtMoney(overduePay.total)}</Text><br /><Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>Overdue Payments : {overduePay.count}</Text></span>}
             extra={showMore()}
           >
-            <Table
-              dataSource={overduePay.items}
-              rowKey={(r, i) => `pay-${i}`}
-              size="small"
-              pagination={false}
-              scroll={{ y: 160 }}
-              columns={[
-                {
-                  title: 'Property', key: 'property', width: 140,
-                  render: (_, r) => <a style={linkStyle}>{r.property} {r.unit_name || ''}</a>,
-                },
-                { title: 'Due Date', dataIndex: 'due_date', key: 'due', width: 100, render: fmtDate },
-                { title: 'Outstanding', dataIndex: 'outstanding', key: 'out', width: 110, render: fmtMoney },
-                {
-                  title: 'Days Late', dataIndex: 'days_late', key: 'late', width: 80,
-                  render: (v) => <Text style={{ color: '#cf1322' }}>{v}</Text>,
-                },
-              ]}
-              locale={{ emptyText: <Empty description="No overdue payments" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-            />
+            {isMobile ? (
+              <MobileCardList
+                dataSource={overduePay.items}
+                rowKey={(r, i) => `pay-${i}`}
+                emptyText="No overdue payments"
+                renderCard={(r) => (
+                  <Card size="small" style={{ borderLeft: '3px solid #cf1322' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <a style={linkStyle}>{r.property} {r.unit_name || ''}</a>
+                      <Text style={{ color: '#cf1322', fontWeight: 600, fontSize: 13 }}>{fmtMoney(r.outstanding)}</Text>
+                    </div>
+                    <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between' }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>Due: {fmtDate(r.due_date)}</Text>
+                      <Text style={{ color: '#cf1322', fontSize: 12 }}>{r.days_late} days late</Text>
+                    </div>
+                  </Card>
+                )}
+              />
+            ) : (
+              <Table
+                dataSource={overduePay.items}
+                rowKey={(r, i) => `pay-${i}`}
+                size="small"
+                pagination={false}
+                scroll={{ y: 160 }}
+                columns={[
+                  {
+                    title: 'Property', key: 'property', width: 140,
+                    render: (_, r) => <a style={linkStyle}>{r.property} {r.unit_name || ''}</a>,
+                  },
+                  { title: 'Due Date', dataIndex: 'due_date', key: 'due', width: 100, render: fmtDate },
+                  { title: 'Outstanding', dataIndex: 'outstanding', key: 'out', width: 110, render: fmtMoney },
+                  {
+                    title: 'Days Late', dataIndex: 'days_late', key: 'late', width: 80,
+                    render: (v) => <Text style={{ color: '#cf1322' }}>{v}</Text>,
+                  },
+                ]}
+                locale={{ emptyText: <Empty description="No overdue payments" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+              />
+            )}
           </Widget>
         </Col>
       </Row>
@@ -204,25 +266,47 @@ export default function DashboardPage() {
             title={<span>Outstanding Balance : <Text style={{ color: '#cf1322' }}>{fmtMoney(outstanding.total)}</Text></span>}
             extra={showMore()}
           >
-            <Table
-              dataSource={outstanding.items}
-              rowKey="tenant_id"
-              size="small"
-              pagination={false}
-              scroll={{ y: 180 }}
-              columns={[
-                {
-                  title: 'Tenant', key: 'tenant',
-                  render: (_, r) => <a style={linkStyle} onClick={() => router.push(`/contacts/tenant/${r.tenant_id}/detail`)}>{r.first_name} {r.last_name}</a>,
-                },
-                { title: 'Outstanding', dataIndex: 'outstanding', key: 'out', width: 130, render: fmtMoney },
-                {
-                  title: 'Days Late', dataIndex: 'days_late', key: 'late', width: 80,
-                  render: (v) => v > 0 ? <Text style={{ color: '#cf1322' }}>{v}</Text> : <Text>{v || 0}</Text>,
-                },
-              ]}
-              locale={{ emptyText: <Empty description="No outstanding balances" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-            />
+            {isMobile ? (
+              <MobileCardList
+                dataSource={outstanding.items}
+                rowKey="tenant_id"
+                emptyText="No outstanding balances"
+                renderCard={(r) => (
+                  <Card size="small" style={{ borderLeft: '3px solid #cf1322' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <a style={linkStyle} onClick={() => router.push(`/contacts/tenant/${r.tenant_id}/detail`)}>{r.first_name} {r.last_name}</a>
+                      <Text style={{ color: '#cf1322', fontWeight: 600, fontSize: 13 }}>{fmtMoney(r.outstanding)}</Text>
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                      {r.days_late > 0
+                        ? <Text style={{ color: '#cf1322', fontSize: 12 }}>{r.days_late} days late</Text>
+                        : <Text type="secondary" style={{ fontSize: 12 }}>{r.days_late || 0} days</Text>
+                      }
+                    </div>
+                  </Card>
+                )}
+              />
+            ) : (
+              <Table
+                dataSource={outstanding.items}
+                rowKey="tenant_id"
+                size="small"
+                pagination={false}
+                scroll={{ y: 180 }}
+                columns={[
+                  {
+                    title: 'Tenant', key: 'tenant',
+                    render: (_, r) => <a style={linkStyle} onClick={() => router.push(`/contacts/tenant/${r.tenant_id}/detail`)}>{r.first_name} {r.last_name}</a>,
+                  },
+                  { title: 'Outstanding', dataIndex: 'outstanding', key: 'out', width: 130, render: fmtMoney },
+                  {
+                    title: 'Days Late', dataIndex: 'days_late', key: 'late', width: 80,
+                    render: (v) => v > 0 ? <Text style={{ color: '#cf1322' }}>{v}</Text> : <Text>{v || 0}</Text>,
+                  },
+                ]}
+                locale={{ emptyText: <Empty description="No outstanding balances" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+              />
+            )}
           </Widget>
         </Col>
 
@@ -255,25 +339,42 @@ export default function DashboardPage() {
               </span>
             }
           >
-            <Table
-              dataSource={expiring.items}
-              rowKey="lease_id"
-              size="small"
-              pagination={false}
-              scroll={{ y: 180 }}
-              columns={[
-                {
-                  title: 'Property', key: 'property',
-                  render: (_, r) => <a style={linkStyle} onClick={() => router.push(`/property/${r.property_id}`)}>{r.property} {r.unit_name || ''}</a>,
-                },
-                {
-                  title: 'Tenant', key: 'tenant',
-                  render: (_, r) => <a style={linkStyle}>{r.first_name} {r.last_name}</a>,
-                },
-                { title: 'Lease End Date', dataIndex: 'lease_end_date', key: 'end', width: 120, render: fmtDate },
-              ]}
-              locale={{ emptyText: <Empty description="No expiring leases" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-            />
+            {isMobile ? (
+              <MobileCardList
+                dataSource={expiring.items}
+                rowKey="lease_id"
+                emptyText="No expiring leases"
+                renderCard={(r) => (
+                  <Card size="small" style={{ borderLeft: '3px solid #faad14' }}>
+                    <a style={linkStyle} onClick={() => router.push(`/property/${r.property_id}`)}>{r.property} {r.unit_name || ''}</a>
+                    <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={{ fontSize: 12 }}>{r.first_name} {r.last_name}</Text>
+                      <Tag color="warning">{fmtDate(r.lease_end_date)}</Tag>
+                    </div>
+                  </Card>
+                )}
+              />
+            ) : (
+              <Table
+                dataSource={expiring.items}
+                rowKey="lease_id"
+                size="small"
+                pagination={false}
+                scroll={{ y: 180 }}
+                columns={[
+                  {
+                    title: 'Property', key: 'property',
+                    render: (_, r) => <a style={linkStyle} onClick={() => router.push(`/property/${r.property_id}`)}>{r.property} {r.unit_name || ''}</a>,
+                  },
+                  {
+                    title: 'Tenant', key: 'tenant',
+                    render: (_, r) => <a style={linkStyle}>{r.first_name} {r.last_name}</a>,
+                  },
+                  { title: 'Lease End Date', dataIndex: 'lease_end_date', key: 'end', width: 120, render: fmtDate },
+                ]}
+                locale={{ emptyText: <Empty description="No expiring leases" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+              />
+            )}
           </Widget>
         </Col>
       </Row>
@@ -297,22 +398,39 @@ export default function DashboardPage() {
               </span>
             }
           >
-            <Table
-              dataSource={upcoming.items}
-              rowKey={(r, i) => `uv-${i}`}
-              size="small"
-              pagination={false}
-              scroll={{ y: 180 }}
-              columns={[
-                {
-                  title: 'Property', key: 'property',
-                  render: (_, r) => <a style={linkStyle} onClick={() => router.push(`/property/${r.property_id}`)}>{r.property} {r.unit_name || ''}</a>,
-                },
-                { title: 'Unit Type', dataIndex: 'unit_type', key: 'type', width: 100, render: v => v ? v.charAt(0).toUpperCase() + v.slice(1) : '-' },
-                { title: 'Lease End Date', dataIndex: 'lease_end_date', key: 'end', width: 120, render: fmtDate },
-              ]}
-              locale={{ emptyText: <Empty description="No upcoming vacants" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-            />
+            {isMobile ? (
+              <MobileCardList
+                dataSource={upcoming.items}
+                rowKey={(r, i) => `uv-${i}`}
+                emptyText="No upcoming vacants"
+                renderCard={(r) => (
+                  <Card size="small" style={{ borderLeft: '3px solid #faad14' }}>
+                    <a style={linkStyle} onClick={() => router.push(`/property/${r.property_id}`)}>{r.property} {r.unit_name || ''}</a>
+                    <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Tag>{r.unit_type ? r.unit_type.charAt(0).toUpperCase() + r.unit_type.slice(1) : '-'}</Tag>
+                      <Text type="secondary" style={{ fontSize: 12 }}>Ends: {fmtDate(r.lease_end_date)}</Text>
+                    </div>
+                  </Card>
+                )}
+              />
+            ) : (
+              <Table
+                dataSource={upcoming.items}
+                rowKey={(r, i) => `uv-${i}`}
+                size="small"
+                pagination={false}
+                scroll={{ y: 180 }}
+                columns={[
+                  {
+                    title: 'Property', key: 'property',
+                    render: (_, r) => <a style={linkStyle} onClick={() => router.push(`/property/${r.property_id}`)}>{r.property} {r.unit_name || ''}</a>,
+                  },
+                  { title: 'Unit Type', dataIndex: 'unit_type', key: 'type', width: 100, render: v => v ? v.charAt(0).toUpperCase() + v.slice(1) : '-' },
+                  { title: 'Lease End Date', dataIndex: 'lease_end_date', key: 'end', width: 120, render: fmtDate },
+                ]}
+                locale={{ emptyText: <Empty description="No upcoming vacants" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+              />
+            )}
           </Widget>
         </Col>
 

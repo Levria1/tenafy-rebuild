@@ -6,9 +6,39 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
 }
 
 a {
   text-decoration: none;
   color: inherit;
+}
+
+/* ── Mobile-specific global styles ── */
+@media (max-width: 767px) {
+  /* Hide desktop sidebar immediately (prevents SSR flash) */
+  .ant-layout-sider {
+    display: none !important;
+  }
+
+  /* Remove sidebar margin from content area */
+  .ant-layout {
+    margin-left: 0 !important;
+  }
+
+  /* Ensure modals/drawers are full-width on mobile */
+  .ant-modal {
+    max-width: calc(100vw - 16px) !important;
+    margin: 8px auto !important;
+  }
+
+  /* Touch-friendly minimum size for interactive elements */
+  .ant-btn {
+    min-height: 36px;
+  }
+
+  /* Make Ant Design Tabs scrollable on mobile */
+  .ant-tabs-nav-list {
+    flex-wrap: nowrap !important;
+  }
 }

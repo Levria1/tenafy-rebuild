@@ -6,6 +6,7 @@ import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload
 import { UploadOutlined, CloudUploadOutlined, UserOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../../components/Layout';
+import useIsMobile from '../../../../../hooks/useIsMobile';
 import { tenant, settings } from '../../../../../lib/api';
 
 const sectionTitleStyle = {
@@ -31,6 +32,7 @@ const requiredStar = { color: '#d4880f', marginRight: 2 };
 
 export default function TenantEditPage() {
   const router = useRouter();
+  const { isMobile } = useIsMobile();
   const params = useParams();
   const tenantId = params.id;
   const [form] = Form.useForm();
@@ -107,9 +109,9 @@ export default function TenantEditPage() {
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 20, color: '#333' }}>Edit Tenant</h2>
 
         <Form form={form} onFinish={onFinish} layout="vertical">
-          <div style={{ display: 'flex', gap: 24 }}>
+          <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 24 }}>
             {/* Left Sidebar */}
-            <div style={{ width: 300, flexShrink: 0 }}>
+            <div style={{ width: isMobile ? '100%' : 300, flexShrink: 0 }}>
               {/* Profile Photo */}
               <div style={{ border: '1px solid #d9d9d9', borderRadius: 4, overflow: 'hidden', marginBottom: 16 }}>
                 <div style={{ background: '#1890ff', color: '#fff', padding: '6px 12px', fontSize: 12, fontWeight: 600 }}>
@@ -147,7 +149,7 @@ export default function TenantEditPage() {
               <div style={{ border: '1px solid #e8e8e8', borderRadius: 4, padding: 20, marginBottom: 20 }}>
                 <div style={sectionTitleStyle}>GENERAL INFORMATION</div>
 
-                <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+                <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginBottom: 16 }}>
                   <div style={{ flex: 1 }}>
                     <Label required>FIRST NAME</Label>
                     <Form.Item name="first_name" noStyle rules={[{ required: true, message: 'Required' }]}>
@@ -168,7 +170,7 @@ export default function TenantEditPage() {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: 16, marginBottom: 16, alignItems: 'flex-end' }}>
+                <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginBottom: 16, alignItems: isMobile ? 'flex-start' : 'flex-end' }}>
                   <div style={{ flex: 1 }}>
                     <Label>COMPANY NAME</Label>
                     <Form.Item name="company_name" noStyle>
@@ -183,7 +185,7 @@ export default function TenantEditPage() {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+                <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginBottom: 16 }}>
                   <div style={{ flex: 1 }}>
                     <Label>DATE OF BIRTH</Label>
                     <Form.Item name="birth_date" noStyle>
@@ -201,7 +203,7 @@ export default function TenantEditPage() {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+                <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginBottom: 16 }}>
                   <div style={{ flex: 1 }}>
                     <Label required>EMAIL</Label>
                     <Form.Item name="email" noStyle rules={[{ type: 'email', message: 'Invalid email' }]}>
@@ -222,7 +224,7 @@ export default function TenantEditPage() {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: 16, marginBottom: 0 }}>
+                <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginBottom: 0 }}>
                   <div style={{ flex: 1 }}>
                     <Label>ID / PASSPORT</Label>
                     <Form.Item name="id_card" noStyle>
@@ -249,7 +251,7 @@ export default function TenantEditPage() {
               <div style={{ border: '1px solid #e8e8e8', borderRadius: 4, padding: 20, marginBottom: 20 }}>
                 <div style={sectionTitleStyle}>ADDITIONAL INFORMATION</div>
 
-                <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+                <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginBottom: 16 }}>
                   <div style={{ flex: 1 }}>
                     <Label>PROFESSION</Label>
                     <Form.Item name="profession" noStyle>
@@ -264,7 +266,7 @@ export default function TenantEditPage() {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+                <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginBottom: 16 }}>
                   <div style={{ flex: 1 }}>
                     <Label>EMPLOYER</Label>
                     <Form.Item name="employer" noStyle>
@@ -279,7 +281,7 @@ export default function TenantEditPage() {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+                <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginBottom: 16 }}>
                   <div style={{ flex: 1 }}>
                     <Label>EMERGENCY CONTACT</Label>
                     <Form.Item name="emergency_contact" noStyle>
@@ -317,20 +319,22 @@ export default function TenantEditPage() {
               </div>
 
               {/* Buttons */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+              <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', gap: 16 }}>
                 <Button
                   size="large"
+                  block={isMobile}
                   onClick={() => router.push(`/contacts/tenant/${tenantId}/detail`)}
-                  style={{ flex: 1, maxWidth: 400 }}
+                  style={isMobile ? {} : { flex: 1, maxWidth: 400 }}
                 >
                   Cancel
                 </Button>
                 <Button
                   type="primary"
                   size="large"
+                  block={isMobile}
                   htmlType="submit"
                   loading={loading}
-                  style={{ minWidth: 200 }}
+                  style={isMobile ? {} : { minWidth: 200 }}
                 >
                   SUBMIT
                 </Button>
