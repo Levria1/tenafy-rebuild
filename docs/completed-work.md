@@ -19,8 +19,13 @@ Track all changes made per session. Update at the end of each session.
 - Colors fixed: **Occupied = green**, **Vacant = red** (was backwards)
 - Header count colors: Occupied = green `#52c41a`, Vacant = red `#ff4d4f`
 
+### Tenant & Lead Source Fix
+- **Tenant edit failing**: `lead_source_id` column was missing from tenant table — migration `lead_source_setting.sql` had never been run
+- Ran migration to create `lead_source_setting` table and add `lead_source_id` column to `tenant`
+- Restored `lead_source_id` in tenant INSERT/UPDATE queries after migration
+- Edit page already had Lead Source field next to ID/Passport (same as create page)
+
 ### Other Fixes
-- **Tenant edit failing**: Removed `lead_source_id` from tenant INSERT/UPDATE queries — column doesn't exist in tenant table
 - **Click-to-copy on HTTP**: Added `document.execCommand('copy')` fallback for droplet (navigator.clipboard only works on HTTPS/localhost)
 - **Lease detail payments**: Notes column now shows `payment_note` from payment transactions instead of invoice note
 - **Memory.md**: Updated server management rule — just tell user in bold caps, don't attempt server operations
