@@ -237,6 +237,7 @@ export default function TenantEditPage() {
                         allowClear
                         showSearch
                         optionFilterProp="label"
+                        style={{ width: '100%' }}
                         options={leadSources.map(s => ({ label: s.name, value: Number(s.id) }))}
                       />
                     </Form.Item>

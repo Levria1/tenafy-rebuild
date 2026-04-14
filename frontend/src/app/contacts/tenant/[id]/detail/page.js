@@ -14,7 +14,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
-import { tenant, invoice, utility } from '../../../../../lib/api';
+import { tenant, invoice, utility, settings } from '../../../../../lib/api';
 
 const { Text } = Typography;
 
@@ -81,6 +81,7 @@ function TenantDetailPage() {
   const [invoicePagination, setInvoicePagination] = useState({ current: 1, pageSize: 10, total: 0 });
   const [accountingSum, setAccountingSum] = useState(null);
   const [activeTab, setActiveTab] = useState(initialTab);
+  const [leadSources, setLeadSources] = useState([]);
   const [publishLoading, setPublishLoading] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerLoading, setDrawerLoading] = useState(false);
@@ -88,12 +89,14 @@ function TenantDetailPage() {
 
   const loadTenant = useCallback(async () => {
     try {
-      const [profileRes, sumRes] = await Promise.all([
+      const [profileRes, sumRes, lsRes] = await Promise.all([
         tenant.getProfile(tenantId),
         tenant.getProfileSum(tenantId),
+        settings.getLeadSources().catch(() => ({ data: { data: [] } })),
       ]);
       if (profileRes.data.code === 200) setTenantData(profileRes.data.data);
       if (sumRes.data.code === 200) setProfileSum(sumRes.data.data);
+      if (lsRes.data?.data) setLeadSources(lsRes.data.data);
     } catch (err) {
       message.error('Failed to load tenant');
     } finally {
@@ -267,8 +270,9 @@ function TenantDetailPage() {
         <FieldValue label="Secondary Email" value={tenantData?.secondary_email} />
         <FieldValue label="Phone" value={tenantData?.phone} />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0 24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 24px' }}>
         <FieldValue label="ID / Passport" value={tenantData?.id_card} />
+        <FieldValue label="Lead Source" value={leadSources.find(s => String(s.id) === String(tenantData?.lead_source_id))?.name} />
       </div>
 
       {/* ADDITIONAL INFORMATION */}
