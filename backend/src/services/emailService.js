@@ -391,6 +391,25 @@ function substituteVariables(content, variablesMap) {
   return result;
 }
 
+/**
+ * Wrap email body HTML in a proper document with CSS reset so that <p> tags
+ * rendered by the Quill rich-text editor don't add unwanted vertical spacing
+ * in email clients (Gmail, Outlook, etc.).
+ */
+function wrapEmailHtml(bodyHtml) {
+  // Gmail overrides inline margin on <p> tags with its own stylesheet.
+  // Replace <p> with <div> which has no default margin in any email client.
+  // Empty <p></p> tags (Quill's blank lines) become <div><br></div> to preserve spacing.
+  let html = bodyHtml
+    .replace(/<p><\/p>/gi, '<div><br></div>')
+    .replace(/<p(\s|>)/gi, '<div$1')
+    .replace(/<\/p>/gi, '</div>');
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">${html}</body></html>`;
+}
+
 // ---------------------------------------------------------------------------
 // Check lease email toggle
 // ---------------------------------------------------------------------------
@@ -564,7 +583,7 @@ async function sendTemplateEmail(pool, orgId, {
   const mailOpts = {
     to: recipient,
     subject: renderedSubject,
-    html: renderedBody,
+    html: wrapEmailHtml(renderedBody),
     from: template.from || undefined,
   };
 
@@ -637,7 +656,7 @@ async function previewTemplate(pool, orgId, { templateId, templateType, leaseId,
     renderedBody = renderedBody.replace(/\n/g, '<br>\n');
   }
 
-  return { subject: renderedSubject, body: renderedBody, variables };
+  return { subject: renderedSubject, body: wrapEmailHtml(renderedBody), variables };
 }
 
 // ---------------------------------------------------------------------------
