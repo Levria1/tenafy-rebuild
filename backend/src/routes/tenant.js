@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
+const { logActivity } = require('../utils/activityLog');
 
 
 // POST /api/tenant/contacts - List tenants with paging
@@ -163,6 +164,7 @@ router.post('/', authenticate, async (req, res) => {
        budget || null, employer || null, salary || null, emergency_contact || null,
        referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null]
     );
+    await logActivity(req, 'CREATE', 'tenant', tenantId, 'Created tenant ' + [first_name, last_name].filter(Boolean).join(' '));
     res.json({ code: 200, message: 'Tenant created', data: { id: tenantId } });
   } catch (error) {
     console.error('Create tenant error:', error);
@@ -224,6 +226,7 @@ router.put('/:id/profile', authenticate, async (req, res) => {
        id_card || null, profession || null, budget || null, employer || null, salary || null,
        emergency_contact || null, referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null, id]
     );
+    await logActivity(req, 'UPDATE', 'tenant', id, 'Updated tenant ' + [first_name, last_name].filter(Boolean).join(' '));
     res.json({ code: 200, message: 'Tenant updated' });
   } catch (error) {
     console.error('Update tenant error:', error);
@@ -272,6 +275,7 @@ router.delete('/:id', authenticate, async (req, res) => {
       console.warn(`[Tenant Delete] No rows affected — id=${id}, orgId=${orgId}`);
       return res.status(404).json({ code: 404, message: 'Contact not found or already deleted' });
     }
+    await logActivity(req, 'DELETE', 'tenant', id, 'Deleted tenant ' + id);
     res.json({ code: 200, message: 'Contact deleted' });
   } catch (error) {
     console.error('Delete tenant error:', error);

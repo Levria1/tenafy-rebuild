@@ -361,6 +361,12 @@ export const notification = {
   delete: (id) => api.delete(`/api/notification/${id}`),
 };
 
+export const activityLog = {
+  list: (params) => api.get('/api/activity-log/list', { params }),
+  getUsers: () => api.get('/api/activity-log/users'),
+  getEntityTypes: () => api.get('/api/activity-log/entity-types'),
+};
+
 export const cleaning = {
   // Cleaners (settings)
   getCleaners: () => api.get('/api/cleaning/cleaners'),

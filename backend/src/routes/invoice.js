@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
+const { logActivity } = require('../utils/activityLog');
 
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 
@@ -218,6 +219,7 @@ router.post('/', authenticate, requirePermission('LANDLORD/INVOICE_CREATE'), asy
       'INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_on, status, category, currency_id, type, tag_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())',
       [invoiceId, orgId, tenant_id, unit_id || null, leasing_id || null, property_id || null, code, amount, note || null, due_date, status || 0, catId, currId, type || 0, tag_id || null]
     );
+    await logActivity(req, 'CREATE', 'invoice', invoiceId, 'Created invoice ' + (code || invoiceId));
     res.json({ code: 200, message: 'Invoice created', data: { id: invoiceId, invoice_code: code } });
   } catch (error) {
     console.error('Create invoice error:', error);
@@ -644,6 +646,7 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), asy
       }
     }
 
+    await logActivity(req, 'UPDATE', 'invoice', id, 'Updated invoice ' + id);
     res.json({ code: 200, message: 'Invoice updated' });
   } catch (error) {
     console.error('Update invoice error:', error);
@@ -691,6 +694,7 @@ router.delete('/:id', authenticate, requirePermission('LANDLORD/INVOICE_DELETE')
       );
     }
 
+    await logActivity(req, 'DELETE', 'invoice', id, 'Deleted invoice ' + id);
     res.json({ code: 200, message: 'Invoice deleted' });
   } catch (error) {
     console.error('Delete invoice error:', error);

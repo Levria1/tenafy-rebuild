@@ -9,6 +9,7 @@ import {
   HomeOutlined,
   TeamOutlined,
   FileTextOutlined,
+  BarChartOutlined,
   CalendarOutlined,
   ToolOutlined,
   DollarOutlined,
@@ -117,6 +118,16 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     key: '/utilities',
     icon: <ThunderboltOutlined />,
     label: <Link href="/utilities">Utilities</Link>,
+  });
+
+  // Reports
+  items.push({
+    key: '/reports',
+    icon: <BarChartOutlined />,
+    label: 'Reports',
+    children: [
+      { key: '/reports/user-logs', label: <Link href="/reports/user-logs">User Logs</Link> },
+    ],
   });
 
   // Build settings children based on permissions

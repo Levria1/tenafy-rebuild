@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
+const { logActivity } = require('../utils/activityLog');
 
 const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequenceCode');
 const {
@@ -876,6 +877,7 @@ router.post('/', authenticate, async (req, res) => {
       }
     }
 
+    await logActivity(req, 'CREATE', 'lease', leaseId.toString(), 'Created lease ' + (leaseNo || leaseId.toString()));
     res.json({ code: 200, message: 'Lease created', data: { id: leaseId.toString(), lease_no: leaseNo } });
   } catch (error) {
     console.error('Create lease error:', error);
@@ -985,6 +987,7 @@ router.put('/:id', authenticate, async (req, res) => {
       );
     }
 
+    await logActivity(req, 'UPDATE', 'lease', id, 'Updated lease ' + id);
     res.json({ code: 200, message: 'Lease updated' });
   } catch (error) {
     console.error('Update lease error:', error);
@@ -1002,6 +1005,7 @@ router.delete('/:id', authenticate, async (req, res) => {
     }
     await req.pool.execute('DELETE FROM leasing_additional_tenant WHERE leasing_id = ?', [id]);
     await req.pool.execute('UPDATE leasing SET deleted_at = NOW() WHERE id = ?', [id]);
+    await logActivity(req, 'DELETE', 'lease', id, 'Deleted lease ' + id);
     res.json({ code: 200, message: 'Lease deleted' });
   } catch (error) {
     console.error('Delete lease error:', error);

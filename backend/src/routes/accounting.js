@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
+const { logActivity } = require('../utils/activityLog');
 
 const { generateSequenceCode } = require('../utils/sequenceCode');
 const { sendReceiptToTenant } = require('../services/emailService');
@@ -351,6 +352,7 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
       })();
     }
 
+    await logActivity(req, 'CREATE', 'payment', accountingId.toString(), 'Created payment ' + (transaction_code || accountingId.toString()));
     res.json({ code: 200, message: 'Transaction created', data: { id: accountingId.toString(), transaction_code } });
   } catch (error) {
     console.error('Create transaction error:', error);
@@ -582,6 +584,7 @@ router.delete('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTI
       }
     }
 
+    await logActivity(req, 'DELETE', 'payment', id, 'Deleted payment ' + id);
     res.json({ code: 200, message: 'Transaction deleted' });
   } catch (error) {
     console.error('Delete transaction error:', error);

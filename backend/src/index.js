@@ -50,6 +50,7 @@ app.use('/api/cleaning', require('./routes/cleaning'));
 app.use('/api/utility', require('./routes/utility'));
 app.use('/api/booking-platform', require('./routes/bookingPlatform'));
 app.use('/api/sales-agent', require('./routes/salesAgent'));
+app.use('/api/activity-log', require('./routes/activityLog'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

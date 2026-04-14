@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
+const { logActivity } = require('../utils/activityLog');
 
 
 // POST /api/property/list - List properties with paging
@@ -314,6 +315,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
       }
     }
 
+    await logActivity(req, 'UPDATE', 'unit', unit_id, 'Updated unit ' + unit_id);
     res.json({ code: 200, message: 'Unit updated' });
   } catch (error) {
     console.error('Update unit error:', error);
@@ -330,6 +332,7 @@ router.delete('/unit/:unit_id', authenticate, async (req, res) => {
       'UPDATE unit u LEFT JOIN property p ON u.property_id = p.id SET u.active_status = 0, u.deleted_at = NOW() WHERE u.id = ? AND p.org_id = ?',
       [unit_id, orgId]
     );
+    await logActivity(req, 'DELETE', 'unit', unit_id, 'Deleted unit ' + unit_id);
     res.json({ code: 200, message: 'Unit deleted' });
   } catch (error) {
     console.error('Delete unit error:', error);
@@ -602,6 +605,7 @@ router.post('/', authenticate, async (req, res) => {
       );
     }
 
+    await logActivity(req, 'CREATE', 'property', propertyId, 'Created property ' + (display_name || propertyId));
     res.json({ code: 200, message: 'Property created', data: { id: propertyId } });
   } catch (error) {
     console.error('Create property error:', error.message, error.sql || '');
@@ -653,6 +657,7 @@ router.put('/:id', authenticate, async (req, res) => {
       }
     }
 
+    await logActivity(req, 'UPDATE', 'property', id, 'Updated property ' + (display_name || id));
     res.json({ code: 200, message: 'Property updated' });
   } catch (error) {
     console.error('Update property error:', error);
@@ -685,6 +690,7 @@ router.delete('/:id', authenticate, async (req, res) => {
       'UPDATE property SET status = 0, deleted_at = NOW() WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
+    await logActivity(req, 'DELETE', 'property', id, 'Deleted property ' + id);
     res.json({ code: 200, message: 'Property deleted' });
   } catch (error) {
     console.error('Delete property error:', error);
@@ -781,6 +787,7 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
       );
     }
 
+    await logActivity(req, 'CREATE', 'unit', unitId, 'Created unit ' + (name || unitId));
     res.json({ code: 200, message: 'Unit created', data: { id: unitId } });
   } catch (error) {
     console.error('Create unit error:', error);

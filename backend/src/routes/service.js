@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
+const { logActivity } = require('../utils/activityLog');
 
 const { generateSequenceCode } = require('../utils/sequenceCode');
 
@@ -198,6 +199,7 @@ router.post('/create', authenticate, async (req, res) => {
       }
     }
 
+    await logActivity(req, 'CREATE', 'service', serviceId, 'Created service request');
     res.json({ code: 200, message: 'Service created', data: { id: serviceId, code } });
   } catch (error) {
     console.error('Create service error:', error);
@@ -450,6 +452,7 @@ router.put('/update/:id', authenticate, async (req, res) => {
       }
     }
 
+    await logActivity(req, 'UPDATE', 'service', id, 'Updated service request ' + id);
     res.json({ code: 200, message: 'Service updated' });
   } catch (error) {
     console.error('Update service error:', error);
@@ -508,6 +511,7 @@ router.delete('/delete/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     await req.pool.execute('UPDATE service SET deleted_at = NOW() WHERE id = ? AND org_id = ?', [id, orgId]);
+    await logActivity(req, 'DELETE', 'service', id, 'Deleted service request ' + id);
     res.json({ code: 200, message: 'Service deleted' });
   } catch (error) {
     console.error('Delete service error:', error);
