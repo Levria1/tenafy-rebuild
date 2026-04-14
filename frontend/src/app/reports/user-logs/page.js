@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Table, Input, Select, DatePicker, Tag, Card, Space, Button, Tooltip, Typography } from 'antd';
 import { SearchOutlined, ReloadOutlined, ExpandOutlined } from '@ant-design/icons';
-import { activityLog } from '@/lib/api';
+import { activityLog } from '../../../lib/api';
 import dayjs from 'dayjs';
 
 const { RangePicker } = DatePicker;
