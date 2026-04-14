@@ -212,7 +212,7 @@ router.get('/calendar', authenticate, async (req, res) => {
       `SELECT DISTINCT u.id AS unit_id, u.name AS unit_name, p.id AS property_id, p.display_name AS property_name,
               cur_t.first_name AS current_tenant_first, cur_t.last_name AS current_tenant_last,
               cur_t.company_name AS current_tenant_company, cur_t.type AS current_tenant_type,
-              cur_l.amount AS current_rent, cur_l.contract_type AS current_contract_type
+              cur_l.amount AS current_rent, cur_l.contract_type AS current_contract_type, cur_l.end_date AS current_end_date
        FROM unit u
        JOIN property p ON u.property_id = p.id
        LEFT JOIN leasing cur_l ON cur_l.unit_id = u.id AND cur_l.deleted_at IS NULL
@@ -286,6 +286,7 @@ router.get('/calendar', authenticate, async (req, res) => {
         name: u.unit_name,
         current_tenant: currentTenantName,
         current_contract_type: u.current_contract_type ?? null,
+        current_end_date: u.current_end_date || null,
         current_rent: u.current_rent || null,
         leases: leasesByUnit[String(u.unit_id)] || [],
       });

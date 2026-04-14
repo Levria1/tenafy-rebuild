@@ -257,9 +257,7 @@ function CalendarInner() {
       if (days > bestDays) { bestDays = days; best = l; }
     }
     const ct = CONTRACT_TYPE_MAP[best.contract_type];
-    const endLabel = best.end_date ? `[${toDate(best.end_date).format('MMM D').toUpperCase()}]` : '';
-    const parts = [best.tenant_name, endLabel, ct ? `(${ct})` : ''].filter(Boolean);
-    return parts.join(' ');
+    return ct ? `${best.tenant_name} (${ct})` : best.tenant_name;
   };
 
   const headerHeight = 36;
@@ -400,7 +398,7 @@ function CalendarInner() {
                     <td style={{ position: 'sticky', left: unitColWidth, zIndex: 1, background: '#fff', padding: '6px 12px', borderRight: '1px solid #e8e8e8', borderBottom: '1px solid #f0f0f0', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: tenantColWidth }}>
                       {unit.current_tenant
                         ? <Tooltip title={CONTRACT_TYPE_LABEL[unit.current_contract_type] ? `Tenant Status: ${CONTRACT_TYPE_LABEL[unit.current_contract_type]} (${CONTRACT_TYPE_MAP[unit.current_contract_type]})` : 'No tenant status set'}>
-                            <span>{unit.current_tenant}{CONTRACT_TYPE_MAP[unit.current_contract_type] ? <span style={{ color: '#999', marginLeft: 4 }}>({CONTRACT_TYPE_MAP[unit.current_contract_type]})</span> : null}</span>
+                            <span>{unit.current_tenant}{unit.current_end_date ? <span style={{ color: '#999', marginLeft: 4 }}>[{toDate(unit.current_end_date).format('MMM D').toUpperCase()}]</span> : null}{CONTRACT_TYPE_MAP[unit.current_contract_type] ? <span style={{ color: '#999', marginLeft: 4 }}>({CONTRACT_TYPE_MAP[unit.current_contract_type]})</span> : null}</span>
                           </Tooltip>
                         : <span style={{ color: '#ccc' }}>—</span>}
                     </td>
