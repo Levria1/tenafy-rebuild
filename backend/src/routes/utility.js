@@ -1214,7 +1214,7 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
     const {
       meter_id, tenant_id, leasing_id,
       checkout_reading, manual_rate,
-      reading_date
+      reading_date, last_reading_override
     } = req.body;
     const orgId = req.user.orgId;
 
@@ -1254,7 +1254,8 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
       lastBillLine ? Number(lastBillLine.ending_reading) : 0,
       Number(meter.current_reading) || 0
     ];
-    const startReading = Math.max(...candidates);
+    // Allow manual override of the last reading if provided
+    const startReading = last_reading_override != null ? Number(last_reading_override) : Math.max(...candidates);
     // Use the most recent date source for credit proration
     const candidateDates = [
       lastReading ? lastReading.reading_date : null,
@@ -1278,31 +1279,47 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
     const proratedCredit = utilityCredit > 0 ? Math.round((utilityCredit * 12 / 365) * periodDays * 100) / 100 : 0;
     const netAmount = Math.max(0, Math.round((grossAmount - proratedCredit) * 100) / 100);
 
-    // 1. Log the checkout meter reading
+    // 1. Check next tenant's lease first (needed for settlement record)
+    const [[nextLease]] = await req.pool.execute(
+      `SELECT id FROM leasing WHERE unit_id = ? AND deleted_at IS NULL AND id != ? AND start_date >= ?
+       ORDER BY start_date ASC LIMIT 1`,
+      [lease.unit_id, leasing_id, settlementDate]
+    );
+
+    // 2. Create settlement record FIRST to prevent orphan data if something fails
     const readingId = genId();
+    const settlementId = genId();
+    await req.pool.execute(
+      `INSERT INTO utility_checkout_settlement
+       (id, org_id, meter_id, tenant_id, leasing_id,
+        starting_reading, checkout_reading, kw_used, rate_per_kw,
+        gross_amount, utility_credit, prorated_credit, period_days, net_amount,
+        reading_date, reading_id, invoice_id, next_lease_id, previous_meter_reading)
+       VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?)`,
+      [settlementId, orgId, meter_id, tenant_id, leasing_id,
+       startReading, checkout_reading, kwUsed, manual_rate,
+       grossAmount, utilityCredit, proratedCredit, periodDays, netAmount,
+       settlementDate, readingId, null, nextLease?.id || null, Number(meter.current_reading)]
+    );
+
+    // 3. Log the checkout meter reading
     await req.pool.execute(
       `INSERT INTO utility_meter_reading (id, org_id, meter_id, reading_value, reading_date, reading_type, tenant_id, notes)
        VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
       [readingId, orgId, meter_id, checkout_reading, settlementDate, tenant_id, 'Checkout settlement']
     );
 
-    // 2. Update meter current_reading
+    // 4. Update meter current_reading
     await req.pool.execute('UPDATE utility_meter SET current_reading = ? WHERE id = ?', [checkout_reading, meter_id]);
 
-    // 3. Update current lease check_out_meter
+    // 5. Update current lease check_out_meter
     await req.pool.execute(
       'UPDATE leasing SET check_out_meter = ?, check_out_meter_updated_at = NOW() WHERE id = ?',
       [checkout_reading, leasing_id]
     );
 
-    // 4. Update next tenant's check_in_meter (if there's a future lease on same unit)
-    const [[nextLease]] = await req.pool.execute(
-      `SELECT id FROM leasing WHERE unit_id = ? AND deleted_at IS NULL AND id != ? AND start_date >= ?
-       ORDER BY start_date ASC LIMIT 1`,
-      [lease.unit_id, leasing_id, settlementDate]
-    );
+    // 6. Update next tenant's check_in_meter if applicable
     if (nextLease) {
-      // Only update if the next lease's check_in_meter hasn't been manually edited more recently
       const [[nextLeaseData]] = await req.pool.execute(
         'SELECT check_in_meter_updated_at FROM leasing WHERE id = ?', [nextLease.id]
       );
@@ -1374,22 +1391,13 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
          tenant_id, currencyId, settlementDate, categoryId,
          Math.ceil(netAmount), note]
       );
-    }
 
-    // 6. Persist settlement record
-    const settlementId = genId();
-    await req.pool.execute(
-      `INSERT INTO utility_checkout_settlement
-       (id, org_id, meter_id, tenant_id, leasing_id,
-        starting_reading, checkout_reading, kw_used, rate_per_kw,
-        gross_amount, utility_credit, prorated_credit, period_days, net_amount,
-        reading_date, reading_id, invoice_id, next_lease_id, previous_meter_reading)
-       VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?)`,
-      [settlementId, orgId, meter_id, tenant_id, leasing_id,
-       startReading, checkout_reading, kwUsed, manual_rate,
-       grossAmount, utilityCredit, proratedCredit, periodDays, netAmount,
-       settlementDate, readingId, invoiceId, nextLease?.id || null, Number(meter.current_reading)]
-    );
+      // Update the settlement record with the invoice_id
+      await req.pool.execute(
+        'UPDATE utility_checkout_settlement SET invoice_id = ? WHERE id = ?',
+        [invoiceId, settlementId]
+      );
+    }
 
     res.json({
       code: 200,

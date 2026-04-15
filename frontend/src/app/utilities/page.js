@@ -1509,6 +1509,7 @@ function BillingTab() {
     setCheckoutResult(null);
     setUseHighestRate(false);
     setHighestRate(null);
+    setSelectedCheckoutMeter(null);
 
     // Load all sub-meters with all tenant leases (current and past)
     try {
@@ -1520,9 +1521,14 @@ function BillingTab() {
     setCheckoutModal(true);
   };
 
+  const [selectedCheckoutMeter, setSelectedCheckoutMeter] = useState(null);
+
   const handleCheckoutMeterChange = async (comboKey) => {
     const meter = checkoutMeters.find(m => `${m.meter_id}_${m.leasing_id}` === comboKey);
-    if (!meter) return;
+    if (!meter) { setSelectedCheckoutMeter(null); return; }
+    setSelectedCheckoutMeter(meter);
+    // Pre-fill the last reading from current_reading
+    checkoutForm.setFieldsValue({ last_reading: Number(meter.current_reading) });
     // Load highest rate for this meter's group
     try {
       const res = await utility.getHighestRate({ group_id: meter.group_id });
@@ -1544,6 +1550,7 @@ function BillingTab() {
         checkout_reading: values.checkout_reading,
         manual_rate: values.manual_rate,
         reading_date: values.reading_date?.format('YYYY-MM-DD') || undefined,
+        last_reading_override: values.last_reading != null ? values.last_reading : undefined,
       });
       setCheckoutResult(res.data?.data);
       message.success('Checkout settlement completed');
@@ -1733,6 +1740,11 @@ function BillingTab() {
                 })}
               />
             </Form.Item>
+            {selectedCheckoutMeter && (
+              <Form.Item name="last_reading" label="Last Reading (editable)">
+                <InputNumber style={{ width: '100%' }} min={0} precision={2} />
+              </Form.Item>
+            )}
             <Row gutter={16}>
               <Col span={12}>
                 <Form.Item name="checkout_reading" label="Checkout Meter Reading" rules={[{ required: true, message: 'Reading is required' }]}>
