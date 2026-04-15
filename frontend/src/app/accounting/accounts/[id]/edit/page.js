@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Form, Input, InputNumber, Select, DatePicker, Button, message, Row, Col, Tabs, Divider, Upload, Spin, AutoComplete } from 'antd';
 import { PlusOutlined, DeleteOutlined, UploadOutlined } from '@ant-design/icons';
@@ -27,6 +27,7 @@ export default function AccountEditPage() {
 
   // Account lines state - starts empty, populated from server or via "+add Line"
   const [accountLines, setAccountLines] = useState([]);
+  const lineKeyRef = useRef(0);
 
   useEffect(() => {
     loadAll();
@@ -156,17 +157,32 @@ export default function AccountEditPage() {
 
   // Account line handlers
   const addLine = () => {
+    lineKeyRef.current += 1;
     setAccountLines(prev => [...prev, {
-      key: Date.now(), amount: '', category: null, invoice_code: '', property_id: null, unit_id: null, lease_id: null, tag_id: null, units: []
+      key: `line-${Date.now()}-${lineKeyRef.current}`, amount: '', category: null, invoice_code: '', property_id: null, unit_id: null, lease_id: null, tag_id: null, units: []
     }]);
   };
 
   const removeLine = (key) => {
-    setAccountLines(prev => prev.filter(l => l.key !== key));
+    setAccountLines(prev => {
+      const next = prev.filter(l => l.key !== key);
+      if (next.length > 0) {
+        const sum = next.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+        form.setFieldValue('amount', sum || undefined);
+      }
+      return next;
+    });
   };
 
   const updateLine = (key, field, value) => {
-    setAccountLines(prev => prev.map(l => l.key === key ? { ...l, [field]: value } : l));
+    setAccountLines(prev => {
+      const next = prev.map(l => l.key === key ? { ...l, [field]: value } : l);
+      if (field === 'amount' && next.length > 0) {
+        const sum = next.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+        form.setFieldValue('amount', sum || undefined);
+      }
+      return next;
+    });
   };
 
   const handleLinePropertyChange = async (key, propertyId) => {
@@ -311,43 +327,54 @@ export default function AccountEditPage() {
         <div style={{ background: '#f8f9fb', border: '1px solid #e8e8e8', borderTop: 'none', padding: '20px 24px', marginBottom: 0 }}>
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item name="amount" label={reqLabel('Amount')} rules={[{ required: true, message: 'Please input your amount' }]}>
-                <InputNumber min={0} style={{ width: '100%' }} addonBefore="HK$" placeholder="Please input your amount" />
+              <Form.Item name="amount" label={<span style={labelStyle}><span style={{ color: 'red' }}>* </span>Amount{accountLines.length > 0 ? ' (Total)' : ''}</span>} rules={[{ required: true, message: 'Please input your amount' }]}>
+                <InputNumber min={0} style={{ width: '100%' }} addonBefore="HK$" placeholder="Please input your amount" disabled={accountLines.length > 0} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="category" label={reqLabel('Category')} rules={[{ required: true, message: 'Please select the category' }]}>
-                <Select placeholder="Please select the category" allowClear showSearch optionFilterProp="label" options={categories.map(c => ({ label: c.name, value: c.id }))} />
-              </Form.Item>
+              {accountLines.length > 0 ? (
+                <div>
+                  <div style={{ ...labelStyle, marginBottom: 8 }}>Category</div>
+                  <Input value="Multiple Expense" disabled style={{ width: '100%', color: '#1890ff', fontWeight: 600 }} />
+                </div>
+              ) : (
+                <Form.Item name="category" label={reqLabel('Category')} rules={[{ required: true, message: 'Please select the category' }]}>
+                  <Select placeholder="Please select the category" allowClear showSearch optionFilterProp="label" options={categories.map(c => ({ label: c.name, value: c.id }))} />
+                </Form.Item>
+              )}
             </Col>
             <Col span={8}>
-              <Form.Item name="invoice_code" label={optLabel('Invoice Number')}>
-                <Input />
-              </Form.Item>
+              {accountLines.length === 0 && (
+                <Form.Item name="invoice_code" label={optLabel('Invoice Number')}>
+                  <Input />
+                </Form.Item>
+              )}
             </Col>
           </Row>
-          <Row gutter={16}>
-            <Col span={6}>
-              <Form.Item name="property_id" label={optLabel('Property')}>
-                <Select placeholder="Please select the property" allowClear showSearch optionFilterProp="label" onChange={handlePropertyChange} options={properties.map(p => ({ label: p.display_name, value: p.id }))} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item name="unit_id" label={optLabel('Unit')}>
-                <Select placeholder="Please select the unit" allowClear onChange={handleUnitChange} options={units.map(u => ({ label: u.name, value: u.id }))} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item name="lease_id" label={optLabel('Lease')}>
-                <Select placeholder="Please input your unit lease" allowClear options={leases.map(l => ({ label: l.lease_no || `Lease #${l.id}`, value: l.id }))} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item name="tag_id" label={optLabel('Property Owner Tag')}>
-                <Select placeholder="Please select the tag" allowClear options={tags.map(t => ({ label: t.name, value: t.id }))} />
-              </Form.Item>
-            </Col>
-          </Row>
+          {accountLines.length === 0 && (
+            <Row gutter={16}>
+              <Col span={6}>
+                <Form.Item name="property_id" label={optLabel('Property')}>
+                  <Select placeholder="Please select the property" allowClear showSearch optionFilterProp="label" onChange={handlePropertyChange} options={properties.map(p => ({ label: p.display_name, value: p.id }))} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="unit_id" label={optLabel('Unit')}>
+                  <Select placeholder="Please select the unit" allowClear onChange={handleUnitChange} options={units.map(u => ({ label: u.name, value: u.id }))} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="lease_id" label={optLabel('Lease')}>
+                  <Select placeholder="Please input your unit lease" allowClear options={leases.map(l => ({ label: l.lease_no || `Lease #${l.id}`, value: l.id }))} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="tag_id" label={optLabel('Property Owner Tag')}>
+                  <Select placeholder="Please select the tag" allowClear options={tags.map(t => ({ label: t.name, value: t.id }))} />
+                </Form.Item>
+              </Col>
+            </Row>
+          )}
         </div>
 
         {/* Account Lines */}

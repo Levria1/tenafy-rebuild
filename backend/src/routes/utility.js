@@ -647,20 +647,36 @@ router.post('/bill', authenticate, async (req, res) => {
     for (const meter of meters) {
       const isCommon = meter.unit_id == null ? 1 : 0;
 
-      // Get last reading from log instead of current_reading
+      // Get last reading — check both meter_reading log AND the ending_reading from the most recent
+      // finalized bill line for this meter (whichever is higher), so that creating a new bill after
+      // finalizing the previous one always picks up the correct starting value.
       const [[lastReading]] = await req.pool.execute(
         `SELECT reading_value FROM utility_meter_reading WHERE meter_id = ? ORDER BY reading_date DESC, created_at DESC LIMIT 1`,
         [meter.id]
       );
-      const startReading = lastReading ? Number(lastReading.reading_value) : Number(meter.current_reading);
+      const [[lastBillLine]] = await req.pool.execute(
+        `SELECT bl.ending_reading FROM utility_bill_line bl
+         JOIN utility_bill b ON bl.bill_id = b.id
+         WHERE bl.meter_id = ? AND b.status = 1
+         ORDER BY b.period_end DESC LIMIT 1`,
+        [meter.id]
+      );
+      // Use the highest value among: last reading log, last finalized bill ending, or meter current_reading
+      const candidates = [
+        lastReading ? Number(lastReading.reading_value) : 0,
+        lastBillLine ? Number(lastBillLine.ending_reading) : 0,
+        Number(meter.current_reading) || 0
+      ];
+      const startReading = Math.max(...candidates);
       let tenantId = null;
       let leasingId = null;
       let leaseStart = null;
       let leaseEnd = null;
       let utilityCredit = 0;
 
-      // Find the most recent tenant for this unit during the billing period
-      // Don't filter by status=1 — ended leases still apply if they overlap the period
+      // Find tenant with an active lease at the END of the billing period.
+      // If a tenant checked out mid-period, they would have been settled via
+      // checkout settlement already — so only include tenants still active at period_end.
       if (!isCommon && meter.unit_id) {
         const [[lease]] = await req.pool.execute(
           `SELECT l.id, l.tenant_id, l.start_date, l.end_date, l.utility_credit
@@ -668,7 +684,7 @@ router.post('/bill', authenticate, async (req, res) => {
            WHERE l.unit_id = ? AND l.deleted_at IS NULL
              AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)
            ORDER BY l.start_date DESC LIMIT 1`,
-          [meter.unit_id, period_end, period_start]
+          [meter.unit_id, period_end, period_end]
         );
         if (lease) {
           tenantId = lease.tenant_id;
@@ -1243,9 +1259,72 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
       }
     }
 
+    // 5. Auto-generate invoice for net amount due
+    let invoiceId = null;
+    let invoiceCode = null;
+    if (netAmount > 0) {
+      // Get default currency
+      const [[cur]] = await req.pool.execute('SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [orgId]);
+      const currencyId = cur ? cur.id : null;
+
+      // Get utility category — prefer "Utilities", then "Utility", then fallback
+      let categoryId = null;
+      const [[exactCat]] = await req.pool.execute(
+        "SELECT id FROM category_setting WHERE org_id = ? AND (name = 'Utilities' OR name = 'utilities') ORDER BY id LIMIT 1",
+        [orgId]
+      );
+      if (exactCat) {
+        categoryId = exactCat.id;
+      } else {
+        const [[utilityCat]] = await req.pool.execute(
+          "SELECT id FROM category_setting WHERE org_id = ? AND (name = 'Utility' OR name = 'utility') ORDER BY id LIMIT 1",
+          [orgId]
+        );
+        if (utilityCat) {
+          categoryId = utilityCat.id;
+        } else {
+          const [[defCat]] = await req.pool.execute(
+            "SELECT id FROM category_setting WHERE org_id = ? ORDER BY id LIMIT 1",
+            [orgId]
+          );
+          categoryId = defCat ? defCat.id : 0;
+        }
+      }
+
+      // Get property_id from unit
+      let propertyId = null;
+      if (meter.unit_id) {
+        const [[unit]] = await req.pool.execute('SELECT property_id FROM unit WHERE id = ?', [meter.unit_id]);
+        if (unit) propertyId = unit.property_id;
+      }
+
+      // Get meter number for the note
+      const [[meterInfo]] = await req.pool.execute('SELECT meter_number FROM utility_meter WHERE id = ?', [meter_id]);
+      const meterNumber = meterInfo?.meter_number || 'N/A';
+
+      invoiceId = genId();
+      invoiceCode = await generateInvoiceCode(req.pool, orgId);
+
+      const note = `Utility checkout settlement: ${kwUsed} kW × $${Number(manual_rate).toFixed(4)}/kW = $${grossAmount.toFixed(2)}` +
+        (proratedCredit > 0 ? ` | Credit: -$${proratedCredit.toFixed(2)}` : '') +
+        ` | Meter: ${meterNumber}` +
+        ` | Reading: ${startReading} → ${Number(checkout_reading)}`;
+
+      await req.pool.execute(
+        `INSERT INTO invoice (id, org_id, invoice_code, property_id, unit_id, leasing_id, tenant_id,
+         currency_id, due_on, category, amount, note, type, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, NOW())`,
+        [invoiceId, orgId, invoiceCode, propertyId, meter.unit_id || null, leasing_id,
+         tenant_id, currencyId, settlementDate, categoryId,
+         Math.ceil(netAmount), note]
+      );
+    }
+
     res.json({
       code: 200,
-      message: 'Checkout settlement completed',
+      message: netAmount > 0
+        ? `Checkout settlement completed — Invoice ${invoiceCode} created for $${Math.ceil(netAmount)}`
+        : 'Checkout settlement completed — no amount due (credit covers usage)',
       data: {
         start_reading: startReading,
         checkout_reading: Number(checkout_reading),
@@ -1259,6 +1338,8 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
         leasing_id,
         meter_id,
         next_lease_updated: !!nextLease,
+        invoice_id: invoiceId ? invoiceId.toString() : null,
+        invoice_code: invoiceCode,
       }
     });
   } catch (error) {
