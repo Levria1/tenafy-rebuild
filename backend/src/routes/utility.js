@@ -1198,14 +1198,32 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
     );
     if (!lease) return res.status(404).json({ code: 404, message: 'Lease not found' });
 
-    // Get last reading as starting point
+    // Get last reading — check meter reading log, last finalized bill ending, and meter current_reading
     const [[lastReading]] = await req.pool.execute(
       `SELECT reading_value, reading_date FROM utility_meter_reading
        WHERE meter_id = ? ORDER BY reading_date DESC, created_at DESC LIMIT 1`,
       [meter_id]
     );
-    const startReading = lastReading ? Number(lastReading.reading_value) : Number(meter.current_reading);
-    const startDate = lastReading ? lastReading.reading_date : lease.start_date;
+    const [[lastBillLine]] = await req.pool.execute(
+      `SELECT bl.ending_reading, b.period_end FROM utility_bill_line bl
+       JOIN utility_bill b ON bl.bill_id = b.id
+       WHERE bl.meter_id = ? AND b.status = 1
+       ORDER BY b.period_end DESC LIMIT 1`,
+      [meter_id]
+    );
+    const candidates = [
+      lastReading ? Number(lastReading.reading_value) : 0,
+      lastBillLine ? Number(lastBillLine.ending_reading) : 0,
+      Number(meter.current_reading) || 0
+    ];
+    const startReading = Math.max(...candidates);
+    // Use the most recent date source for credit proration
+    const candidateDates = [
+      lastReading ? lastReading.reading_date : null,
+      lastBillLine ? lastBillLine.period_end : null,
+      lease.start_date
+    ].filter(Boolean);
+    const startDate = candidateDates.sort((a, b) => new Date(b) - new Date(a))[0] || lease.start_date;
 
     // Calculate usage
     const kwUsed = Number(checkout_reading) - startReading;

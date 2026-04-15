@@ -973,7 +973,7 @@ function TenantDetailPage() {
               <div style={{ marginBottom: 16, padding: 12, background: '#f5f5f5', borderRadius: 8 }}>
                 <div><Text type="secondary">Meter:</Text> {editingSettlement.meter_number}</div>
                 <div><Text type="secondary">Unit:</Text> {editingSettlement.property_name} - {editingSettlement.unit_name}</div>
-                <div><Text type="secondary">Starting Reading:</Text> {editingSettlement.starting_reading.toLocaleString()}</div>
+                <div><Text type="secondary">Last Reading:</Text> {editingSettlement.starting_reading.toLocaleString()}</div>
               </div>
               <Form form={editForm} layout="vertical">
                 <Form.Item name="checkout_reading" label="Checkout Reading" rules={[{ required: true, message: 'Required' }]}>

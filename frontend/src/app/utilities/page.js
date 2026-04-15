@@ -1773,7 +1773,7 @@ function BillingTab() {
         ) : (
           <div>
             <Descriptions bordered column={1} size="small">
-              <Descriptions.Item label="Starting Reading">{Number(checkoutResult.start_reading).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="Last Reading">{Number(checkoutResult.start_reading).toLocaleString()}</Descriptions.Item>
               <Descriptions.Item label="Checkout Reading">{Number(checkoutResult.checkout_reading).toLocaleString()}</Descriptions.Item>
               <Descriptions.Item label="kWh Used">{Number(checkoutResult.kw_used).toLocaleString()}</Descriptions.Item>
               <Descriptions.Item label="Rate">${Number(checkoutResult.rate).toFixed(2)}/kWh</Descriptions.Item>
