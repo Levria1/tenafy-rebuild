@@ -48,7 +48,7 @@ export default function LeasingDetailPage() {
       if (response.data.code === 200) {
         const data = response.data.data;
         setLease(data);
-        if (data.unit_id) loadReadings(data.unit_id);
+        if (data.unit_id) loadReadings(data.unit_id, data);
       }
     } catch (error) {
       message.error('Failed to load lease');
@@ -85,11 +85,24 @@ export default function LeasingDetailPage() {
     }
   };
 
-  const loadReadings = async (unitId) => {
+  const loadReadings = async (unitId, leaseData) => {
     setReadingsLoading(true);
     try {
       const res = await utility.getUnitReadings({ unit_id: unitId });
-      setReadings(res.data?.data || []);
+      const allReadings = res.data?.data || [];
+      // Filter to only show readings within the lease period
+      if (leaseData?.start_date) {
+        const leaseStart = dayjs(leaseData.start_date).startOf('day');
+        const leaseEnd = leaseData.end_date ? dayjs(leaseData.end_date).endOf('day') : null;
+        setReadings(allReadings.filter(r => {
+          const readingDate = dayjs(r.reading_date);
+          if (readingDate.isBefore(leaseStart)) return false;
+          if (leaseEnd && readingDate.isAfter(leaseEnd)) return false;
+          return true;
+        }));
+      } else {
+        setReadings(allReadings);
+      }
     } catch (err) {
       // silently fail — unit may not have meters
     } finally {
