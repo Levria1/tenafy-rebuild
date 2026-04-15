@@ -91,18 +91,34 @@ export default function LeasingDetailPage() {
       const res = await utility.getUnitReadings({ unit_id: unitId });
       const allReadings = res.data?.data || [];
       // Filter to only show readings within the lease period
+      let filtered = allReadings;
       if (leaseData?.start_date) {
         const leaseStart = dayjs(leaseData.start_date).startOf('day');
         const leaseEnd = leaseData.end_date ? dayjs(leaseData.end_date).endOf('day') : null;
-        setReadings(allReadings.filter(r => {
+        filtered = allReadings.filter(r => {
           const readingDate = dayjs(r.reading_date);
           if (readingDate.isBefore(leaseStart)) return false;
           if (leaseEnd && readingDate.isAfter(leaseEnd)) return false;
           return true;
-        }));
-      } else {
-        setReadings(allReadings);
+        });
       }
+      // Add check-in meter as a Move-In reading if it exists
+      if (leaseData?.check_in_meter != null) {
+        filtered = [
+          ...filtered,
+          {
+            id: `checkin-${leaseData.id}`,
+            reading_date: leaseData.start_date,
+            reading_value: leaseData.check_in_meter,
+            reading_type: 0,
+            meter_number: filtered[0]?.meter_number || '-',
+            notes: 'Lease check-in meter',
+          }
+        ];
+      }
+      // Sort by date descending
+      filtered.sort((a, b) => new Date(b.reading_date) - new Date(a.reading_date));
+      setReadings(filtered);
     } catch (err) {
       // silently fail — unit may not have meters
     } finally {
