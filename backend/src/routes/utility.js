@@ -468,7 +468,45 @@ router.get('/meter-readings', authenticate, async (req, res) => {
        ORDER BY r.reading_date DESC, r.created_at DESC`,
       [meter_id, orgId]
     );
-    res.json({ code: 200, data: rows });
+
+    // Also get check-in meter readings from leases for this meter's unit
+    const [[meter]] = await req.pool.execute(
+      'SELECT unit_id FROM utility_meter WHERE id = ? AND org_id = ?', [meter_id, orgId]
+    );
+    let checkInRows = [];
+    if (meter?.unit_id) {
+      const [leases] = await req.pool.execute(
+        `SELECT l.id, l.start_date, l.check_in_meter, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name
+         FROM leasing l
+         LEFT JOIN tenant t ON l.tenant_id = t.id
+         WHERE l.unit_id = ? AND l.deleted_at IS NULL AND l.check_in_meter IS NOT NULL
+         ORDER BY l.start_date DESC`,
+        [meter.unit_id]
+      );
+      checkInRows = leases.map(l => ({
+        id: `checkin-${l.id}`,
+        reading_value: l.check_in_meter,
+        reading_date: l.start_date,
+        reading_type: 0, // Move-In
+        notes: 'Lease check-in meter',
+        tenant_first_name: l.tenant_first_name,
+        tenant_last_name: l.tenant_last_name,
+        is_lease_checkin: true,
+      }));
+    }
+
+    // Merge and sort by date descending
+    const combined = [...rows, ...checkInRows].sort((a, b) => {
+      const dateA = new Date(a.reading_date);
+      const dateB = new Date(b.reading_date);
+      if (dateB - dateA !== 0) return dateB - dateA;
+      // If same date, lease check-ins come after actual readings
+      if (a.is_lease_checkin && !b.is_lease_checkin) return 1;
+      if (!a.is_lease_checkin && b.is_lease_checkin) return -1;
+      return 0;
+    });
+
+    res.json({ code: 200, data: combined });
   } catch (error) {
     console.error('Get meter readings error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get readings' });
