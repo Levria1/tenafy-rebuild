@@ -1320,12 +1320,28 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
       );
     }
 
+    // 6. Persist settlement record
+    const settlementId = genId();
+    await req.pool.execute(
+      `INSERT INTO utility_checkout_settlement
+       (id, org_id, meter_id, tenant_id, leasing_id,
+        starting_reading, checkout_reading, kw_used, rate_per_kw,
+        gross_amount, utility_credit, prorated_credit, period_days, net_amount,
+        reading_date, reading_id, invoice_id, next_lease_id, previous_meter_reading)
+       VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?)`,
+      [settlementId, orgId, meter_id, tenant_id, leasing_id,
+       startReading, checkout_reading, kwUsed, manual_rate,
+       grossAmount, utilityCredit, proratedCredit, periodDays, netAmount,
+       settlementDate, readingId, invoiceId, nextLease?.id || null, Number(meter.current_reading)]
+    );
+
     res.json({
       code: 200,
       message: netAmount > 0
         ? `Checkout settlement completed — Invoice ${invoiceCode} created for $${Math.ceil(netAmount)}`
         : 'Checkout settlement completed — no amount due (credit covers usage)',
       data: {
+        settlement_id: settlementId.toString(),
         start_reading: startReading,
         checkout_reading: Number(checkout_reading),
         kw_used: kwUsed,
@@ -1345,6 +1361,181 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Checkout settlement error:', error);
     res.status(500).json({ code: 500, message: 'Failed to process checkout settlement' });
+  }
+});
+
+// PUT /api/utility/checkout-settlement/:id — edit a checkout settlement
+router.put('/checkout-settlement/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { checkout_reading, rate_per_kw } = req.body;
+    const orgId = req.user.orgId;
+
+    const [[settlement]] = await req.pool.execute(
+      'SELECT * FROM utility_checkout_settlement WHERE id = ? AND org_id = ?', [id, orgId]
+    );
+    if (!settlement) return res.status(404).json({ code: 404, message: 'Settlement not found' });
+
+    const newReading = checkout_reading != null ? Number(checkout_reading) : Number(settlement.checkout_reading);
+    const newRate = rate_per_kw != null ? Number(rate_per_kw) : Number(settlement.rate_per_kw);
+    const startReading = Number(settlement.starting_reading);
+
+    const kwUsed = newReading - startReading;
+    if (kwUsed < 0) {
+      return res.status(400).json({ code: 400, message: 'Checkout reading cannot be less than starting reading' });
+    }
+
+    const grossAmount = kwUsed * newRate;
+    const utilityCredit = Number(settlement.utility_credit);
+    const periodDays = settlement.period_days;
+    const proratedCredit = utilityCredit > 0 ? Math.round((utilityCredit * 12 / 365) * periodDays * 100) / 100 : 0;
+    const netAmount = Math.max(0, Math.round((grossAmount - proratedCredit) * 100) / 100);
+
+    // Update settlement record
+    await req.pool.execute(
+      `UPDATE utility_checkout_settlement
+       SET checkout_reading = ?, kw_used = ?, rate_per_kw = ?,
+           gross_amount = ?, prorated_credit = ?, net_amount = ?
+       WHERE id = ?`,
+      [newReading, kwUsed, newRate, grossAmount, proratedCredit, netAmount, id]
+    );
+
+    // Update the linked meter reading
+    if (settlement.reading_id) {
+      await req.pool.execute(
+        'UPDATE utility_meter_reading SET reading_value = ? WHERE id = ?',
+        [newReading, settlement.reading_id]
+      );
+    }
+
+    // Update meter current_reading
+    await req.pool.execute(
+      'UPDATE utility_meter SET current_reading = ? WHERE id = ?',
+      [newReading, settlement.meter_id]
+    );
+
+    // Update lease check_out_meter
+    await req.pool.execute(
+      'UPDATE leasing SET check_out_meter = ?, check_out_meter_updated_at = NOW() WHERE id = ?',
+      [newReading, settlement.leasing_id]
+    );
+
+    // Update next lease check_in_meter if applicable
+    if (settlement.next_lease_id) {
+      await req.pool.execute(
+        'UPDATE leasing SET check_in_meter = ?, check_in_meter_updated_at = NOW() WHERE id = ?',
+        [newReading, settlement.next_lease_id]
+      );
+    }
+
+    // Update invoice amount if exists
+    if (settlement.invoice_id) {
+      if (netAmount > 0) {
+        // Get meter number for note
+        const [[meterInfo]] = await req.pool.execute('SELECT meter_number FROM utility_meter WHERE id = ?', [settlement.meter_id]);
+        const meterNumber = meterInfo?.meter_number || 'N/A';
+        const note = `Utility checkout settlement: ${kwUsed} kW × $${newRate.toFixed(4)}/kW = $${grossAmount.toFixed(2)}` +
+          (proratedCredit > 0 ? ` | Credit: -$${proratedCredit.toFixed(2)}` : '') +
+          ` | Meter: ${meterNumber}` +
+          ` | Reading: ${startReading} → ${newReading}`;
+        await req.pool.execute(
+          'UPDATE invoice SET amount = ?, note = ? WHERE id = ? AND deleted_at IS NULL',
+          [Math.ceil(netAmount), note, settlement.invoice_id]
+        );
+      } else {
+        // Net is now 0 — soft-delete the invoice
+        await req.pool.execute(
+          'UPDATE invoice SET deleted_at = NOW() WHERE id = ?', [settlement.invoice_id]
+        );
+        await req.pool.execute(
+          'UPDATE utility_checkout_settlement SET invoice_id = NULL WHERE id = ?', [id]
+        );
+      }
+    }
+
+    res.json({
+      code: 200,
+      message: 'Settlement updated',
+      data: {
+        checkout_reading: newReading,
+        kw_used: kwUsed,
+        rate: newRate,
+        gross_amount: grossAmount,
+        prorated_credit: proratedCredit,
+        net_amount: netAmount,
+      }
+    });
+  } catch (error) {
+    console.error('Edit checkout settlement error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to update settlement' });
+  }
+});
+
+// DELETE /api/utility/checkout-settlement/:id — undo a checkout settlement
+router.delete('/checkout-settlement/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+
+    const [[settlement]] = await req.pool.execute(
+      'SELECT * FROM utility_checkout_settlement WHERE id = ? AND org_id = ?', [id, orgId]
+    );
+    if (!settlement) return res.status(404).json({ code: 404, message: 'Settlement not found' });
+
+    // Guard: check if any later meter readings exist (from subsequent billing or settlements)
+    const [[{ laterCount }]] = await req.pool.execute(
+      `SELECT COUNT(*) as laterCount FROM utility_meter_reading
+       WHERE meter_id = ? AND id != ? AND reading_date > ?`,
+      [settlement.meter_id, settlement.reading_id, settlement.reading_date]
+    );
+    if (Number(laterCount) > 0) {
+      return res.status(400).json({
+        code: 400,
+        message: 'Cannot undo: there are newer meter readings after this settlement. Undo those first.'
+      });
+    }
+
+    // 1. Delete the meter reading
+    if (settlement.reading_id) {
+      await req.pool.execute('DELETE FROM utility_meter_reading WHERE id = ?', [settlement.reading_id]);
+    }
+
+    // 2. Revert meter current_reading to previous value
+    if (settlement.previous_meter_reading != null) {
+      await req.pool.execute(
+        'UPDATE utility_meter SET current_reading = ? WHERE id = ?',
+        [settlement.previous_meter_reading, settlement.meter_id]
+      );
+    }
+
+    // 3. Clear lease check_out_meter
+    await req.pool.execute(
+      'UPDATE leasing SET check_out_meter = NULL, check_out_meter_updated_at = NOW() WHERE id = ?',
+      [settlement.leasing_id]
+    );
+
+    // 4. Clear next lease check_in_meter if it was auto-set
+    if (settlement.next_lease_id) {
+      await req.pool.execute(
+        'UPDATE leasing SET check_in_meter = NULL, check_in_meter_updated_at = NOW() WHERE id = ?',
+        [settlement.next_lease_id]
+      );
+    }
+
+    // 5. Soft-delete the auto-generated invoice
+    if (settlement.invoice_id) {
+      await req.pool.execute(
+        'UPDATE invoice SET deleted_at = NOW() WHERE id = ?', [settlement.invoice_id]
+      );
+    }
+
+    // 6. Delete the settlement record
+    await req.pool.execute('DELETE FROM utility_checkout_settlement WHERE id = ?', [id]);
+
+    res.json({ code: 200, message: 'Settlement undone successfully' });
+  } catch (error) {
+    console.error('Undo checkout settlement error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to undo settlement' });
   }
 });
 

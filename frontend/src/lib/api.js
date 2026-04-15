@@ -425,6 +425,8 @@ export const utility = {
   getHighestRate: (params) => api.get('/api/utility/highest-rate', { params }),
   getCheckoutMeters: () => api.get('/api/utility/checkout-meters'),
   checkoutSettlement: (data) => api.post('/api/utility/checkout-settlement', data),
+  updateSettlement: (id, data) => api.put(`/api/utility/checkout-settlement/${id}`, data),
+  deleteSettlement: (id) => api.delete(`/api/utility/checkout-settlement/${id}`),
   getTenantHistory: (tenantId) => api.get(`/api/utility/tenant/${tenantId}/history`),
 };
 

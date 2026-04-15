@@ -5,12 +5,12 @@ import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import {
   Button, Space, Tag, Table, message, Spin, Empty, Dropdown, Tooltip,
   Typography, Statistic, Row, Col, Divider, Avatar, Drawer, Descriptions, Modal,
-  Input, Select, DatePicker,
+  Input, InputNumber, Select, DatePicker, Form, Popconfirm,
 } from 'antd';
 import {
   EditOutlined, UserOutlined, MailOutlined,
   FileTextOutlined, DollarOutlined, PrinterOutlined,
-  DownOutlined, EyeOutlined, DeleteOutlined, SearchOutlined,
+  DownOutlined, EyeOutlined, DeleteOutlined, SearchOutlined, UndoOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
@@ -671,8 +671,12 @@ function TenantDetailPage() {
     const [searchText, setSearchText] = useState('');
     const [filterProperty, setFilterProperty] = useState(null);
     const [filterDates, setFilterDates] = useState(null);
+    const [editModalOpen, setEditModalOpen] = useState(false);
+    const [editingSettlement, setEditingSettlement] = useState(null);
+    const [editLoading, setEditLoading] = useState(false);
+    const [editForm] = Form.useForm();
 
-    useEffect(() => {
+    const loadHistory = useCallback(() => {
       if (!tenantId) return;
       setLoading(true);
       utility.getTenantHistory(tenantId)
@@ -680,6 +684,54 @@ function TenantDetailPage() {
         .catch(() => message.error('Failed to load utility history'))
         .finally(() => setLoading(false));
     }, [tenantId]);
+
+    useEffect(() => { loadHistory(); }, [loadHistory]);
+
+    const openEditSettlement = (settlement) => {
+      setEditingSettlement(settlement);
+      editForm.setFieldsValue({
+        checkout_reading: settlement.ending_reading,
+        rate_per_kw: settlement.rate,
+      });
+      setEditModalOpen(true);
+    };
+
+    const handleEditSettlement = async () => {
+      try {
+        const values = await editForm.validateFields();
+        setEditLoading(true);
+        const res = await utility.updateSettlement(editingSettlement.settlementId, {
+          checkout_reading: values.checkout_reading,
+          rate_per_kw: values.rate_per_kw,
+        });
+        if (res.data.code === 200) {
+          message.success('Settlement updated');
+          setEditModalOpen(false);
+          loadHistory();
+        } else {
+          message.error(res.data.message || 'Failed to update settlement');
+        }
+      } catch (error) {
+        if (error.errorFields) return; // form validation
+        message.error(error.response?.data?.message || 'Failed to update settlement');
+      } finally {
+        setEditLoading(false);
+      }
+    };
+
+    const handleUndoSettlement = async (settlementId) => {
+      try {
+        const res = await utility.deleteSettlement(settlementId);
+        if (res.data.code === 200) {
+          message.success('Settlement undone successfully');
+          loadHistory();
+        } else {
+          message.error(res.data.message || 'Failed to undo settlement');
+        }
+      } catch (error) {
+        message.error(error.response?.data?.message || 'Failed to undo settlement');
+      }
+    };
 
     if (loading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>;
     if (!data) return <Empty description="No utility data" />;
@@ -711,6 +763,7 @@ function TenantDetailPage() {
       })),
       ...settlements.map(cs => ({
         key: `settle-${cs.id}`,
+        settlementId: cs.id,
         type: 'Checkout',
         unit_name: cs.unit_name,
         property_name: cs.property_name,
@@ -766,6 +819,30 @@ function TenantDetailPage() {
           if (!r.invoice_code) return <Text type="secondary">—</Text>;
           const s = INV_STATUS[Number(r.invoice_status)] || INV_STATUS[0];
           return <Tag color={s.color}>{r.invoice_code} - {s.text}</Tag>;
+        }
+      },
+      {
+        title: '', key: 'actions', width: 80, fixed: 'right',
+        render: (_, r) => {
+          if (!r.settlementId) return null;
+          return (
+            <Space size={4}>
+              <Tooltip title="Edit">
+                <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEditSettlement(r)} />
+              </Tooltip>
+              <Popconfirm
+                title="Undo this settlement?"
+                description="This will delete the meter reading, revert the meter, clear check-in/check-out values, and delete the auto-generated invoice."
+                onConfirm={() => handleUndoSettlement(r.settlementId)}
+                okText="Undo"
+                okButtonProps={{ danger: true }}
+              >
+                <Tooltip title="Undo">
+                  <Button type="text" size="small" danger icon={<UndoOutlined />} />
+                </Tooltip>
+              </Popconfirm>
+            </Space>
+          );
         }
       },
     ];
@@ -848,6 +925,20 @@ function TenantDetailPage() {
                     </Tag>
                   </div>
                 )}
+                {row.settlementId && (
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8, borderTop: '1px solid #f0f0f0', paddingTop: 8 }}>
+                    <Button size="small" icon={<EditOutlined />} onClick={() => openEditSettlement(row)}>Edit</Button>
+                    <Popconfirm
+                      title="Undo this settlement?"
+                      description="This will revert all changes."
+                      onConfirm={() => handleUndoSettlement(row.settlementId)}
+                      okText="Undo"
+                      okButtonProps={{ danger: true }}
+                    >
+                      <Button size="small" danger icon={<UndoOutlined />}>Undo</Button>
+                    </Popconfirm>
+                  </div>
+                )}
               </div>
             )}
           />
@@ -867,6 +958,34 @@ function TenantDetailPage() {
             locale={{ emptyText: 'No billing history' }}
           />
         )}
+
+        {/* Edit Settlement Modal */}
+        <Modal
+          title="Edit Checkout Settlement"
+          open={editModalOpen}
+          onCancel={() => setEditModalOpen(false)}
+          onOk={handleEditSettlement}
+          confirmLoading={editLoading}
+          okText="Update"
+        >
+          {editingSettlement && (
+            <div>
+              <div style={{ marginBottom: 16, padding: 12, background: '#f5f5f5', borderRadius: 8 }}>
+                <div><Text type="secondary">Meter:</Text> {editingSettlement.meter_number}</div>
+                <div><Text type="secondary">Unit:</Text> {editingSettlement.property_name} - {editingSettlement.unit_name}</div>
+                <div><Text type="secondary">Starting Reading:</Text> {editingSettlement.starting_reading.toLocaleString()}</div>
+              </div>
+              <Form form={editForm} layout="vertical">
+                <Form.Item name="checkout_reading" label="Checkout Reading" rules={[{ required: true, message: 'Required' }]}>
+                  <InputNumber style={{ width: '100%' }} min={editingSettlement.starting_reading} />
+                </Form.Item>
+                <Form.Item name="rate_per_kw" label="Rate ($/kW)" rules={[{ required: true, message: 'Required' }]}>
+                  <InputNumber style={{ width: '100%' }} min={0} step={0.01} />
+                </Form.Item>
+              </Form>
+            </div>
+          )}
+        </Modal>
       </div>
     );
   }
