@@ -4,6 +4,27 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Utility Checkout Fixes, Settings ID Fix, Property/Unit Active Status
+
+### Utility Checkout Settlement Fixes
+- **Editable last reading**: Added `last_reading_override` field to checkout modal — pre-fills from meter's `current_reading`, user can override. Backend uses it instead of Math.max calculation when provided.
+- **Orphan reading prevention**: Reordered backend operations — settlement record INSERT now happens first (step 2), meter reading after (step 3). If settlement insert fails, no orphan reading is created.
+- **Exclude settled tenants**: Checkout meter dropdown now LEFT JOINs `utility_checkout_settlement` and filters `ucs.id IS NULL` — tenants with completed settlements no longer appear.
+
+### Settings Category/Payment/Lead Source Fix
+- **Root cause**: `category_setting`, `payment_method_setting`, and `lead_source_setting` tables have bigint PKs without AUTO_INCREMENT, but INSERT statements weren't providing an ID.
+- Added `genId()` to `settings.js` and all three INSERT endpoints now generate Snowflake IDs explicitly.
+
+### Property & Unit Active Status
+- **Unit active_status toggle**: Added Active/Inactive dropdown to unit edit form (`active_status` field). Backend PUT now accepts and saves it.
+- **Lease guard**: Cannot deactivate a unit if it has active or upcoming leases (returns 400 error). Same guard on property — cannot set `status=0` if any unit has active/upcoming leases.
+- **Unit detail page fix**: Status tag was reading `unit.status` (occupancy: 0=vacant/1=occupied) instead of `unit.active_status`. Fixed to show correct Active/Inactive state.
+- **Property detail units list**: Now shows ALL units (including inactive) with inactive ones sorted to bottom, greyed out (60% opacity), and showing "Inactive" tag instead of Occupied/Vacant.
+- **Missing column fix**: Removed `account_name` and `bank_details` from unit INSERT/UPDATE queries — columns don't exist in DB, causing all unit updates to fail.
+- **Frontend error surfacing**: Unit edit now shows backend error message (e.g. "Cannot deactivate: unit has active or upcoming leases") instead of generic "Failed to update unit".
+
+---
+
 ## Session: Complete Stored Status Removal, Unit Occupied/Vacant Fix, Tenant Edit Fix
 
 ### Stored Status Column Removal (leasing.status & unit.status)
