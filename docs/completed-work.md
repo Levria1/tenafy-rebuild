@@ -4,6 +4,37 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Checkout Credit Fix, React Hooks Bug, Public API Expansion (2026-04-16)
+
+### Utility Checkout Settlement Credit Calculation Fix
+- **Bug**: Checkout settlement was using the most recent meter reading's `reading_date` as the credit period start, even when that reading was an arbitrary monthly/manual reading. For a tenant checking out Mar 28 with last bill period ending Mar 10, credit was being calculated as only 4 days instead of 18.
+- **Fix** ([backend/src/routes/utility.js:1261-1272](backend/src/routes/utility.js:1261)): Credit period now starts the day AFTER the last finalized bill's `period_end` (each day belongs to exactly one billing period). If no prior bill, falls back to `lease.start_date`. If lease started after last bill end, uses lease start.
+- Example: Bill ends Mar 10, checkout Mar 28 → credit = Mar 11 through Mar 28 = 18 days = $236.71 (at $400/mo credit).
+
+### React Error #300 on Bill Detail View
+- **Bug**: Clicking View on any utility bill caused "Minified React error #300" (Rendered fewer hooks than expected) — entire page crashed.
+- **Root cause** ([frontend/src/app/utilities/page.js:1524](frontend/src/app/utilities/page.js:1524)): `useState(selectedCheckoutMeter)` was declared AFTER the early return at line 1293 `if (selectedBill && billDetail) { return ... }`. When viewing bill list, all hooks ran. When clicking View, early return triggered before reaching that hook — React saw a hook count mismatch between renders → crash.
+- **Fix**: Moved the useState declaration up to line 1138 with the other state hooks.
+
+### Public API Expansion (2 → 34 endpoints)
+- **Why**: User wants to hook their own AI assistant up to the production droplet for read-only data queries.
+- **Added** to [backend/src/routes/public.js](backend/src/routes/public.js):
+  - Meta: `/health`
+  - Properties/Units: `/properties/:id`, `/units`, `/units/:id` (in addition to existing `/properties`, `/units/available`)
+  - Tenants & Contacts: `/tenants`, `/tenants/:id`, `/tenants/:id/leases`, `/tenants/:id/invoices`, `/payees`, `/payees/:id`, `/property-owners`, `/property-owners/:id`, `/service-vendors`, `/service-vendors/:id`
+  - Leases: `/leases`, `/leases/:id`, `/leases/expiring`
+  - Invoices/Payments: `/invoices`, `/invoices/:id`, `/payments`
+  - Accounting: `/accounting`, `/accounting/:id`
+  - Services: `/services`, `/services/:id`
+  - Utilities: `/utility/groups`, `/utility/bills`, `/utility/bills/:id`, `/utility/meters`, `/utility/meters/:id/readings`, `/utility/settlements`
+  - Cleaning: `/cleaning/cleaners`, `/cleaning/schedule`
+- **Security properties**: All 34 routes are GET-only (verified via router introspection), all filter by `req.apiKey.orgId`, all honor `deleted_at IS NULL`. Multi-tenant isolation is enforced twice: at the DB pool level (per-org pool via `getOrgPool`) AND at the query level (explicit `WHERE org_id = ?`).
+- **Authentication**: Uses existing `authenticateApiKey` middleware — no new infra. Gates: `organizations.public_api_enabled=1` + `api_keys.status=1`.
+- **No pagination, no rate limiting** — returns full result sets, per user preference.
+- **New docs**: [docs/public-api.md](docs/public-api.md) — reference with all endpoints, enum field values, curl examples, AI-hookup notes.
+
+---
+
 ## Session: Utility Checkout Fixes, Settings ID Fix, Property/Unit Active Status
 
 ### Utility Checkout Settlement Fixes
