@@ -1258,13 +1258,18 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
     ];
     // Allow manual override of the last reading if provided
     const startReading = last_reading_override != null ? Number(last_reading_override) : Math.max(...candidates);
-    // Use the most recent date source for credit proration
-    const candidateDates = [
-      lastReading ? lastReading.reading_date : null,
-      lastBillLine ? lastBillLine.period_end : null,
-      lease.start_date
-    ].filter(Boolean);
-    const startDate = candidateDates.sort((a, b) => new Date(b) - new Date(a))[0] || lease.start_date;
+    // Credit period starts the day AFTER the last finalized bill ended (each day
+    // belongs to exactly one billing period). If no prior bill, or if the lease
+    // started later than that, use lease.start_date.
+    let startDate;
+    if (lastBillLine) {
+      const dayAfterLastBill = new Date(lastBillLine.period_end);
+      dayAfterLastBill.setDate(dayAfterLastBill.getDate() + 1);
+      const leaseStart = new Date(lease.start_date);
+      startDate = dayAfterLastBill > leaseStart ? dayAfterLastBill : lease.start_date;
+    } else {
+      startDate = lease.start_date;
+    }
 
     // Calculate usage
     const kwUsed = Number(checkout_reading) - startReading;

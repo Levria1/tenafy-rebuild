@@ -1135,6 +1135,7 @@ function BillingTab() {
   const [checkoutMeters, setCheckoutMeters] = useState([]);
   const [highestRate, setHighestRate] = useState(null);
   const [useHighestRate, setUseHighestRate] = useState(false);
+  const [selectedCheckoutMeter, setSelectedCheckoutMeter] = useState(null);
   const [billForm] = Form.useForm();
   const [checkoutForm] = Form.useForm();
   const [billSearch, setBillSearch] = useState('');
@@ -1520,8 +1521,6 @@ function BillingTab() {
     }
     setCheckoutModal(true);
   };
-
-  const [selectedCheckoutMeter, setSelectedCheckoutMeter] = useState(null);
 
   const handleCheckoutMeterChange = async (comboKey) => {
     const meter = checkoutMeters.find(m => `${m.meter_id}_${m.leasing_id}` === comboKey);
