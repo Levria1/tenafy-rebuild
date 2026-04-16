@@ -14,6 +14,7 @@ import {
 import MainLayout, { useAuth } from '../../../../../components/Layout';
 import useIsMobile from '../../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../../components/mobile/MobileCardList';
+import UnitViewingsTab from '../../../../../components/viewings/UnitViewingsTab';
 import { property as propertyApi, service as serviceApi } from '../../../../../lib/api';
 
 const { Text, Title } = Typography;
@@ -846,6 +847,11 @@ export default function UnitDetailPage() {
       key: 'service-cost',
       label: 'Service Cost',
       children: <ServiceCostTab unitId={unitId} isMobile={isMobile} />,
+    },
+    {
+      key: 'viewings',
+      label: 'Viewings',
+      children: <UnitViewingsTab unitId={unitId} isMobile={isMobile} />,
     },
   ];
 

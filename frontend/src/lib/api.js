@@ -437,6 +437,17 @@ export const bookingPlatform = {
   delete: (id) => api.delete(`/api/booking-platform/${id}`),
 };
 
+export const viewingApi = {
+  // Shareable links
+  listLinks: (unitId) => api.get(`/api/viewing/unit/${unitId}/links`),
+  createLink: (unitId, data) => api.post(`/api/viewing/unit/${unitId}/links`, data),
+  revokeLink: (linkId) => api.patch(`/api/viewing/link/${linkId}/revoke`),
+  // Bookings
+  listBookings: (unitId) => api.get(`/api/viewing/unit/${unitId}/bookings`),
+  getBooking: (id) => api.get(`/api/viewing/bookings/${id}`),
+  cancelBooking: (id) => api.patch(`/api/viewing/bookings/${id}/cancel`),
+};
+
 export const salesAgent = {
   list: () => api.get('/api/sales-agent'),
   create: (data) => api.post('/api/sales-agent', data),

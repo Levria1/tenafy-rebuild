@@ -56,6 +56,12 @@ const TEMPLATE_TYPES = [
   { value: 'Deposit-Tenant', label: 'Deposit (Tenant)' },
   { value: 'Receipt-Tenant', label: 'Payment Receipt (Tenant)' },
   { value: 'Inventory-Tenant', label: 'Inventory (Tenant)' },
+  // Public viewing-booking templates (ad-hoc HTML fallback lives in routes/viewingPublic.js)
+  { value: 'Viewing-Employee-Request', label: 'Viewing Request (Employee)' },
+  { value: 'Viewing-Tenant-Request', label: 'Viewing Request (Tenant)' },
+  { value: 'Viewing-Confirmation', label: 'Viewing Confirmation (All)' },
+  { value: 'Viewing-Declined', label: 'Viewing Declined (Viewer)' },
+  { value: 'Viewing-Cancelled', label: 'Viewing Cancelled (All)' },
 ];
 
 const TOGGLE_MAP = {

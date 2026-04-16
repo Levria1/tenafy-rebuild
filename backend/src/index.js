@@ -46,6 +46,8 @@ app.use('/api/tenant-portal', require('./routes/tenantPortal'));
 app.use('/api/pdf', require('./routes/pdf'));
 app.use('/api/storage', require('./routes/storage'));
 app.use('/api/public', require('./routes/public'));
+app.use('/api/viewing-public', require('./routes/viewingPublic'));
+app.use('/api/viewing', require('./routes/viewing'));
 app.use('/api/cleaning', require('./routes/cleaning'));
 app.use('/api/utility', require('./routes/utility'));
 app.use('/api/booking-platform', require('./routes/bookingPlatform'));

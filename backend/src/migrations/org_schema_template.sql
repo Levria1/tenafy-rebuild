@@ -915,6 +915,67 @@ CREATE TABLE `viewing` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table `viewing_link` — public booking shareable URL registry (2026-04)
+--
+DROP TABLE IF EXISTS `viewing_link`;
+CREATE TABLE `viewing_link` (
+  `id` bigint NOT NULL,
+  `token` varchar(64) NOT NULL,
+  `property_id` bigint NOT NULL,
+  `unit_id` bigint NOT NULL,
+  `employee_id` bigint NOT NULL,
+  `created_by` bigint NOT NULL,
+  `note` varchar(500) DEFAULT NULL,
+  `status` tinyint NOT NULL DEFAULT '1',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `revoked_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_vl_token` (`token`),
+  KEY `idx_vl_unit` (`unit_id`),
+  KEY `idx_vl_employee` (`employee_id`),
+  KEY `idx_vl_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+--
+-- Table `viewing_booking` — public booking submissions (2026-04)
+--
+DROP TABLE IF EXISTS `viewing_booking`;
+CREATE TABLE `viewing_booking` (
+  `id` bigint NOT NULL,
+  `link_id` bigint NOT NULL,
+  `unit_id` bigint NOT NULL,
+  `property_id` bigint NOT NULL,
+  `employee_id` bigint NOT NULL,
+  `leasing_id` bigint DEFAULT NULL,
+  `tenant_id` bigint DEFAULT NULL,
+  `viewer_name` varchar(255) NOT NULL,
+  `viewer_email` varchar(255) NOT NULL,
+  `viewer_phone` varchar(64) DEFAULT NULL,
+  `viewer_message` text,
+  `proposed_datetime` datetime NOT NULL,
+  `duration_minutes` int NOT NULL DEFAULT '30',
+  `tenant_action_token` varchar(64) DEFAULT NULL,
+  `employee_action_token` varchar(64) NOT NULL,
+  `viewer_manage_token` varchar(64) NOT NULL,
+  `tenant_decision` tinyint NOT NULL DEFAULT '0' COMMENT '0=pending,1=approved,2=declined,3=skipped',
+  `tenant_decided_at` timestamp NULL DEFAULT NULL,
+  `employee_decision` tinyint NOT NULL DEFAULT '0' COMMENT '0=pending,1=approved,2=declined',
+  `employee_decided_at` timestamp NULL DEFAULT NULL,
+  `status` tinyint NOT NULL DEFAULT '0' COMMENT '0=pending,1=confirmed,2=declined,3=cancelled,4=expired',
+  `ics_uid` varchar(128) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_vb_tenant_tok` (`tenant_action_token`),
+  UNIQUE KEY `uk_vb_employee_tok` (`employee_action_token`),
+  UNIQUE KEY `uk_vb_manage_tok` (`viewer_manage_token`),
+  KEY `idx_vb_link` (`link_id`),
+  KEY `idx_vb_unit_when` (`unit_id`, `proposed_datetime`),
+  KEY `idx_vb_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;

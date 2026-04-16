@@ -15,5 +15,6 @@ module.exports = {
     connectionLimit: 10,
     queueLimit: 0
   },
-  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000'
+  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+  appUrl: process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000'
 };

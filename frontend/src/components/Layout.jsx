@@ -205,8 +205,8 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Skip auth for master pages, login page, and tenant portal
-  const isPublicPage = currentPathname === '/login' || currentPathname.startsWith('/master') || currentPathname.startsWith('/tenant-portal');
+  // Skip auth for master pages, login page, tenant portal, and public booking pages
+  const isPublicPage = currentPathname === '/login' || currentPathname.startsWith('/master') || currentPathname.startsWith('/tenant-portal') || currentPathname.startsWith('/book');
 
   useEffect(() => {
     if (isPublicPage) {
