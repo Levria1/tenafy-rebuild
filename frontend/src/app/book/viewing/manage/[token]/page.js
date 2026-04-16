@@ -5,7 +5,7 @@ import { useParams } from 'next/navigation';
 import {
   Card, Button, Typography, Spin, Result, Alert, Descriptions, Popconfirm, Tag,
 } from 'antd';
-import { viewingPublic } from '@/lib/bookingApi';
+import { viewingPublic } from '../../../../../lib/bookingApi';
 import dayjs from 'dayjs';
 
 const { Title, Paragraph, Text } = Typography;

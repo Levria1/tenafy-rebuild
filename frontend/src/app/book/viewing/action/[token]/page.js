@@ -6,7 +6,7 @@ import {
   Card, Button, Typography, Spin, Result, Alert, Descriptions, Space, Tag,
 } from 'antd';
 import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
-import { viewingPublic } from '@/lib/bookingApi';
+import { viewingPublic } from '../../../../../lib/bookingApi';
 import dayjs from 'dayjs';
 
 const { Title, Paragraph, Text } = Typography;
