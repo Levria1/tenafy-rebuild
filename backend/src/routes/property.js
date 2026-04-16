@@ -278,26 +278,47 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
     const {
       name, type, size, size_unit, beds, baths,
       smoking, laundry, parking,
-      amenity_detail, access_information, key_code, wifi_information, account_name, bank_details, internal_note,
+      amenity_detail, access_information, key_code, wifi_information, internal_note,
       rent_price_min, rent_price_max, deposit_price,
-      charge_method, fee, photo, galleryFileIds,
+      charge_method, fee, photo, galleryFileIds, active_status,
     } = req.body;
     const orgId = req.user.orgId;
+
+    // Block deactivation if there are active or upcoming leases on this unit
+    if (active_status != null && Number(active_status) === 0) {
+      const [[existing]] = await req.pool.execute(
+        'SELECT active_status FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ?',
+        [unit_id, orgId]
+      );
+      if (existing && Number(existing.active_status) === 1) {
+        const [[leaseCheck]] = await req.pool.execute(
+          `SELECT COUNT(*) AS cnt FROM leasing
+           WHERE unit_id = ? AND deleted_at IS NULL
+             AND (end_date IS NULL OR end_date >= CURDATE())`,
+          [unit_id]
+        );
+        if (leaseCheck && Number(leaseCheck.cnt) > 0) {
+          return res.status(400).json({ code: 400, message: 'Cannot deactivate: unit has active or upcoming leases' });
+        }
+      }
+    }
 
     await req.pool.execute(
       `UPDATE unit u LEFT JOIN property p ON u.property_id = p.id
        SET u.name = ?, u.type = ?, u.size = ?, u.size_unit = ?, u.beds = ?, u.baths = ?,
            u.smoking = ?, u.laundry = ?, u.parking = ?,
-           u.amenity_detail = ?, u.access_information = ?, u.key_code = ?, u.wifi_information = ?, u.account_name = ?, u.bank_details = ?, u.internal_note = ?,
+           u.amenity_detail = ?, u.access_information = ?, u.key_code = ?, u.wifi_information = ?, u.internal_note = ?,
            u.rent_price_min = ?, u.rent_price_max = ?, u.deposit_price = ?,
-           u.charge_method = ?, u.fee = ?, u.photo = ?
+           u.charge_method = ?, u.fee = ?, u.photo = ?,
+           u.active_status = ?
        WHERE u.id = ? AND p.org_id = ?`,
       [
         name || null, type || null, size ?? null, size_unit || null, beds ?? null, baths ?? null,
         smoking ?? null, laundry ?? null, parking ?? null,
-        amenity_detail || null, access_information || null, key_code || null, wifi_information || null, account_name || null, bank_details || null, internal_note || null,
+        amenity_detail || null, access_information || null, key_code || null, wifi_information || null, internal_note || null,
         rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
         charge_method ?? null, fee ?? null, photo || null,
+        active_status != null ? Number(active_status) : 1,
         unit_id, orgId
       ]
     );
@@ -622,6 +643,26 @@ router.put('/:id', authenticate, async (req, res) => {
             photo, galleryFileIds } = req.body;
     const orgId = req.user.orgId;
 
+    // Block deactivation if there are active or upcoming leases on any unit of this property
+    if (status != null && Number(status) === 0) {
+      const [[existing]] = await req.pool.execute(
+        'SELECT status FROM property WHERE id = ? AND org_id = ?',
+        [id, orgId]
+      );
+      if (existing && Number(existing.status) === 1) {
+        const [[leaseCheck]] = await req.pool.execute(
+          `SELECT COUNT(*) AS cnt FROM leasing l
+           JOIN unit u ON l.unit_id = u.id
+           WHERE u.property_id = ? AND l.deleted_at IS NULL
+             AND (l.end_date IS NULL OR l.end_date >= CURDATE())`,
+          [id]
+        );
+        if (leaseCheck && Number(leaseCheck.cnt) > 0) {
+          return res.status(400).json({ code: 400, message: 'Cannot deactivate: property has units with active or upcoming leases' });
+        }
+      }
+    }
+
     await req.pool.execute(
       `UPDATE property SET display_name = ?, street_address = ?, city = ?, state = ?,
        country = ?, zip_code = ?, district = ?, type = ?, status = ?, currency = ?,
@@ -721,8 +762,8 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
          WHERE l.deleted_at IS NULL
            AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
        ) lt ON lt.unit_id = u.id AND lt.rn = 1
-       WHERE u.property_id = ? AND p.org_id = ? AND u.active_status = 1
-       ORDER BY u.name`,
+       WHERE u.property_id = ? AND p.org_id = ?
+       ORDER BY u.active_status DESC, u.name`,
       [property_id, orgId]
     );
     res.json({ code: 200, data: units });
@@ -739,7 +780,7 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
     const {
       name, type, amenity_type, beds, baths, size, size_unit, parking,
       smoking, laundry, amenity_detail, access_information, key_code,
-      wifi_information, account_name, bank_details, internal_note,
+      wifi_information, internal_note,
       rent_price_min, rent_price_max, deposit_price, owner_id,
       charge_method, fee, amenityIds, photo, galleryFileIds
     } = req.body;
@@ -756,15 +797,15 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
     await req.pool.execute(
       `INSERT INTO unit (id, property_id, name, type, amenity_type, beds, baths, size, size_unit,
        parking, smoking, laundry, amenity_detail, access_information, key_code,
-       wifi_information, account_name, bank_details, internal_note,
+       wifi_information, internal_note,
        rent_price_min, rent_price_max, deposit_price, owner_id,
        charge_method, fee, photo, status, active_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
       [unitId, property_id, name || null, type || null, amenity_type ?? 1,
        beds ?? null, baths ?? null, size ?? null, size_unit || 'sqft',
        parking ?? null, smoking ? 1 : 0, laundry ? 1 : 0,
        amenity_detail || null, access_information || null, key_code || null,
-       wifi_information || null, account_name || null, bank_details || null, internal_note || null,
+       wifi_information || null, internal_note || null,
        rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
        owner_id || null, charge_method || null, fee ?? null, photo || null]
     );

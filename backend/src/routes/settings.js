@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const { authenticate, requireSuperAdmin } = require('../middleware/auth');
 const { getMasterPool } = require('../config/poolRegistry');
+const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
 
 // ---------------------------------------------------------------------------
@@ -80,11 +81,12 @@ router.post('/setting/category/add', authenticate, async (req, res) => {
   try {
     const { name } = req.body;
     const orgId = req.user.orgId;
-    const [result] = await req.pool.execute(
-      'INSERT INTO category_setting (org_id, name, enabled, updated_at) VALUES (?, ?, 1, NOW())',
-      [orgId, name]
+    const id = genId();
+    await req.pool.execute(
+      'INSERT INTO category_setting (id, org_id, name, enabled, updated_at) VALUES (?, ?, ?, 1, NOW())',
+      [id, orgId, name]
     );
-    res.json({ code: 200, message: 'Category created', data: { id: result.insertId } });
+    res.json({ code: 200, message: 'Category created', data: { id } });
   } catch (error) {
     console.error('Create category error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create category' });
@@ -144,11 +146,12 @@ router.post('/setting/payment/add', authenticate, async (req, res) => {
   try {
     const { name } = req.body;
     const orgId = req.user.orgId;
-    const [result] = await req.pool.execute(
-      'INSERT INTO payment_method_setting (org_id, payment_method, enabled, updated_at) VALUES (?, ?, 1, NOW())',
-      [orgId, name]
+    const id = genId();
+    await req.pool.execute(
+      'INSERT INTO payment_method_setting (id, org_id, payment_method, enabled, updated_at) VALUES (?, ?, ?, 1, NOW())',
+      [id, orgId, name]
     );
-    res.json({ code: 200, message: 'Payment method created', data: { id: result.insertId } });
+    res.json({ code: 200, message: 'Payment method created', data: { id } });
   } catch (error) {
     console.error('Create payment method error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create payment method' });
@@ -622,11 +625,12 @@ router.post('/setting/lead-source/add', authenticate, async (req, res) => {
     const { name } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ code: 400, message: 'Name is required' });
     const orgId = req.user.orgId;
-    const [result] = await req.pool.execute(
-      'INSERT INTO lead_source_setting (org_id, name, enabled, updated_at) VALUES (?, ?, 1, NOW())',
-      [orgId, name.trim()]
+    const id = genId();
+    await req.pool.execute(
+      'INSERT INTO lead_source_setting (id, org_id, name, enabled, updated_at) VALUES (?, ?, ?, 1, NOW())',
+      [id, orgId, name.trim()]
     );
-    res.json({ code: 200, message: 'Lead source created', data: { id: result.insertId } });
+    res.json({ code: 200, message: 'Lead source created', data: { id } });
   } catch (error) {
     console.error('Create lead source error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create lead source' });

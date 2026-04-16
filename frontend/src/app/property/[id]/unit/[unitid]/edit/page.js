@@ -71,6 +71,7 @@ export default function UnitEditPage() {
           deposit_price: d.deposit_price ? Number(d.deposit_price) : undefined,
           charge_method: d.charge_method != null ? Number(d.charge_method) : 0,
           fee: d.fee ? Number(d.fee) : undefined,
+          active_status: d.active_status != null ? Number(d.active_status) : 1,
         });
       }
       if (amenRes.data.code === 200) {
@@ -136,7 +137,7 @@ export default function UnitEditPage() {
       message.success('Unit updated successfully');
       router.push(`/property/${propertyId}/unit/${unitId}`);
     } catch (error) {
-      message.error('Failed to update unit');
+      message.error(error?.response?.data?.message || 'Failed to update unit');
     } finally {
       setLoading(false);
     }
@@ -213,6 +214,14 @@ export default function UnitEditPage() {
               <Col span={6}>
                 <Form.Item name="smoking" label="Smoking" valuePropName="checked">
                   <Switch checkedChildren="YES" unCheckedChildren="NO" />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="active_status" label="Active Status">
+                  <Select>
+                    <Select.Option value={1}>Active</Select.Option>
+                    <Select.Option value={0}>Inactive</Select.Option>
+                  </Select>
                 </Form.Item>
               </Col>
             </Row>

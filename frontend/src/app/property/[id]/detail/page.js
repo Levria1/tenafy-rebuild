@@ -89,6 +89,7 @@ function OccupancyDonut({ occupied, vacant, total }) {
 // ---------------------------------------------------------------------------
 function UnitCard({ unit, propertyId, router, isMobile }) {
   const isOccupied = unit.status === 1;
+  const isInactive = Number(unit.active_status) === 0;
   const tenantName = [unit.tenant_first_name, unit.tenant_last_name].filter(Boolean).join(' ');
   const sizeText = unit.size ? `${unit.size} ${unit.size_unit || 'sqft'}` : '';
 
@@ -103,8 +104,10 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>{unit.name}</span>
-              <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 10, lineHeight: '16px' }}>{isOccupied ? 'Occupied' : 'Vacant'}</Tag>
+              <span style={{ fontWeight: 600, fontSize: 13, ...(isInactive ? { color: '#999' } : {}) }}>{unit.name}</span>
+              {isInactive
+                ? <Tag color="default" style={{ fontSize: 10, lineHeight: '16px' }}>Inactive</Tag>
+                : <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 10, lineHeight: '16px' }}>{isOccupied ? 'Occupied' : 'Vacant'}</Tag>}
             </div>
             <div style={{ color: '#888', fontSize: 11 }}>{unit.type ? unit.type.charAt(0).toUpperCase() + unit.type.slice(1) : 'Apartment'}</div>
           </div>
@@ -129,7 +132,7 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', padding: '14px 20px', gap: 16, borderBottom: '1px solid #f0f0f0' }}>
+    <div style={{ display: 'flex', alignItems: 'center', padding: '14px 20px', gap: 16, borderBottom: '1px solid #f0f0f0', ...(isInactive ? { opacity: 0.6 } : {}) }}>
       <div style={{ width: 56, height: 45, borderRadius: 6, overflow: 'hidden', flexShrink: 0, background: '#f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {unit.photo
           ? <img src={`${API_URL}/api/file/preview/${unit.photo}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -137,8 +140,10 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontWeight: 600, fontSize: 14 }}>{unit.name}</span>
-          <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 11, lineHeight: '18px' }}>{isOccupied ? 'Occupied' : 'Vacant'}</Tag>
+          <span style={{ fontWeight: 600, fontSize: 14, ...(isInactive ? { color: '#999' } : {}) }}>{unit.name}</span>
+          {isInactive
+            ? <Tag color="default" style={{ fontSize: 11, lineHeight: '18px' }}>Inactive</Tag>
+            : <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 11, lineHeight: '18px' }}>{isOccupied ? 'Occupied' : 'Vacant'}</Tag>}
         </div>
         <div style={{ color: '#888', fontSize: 12 }}>{unit.type ? unit.type.charAt(0).toUpperCase() + unit.type.slice(1) : 'Apartment'}</div>
         <div style={{ color: '#666', fontSize: 12, display: 'flex', gap: 12, flexWrap: 'wrap' }}>

@@ -1198,7 +1198,9 @@ router.get('/checkout-meters', authenticate, async (req, res) => {
        LEFT JOIN property p ON u.property_id = p.id
        JOIN leasing l ON l.unit_id = m.unit_id AND l.deleted_at IS NULL
        JOIN tenant t ON l.tenant_id = t.id
+       LEFT JOIN utility_checkout_settlement ucs ON ucs.leasing_id = l.id AND ucs.meter_id = m.id
        WHERE m.org_id = ? AND m.status = 1 AND m.meter_category = 1
+         AND ucs.id IS NULL
        ORDER BY t.first_name, t.last_name, m.meter_number, l.start_date DESC`,
       [orgId]
     );

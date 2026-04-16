@@ -893,8 +893,8 @@ export default function UnitDetailPage() {
             <div style={{ textAlign: 'left' }}>
               <Text type="secondary" style={{ fontSize: 12 }}>Status:</Text>
               <br />
-              <Tag color={unit.status === 1 ? 'green' : 'blue'} style={{ marginTop: 4 }}>
-                {unit.status === 1 ? 'Active' : 'Inactive'}
+              <Tag color={Number(unit.active_status) === 1 ? 'green' : 'default'} style={{ marginTop: 4 }}>
+                {Number(unit.active_status) === 1 ? 'Active' : 'Inactive'}
               </Tag>
             </div>
             <Button block style={{ marginTop: 16 }} onClick={() => router.push(`/property/${propertyId}`)}>
