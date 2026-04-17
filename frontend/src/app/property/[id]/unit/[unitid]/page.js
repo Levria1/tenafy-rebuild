@@ -16,6 +16,7 @@ import useIsMobile from '../../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../../components/mobile/MobileCardList';
 import UnitViewingsTab from '../../../../../components/viewings/UnitViewingsTab';
 import { property as propertyApi, service as serviceApi } from '../../../../../lib/api';
+import { formatBeds, formatUnitType } from '../../../../../lib/format';
 
 const { Text, Title } = Typography;
 
@@ -54,17 +55,20 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
 
       {/* UNIT INFORMATION */}
       <Card size="small" title="UNIT INFORMATION" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
-        <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small" {...descStyle}>
-          <Descriptions.Item label="Type">{unit?.type || '-'}</Descriptions.Item>
+        {/* 2 columns — Bedrooms sits under Type, Bathrooms under Room Size */}
+        <Descriptions column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} size="small" {...descStyle}>
+          <Descriptions.Item label="Type">{formatUnitType(unit?.type)}</Descriptions.Item>
           <Descriptions.Item label="Room Size">
             {unit?.size ? `${unit.size} ${unit.size_unit || 'sqft'}` : '-'}
           </Descriptions.Item>
-          <Descriptions.Item label="Bedrooms">{unit?.beds ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Bedrooms">{formatBeds(unit?.beds)}</Descriptions.Item>
           <Descriptions.Item label="Bathrooms">{unit?.baths ?? '-'}</Descriptions.Item>
         </Descriptions>
         <Descriptions column={{ xs: 1, sm: 3 }} size="small" {...descStyle}>
-          <Descriptions.Item label="Housing Status">{unit?.housing_status || 'NONE'}</Descriptions.Item>
-          <Descriptions.Item label="Laundry">{unit?.laundry ? 'YES' : 'NONE'}</Descriptions.Item>
+          <Descriptions.Item label="Occupancy">
+            {Number(unit?.status) === 1 ? 'Occupied' : 'Vacant'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Laundry">{unit?.laundry ? 'YES' : 'NO'}</Descriptions.Item>
           <Descriptions.Item label="Smoking">{formatBool(unit?.smoking)}</Descriptions.Item>
         </Descriptions>
       </Card>

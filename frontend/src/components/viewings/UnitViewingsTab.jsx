@@ -3,14 +3,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Button, Card, Table, Tag, Space, Typography, Popconfirm, message, Empty,
-  Drawer, Descriptions, Alert,
+  Drawer, Descriptions, Alert, Select, Tooltip,
 } from 'antd';
 import {
   PlusOutlined, CopyOutlined, LinkOutlined, EyeOutlined, StopOutlined,
+  UserOutlined, UserAddOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import GenerateViewingLinkModal from './GenerateViewingLinkModal';
-import { viewingApi } from '../../lib/api';
+import { viewingApi, user as userApi } from '../../lib/api';
 
 const { Text, Paragraph } = Typography;
 
@@ -30,18 +31,21 @@ const DECISION = {
 };
 
 function employeeName(emp) {
-  if (!emp) return '-';
+  if (!emp) return null;
   return [emp.first_name, emp.last_name].filter(Boolean).join(' ') || emp.email || '-';
 }
 
 export default function UnitViewingsTab({ unitId, isMobile }) {
   const [links, setLinks] = useState([]);
   const [bookings, setBookings] = useState([]);
+  const [users, setUsers] = useState([]);
   const [loadingLinks, setLoadingLinks] = useState(false);
   const [loadingBookings, setLoadingBookings] = useState(false);
+  const [loadingUsers, setLoadingUsers] = useState(false);
   const [genOpen, setGenOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailData, setDetailData] = useState(null);
+  const [assigningLinkId, setAssigningLinkId] = useState(null);
 
   const reloadLinks = useCallback(() => {
     if (!unitId) return;
@@ -61,10 +65,25 @@ export default function UnitViewingsTab({ unitId, isMobile }) {
       .finally(() => setLoadingBookings(false));
   }, [unitId]);
 
+  // Load users for the assign-employee dropdown. listUsers is already
+  // org-scoped on the backend (WHERE u.org_id = req.user.orgId), so this
+  // only shows users in the current organization.
+  const loadUsers = useCallback(() => {
+    setLoadingUsers(true);
+    userApi.listUsers({}, { page: 1, limit: 500 })
+      .then((r) => {
+        const list = r?.data?.data?.content || [];
+        setUsers(Array.isArray(list) ? list : []);
+      })
+      .catch(() => setUsers([]))
+      .finally(() => setLoadingUsers(false));
+  }, []);
+
   useEffect(() => {
     reloadLinks();
     reloadBookings();
-  }, [reloadLinks, reloadBookings]);
+    loadUsers();
+  }, [reloadLinks, reloadBookings, loadUsers]);
 
   const handleCopy = async (token) => {
     const url = `${window.location.origin}/book/viewing/${token}`;
@@ -72,7 +91,8 @@ export default function UnitViewingsTab({ unitId, isMobile }) {
       await navigator.clipboard.writeText(url);
       message.success('Link copied');
     } catch {
-      message.error('Copy failed');
+      // Browsers block navigator.clipboard on plain HTTP. Works on HTTPS/localhost.
+      message.error('Copy failed — clipboard is only available on HTTPS');
     }
   };
 
@@ -83,6 +103,19 @@ export default function UnitViewingsTab({ unitId, isMobile }) {
       reloadLinks();
     } catch (e) {
       message.error(e?.response?.data?.message || 'Failed to revoke');
+    }
+  };
+
+  const handleAssignEmployee = async (linkId, employeeId) => {
+    setAssigningLinkId(linkId);
+    try {
+      await viewingApi.assignEmployee(linkId, employeeId);
+      message.success(employeeId ? 'Employee assigned' : 'Employee cleared');
+      reloadLinks();
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to update employee');
+    } finally {
+      setAssigningLinkId(null);
     }
   };
 
@@ -108,18 +141,50 @@ export default function UnitViewingsTab({ unitId, isMobile }) {
     }
   };
 
+  const userOptions = users.map(u => ({
+    value: String(u.id),
+    label: [u.first_name, u.last_name].filter(Boolean).join(' ') || u.email || u.username,
+  }));
+
   // --- Shareable links table ---
   const linkColumns = [
     {
       title: 'Status',
       dataIndex: 'status',
-      width: 100,
-      render: (s) => <Tag color={s === 1 ? 'green' : 'default'}>{s === 1 ? 'Active' : 'Revoked'}</Tag>,
+      width: 90,
+      render: (s, r) => {
+        if (s !== 1) return <Tag color="default">Revoked</Tag>;
+        if (!r.employee) return <Tag color="orange">Not ready</Tag>;
+        return <Tag color="green">Active</Tag>;
+      },
     },
     {
       title: 'Employee',
       dataIndex: 'employee',
-      render: (e) => employeeName(e),
+      width: 240,
+      render: (emp, r) => {
+        if (r.status !== 1) {
+          return emp ? <Text type="secondary">{employeeName(emp)}</Text> : <Text type="secondary">—</Text>;
+        }
+        return (
+          <Select
+            size="small"
+            style={{ width: '100%' }}
+            placeholder={
+              <span style={{ color: '#ff7875' }}>
+                <UserAddOutlined /> Assign employee…
+              </span>
+            }
+            value={emp ? emp.id : undefined}
+            onChange={(val) => handleAssignEmployee(r.id, val)}
+            loading={loadingUsers || assigningLinkId === r.id}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={userOptions}
+          />
+        );
+      },
     },
     {
       title: 'Note',
@@ -141,17 +206,19 @@ export default function UnitViewingsTab({ unitId, isMobile }) {
     {
       title: 'Actions',
       key: 'actions',
-      width: 180,
+      width: 200,
       render: (_, r) => (
-        <Space size="small">
-          <Button
-            size="small"
-            icon={<CopyOutlined />}
-            disabled={r.status !== 1}
-            onClick={() => handleCopy(r.token)}
-          >
-            Copy
-          </Button>
+        <Space size="small" wrap={false}>
+          <Tooltip title={!r.employee ? 'Assign an employee before sharing' : ''}>
+            <Button
+              size="small"
+              icon={<CopyOutlined />}
+              disabled={r.status !== 1 || !r.employee}
+              onClick={() => handleCopy(r.token)}
+            >
+              Copy
+            </Button>
+          </Tooltip>
           {r.status === 1 && (
             <Popconfirm title="Revoke this link?" okText="Revoke" okType="danger" onConfirm={() => handleRevoke(r.id)}>
               <Button size="small" danger icon={<StopOutlined />}>Revoke</Button>
@@ -242,6 +309,7 @@ export default function UnitViewingsTab({ unitId, isMobile }) {
           columns={linkColumns}
           pagination={false}
           style={{ marginBottom: 24 }}
+          scroll={{ x: 'max-content' }}
         />
       )}
 
@@ -318,11 +386,6 @@ export default function UnitViewingsTab({ unitId, isMobile }) {
                 <Tag color={DECISION[detailData.tenant_decision]?.color}>
                   {DECISION[detailData.tenant_decision]?.label}
                 </Tag>
-                {detailData.tenant_decided_at && (
-                  <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                    {dayjs(detailData.tenant_decided_at).fromNow ? dayjs(detailData.tenant_decided_at).format('MMM D, HH:mm') : ''}
-                  </Text>
-                )}
               </Descriptions.Item>
               <Descriptions.Item label="Employee decision">
                 <Tag color={DECISION[detailData.employee_decision]?.color}>

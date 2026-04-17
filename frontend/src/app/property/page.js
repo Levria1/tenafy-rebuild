@@ -19,6 +19,7 @@ import { useRouter } from 'next/navigation';
 import MainLayout from '../../components/Layout';
 import useIsMobile from '../../hooks/useIsMobile';
 import { property } from '../../lib/api';
+import { formatBeds, formatUnitType } from '../../lib/format';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -221,7 +222,7 @@ function UnitRow({ unit, propId, router, isLast, isMobile }) {
               </Tag>
             </div>
             <div style={{ color: '#888', fontSize: 11 }}>
-              {unit.type ? unit.type.charAt(0).toUpperCase() + unit.type.slice(1) : 'Unit'}
+              {unit.type ? formatUnitType(unit.type) : 'Unit'}
             </div>
           </div>
           {tenantName && (
@@ -236,7 +237,7 @@ function UnitRow({ unit, propId, router, isLast, isMobile }) {
         {/* Details row */}
         <div style={{ color: '#666', fontSize: 11, display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
           <span>Size: <strong>{sizeText}</strong></span>
-          <span>Bed: <strong>{unit.beds ?? '-'}</strong></span>
+          <span>Bed: <strong>{formatBeds(unit.beds)}</strong></span>
           <span>Bath: <strong>{unit.baths ?? '-'}</strong></span>
           <span>Rent: <strong>{rentRange}</strong></span>
         </div>
@@ -281,11 +282,11 @@ function UnitRow({ unit, propId, router, isLast, isMobile }) {
           </Tag>
         </div>
         <div style={{ color: '#888', fontSize: 12, marginBottom: 2 }}>
-          {unit.type ? unit.type.charAt(0).toUpperCase() + unit.type.slice(1) : 'Unit'}
+          {unit.type ? formatUnitType(unit.type) : 'Unit'}
         </div>
         <div style={{ color: '#666', fontSize: 12, display: 'flex', gap: 16 }}>
           <span>Room Size: <strong>{sizeText}</strong></span>
-          <span>Bedrooms <strong>{unit.beds ?? '-'}</strong></span>
+          <span>Bedrooms <strong>{formatBeds(unit.beds)}</strong></span>
           <span>Bathrooms <strong>{unit.baths ?? '-'}</strong></span>
         </div>
         <div style={{ fontSize: 12, marginTop: 4 }}>

@@ -6,6 +6,7 @@ import { Card, Form, Input, InputNumber, Select, Button, message, Row, Col, Swit
 import { ArrowLeftOutlined, CheckOutlined, CloseOutlined, UploadOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../../components/Layout';
 import { property as propertyApi, file as fileApi } from '../../../../../../lib/api';
+import { bedsSelectOptions, unitTypeOptions } from '../../../../../../lib/format';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -66,6 +67,7 @@ export default function UnitEditPage() {
           account_name: d.account_name || '',
           bank_details: d.bank_details || '',
           internal_note: d.internal_note || '',
+          listing_url: d.listing_url || '',
           rent_price_min: d.rent_price_min ? Number(d.rent_price_min) : undefined,
           rent_price_max: d.rent_price_max ? Number(d.rent_price_max) : undefined,
           deposit_price: d.deposit_price ? Number(d.deposit_price) : undefined,
@@ -170,8 +172,15 @@ export default function UnitEditPage() {
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item name="type" label="Type">
-                  <Input placeholder="e.g. Studio, 1BR, Commercial" />
+                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.type !== cur.type}>
+                  {({ getFieldValue }) => (
+                    <Form.Item name="type" label="Type">
+                      <Select
+                        placeholder="Pick a type"
+                        options={unitTypeOptions(getFieldValue('type'))}
+                      />
+                    </Form.Item>
+                  )}
                 </Form.Item>
               </Col>
               <Col span={4}>
@@ -190,8 +199,16 @@ export default function UnitEditPage() {
             </Row>
             <Row gutter={16}>
               <Col span={6}>
-                <Form.Item name="beds" label="Bedrooms">
-                  <InputNumber min={0} style={{ width: '100%' }} />
+                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.beds !== cur.beds}>
+                  {({ getFieldValue }) => (
+                    <Form.Item name="beds" label="Bedrooms">
+                      <Select
+                        placeholder="Pick a layout"
+                        options={bedsSelectOptions(getFieldValue('beds'))}
+                        style={{ width: '100%' }}
+                      />
+                    </Form.Item>
+                  )}
                 </Form.Item>
               </Col>
               <Col span={6}>
@@ -323,6 +340,14 @@ export default function UnitEditPage() {
             </Form.Item>
             <Form.Item name="internal_note" label="Internal Notes">
               <TextArea rows={3} placeholder="Notes for internal use only..." />
+            </Form.Item>
+            <Form.Item
+              name="listing_url"
+              label="Public Listing URL (this unit)"
+              extra="Optional. The page on your public website for THIS specific unit. If blank, the chatbot falls back to the property-level URL."
+              rules={[{ pattern: /^https?:\/\/.+/i, message: 'Must start with http:// or https://' }]}
+            >
+              <Input placeholder="https://taneresidence.com/apartments/sun-gardens-3b" />
             </Form.Item>
           </div>
 

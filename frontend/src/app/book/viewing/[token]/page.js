@@ -6,9 +6,42 @@ import {
   Card, Form, Input, DatePicker, Button, Typography, Alert, Spin, Result, Space, Tag,
 } from 'antd';
 import { viewingPublic } from '../../../../lib/bookingApi';
+import { formatBeds, formatUnitType } from '../../../../lib/format';
 import dayjs from 'dayjs';
 
 const { Title, Paragraph, Text } = Typography;
+
+// Availability window — keep in sync with backend validateBookingSlot() in
+// backend/src/routes/viewingPublic.js.
+// Viewings: Monday-Saturday, 11:00 AM – 7:00 PM (latest end time).
+const OPEN_HOUR = 11;
+const CLOSE_HOUR = 19; // 7 PM, end-time boundary
+const DURATION_MIN = 30;
+const LATEST_START_HOUR = 18; // 18:30 is the last valid start (ends 19:00)
+
+const disabledPickerDate = (d) => {
+  if (!d) return false;
+  // Block past dates and Sundays (day 0)
+  if (d.isBefore(dayjs().startOf('day'))) return true;
+  if (d.day() === 0) return true;
+  return false;
+};
+
+const disabledPickerTime = () => {
+  const disabledHours = [];
+  for (let h = 0; h < 24; h++) {
+    if (h < OPEN_HOUR || h > LATEST_START_HOUR) disabledHours.push(h);
+  }
+  return {
+    disabledHours: () => disabledHours,
+    disabledMinutes: (selectedHour) => {
+      // For the last allowed hour (18:00), only :00, :15, :30 are valid starts
+      // (18:30 + 30 = 19:00 = close). Block :45.
+      if (selectedHour === LATEST_START_HOUR) return [45];
+      return [];
+    },
+  };
+};
 
 export default function ViewingBookingFormPage() {
   const { token } = useParams();
@@ -61,6 +94,16 @@ export default function ViewingBookingFormPage() {
     );
   }
 
+  if (detail && detail.ready === false) {
+    return (
+      <Result
+        status="info"
+        title="Not ready yet"
+        subTitle={`The viewing link for ${detail.unit?.name || 'this unit'} isn't quite ready. The property team hasn't assigned a host yet. Please check back shortly or contact them directly.`}
+      />
+    );
+  }
+
   if (success) {
     return (
       <Result
@@ -89,8 +132,11 @@ export default function ViewingBookingFormPage() {
       <Space direction="vertical" size={4} style={{ marginBottom: 20 }}>
         {detail.unit.beds != null && (
           <Text type="secondary">
-            {detail.unit.beds} bed &middot; {detail.unit.baths} bath
-            {detail.unit.type ? <> &middot; {detail.unit.type}</> : null}
+            {Number(detail.unit.beds) === 0
+              ? 'Studio'
+              : `${detail.unit.beds} bed`}
+            {' '}&middot; {detail.unit.baths} bath
+            {detail.unit.type ? <> &middot; {formatUnitType(detail.unit.type)}</> : null}
           </Text>
         )}
         <Text type="secondary">Your host: <strong>{detail.employee.name}</strong></Text>
@@ -128,19 +174,40 @@ export default function ViewingBookingFormPage() {
         >
           <Input placeholder="jane@example.com" autoComplete="email" />
         </Form.Item>
-        <Form.Item name="viewer_phone" label="Phone (optional)">
+        <Form.Item
+          name="viewer_phone"
+          label="Phone"
+          rules={[
+            { required: true, message: 'Please enter your phone number' },
+            { min: 7, message: 'Please enter a valid phone number' },
+          ]}
+        >
           <Input placeholder="+254 700 000 000" autoComplete="tel" />
         </Form.Item>
         <Form.Item
           name="proposed_datetime"
           label="Proposed date & time"
-          rules={[{ required: true, message: 'Please pick a date and time' }]}
+          extra="Viewings run Monday–Saturday, 11:00 AM – 7:00 PM. Sunday is closed."
+          rules={[
+            { required: true, message: 'Please pick a date and time' },
+            {
+              validator: (_, value) => {
+                if (!value) return Promise.resolve();
+                if (value.day() === 0) return Promise.reject(new Error('Sundays are not available'));
+                const mins = value.hour() * 60 + value.minute();
+                if (mins < OPEN_HOUR * 60) return Promise.reject(new Error('Start time must be 11:00 AM or later'));
+                if (mins + DURATION_MIN > CLOSE_HOUR * 60) return Promise.reject(new Error('Viewings must end by 7:00 PM'));
+                return Promise.resolve();
+              },
+            },
+          ]}
         >
           <DatePicker
-            showTime={{ format: 'HH:mm', minuteStep: 15 }}
+            showTime={{ format: 'HH:mm', minuteStep: 15, defaultValue: dayjs().hour(11).minute(0) }}
             format="YYYY-MM-DD HH:mm"
             style={{ width: '100%' }}
-            disabledDate={(d) => d && d.isBefore(dayjs().startOf('day'))}
+            disabledDate={disabledPickerDate}
+            disabledTime={disabledPickerTime}
             placeholder="Pick when you'd like to visit"
           />
         </Form.Item>
@@ -155,8 +222,10 @@ export default function ViewingBookingFormPage() {
       </Form>
 
       <Paragraph style={{ color: '#8c8c8c', fontSize: 12, marginTop: 16 }}>
-        By submitting, you agree to be contacted about this viewing. Your request is sent to the
-        property team for approval — if the unit is currently occupied, the tenant is also asked to approve.
+        By submitting, you agree to be contacted about this viewing. Your name, email, and phone
+        will be saved in the property team's contact list so they can reach you about this and
+        future listings. Your request is sent to the property team for approval — if the unit is
+        currently occupied, the tenant is also asked to approve.
       </Paragraph>
     </Card>
   );

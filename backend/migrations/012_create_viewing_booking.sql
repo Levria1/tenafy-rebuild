@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS viewing_booking (
   employee_id            BIGINT       NOT NULL,
   leasing_id             BIGINT       DEFAULT NULL,
   tenant_id              BIGINT       DEFAULT NULL,
+  viewer_contact_id      BIGINT       DEFAULT NULL,
   viewer_name            VARCHAR(255) NOT NULL,
   viewer_email           VARCHAR(255) NOT NULL,
   viewer_phone           VARCHAR(64)  DEFAULT NULL,
@@ -41,5 +42,6 @@ CREATE TABLE IF NOT EXISTS viewing_booking (
   UNIQUE KEY uk_vb_manage_tok (viewer_manage_token),
   KEY idx_vb_link (link_id),
   KEY idx_vb_unit_when (unit_id, proposed_datetime),
-  KEY idx_vb_status (status)
+  KEY idx_vb_status (status),
+  KEY idx_vb_viewer_contact (viewer_contact_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

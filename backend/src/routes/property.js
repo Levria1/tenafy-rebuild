@@ -281,6 +281,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
       amenity_detail, access_information, key_code, wifi_information, internal_note,
       rent_price_min, rent_price_max, deposit_price,
       charge_method, fee, photo, galleryFileIds, active_status,
+      listing_url,
     } = req.body;
     const orgId = req.user.orgId;
 
@@ -308,6 +309,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
        SET u.name = ?, u.type = ?, u.size = ?, u.size_unit = ?, u.beds = ?, u.baths = ?,
            u.smoking = ?, u.laundry = ?, u.parking = ?,
            u.amenity_detail = ?, u.access_information = ?, u.key_code = ?, u.wifi_information = ?, u.internal_note = ?,
+           u.listing_url = ?,
            u.rent_price_min = ?, u.rent_price_max = ?, u.deposit_price = ?,
            u.charge_method = ?, u.fee = ?, u.photo = ?,
            u.active_status = ?
@@ -316,6 +318,7 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
         name || null, type || null, size ?? null, size_unit || null, beds ?? null, baths ?? null,
         smoking ?? null, laundry ?? null, parking ?? null,
         amenity_detail || null, access_information || null, key_code || null, wifi_information || null, internal_note || null,
+        listing_url || null,
         rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
         charge_method ?? null, fee ?? null, photo || null,
         active_status != null ? Number(active_status) : 1,
@@ -594,18 +597,18 @@ router.post('/', authenticate, async (req, res) => {
   try {
     const { display_name, street_address, city, state, country, zip_code, district,
             type, status, currency, year_of_built, notes, payment_instructions, amenityIds,
-            photo, galleryFileIds } = req.body;
+            photo, galleryFileIds, listing_url } = req.body;
     const orgId = req.user.orgId;
 
     const propertyId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
     await req.pool.execute(
       `INSERT INTO property (id, org_id, display_name, street_address, city, state, country,
-       zip_code, district, type, status, currency, year_of_built, notes, payment_instructions, photo, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+       zip_code, district, type, status, currency, year_of_built, notes, payment_instructions, photo, listing_url, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [propertyId, orgId, display_name || null, street_address || null, city || null, state || null, country || null, zip_code || null,
        district || null, type || 1, status ?? 1, currency || null,
-       year_of_built || null, notes || null, payment_instructions || null, photo || null]
+       year_of_built || null, notes || null, payment_instructions || null, photo || null, listing_url || null]
     );
 
     // Save amenities if provided
@@ -640,7 +643,7 @@ router.put('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const { display_name, street_address, city, state, country, zip_code, district,
             type, status, currency, year_of_built, mls, notes, payment_instructions, amenityIds,
-            photo, galleryFileIds } = req.body;
+            photo, galleryFileIds, listing_url } = req.body;
     const orgId = req.user.orgId;
 
     // Block deactivation if there are active or upcoming leases on any unit of this property
@@ -666,12 +669,14 @@ router.put('/:id', authenticate, async (req, res) => {
     await req.pool.execute(
       `UPDATE property SET display_name = ?, street_address = ?, city = ?, state = ?,
        country = ?, zip_code = ?, district = ?, type = ?, status = ?, currency = ?,
-       year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, photo = ?, updated_at = NOW()
+       year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, photo = ?,
+       listing_url = ?, updated_at = NOW()
        WHERE id = ? AND org_id = ?`,
       [display_name || null, street_address || null, city || null, state || null,
        country || null, zip_code || null, district || null, type ?? 1, status ?? 1,
        currency || null, year_of_built || null, mls || null, notes || null,
-       payment_instructions || null, photo || null, id, orgId]
+       payment_instructions || null, photo || null,
+       listing_url || null, id, orgId]
     );
 
     // Update amenities if provided
@@ -782,7 +787,8 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
       smoking, laundry, amenity_detail, access_information, key_code,
       wifi_information, internal_note,
       rent_price_min, rent_price_max, deposit_price, owner_id,
-      charge_method, fee, amenityIds, photo, galleryFileIds
+      charge_method, fee, amenityIds, photo, galleryFileIds,
+      listing_url,
     } = req.body;
     const orgId = req.user.orgId;
 
@@ -797,15 +803,15 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
     await req.pool.execute(
       `INSERT INTO unit (id, property_id, name, type, amenity_type, beds, baths, size, size_unit,
        parking, smoking, laundry, amenity_detail, access_information, key_code,
-       wifi_information, internal_note,
+       wifi_information, internal_note, listing_url,
        rent_price_min, rent_price_max, deposit_price, owner_id,
        charge_method, fee, photo, status, active_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
       [unitId, property_id, name || null, type || null, amenity_type ?? 1,
        beds ?? null, baths ?? null, size ?? null, size_unit || 'sqft',
        parking ?? null, smoking ? 1 : 0, laundry ? 1 : 0,
        amenity_detail || null, access_information || null, key_code || null,
-       wifi_information || null, internal_note || null,
+       wifi_information || null, internal_note || null, listing_url || null,
        rent_price_min ?? null, rent_price_max ?? null, deposit_price ?? null,
        owner_id || null, charge_method || null, fee ?? null, photo || null]
     );

@@ -437,11 +437,28 @@ export const bookingPlatform = {
   delete: (id) => api.delete(`/api/booking-platform/${id}`),
 };
 
+export const chatApi = {
+  // Chat (staff-test and eventually widget)
+  sendMessage: (data) => api.post('/api/chat/message', data),
+  // Sessions
+  listSessions: () => api.get('/api/chat/sessions'),
+  getSession:   (id) => api.get(`/api/chat/sessions/${id}`),
+  takeover:     (id, disabled) => api.patch(`/api/chat/sessions/${id}/takeover`, { disabled }),
+  // Settings
+  getSettings:  () => api.get('/api/chat/settings'),
+  updateSettings: (data) => api.put('/api/chat/settings', data),
+};
+
 export const viewingApi = {
+  // Top-level overview (all units + their active link)
+  overview: () => api.get('/api/viewing/overview'),
+  autoGenerate: () => api.post('/api/viewing/auto-generate'),
+  regenerateForUnit: (unitId) => api.post(`/api/viewing/unit/${unitId}/regenerate`),
   // Shareable links
   listLinks: (unitId) => api.get(`/api/viewing/unit/${unitId}/links`),
-  createLink: (unitId, data) => api.post(`/api/viewing/unit/${unitId}/links`, data),
+  createLink: (unitId, data) => api.post(`/api/viewing/unit/${unitId}/links`, data || {}),
   revokeLink: (linkId) => api.patch(`/api/viewing/link/${linkId}/revoke`),
+  assignEmployee: (linkId, employee_id) => api.patch(`/api/viewing/link/${linkId}/employee`, { employee_id: employee_id || null }),
   // Bookings
   listBookings: (unitId) => api.get(`/api/viewing/unit/${unitId}/bookings`),
   getBooking: (id) => api.get(`/api/viewing/bookings/${id}`),

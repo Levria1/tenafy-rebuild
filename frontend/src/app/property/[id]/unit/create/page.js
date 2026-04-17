@@ -8,6 +8,7 @@ import {
 import { ArrowLeftOutlined, UploadOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../components/Layout';
 import { property as propertyApi, file as fileApi } from '../../../../../lib/api';
+import { bedsSelectOptions, unitTypeOptions } from '../../../../../lib/format';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -298,18 +299,7 @@ export default function PropertyUnitCreatePage() {
                 label={<><span style={{ color: '#ff4d4f', marginRight: 4 }}>*</span>UNIT TYPE</>}
                 rules={[{ required: true, message: 'Please select unit type' }]}
               >
-                <Select placeholder="Please select unit type">
-                  <Select.Option value="apartment">Apartment</Select.Option>
-                  <Select.Option value="condo">Condo</Select.Option>
-                  <Select.Option value="house">House</Select.Option>
-                  <Select.Option value="townhouse">Townhouse</Select.Option>
-                  <Select.Option value="studio">Studio</Select.Option>
-                  <Select.Option value="loft">Loft</Select.Option>
-                  <Select.Option value="office">Office</Select.Option>
-                  <Select.Option value="retail">Retail</Select.Option>
-                  <Select.Option value="sharedRoom">Shared Room</Select.Option>
-                  <Select.Option value="other">Other</Select.Option>
-                </Select>
+                <Select placeholder="Please select unit type" options={unitTypeOptions()} />
               </Form.Item>
             </div>
 
@@ -319,7 +309,11 @@ export default function PropertyUnitCreatePage() {
                 label={<><span style={{ color: '#ff4d4f', marginRight: 4 }}>*</span>BEDROOMS</>}
                 rules={[{ required: true, message: 'Required' }]}
               >
-                <InputNumber min={0} placeholder="Please input bedrooms" style={{ width: '100%' }} />
+                <Select
+                  placeholder="Pick a layout"
+                  options={bedsSelectOptions()}
+                  style={{ width: '100%' }}
+                />
               </Form.Item>
 
               <Form.Item
@@ -457,6 +451,16 @@ export default function PropertyUnitCreatePage() {
             <SectionLabel>INTERNAL NOTES</SectionLabel>
             <Form.Item name="internal_note">
               <Input.TextArea rows={3} placeholder="Please input internal notes" />
+            </Form.Item>
+
+            {/* Public Listing URL */}
+            <SectionLabel>PUBLIC LISTING URL (THIS UNIT)</SectionLabel>
+            <Form.Item
+              name="listing_url"
+              extra="Optional. Link to this specific unit's page on your public website. Falls back to the property-level URL if blank."
+              rules={[{ pattern: /^https?:\/\/.+/i, message: 'Must start with http:// or https://' }]}
+            >
+              <Input placeholder="https://taneresidence.com/apartments/sun-gardens-3b" />
             </Form.Item>
 
             {/* Rent Range */}

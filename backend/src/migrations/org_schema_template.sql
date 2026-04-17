@@ -505,6 +505,7 @@ CREATE TABLE `property` (
   `status` tinyint NOT NULL DEFAULT '0' COMMENT '0:inactive; 1:active',
   `photo` bigint DEFAULT NULL,
   `notes` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `listing_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `payment_instructions` text COLLATE utf8mb4_unicode_ci,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -765,6 +766,7 @@ CREATE TABLE `unit` (
   `wifi_information` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `payment_information` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `internal_note` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `listing_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `status` tinyint NOT NULL DEFAULT '0' COMMENT '0:vancant;1:occupied;',
   `active_status` tinyint NOT NULL DEFAULT '1' COMMENT '0:inactive;1:active;',
   `photo` bigint DEFAULT NULL,
@@ -925,7 +927,7 @@ CREATE TABLE `viewing_link` (
   `token` varchar(64) NOT NULL,
   `property_id` bigint NOT NULL,
   `unit_id` bigint NOT NULL,
-  `employee_id` bigint NOT NULL,
+  `employee_id` bigint DEFAULT NULL,
   `created_by` bigint NOT NULL,
   `note` varchar(500) DEFAULT NULL,
   `status` tinyint NOT NULL DEFAULT '1',
@@ -950,6 +952,7 @@ CREATE TABLE `viewing_booking` (
   `employee_id` bigint NOT NULL,
   `leasing_id` bigint DEFAULT NULL,
   `tenant_id` bigint DEFAULT NULL,
+  `viewer_contact_id` bigint DEFAULT NULL,
   `viewer_name` varchar(255) NOT NULL,
   `viewer_email` varchar(255) NOT NULL,
   `viewer_phone` varchar(64) DEFAULT NULL,
@@ -964,6 +967,7 @@ CREATE TABLE `viewing_booking` (
   `employee_decision` tinyint NOT NULL DEFAULT '0' COMMENT '0=pending,1=approved,2=declined',
   `employee_decided_at` timestamp NULL DEFAULT NULL,
   `status` tinyint NOT NULL DEFAULT '0' COMMENT '0=pending,1=confirmed,2=declined,3=cancelled,4=expired',
+  `source` varchar(16) NOT NULL DEFAULT 'web',
   `ics_uid` varchar(128) NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -973,7 +977,69 @@ CREATE TABLE `viewing_booking` (
   UNIQUE KEY `uk_vb_manage_tok` (`viewer_manage_token`),
   KEY `idx_vb_link` (`link_id`),
   KEY `idx_vb_unit_when` (`unit_id`, `proposed_datetime`),
-  KEY `idx_vb_status` (`status`)
+  KEY `idx_vb_status` (`status`),
+  KEY `idx_vb_viewer_contact` (`viewer_contact_id`),
+  KEY `idx_vb_source` (`source`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+--
+-- Table `chat_session` — MiniMax-powered assistant conversations (2026-04)
+--
+DROP TABLE IF EXISTS `chat_session`;
+CREATE TABLE `chat_session` (
+  `id` bigint NOT NULL,
+  `channel` varchar(20) NOT NULL,
+  `channel_user_id` varchar(255) NOT NULL,
+  `contact_id` bigint DEFAULT NULL,
+  `viewer_name` varchar(255) DEFAULT NULL,
+  `viewer_email` varchar(255) DEFAULT NULL,
+  `viewer_phone` varchar(64) DEFAULT NULL,
+  `language` varchar(10) DEFAULT NULL,
+  `status` tinyint NOT NULL DEFAULT '0',
+  `bot_disabled` bit(1) NOT NULL DEFAULT b'0',
+  `message_count` int NOT NULL DEFAULT '0',
+  `booking_count` int NOT NULL DEFAULT '0',
+  `lead_captured` bit(1) NOT NULL DEFAULT b'0',
+  `last_message_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_chat_channel_user` (`channel`, `channel_user_id`),
+  KEY `idx_chat_contact` (`contact_id`),
+  KEY `idx_chat_status_last` (`status`, `last_message_at`),
+  KEY `idx_chat_channel` (`channel`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+DROP TABLE IF EXISTS `chat_message`;
+CREATE TABLE `chat_message` (
+  `id` bigint NOT NULL,
+  `session_id` bigint NOT NULL,
+  `role` varchar(20) NOT NULL,
+  `content` longtext,
+  `tool_calls` json DEFAULT NULL,
+  `tool_call_id` varchar(64) DEFAULT NULL,
+  `tool_name` varchar(64) DEFAULT NULL,
+  `tokens_in` int NOT NULL DEFAULT '0',
+  `tokens_out` int NOT NULL DEFAULT '0',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_cm_session` (`session_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+DROP TABLE IF EXISTS `bot_settings`;
+CREATE TABLE `bot_settings` (
+  `id` bigint NOT NULL DEFAULT '1',
+  `enabled` bit(1) NOT NULL DEFAULT b'0',
+  `capabilities` json DEFAULT NULL,
+  `system_prompt` text,
+  `custom_instructions` text,
+  `max_bookings_per_session` int NOT NULL DEFAULT '2',
+  `max_messages_per_session` int NOT NULL DEFAULT '50',
+  `max_messages_per_day` int NOT NULL DEFAULT '500',
+  `settings_locked` bit(1) NOT NULL DEFAULT b'0',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;

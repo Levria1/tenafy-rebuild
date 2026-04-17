@@ -10,6 +10,7 @@ import {
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
 import { property, accounting } from '../../../../lib/api';
+import { formatBeds, formatUnitType } from '../../../../lib/format';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -109,7 +110,7 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
                 ? <Tag color="default" style={{ fontSize: 10, lineHeight: '16px' }}>Inactive</Tag>
                 : <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 10, lineHeight: '16px' }}>{isOccupied ? 'Occupied' : 'Vacant'}</Tag>}
             </div>
-            <div style={{ color: '#888', fontSize: 11 }}>{unit.type ? unit.type.charAt(0).toUpperCase() + unit.type.slice(1) : 'Apartment'}</div>
+            <div style={{ color: '#888', fontSize: 11 }}>{unit.type ? formatUnitType(unit.type) : 'Apartment'}</div>
           </div>
           {tenantName && (
             <div style={{ fontSize: 11, color: '#333', textAlign: 'right', flexShrink: 0 }}>
@@ -119,7 +120,7 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
         </div>
         <div style={{ color: '#666', fontSize: 11, display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
           {sizeText && <span>Size: <strong>{sizeText}</strong></span>}
-          <span>Bed: <strong>{unit.beds ?? '-'}</strong></span>
+          <span>Bed: <strong>{formatBeds(unit.beds)}</strong></span>
           <span>Bath: <strong>{unit.baths ?? '-'}</strong></span>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -145,10 +146,10 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
             ? <Tag color="default" style={{ fontSize: 11, lineHeight: '18px' }}>Inactive</Tag>
             : <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 11, lineHeight: '18px' }}>{isOccupied ? 'Occupied' : 'Vacant'}</Tag>}
         </div>
-        <div style={{ color: '#888', fontSize: 12 }}>{unit.type ? unit.type.charAt(0).toUpperCase() + unit.type.slice(1) : 'Apartment'}</div>
+        <div style={{ color: '#888', fontSize: 12 }}>{unit.type ? formatUnitType(unit.type) : 'Apartment'}</div>
         <div style={{ color: '#666', fontSize: 12, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           {sizeText && <span>Room Size: <strong>{sizeText}</strong></span>}
-          <span>Bedrooms: <strong>{unit.beds ?? '-'}</strong></span>
+          <span>Bedrooms: <strong>{formatBeds(unit.beds)}</strong></span>
           <span>Bathrooms: <strong>{unit.baths ?? '-'}</strong></span>
         </div>
       </div>

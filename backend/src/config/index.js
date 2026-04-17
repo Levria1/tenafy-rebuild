@@ -16,5 +16,16 @@ module.exports = {
     queueLimit: 0
   },
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
-  appUrl: process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000'
+  appUrl: process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000',
+  chat: {
+    enabled: process.env.CHAT_ENABLED !== 'false', // default on; set CHAT_ENABLED=false to globally disable
+    provider: process.env.LLM_PROVIDER || 'minimax',
+    maxToolIterations: parseInt(process.env.CHAT_MAX_TOOL_ITERATIONS || '6'),
+    minimax: {
+      apiKey:  process.env.MINIMAX_API_KEY  || '',
+      groupId: process.env.MINIMAX_GROUP_ID || '',
+      baseUrl: process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.chat/v1',
+      model:   process.env.MINIMAX_MODEL    || 'MiniMax-Text-01',
+    },
+  },
 };

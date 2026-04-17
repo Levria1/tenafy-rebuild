@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS viewing_link (
   token        VARCHAR(64)  NOT NULL,
   property_id  BIGINT       NOT NULL,
   unit_id      BIGINT       NOT NULL,
-  employee_id  BIGINT       NOT NULL,
+  employee_id  BIGINT       DEFAULT NULL,
   created_by   BIGINT       NOT NULL,
   note         VARCHAR(500) DEFAULT NULL,
   status       TINYINT      NOT NULL DEFAULT 1,

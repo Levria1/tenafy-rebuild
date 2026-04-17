@@ -93,6 +93,7 @@ export default function PropertyEditPage() {
           mls:                   d.mls,
           payment_instructions:  d.payment_instructions,
           notes:                 d.notes,
+          listing_url:           d.listing_url,
         });
       }
 
@@ -403,6 +404,19 @@ export default function PropertyEditPage() {
             <SectionLabel>NOTES</SectionLabel>
             <Form.Item name="notes">
               <Input.TextArea rows={4} placeholder="Please input your notes here" />
+            </Form.Item>
+
+            {/* Public website listing URL */}
+            <SectionLabel>PUBLIC LISTING URL</SectionLabel>
+            <Form.Item
+              name="listing_url"
+              extra="The page on your public website (e.g. taneresidence.com/properties/...) where prospects can see photos and details. The chatbot links here when recommending this property."
+              rules={[{
+                pattern: /^https?:\/\/.+/i,
+                message: 'Must start with http:// or https://',
+              }]}
+            >
+              <Input placeholder="https://taneresidence.com/properties/sun-gardens" />
             </Form.Item>
 
             {/* Document upload placeholder */}

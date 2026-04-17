@@ -65,6 +65,35 @@ function buildUrl(path) {
   return `${base}${path}`;
 }
 
+// ---------------------------------------------------------------------------
+// Availability window (keep in sync with frontend /book/viewing/[token]/page.js)
+//
+// Viewings: Monday–Saturday, 11:00 AM – 7:00 PM. Sunday is closed.
+// The "7 PM" boundary is the END of the viewing, so the latest start time
+// for a 30-min slot is 18:30.
+//
+// We intentionally parse the submitted datetime as a literal wall-clock value
+// (what the viewer picked in the UI) rather than going through Date's timezone
+// coercion, so the rule applies consistently regardless of server TZ.
+// ---------------------------------------------------------------------------
+const VIEWING_OPEN_MIN = 11 * 60;   // 11:00
+const VIEWING_CLOSE_MIN = 19 * 60;  // 19:00 (7 PM) — last end time
+
+function validateBookingSlot(datetimeStr, durationMinutes = 30) {
+  const m = String(datetimeStr).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return 'Invalid date/time format';
+  const [, yyyy, mm, dd, HH, MM] = m;
+  // Compute day-of-week in UTC to avoid server-TZ shifts on the calendar date.
+  const dow = new Date(Date.UTC(+yyyy, +mm - 1, +dd)).getUTCDay(); // 0=Sun
+  if (dow === 0) return 'Viewings are not available on Sundays';
+  const startMin = +HH * 60 + +MM;
+  if (startMin < VIEWING_OPEN_MIN) return 'Viewings start from 11:00 AM';
+  if (startMin + durationMinutes > VIEWING_CLOSE_MIN) {
+    return 'Viewings must end by 7:00 PM';
+  }
+  return null;
+}
+
 // Rate limiter for the three public POST endpoints.
 // 20 requests per 10 minutes per IP is generous for a human but blocks bots.
 const postLimiter = rateLimit({
@@ -152,6 +181,7 @@ function bodyCancelled({ viewer_name, property_name, unit_name, proposed_datetim
 // ---------------------------------------------------------------------------
 
 async function findLinkByToken(pool, token) {
+  // LEFT JOIN user so unassigned links (employee_id IS NULL) still resolve.
   const [rows] = await pool.execute(
     `SELECT vl.*, p.display_name AS property_name, p.street_address, p.city, p.state,
             p.country, p.zip_code, u.name AS unit_name, u.type AS unit_type,
@@ -161,7 +191,7 @@ async function findLinkByToken(pool, token) {
      FROM viewing_link vl
      JOIN property p ON vl.property_id = p.id
      JOIN unit u     ON vl.unit_id = u.id
-     JOIN user usr   ON vl.employee_id = usr.id
+     LEFT JOIN user usr ON vl.employee_id = usr.id
      WHERE vl.token = ? LIMIT 1`,
     [token]
   );
@@ -184,6 +214,59 @@ async function findBookingByToken(pool, token, column) {
     [token]
   );
   return rows[0] || null;
+}
+
+// Upsert a `tenant` contact for the prospective viewer.
+//
+// - If a non-deleted contact with the same email already exists in this org,
+//   we reuse it (updating blank name/phone fields) so we don't duplicate leads.
+// - Otherwise we insert a new row with category=3 ("prospect"), status=0
+//   (pending), and a note identifying where the lead came from.
+//
+// Return the contact id (string, bigint-safe).
+async function upsertViewerContact(pool, orgId, { name, email, phone, unitName, propertyName }) {
+  const contactId = newId();
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const [firstName, ...rest] = String(name).trim().split(/\s+/);
+  const lastName = rest.join(' ') || null;
+  const sourceNote = `Lead — submitted via public viewing request for ${unitName || 'unit'}` +
+                     (propertyName ? ` at ${propertyName}` : '') +
+                     ` on ${new Date().toISOString().slice(0, 10)}.`;
+
+  // Look for an existing contact with this email in this org.
+  const [existing] = await pool.execute(
+    `SELECT id, first_name, last_name, phone, notes
+     FROM tenant
+     WHERE org_id = ? AND email = ? AND deleted_at IS NULL
+     LIMIT 1`,
+    [orgId, normalizedEmail]
+  );
+
+  if (existing.length) {
+    const e = existing[0];
+    // Fill in any missing fields without overwriting what staff may have edited.
+    const updates = [];
+    const params = [];
+    if (!e.first_name && firstName) { updates.push('first_name = ?'); params.push(firstName); }
+    if (!e.last_name && lastName)   { updates.push('last_name = ?');  params.push(lastName); }
+    if (!e.phone && phone)          { updates.push('phone = ?');      params.push(phone); }
+    // Append, don't overwrite, the notes.
+    const mergedNotes = (e.notes ? e.notes.trim() + '\n\n' : '') + sourceNote;
+    updates.push('notes = ?'); params.push(mergedNotes);
+    params.push(e.id);
+    await pool.execute(`UPDATE tenant SET ${updates.join(', ')} WHERE id = ?`, params);
+    return String(e.id);
+  }
+
+  // Brand-new lead — insert with category=3 (prospect).
+  await pool.execute(
+    `INSERT INTO tenant
+       (id, org_id, first_name, last_name, email, phone, notes,
+        type, status, category, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?,  0, 0, 3, NOW(), NOW())`,
+    [contactId, orgId, firstName || null, lastName, normalizedEmail, phone || null, sourceNote]
+  );
+  return contactId;
 }
 
 async function findActiveLeaseForUnit(pool, unitId) {
@@ -216,6 +299,20 @@ router.get('/link/:token', resolveOrgByViewingToken, async (req, res) => {
     const link = await findLinkByToken(req.pool, req.viewingToken);
     if (!link || link.status !== 1) return fail(res, 'Link not found or no longer active', 404);
 
+    // Link is active, but if no employee has been assigned yet we surface a
+    // friendly "not ready" state instead of the booking form. Staff generate
+    // the link first, then assign an employee before sharing.
+    if (!link.employee_id) {
+      return res.status(200).json({
+        code: 200,
+        data: {
+          ready: false,
+          property: { name: link.property_name, city: link.city },
+          unit: { name: link.unit_name },
+        },
+      });
+    }
+
     // Soft warning: is there another confirmed viewing near this unit soon?
     const [[nearby]] = await req.pool.execute(
       `SELECT COUNT(*) AS n FROM viewing_booking
@@ -226,6 +323,7 @@ router.get('/link/:token', resolveOrgByViewingToken, async (req, res) => {
     );
 
     ok(res, {
+      ready: true,
       unit: {
         id: String(link.unit_id),
         name: link.unit_name,
@@ -263,21 +361,49 @@ router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, asyn
       proposed_datetime, duration_minutes,
     } = req.body || {};
 
-    if (!viewer_name || !viewer_email || !proposed_datetime) {
-      return fail(res, 'Name, email, and date/time are required', 400);
+    if (!viewer_name || !viewer_email || !viewer_phone || !proposed_datetime) {
+      return fail(res, 'Name, email, phone, and date/time are required', 400);
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(viewer_email))) {
       return fail(res, 'A valid email address is required', 400);
     }
+    if (String(viewer_phone).trim().length < 7) {
+      return fail(res, 'A valid phone number is required', 400);
+    }
     const when = new Date(proposed_datetime);
     if (isNaN(when.getTime())) return fail(res, 'Invalid date/time', 400);
+    const durationMin = Number(duration_minutes) || 30;
+
+    // Enforce the viewing window (Mon–Sat, 11:00–19:00). This must happen on
+    // the server too; the frontend picker only guides UX.
+    const slotError = validateBookingSlot(proposed_datetime, durationMin);
+    if (slotError) return fail(res, slotError, 400);
 
     const link = await findLinkByToken(req.pool, req.viewingToken);
     if (!link || link.status !== 1) return fail(res, 'Link not found or no longer active', 404);
+    if (!link.employee_id || !link.employee_email) {
+      return fail(res, 'This link is not ready yet. The property team has not assigned a host — please try again shortly.', 409);
+    }
 
     // Determine occupancy
     const lease = await findActiveLeaseForUnit(req.pool, link.unit_id);
     const hasTenant = Boolean(lease && lease.tenant_id && lease.email);
+
+    // Upsert the viewer into the org's contacts list (category=3 prospect).
+    // Best-effort — if this fails we still want to accept the booking, so log
+    // and continue with a null contact id.
+    let viewerContactId = null;
+    try {
+      viewerContactId = await upsertViewerContact(req.pool, req.orgId, {
+        name: viewer_name,
+        email: viewer_email,
+        phone: viewer_phone,
+        unitName: link.unit_name,
+        propertyName: link.property_name,
+      });
+    } catch (e) {
+      console.error('[viewing-public] contact upsert failed:', e.message);
+    }
 
     // Generate IDs / tokens
     const bookingId = newId();
@@ -285,7 +411,6 @@ router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, asyn
     const manageTok = newActionToken();
     const tenantTok = hasTenant ? newActionToken() : null;
     const icsUid = `${bookingId}@tenafy-viewing`;
-    const durationMin = Number(duration_minutes) || 30;
 
     // Register action/manage tokens in master so public routes can resolve them later.
     const master = getMasterPool();
@@ -303,16 +428,17 @@ router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, asyn
     await req.pool.execute(
       `INSERT INTO viewing_booking (
         id, link_id, unit_id, property_id, employee_id,
-        leasing_id, tenant_id,
+        leasing_id, tenant_id, viewer_contact_id,
         viewer_name, viewer_email, viewer_phone, viewer_message,
         proposed_datetime, duration_minutes,
         tenant_action_token, employee_action_token, viewer_manage_token,
-        tenant_decision, employee_decision, status, ics_uid
-       ) VALUES (?, ?, ?, ?, ?,  ?, ?,  ?, ?, ?, ?,  ?, ?,  ?, ?, ?,  ?, 0, 0, ?)`,
+        tenant_decision, employee_decision, status, source, ics_uid
+       ) VALUES (?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?,  ?, ?, ?,  ?, 0, 0, 'web', ?)`,
       [
         bookingId, link.id, link.unit_id, link.property_id, link.employee_id,
         lease ? lease.leasing_id : null,
         lease ? lease.tenant_id : null,
+        viewerContactId,
         viewer_name, viewer_email, viewer_phone || null, viewer_message || null,
         when, durationMin,
         tenantTok, employeeTok, manageTok,
@@ -669,6 +795,48 @@ router.post('/manage/:token/cancel', postLimiter, resolveOrgByManageToken, async
     fail(res, 'Failed to cancel booking');
   } finally {
     conn.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /lead — general inquiry / lead capture WITHOUT a specific unit/time.
+//
+// Used by:
+//   - The WordPress "Message us" form (after we build it)
+//   - The chatbot widget as a fallback when the prospect isn't ready to book
+//
+// Requires an org token because we have no other way to route the lead. We
+// reuse the KIND_LINK token infrastructure — any active link token identifies
+// the org safely. (Open question: should we add a dedicated KIND_LEAD token
+// per-org? For now, any of the org's active viewing links works.)
+// ---------------------------------------------------------------------------
+router.post('/lead/:token', postLimiter, resolveOrgByViewingToken, async (req, res) => {
+  try {
+    const { name, email, phone, message } = req.body || {};
+    if (!name || !email || !phone) {
+      return fail(res, 'Name, email, and phone are required', 400);
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
+      return fail(res, 'A valid email address is required', 400);
+    }
+    const contactId = await upsertViewerContact(req.pool, req.orgId, {
+      name, email, phone,
+      unitName: 'general inquiry',
+      propertyName: null,
+    });
+
+    // Append the free-form message to the contact notes so staff see context.
+    if (message) {
+      await req.pool.execute(
+        `UPDATE tenant SET notes = CONCAT(COALESCE(notes, ''), '\n\nInquiry: ', ?)
+         WHERE id = ?`,
+        [String(message).slice(0, 2000), contactId]
+      );
+    }
+    ok(res, { contact_id: contactId });
+  } catch (err) {
+    console.error('[viewing-public] lead error:', err);
+    fail(res, 'Failed to capture lead');
   }
 });
 

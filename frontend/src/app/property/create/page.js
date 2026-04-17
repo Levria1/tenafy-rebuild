@@ -399,6 +399,16 @@ export default function PropertyCreatePage() {
               <Input.TextArea rows={4} placeholder="Please input your notes here" />
             </Form.Item>
 
+            {/* Public website listing URL */}
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, marginTop: 8 }}>Public Listing URL</div>
+            <Form.Item
+              name="listing_url"
+              extra="The page on your public website where prospects can see photos (e.g. taneresidence.com/properties/...). The chatbot will link here."
+              rules={[{ pattern: /^https?:\/\/.+/i, message: 'Must start with http:// or https://' }]}
+            >
+              <Input placeholder="https://taneresidence.com/properties/sun-gardens" />
+            </Form.Item>
+
             {/* Document upload placeholder */}
             <div style={{
               border: '1px dashed #d9d9d9', borderRadius: 6, padding: 28,

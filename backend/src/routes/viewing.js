@@ -44,10 +44,13 @@ router.get('/unit/:unitId/links', async (req, res) => {
               usr.email AS employee_email,
               (SELECT COUNT(*) FROM viewing_booking vb WHERE vb.link_id = vl.id) AS booking_count
        FROM viewing_link vl
-       JOIN user usr ON vl.employee_id = usr.id
+       JOIN unit u ON vl.unit_id = u.id
+       JOIN property p ON u.property_id = p.id
+       LEFT JOIN user usr ON vl.employee_id = usr.id
        WHERE vl.unit_id = ?
+         AND p.org_id = ?
        ORDER BY vl.created_at DESC`,
-      [unitId]
+      [unitId, req.user.orgId]
     );
     ok(res, rows.map(r => ({
       id: String(r.id),
@@ -56,12 +59,12 @@ router.get('/unit/:unitId/links', async (req, res) => {
       note: r.note,
       created_at: r.created_at,
       revoked_at: r.revoked_at,
-      employee: {
+      employee: r.employee_id ? {
         id: String(r.employee_id),
         first_name: r.employee_first_name,
         last_name: r.employee_last_name,
         email: r.employee_email,
-      },
+      } : null,
       booking_count: Number(r.booking_count || 0),
     })));
   } catch (err) {
@@ -72,29 +75,39 @@ router.get('/unit/:unitId/links', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /unit/:unitId/links — create a shareable link
-// body: { employee_id, note? }
+// body: { employee_id? (optional), note? }
+//
+// The employee is optional at create time. Until an employee is assigned via
+// PATCH /link/:id/employee, the public endpoints will refuse submissions and
+// show a "not ready" state to viewers.
 // ---------------------------------------------------------------------------
 router.post('/unit/:unitId/links', async (req, res) => {
   try {
     const { unitId } = req.params;
     const { employee_id, note } = req.body || {};
-    if (!employee_id) return fail(res, 'employee_id is required', 400);
 
-    // Verify unit exists under this org (JOIN property for org filter).
+    // Verify unit exists and is active under this org. Org isolation is
+    // enforced by req.pool (per-org DB).
     const [units] = await req.pool.execute(
       `SELECT u.id, u.property_id FROM unit u
        JOIN property p ON u.property_id = p.id
-       WHERE u.id = ? AND p.deleted_at IS NULL LIMIT 1`,
-      [unitId]
+       WHERE u.id = ?
+         AND p.org_id = ?
+         AND p.status = 1 AND p.deleted_at IS NULL
+         AND u.active_status = 1 AND u.deleted_at IS NULL
+       LIMIT 1`,
+      [unitId, req.user.orgId]
     );
-    if (!units.length) return fail(res, 'Unit not found', 404);
+    if (!units.length) return fail(res, 'Unit not found or no longer active', 404);
 
-    // Verify employee belongs to same org DB (shared pool => same org).
-    const [users] = await req.pool.execute(
-      'SELECT id FROM user WHERE id = ? AND status = 1 LIMIT 1',
-      [employee_id]
-    );
-    if (!users.length) return fail(res, 'Employee not found or inactive', 400);
+    // If employee_id was supplied, validate it belongs to this org.
+    if (employee_id) {
+      const [users] = await req.pool.execute(
+        'SELECT id FROM user WHERE id = ? AND status = 1 LIMIT 1',
+        [employee_id]
+      );
+      if (!users.length) return fail(res, 'Employee not found or inactive', 400);
+    }
 
     const id = newId();
     const token = newLinkToken();
@@ -105,7 +118,7 @@ router.post('/unit/:unitId/links', async (req, res) => {
       `INSERT INTO viewing_link
          (id, token, property_id, unit_id, employee_id, created_by, note, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
-      [id, token, propertyId, unitId, employee_id, req.user.id, note || null]
+      [id, token, propertyId, unitId, employee_id || null, req.user.id, note || null]
     );
 
     // Register in master token registry so the public middleware can resolve it.
@@ -123,14 +136,56 @@ router.post('/unit/:unitId/links', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// PATCH /link/:id/employee — assign or change which employee handles this link
+// body: { employee_id }  (pass null to unassign)
+// ---------------------------------------------------------------------------
+router.patch('/link/:id/employee', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { employee_id } = req.body || {};
+
+    // Verify the link belongs to this org.
+    const [rows] = await req.pool.execute(
+      `SELECT vl.id FROM viewing_link vl
+       JOIN unit u ON vl.unit_id = u.id
+       JOIN property p ON u.property_id = p.id
+       WHERE vl.id = ? AND p.org_id = ? LIMIT 1`,
+      [id, req.user.orgId]
+    );
+    if (!rows.length) return fail(res, 'Link not found', 404);
+
+    if (employee_id) {
+      const [users] = await req.pool.execute(
+        'SELECT id FROM user WHERE id = ? AND status = 1 LIMIT 1',
+        [employee_id]
+      );
+      if (!users.length) return fail(res, 'Employee not found or inactive', 400);
+    }
+
+    await req.pool.execute(
+      'UPDATE viewing_link SET employee_id = ? WHERE id = ?',
+      [employee_id || null, id]
+    );
+
+    ok(res, { id: String(id), employee_id: employee_id || null });
+  } catch (err) {
+    console.error('[viewing] assign employee error:', err);
+    fail(res, 'Failed to update employee');
+  }
+});
+
+// ---------------------------------------------------------------------------
 // PATCH /link/:id/revoke — revoke a shareable link
 // ---------------------------------------------------------------------------
 router.patch('/link/:id/revoke', async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await req.pool.execute(
-      'SELECT token, status FROM viewing_link WHERE id = ? LIMIT 1',
-      [id]
+      `SELECT vl.token, vl.status FROM viewing_link vl
+       JOIN unit u ON vl.unit_id = u.id
+       JOIN property p ON u.property_id = p.id
+       WHERE vl.id = ? AND p.org_id = ? LIMIT 1`,
+      [id, req.user.orgId]
     );
     if (!rows.length) return fail(res, 'Link not found', 404);
     if (rows[0].status === 0) return ok(res, { already_revoked: true });
@@ -165,10 +220,12 @@ router.get('/unit/:unitId/bookings', async (req, res) => {
               usr.first_name AS employee_first_name,
               usr.last_name AS employee_last_name
        FROM viewing_booking vb
+       JOIN property p ON vb.property_id = p.id
        JOIN user usr ON vb.employee_id = usr.id
        WHERE vb.unit_id = ?
+         AND p.org_id = ?
        ORDER BY vb.created_at DESC`,
-      [unitId]
+      [unitId, req.user.orgId]
     );
     ok(res, rows.map(r => ({
       id: String(r.id),
@@ -211,8 +268,8 @@ router.get('/bookings/:id', async (req, res) => {
        JOIN property p ON vb.property_id = p.id
        JOIN user usr ON vb.employee_id = usr.id
        LEFT JOIN tenant t ON vb.tenant_id = t.id
-       WHERE vb.id = ? LIMIT 1`,
-      [id]
+       WHERE vb.id = ? AND p.org_id = ? LIMIT 1`,
+      [id, req.user.orgId]
     );
     if (!rows.length) return fail(res, 'Booking not found', 404);
     const r = rows[0];
@@ -234,7 +291,10 @@ router.patch('/bookings/:id/cancel', async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await req.pool.execute(
-      'SELECT status FROM viewing_booking WHERE id = ? LIMIT 1', [id]
+      `SELECT vb.status FROM viewing_booking vb
+       JOIN property p ON vb.property_id = p.id
+       WHERE vb.id = ? AND p.org_id = ? LIMIT 1`,
+      [id, req.user.orgId]
     );
     if (!rows.length) return fail(res, 'Booking not found', 404);
     if (rows[0].status === 3) return ok(res, { already: true });
@@ -243,6 +303,201 @@ router.patch('/bookings/:id/cancel', async (req, res) => {
   } catch (err) {
     console.error('[viewing] cancel booking error:', err);
     fail(res, 'Failed to cancel booking');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /overview — every unit in the org with current active link status
+//
+// Drives the top-level "Properties → Viewings" page. One row per unit.
+// If a unit has multiple active links, we return the most-recently-created one
+// (staff rarely need multiple, and the page offers a "Regenerate" to replace).
+// ---------------------------------------------------------------------------
+router.get('/overview', async (req, res) => {
+  try {
+    // Only show units the staff would actually want to generate viewings for:
+    // active property + active, non-deleted unit. Org isolation is enforced by
+    // req.pool (per-org DB) — no explicit org_id filter needed.
+    const [rows] = await req.pool.execute(
+      `SELECT u.id AS unit_id, u.name AS unit_name, u.type AS unit_type,
+              u.status AS unit_status, u.active_status,
+              p.id AS property_id, p.display_name AS property_name,
+              p.street_address, p.city, p.state,
+              vl.id AS link_id, vl.token AS link_token, vl.status AS link_status,
+              vl.employee_id, vl.note AS link_note, vl.created_at AS link_created_at,
+              usr.first_name AS employee_first_name,
+              usr.last_name AS employee_last_name,
+              usr.email AS employee_email,
+              (SELECT COUNT(*) FROM viewing_booking vb WHERE vb.unit_id = u.id) AS total_bookings,
+              (SELECT COUNT(*) FROM viewing_booking vb WHERE vb.unit_id = u.id AND vb.status = 0) AS pending_bookings
+       FROM unit u
+       JOIN property p ON u.property_id = p.id
+       LEFT JOIN viewing_link vl ON vl.id = (
+         SELECT vl2.id FROM viewing_link vl2
+         WHERE vl2.unit_id = u.id AND vl2.status = 1
+         ORDER BY vl2.created_at DESC LIMIT 1
+       )
+       LEFT JOIN user usr ON vl.employee_id = usr.id
+       WHERE p.org_id = ?
+         AND p.status = 1
+         AND p.deleted_at IS NULL
+         AND u.active_status = 1
+         AND u.deleted_at IS NULL
+       ORDER BY p.display_name, u.name`,
+      [req.user.orgId]
+    );
+    ok(res, rows.map(r => ({
+      unit: {
+        id: String(r.unit_id),
+        name: r.unit_name,
+        type: r.unit_type,
+        status: r.unit_status,
+        active_status: r.active_status,
+      },
+      property: {
+        id: String(r.property_id),
+        name: r.property_name,
+        street_address: r.street_address,
+        city: r.city,
+        state: r.state,
+      },
+      link: r.link_id ? {
+        id: String(r.link_id),
+        token: r.link_token,
+        status: r.link_status,
+        note: r.link_note,
+        created_at: r.link_created_at,
+      } : null,
+      employee: r.employee_id ? {
+        id: String(r.employee_id),
+        first_name: r.employee_first_name,
+        last_name: r.employee_last_name,
+        email: r.employee_email,
+      } : null,
+      total_bookings: Number(r.total_bookings || 0),
+      pending_bookings: Number(r.pending_bookings || 0),
+    })));
+  } catch (err) {
+    console.error('[viewing] overview error:', err);
+    fail(res, 'Failed to load viewings overview');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /auto-generate — create an active link for every unit that doesn't
+// have one yet. Idempotent.
+// ---------------------------------------------------------------------------
+router.post('/auto-generate', async (req, res) => {
+  try {
+    // Find all ACTIVE units in this org with NO active viewing_link.
+    // Matches the filter set used by /overview so auto-generate doesn't mint
+    // links for retired or deleted units.
+    const [units] = await req.pool.execute(
+      `SELECT u.id AS unit_id, u.property_id
+       FROM unit u
+       JOIN property p ON u.property_id = p.id
+       WHERE p.org_id = ?
+         AND p.status = 1
+         AND p.deleted_at IS NULL
+         AND u.active_status = 1
+         AND u.deleted_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM viewing_link vl
+           WHERE vl.unit_id = u.id AND vl.status = 1
+         )`,
+      [req.user.orgId]
+    );
+
+    if (!units.length) return ok(res, { created: 0 });
+
+    const master = getMasterPool();
+    const rowsForOrg = [];
+    const rowsForMaster = [];
+    const now = new Date();
+    for (const u of units) {
+      const id = newId();
+      const token = newLinkToken();
+      rowsForOrg.push([id, token, u.property_id, u.unit_id, null, req.user.id, null, 1, now]);
+      rowsForMaster.push([token, String(req.user.orgId), KIND_LINK, 1]);
+    }
+
+    // Bulk insert into the org DB
+    await req.pool.query(
+      `INSERT INTO viewing_link
+         (id, token, property_id, unit_id, employee_id, created_by, note, status, created_at)
+       VALUES ?`,
+      [rowsForOrg]
+    );
+    // Bulk insert into the master registry
+    await master.query(
+      `INSERT INTO viewing_link_registry (token, org_id, kind, status) VALUES ?`,
+      [rowsForMaster]
+    );
+
+    ok(res, { created: units.length });
+  } catch (err) {
+    console.error('[viewing] auto-generate error:', err);
+    fail(res, 'Failed to auto-generate links');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /unit/:unitId/regenerate — revoke the current active link for a unit
+// (if any) and create a fresh one. Returns the new link.
+// ---------------------------------------------------------------------------
+router.post('/unit/:unitId/regenerate', async (req, res) => {
+  try {
+    const { unitId } = req.params;
+
+    const [units] = await req.pool.execute(
+      `SELECT u.id, u.property_id FROM unit u
+       JOIN property p ON u.property_id = p.id
+       WHERE u.id = ?
+         AND p.org_id = ?
+         AND p.status = 1 AND p.deleted_at IS NULL
+         AND u.active_status = 1 AND u.deleted_at IS NULL
+       LIMIT 1`,
+      [unitId, req.user.orgId]
+    );
+    if (!units.length) return fail(res, 'Unit not found or no longer active', 404);
+
+    // Revoke existing active links
+    const [existing] = await req.pool.execute(
+      'SELECT token FROM viewing_link WHERE unit_id = ? AND status = 1',
+      [unitId]
+    );
+    if (existing.length) {
+      const tokens = existing.map(e => e.token);
+      await req.pool.query(
+        'UPDATE viewing_link SET status = 0, revoked_at = NOW() WHERE unit_id = ? AND status = 1',
+        [unitId]
+      );
+      const master = getMasterPool();
+      await master.query(
+        'UPDATE viewing_link_registry SET status = 0 WHERE token IN (?)',
+        [tokens]
+      );
+    }
+
+    // Create a fresh one (unassigned — staff will pick an employee afterward)
+    const id = newId();
+    const token = newLinkToken();
+    await req.pool.execute(
+      `INSERT INTO viewing_link
+         (id, token, property_id, unit_id, employee_id, created_by, note, status, created_at)
+       VALUES (?, ?, ?, ?, NULL, ?, NULL, 1, NOW())`,
+      [id, token, units[0].property_id, unitId, req.user.id]
+    );
+    const master = getMasterPool();
+    await master.execute(
+      'INSERT INTO viewing_link_registry (token, org_id, kind, status) VALUES (?, ?, ?, 1)',
+      [token, String(req.user.orgId), KIND_LINK]
+    );
+
+    ok(res, { id: String(id), token });
+  } catch (err) {
+    console.error('[viewing] regenerate error:', err);
+    fail(res, 'Failed to regenerate link');
   }
 });
 

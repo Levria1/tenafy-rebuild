@@ -27,6 +27,7 @@ import {
   InfoCircleOutlined,
   CloseCircleOutlined,
   CheckCircleOutlined,
+  MessageOutlined,
 } from '@ant-design/icons';
 import Cookies from 'js-cookie';
 import { notification as notificationApi } from '../lib/api';
@@ -49,12 +50,16 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     label: <Link href="/dashboard">Dashboard</Link>,
   });
 
-  // Properties
+  // Properties (nested: list + viewings)
   if (hasPermission('LANDLORD/PROPERTY_LIST')) {
     items.push({
       key: '/property',
       icon: <HomeOutlined />,
-      label: <Link href="/property">Properties</Link>,
+      label: 'Properties',
+      children: [
+        { key: '/property/list', label: <Link href="/property">All Properties</Link> },
+        { key: '/property/viewings', label: <Link href="/property/viewings">Viewings</Link> },
+      ],
     });
   }
 
@@ -105,6 +110,24 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
       key: '/services',
       icon: <ToolOutlined />,
       label: <Link href="/services">Service</Link>,
+    });
+  }
+
+  // Chatbot — parent shown if user has at least one child permission
+  const chatChildren = [];
+  if (hasPermission('LANDLORD/CHAT_SESSION_LIST')) {
+    chatChildren.push({ key: '/chatbot/sessions', label: <Link href="/chatbot/sessions">Sessions</Link> });
+    chatChildren.push({ key: '/chatbot/test', label: <Link href="/chatbot/test">Test Chat</Link> });
+  }
+  if (hasPermission('LANDLORD/CHAT_SETTINGS_VIEW')) {
+    chatChildren.push({ key: '/chatbot/settings', label: <Link href="/chatbot/settings">Settings</Link> });
+  }
+  if (chatChildren.length > 0) {
+    items.push({
+      key: '/chatbot',
+      icon: <MessageOutlined />,
+      label: 'Chatbot',
+      children: chatChildren,
     });
   }
 

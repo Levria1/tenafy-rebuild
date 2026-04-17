@@ -208,6 +208,14 @@ router.get('/units/:id', async (req, res) => {
       'SELECT file_id, `order` FROM object_gallery WHERE object_id = ? ORDER BY `order`', [id]
     );
 
+    // Active, assigned viewing link token (null if none exists or employee not yet assigned)
+    const [[linkRow]] = await req.pool.execute(
+      `SELECT token FROM viewing_link
+       WHERE unit_id = ? AND status = 1 AND employee_id IS NOT NULL
+       ORDER BY created_at DESC LIMIT 1`,
+      [id]
+    );
+
     res.json({
       code: 200,
       data: {
@@ -215,11 +223,25 @@ router.get('/units/:id', async (req, res) => {
         current_lease: currentLease || null,
         amenity_ids: amenityRows.map(r => r.amenity_id),
         gallery: galleryRows,
+        booking_token: linkRow ? linkRow.token : null,
       },
     });
   } catch (error) {
     console.error('Public unit detail error:', error);
     fail(res, 'Failed to fetch unit');
+  }
+});
+
+// GET /api/public/amenities — all amenities available on this org
+router.get('/amenities', async (req, res) => {
+  try {
+    const [rows] = await req.pool.execute(
+      'SELECT id, name, type FROM amenity ORDER BY name'
+    );
+    ok(res, rows);
+  } catch (error) {
+    console.error('Public amenities error:', error);
+    fail(res, 'Failed to fetch amenities');
   }
 });
 
