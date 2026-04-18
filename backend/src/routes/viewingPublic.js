@@ -17,6 +17,7 @@ const config = require('../config');
 const { getMasterPool } = require('../config/poolRegistry');
 const { sendMail } = require('../config/mailer');
 const { buildViewingIcs } = require('../utils/ics');
+const { createViewingEvent, deleteViewingEvent } = require('../services/googleCalendar');
 const {
   resolveOrgByViewingToken,
   resolveOrgByActionToken,
@@ -203,7 +204,7 @@ async function findBookingByToken(pool, token, column) {
     `SELECT vb.*, p.display_name AS property_name, p.street_address, p.city, p.state,
             u.name AS unit_name,
             usr.first_name AS employee_first_name, usr.last_name AS employee_last_name,
-            usr.email AS employee_email,
+            usr.email AS employee_email, usr.google_calendar_id AS employee_google_calendar_id,
             t.first_name AS tenant_first_name, t.last_name AS tenant_last_name, t.email AS tenant_email
      FROM viewing_booking vb
      JOIN property p ON vb.property_id = p.id
@@ -611,6 +612,37 @@ router.post('/action/:token', postLimiter, resolveOrgByActionToken, async (req, 
       isTenant ? 'tenant_action_token' : 'employee_action_token');
 
     if (newStatus === 1) {
+      // Push to the assigned employee's Google Calendar (fire-and-forget)
+      createViewingEvent({
+        calendarId: full.employee_google_calendar_id,
+        booking: {
+          proposed_datetime: full.proposed_datetime,
+          duration_minutes: full.duration_minutes,
+          viewer_name: full.viewer_name,
+          viewer_email: full.viewer_email,
+          viewer_phone: full.viewer_phone,
+          viewer_message: full.viewer_message,
+        },
+        unit: { name: full.unit_name },
+        property: {
+          name: full.property_name,
+          street_address: full.street_address,
+          city: full.city,
+          state: full.state,
+        },
+        employee: {
+          name: employeeDisplayName(full),
+          email: full.employee_email,
+        },
+      }).then(gcalEventId => {
+        if (gcalEventId) {
+          req.pool.execute(
+            'UPDATE viewing_booking SET gcal_event_id = ? WHERE id = ?',
+            [gcalEventId, booking.id]
+          ).catch(e => console.error('[viewing-public] save gcal_event_id failed:', e.message));
+        }
+      }).catch(e => console.error('[viewing-public] Google Calendar create failed:', e.message));
+
       // Confirmed — send ICS to viewer + employee (+ tenant if any)
       const attendees = [
         { name: full.viewer_name, email: full.viewer_email },
@@ -746,6 +778,14 @@ router.post('/manage/:token/cancel', postLimiter, resolveOrgByManageToken, async
     await conn.commit();
 
     const full = await findBookingByToken(req.pool, req.viewingToken, 'viewer_manage_token');
+
+    // Remove from the employee's Google Calendar (fire-and-forget)
+    if (full.gcal_event_id && full.employee_google_calendar_id) {
+      deleteViewingEvent({
+        calendarId: full.employee_google_calendar_id,
+        gcalEventId: full.gcal_event_id,
+      }).catch(e => console.error('[viewing-public] Google Calendar delete failed:', e.message));
+    }
 
     let ics;
     try {

@@ -17,6 +17,7 @@ module.exports = {
   },
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
   appUrl: process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000',
+  googleServiceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '',
   chat: {
     enabled: process.env.CHAT_ENABLED !== 'false', // default on; set CHAT_ENABLED=false to globally disable
     provider: process.env.LLM_PROVIDER || 'minimax',

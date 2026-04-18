@@ -753,7 +753,10 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
       `SELECT u.*,
               lt.tenant_id,
               lt.tenant_first_name,
-              lt.tenant_last_name
+              lt.tenant_last_name,
+              lt.lease_start_date,
+              lt.lease_end_date,
+              lt.lease_amount
        FROM unit u
        JOIN property p ON u.property_id = p.id
        LEFT JOIN (
@@ -761,6 +764,9 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
                 t.id AS tenant_id,
                 t.first_name AS tenant_first_name,
                 t.last_name AS tenant_last_name,
+                l.start_date AS lease_start_date,
+                l.end_date AS lease_end_date,
+                l.amount AS lease_amount,
                 ROW_NUMBER() OVER (PARTITION BY l.unit_id ORDER BY l.start_date DESC) AS rn
          FROM leasing l
          JOIN tenant t ON l.tenant_id = t.id

@@ -16,6 +16,7 @@ import {
   HomeOutlined,
 } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
+import dayjs from 'dayjs';
 import MainLayout from '../../components/Layout';
 import useIsMobile from '../../hooks/useIsMobile';
 import { property } from '../../lib/api';
@@ -296,21 +297,35 @@ function UnitRow({ unit, propId, router, isLast, isMobile }) {
       </div>
 
       {/* Tenant section */}
-      <div style={{ textAlign: 'center', minWidth: 120 }}>
+      <div style={{ textAlign: 'center', minWidth: 110 }}>
         <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>Tenant</div>
         {tenantName ? (
           <>
             <div style={{
-              width: 36, height: 36, borderRadius: '50%', background: '#fff1f0', border: '2px solid #ff4d4f',
+              width: 36, height: 36, borderRadius: '50%', background: '#f0f0f0', border: '2px solid #d9d9d9',
               display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 4px',
             }}>
-              <UserOutlined style={{ fontSize: 16, color: '#ff4d4f' }} />
+              <UserOutlined style={{ fontSize: 16, color: '#8c8c8c' }} />
             </div>
             <div
               style={{ fontSize: 12, color: '#1677ff', cursor: 'pointer' }}
               onClick={() => unit.tenant_id && router.push(`/contacts/tenant/${unit.tenant_id}/detail`)}
             >{tenantName}</div>
           </>
+        ) : (
+          <div style={{ color: '#ccc', fontSize: 12 }}>—</div>
+        )}
+      </div>
+
+      {/* Lease section */}
+      <div style={{ minWidth: 130 }}>
+        <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Lease</div>
+        {unit.lease_start_date ? (
+          <div style={{ fontSize: 11, color: '#555', lineHeight: '20px' }}>
+            <div><span style={{ color: '#888' }}>In</span>{'  '}<strong>{dayjs(unit.lease_start_date).format('MMM D, YYYY')}</strong></div>
+            <div><span style={{ color: '#888' }}>Out</span>{'  '}<strong>{unit.lease_end_date ? dayjs(unit.lease_end_date).format('MMM D, YYYY') : '—'}</strong></div>
+            <div><span style={{ color: '#888' }}>Rent</span>{'  '}<strong>{unit.lease_amount ? Number(unit.lease_amount).toLocaleString() : '—'}</strong></div>
+          </div>
         ) : (
           <div style={{ color: '#ccc', fontSize: 12 }}>—</div>
         )}
