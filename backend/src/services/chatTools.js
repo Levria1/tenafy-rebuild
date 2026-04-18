@@ -58,7 +58,7 @@ const search_available_units = {
           beds: { type: 'integer', description: 'Minimum number of bedrooms. Pass 0 to search for studios (no separate bedroom).' },
           max_price: { type: 'number', description: 'Maximum monthly rent the prospect is willing to pay' },
           min_price: { type: 'number', description: 'Minimum monthly rent (optional, rarely useful)' },
-          city: { type: 'string', description: 'City name to filter by (matched against property.city)' },
+          city: { type: 'string', description: 'Location name to filter by. Fuzzy-matched against city, district, state, AND street_address. Good for city names ("Hong Kong"), neighborhoods ("Mong Kok", "Causeway Bay"), or street names.' },
           property_id: { type: 'string', description: 'If the prospect named a specific property, its id' },
           available_on: { type: 'string', description: 'Target availability date in YYYY-MM-DD format. Omit to use today.' },
           limit: { type: 'integer', description: 'Maximum number of units to return (default 10, max 25)' },
@@ -91,7 +91,19 @@ const search_available_units = {
     ];
     const params = [ctx.orgId];
     if (args.property_id) { where.push('p.id = ?'); params.push(args.property_id); }
-    if (args.city)        { where.push('LOWER(p.city) = LOWER(?)'); params.push(args.city); }
+    if (args.city) {
+      // Fuzzy match across city/state/district/address so neighborhood names
+      // like "Mong Kok" or street names match even if property.city is "Hong Kong".
+      where.push(`(
+        LOWER(p.city)           LIKE LOWER(?) OR
+        LOWER(p.state)          LIKE LOWER(?) OR
+        LOWER(p.district)       LIKE LOWER(?) OR
+        LOWER(p.street_address) LIKE LOWER(?) OR
+        LOWER(p.display_name)   LIKE LOWER(?)
+      )`);
+      const needle = '%' + String(args.city).trim() + '%';
+      params.push(needle, needle, needle, needle, needle);
+    }
     if (args.beds != null){ where.push('u.beds >= ?'); params.push(Number(args.beds)); }
     if (args.max_price != null) {
       where.push('(u.rent_price_min IS NULL OR u.rent_price_min <= ?)');
@@ -109,7 +121,7 @@ const search_available_units = {
               u.beds, u.baths, u.rent_price_min, u.rent_price_max,
               COALESCE(u.listing_url, p.listing_url) AS listing_url,
               p.id AS property_id, p.display_name AS property_name,
-              p.street_address, p.city, p.country, p.currency,
+              p.street_address, p.city, p.state, p.district, p.country, p.currency,
               vl.token AS booking_token,
               next_end.next_available_on
        FROM unit u
@@ -154,6 +166,8 @@ const search_available_units = {
           name: r.property_name,
           address: r.street_address,
           city: r.city,
+          state: r.state,
+          district: r.district,
           country: r.country,
         },
         can_book: Boolean(r.booking_token),
@@ -248,17 +262,36 @@ const list_properties = {
     function: {
       name: 'list_properties',
       description:
-        'List all active properties with their city and available-unit counts. Use when the ' +
-        'prospect asks a broad question like "what buildings do you have?" or "do you have anything in Nairobi?".',
-      parameters: { type: 'object', properties: {} },
+        'List properties with their location and available-unit counts. Use when the prospect ' +
+        'asks a broad question like "what buildings do you have?" or "do you have anything in Mong Kok?". ' +
+        'Pass `location` to fuzzy-filter across city/district/address/name.',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string', description: 'Fuzzy filter — matches city/district/state/street_address/display_name.' },
+        },
+      },
     },
   },
   cap: 'can_search',
-  async execute(ctx) {
+  async execute(ctx, args = {}) {
     const { pool } = ctx;
     const today = new Date().toISOString().split('T')[0];
+    const where = ['p.org_id = ?', 'p.status = 1', 'p.deleted_at IS NULL'];
+    const params = [today, today, ctx.orgId];
+    if (args.location) {
+      where.push(`(
+        LOWER(p.city)           LIKE LOWER(?) OR
+        LOWER(p.state)          LIKE LOWER(?) OR
+        LOWER(p.district)       LIKE LOWER(?) OR
+        LOWER(p.street_address) LIKE LOWER(?) OR
+        LOWER(p.display_name)   LIKE LOWER(?)
+      )`);
+      const needle = '%' + String(args.location).trim() + '%';
+      params.push(needle, needle, needle, needle, needle);
+    }
     const [rows] = await pool.execute(
-      `SELECT p.id, p.display_name, p.street_address, p.city, p.state, p.country,
+      `SELECT p.id, p.display_name, p.street_address, p.city, p.state, p.country, p.district,
               COUNT(u.id) AS total_units,
               SUM(CASE WHEN u.active_status = 1 AND NOT EXISTS (
                 SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
@@ -266,10 +299,10 @@ const list_properties = {
               ) THEN 1 ELSE 0 END) AS available_units
        FROM property p
        LEFT JOIN unit u ON u.property_id = p.id
-       WHERE p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL
+       WHERE ${where.join(' AND ')}
        GROUP BY p.id
        ORDER BY p.display_name`,
-      [today, today, ctx.orgId]
+      params
     );
     return {
       count: rows.length,
@@ -278,6 +311,8 @@ const list_properties = {
         name: p.display_name,
         address: p.street_address,
         city: p.city,
+        state: p.state,
+        district: p.district,
         country: p.country,
         total_units: Number(p.total_units) || 0,
         available_units: Number(p.available_units) || 0,

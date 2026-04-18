@@ -63,13 +63,18 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
           </Descriptions.Item>
           <Descriptions.Item label="Bedrooms">{formatBeds(unit?.beds)}</Descriptions.Item>
           <Descriptions.Item label="Bathrooms">{unit?.baths ?? '-'}</Descriptions.Item>
-        </Descriptions>
-        <Descriptions column={{ xs: 1, sm: 3 }} size="small" {...descStyle}>
           <Descriptions.Item label="Occupancy">
             {Number(unit?.status) === 1 ? 'Occupied' : 'Vacant'}
           </Descriptions.Item>
-          <Descriptions.Item label="Laundry">{unit?.laundry ? 'YES' : 'NO'}</Descriptions.Item>
-          <Descriptions.Item label="Smoking">{formatBool(unit?.smoking)}</Descriptions.Item>
+          <Descriptions.Item label="Link" span={2}>
+            {unit?.listing_url ? (
+              <a href={unit.listing_url} target="_blank" rel="noreferrer" style={{ color: '#1677ff', wordBreak: 'break-all' }}>
+                {unit.listing_url}
+              </a>
+            ) : (
+              <Text type="secondary">Not set</Text>
+            )}
+          </Descriptions.Item>
         </Descriptions>
       </Card>
 

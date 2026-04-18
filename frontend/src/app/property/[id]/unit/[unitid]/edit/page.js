@@ -57,6 +57,8 @@ export default function UnitEditPage() {
           size_unit: d.size_unit || 'sqft',
           beds: d.beds != null ? Number(d.beds) : undefined,
           baths: d.baths != null ? Number(d.baths) : undefined,
+          // Laundry + Smoking no longer shown on the form; loaded here so
+          // the submit payload preserves existing DB values instead of nulling them.
           smoking: d.smoking ? true : false,
           laundry: d.laundry ? true : false,
           parking: d.parking != null ? Number(d.parking) : undefined,
@@ -223,16 +225,6 @@ export default function UnitEditPage() {
               </Col>
             </Row>
             <Row gutter={16}>
-              <Col span={6}>
-                <Form.Item name="laundry" label="Laundry" valuePropName="checked">
-                  <Switch checkedChildren="YES" unCheckedChildren="NO" />
-                </Form.Item>
-              </Col>
-              <Col span={6}>
-                <Form.Item name="smoking" label="Smoking" valuePropName="checked">
-                  <Switch checkedChildren="YES" unCheckedChildren="NO" />
-                </Form.Item>
-              </Col>
               <Col span={6}>
                 <Form.Item name="active_status" label="Active Status">
                   <Select>
