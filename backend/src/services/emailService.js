@@ -57,6 +57,7 @@ const TEMPLATE_TYPES = [
   { value: 'Receipt-Tenant', label: 'Payment Receipt (Tenant)' },
   { value: 'Inventory-Tenant', label: 'Inventory (Tenant)' },
   // Public viewing-booking templates (ad-hoc HTML fallback lives in routes/viewingPublic.js)
+  { value: 'Viewing-Receipt', label: 'Viewing Request Received (Viewer)' },
   { value: 'Viewing-Employee-Request', label: 'Viewing Request (Employee)' },
   { value: 'Viewing-Tenant-Request', label: 'Viewing Request (Tenant)' },
   { value: 'Viewing-Confirmation', label: 'Viewing Confirmation (All)' },
@@ -105,6 +106,19 @@ const TEMPLATE_VARIABLES = [
   { key: '%Receipt Amount%', description: 'Payment receipt amount' },
   { key: '%Transaction Code%', description: 'Payment transaction code' },
   { key: '%Payment Method%', description: 'Payment method name' },
+  // --- Viewing-booking variables (used in Viewing-* template types) ---
+  { key: '%Viewer Name%', description: 'Prospective viewer full name' },
+  { key: '%Viewer Email%', description: 'Prospective viewer email' },
+  { key: '%Viewer Phone%', description: 'Prospective viewer phone' },
+  { key: '%Viewer Message%', description: 'Optional message from the viewer' },
+  { key: '%Viewing Date%', description: 'Proposed viewing date & time' },
+  { key: '%Unit Name%', description: 'Unit name/number (viewing)' },
+  { key: '%Property Name%', description: 'Property name (viewing)' },
+  { key: '%Property Address%', description: 'Full property address' },
+  { key: '%Host Name%', description: 'Assigned staff host name' },
+  { key: '%Approve URL%', description: 'Approve link (employee/tenant emails)' },
+  { key: '%Decline URL%', description: 'Decline link (employee/tenant emails)' },
+  { key: '%Manage URL%', description: 'Viewer self-manage / cancel link' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -848,6 +862,7 @@ module.exports = {
   loadTemplate,
   resolveVariables,
   substituteVariables,
+  wrapEmailHtml,
   getSampleVariables,
   sendTemplateEmail,
   previewTemplate,

@@ -15,9 +15,55 @@ const router = express.Router();
 
 const config = require('../config');
 const { getMasterPool } = require('../config/poolRegistry');
-const { sendMail } = require('../config/mailer');
+const { sendMail, sendMailWithAccount } = require('../config/mailer');
+const {
+  findSmtpAccount,
+  loadTemplate,
+  substituteVariables,
+  wrapEmailHtml,
+} = require('../services/emailService');
 const { buildViewingIcs } = require('../utils/ics');
 const { createViewingEvent, deleteViewingEvent } = require('../services/googleCalendar');
+
+/**
+ * Send a viewing-related email.
+ *
+ * If a template of the given `templateType` exists in the org's email_template
+ * table, its subject + body are used (with variables substituted). If not, the
+ * provided `fallback` { subject, html } is used.
+ *
+ * In both cases the email is sent via the org's default SMTP account when one
+ * is configured; otherwise it falls back to the env-based sendMail.
+ *
+ * Returns a Promise — caller should .catch() for fire-and-forget.
+ */
+async function sendViewingMail(pool, orgId, { templateType, variables, fallback, mailOpts }) {
+  let subject = fallback.subject;
+  let html    = fallback.html;
+
+  if (templateType) {
+    try {
+      const template = await loadTemplate(pool, orgId, templateType);
+      if (template && template.template_content) {
+        subject = substituteVariables(template.subject || subject, variables || {});
+        let body = substituteVariables(template.template_content, variables || {});
+        // If the stored body is plain text, convert newlines to <br>
+        if (!/<[a-z][\s\S]*>/i.test(body)) body = body.replace(/\n/g, '<br>\n');
+        html = wrapEmailHtml(body);
+        if (template.from && !mailOpts.from) mailOpts.from = template.from;
+      }
+    } catch (e) {
+      console.error(`[viewing-public] template load failed (${templateType}):`, e.message);
+    }
+  }
+
+  const finalOpts = { ...mailOpts, subject, html };
+  const smtpAccount = await findSmtpAccount(pool, orgId, finalOpts.from);
+  if (smtpAccount) {
+    return sendMailWithAccount(smtpAccount, finalOpts);
+  }
+  return sendMail(finalOpts);
+}
 const {
   resolveOrgByViewingToken,
   resolveOrgByActionToken,
@@ -454,40 +500,67 @@ router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, asyn
     const employeeDecline = buildUrl(`/book/viewing/action/${employeeTok}?decision=decline`);
     const propertyName = link.property_name;
     const unitName = link.unit_name;
+    const hostName = [link.employee_first_name, link.employee_last_name].filter(Boolean).join(' ') || link.employee_email;
+    const propertyAddress = [link.street_address, link.city, link.state, link.country].filter(Boolean).join(', ');
+
+    // Shared variables available to any Viewing-* template
+    const baseVars = {
+      '%Viewer Name%':    viewer_name || '',
+      '%Viewer Email%':   viewer_email || '',
+      '%Viewer Phone%':   viewer_phone || '',
+      '%Viewer Message%': viewer_message || '',
+      '%Viewing Date%':   formatWhen(when),
+      '%Unit Name%':      unitName || '',
+      '%Property Name%':  propertyName || '',
+      '%Property Address%': propertyAddress,
+      '%Host Name%':      hostName,
+    };
 
     // 1. Viewer receipt
-    sendMail({
-      to: viewer_email,
-      subject: `Viewing request received: ${unitName} at ${propertyName}`,
-      html: bodyViewerReceipt({
-        viewer_name, property_name: propertyName, unit_name: unitName,
-        proposed_datetime: when, manage_url: manageUrl,
-      }),
+    sendViewingMail(req.pool, req.orgId, {
+      templateType: 'Viewing-Receipt',
+      variables: { ...baseVars, '%Manage URL%': manageUrl },
+      fallback: {
+        subject: `Viewing request received: ${unitName} at ${propertyName}`,
+        html: bodyViewerReceipt({
+          viewer_name, property_name: propertyName, unit_name: unitName,
+          proposed_datetime: when, manage_url: manageUrl,
+        }),
+      },
+      mailOpts: { to: viewer_email },
     }).catch(e => console.error('[viewing-public] viewer email failed:', e.message));
 
     // 2. Employee approval request
-    sendMail({
-      to: link.employee_email,
-      subject: `Viewing request — ${unitName} (${formatWhen(when)})`,
-      html: bodyApprovalRequest({
-        role: 'employee', viewer_name, viewer_email, viewer_phone, viewer_message,
-        property_name: propertyName, unit_name: unitName, proposed_datetime: when,
-        approve_url: employeeApprove, decline_url: employeeDecline,
-      }),
+    sendViewingMail(req.pool, req.orgId, {
+      templateType: 'Viewing-Employee-Request',
+      variables: { ...baseVars, '%Approve URL%': employeeApprove, '%Decline URL%': employeeDecline },
+      fallback: {
+        subject: `Viewing request — ${unitName} (${formatWhen(when)})`,
+        html: bodyApprovalRequest({
+          role: 'employee', viewer_name, viewer_email, viewer_phone, viewer_message,
+          property_name: propertyName, unit_name: unitName, proposed_datetime: when,
+          approve_url: employeeApprove, decline_url: employeeDecline,
+        }),
+      },
+      mailOpts: { to: link.employee_email },
     }).catch(e => console.error('[viewing-public] employee email failed:', e.message));
 
     // 3. Tenant approval request (only if occupied)
     if (hasTenant && tenantTok) {
       const tenantApprove = buildUrl(`/book/viewing/action/${tenantTok}?decision=approve`);
       const tenantDecline = buildUrl(`/book/viewing/action/${tenantTok}?decision=decline`);
-      sendMail({
-        to: lease.email,
-        subject: `Viewing request for your unit — ${unitName} (${formatWhen(when)})`,
-        html: bodyApprovalRequest({
-          role: 'tenant', viewer_name, viewer_email, viewer_phone, viewer_message,
-          property_name: propertyName, unit_name: unitName, proposed_datetime: when,
-          approve_url: tenantApprove, decline_url: tenantDecline,
-        }),
+      sendViewingMail(req.pool, req.orgId, {
+        templateType: 'Viewing-Tenant-Request',
+        variables: { ...baseVars, '%Approve URL%': tenantApprove, '%Decline URL%': tenantDecline },
+        fallback: {
+          subject: `Viewing request for your unit — ${unitName} (${formatWhen(when)})`,
+          html: bodyApprovalRequest({
+            role: 'tenant', viewer_name, viewer_email, viewer_phone, viewer_message,
+            property_name: propertyName, unit_name: unitName, proposed_datetime: when,
+            approve_url: tenantApprove, decline_url: tenantDecline,
+          }),
+        },
+        mailOpts: { to: lease.email },
       }).catch(e => console.error('[viewing-public] tenant email failed:', e.message));
     }
 
@@ -670,7 +743,7 @@ router.post('/action/:token', postLimiter, resolveOrgByActionToken, async (req, 
         console.error('[viewing-public] ICS build failed:', e.message);
       }
 
-      const html = bodyConfirmation({
+      const fallbackConfirmHtml = bodyConfirmation({
         viewer_name: full.viewer_name,
         property_name: full.property_name,
         unit_name: full.unit_name,
@@ -682,12 +755,27 @@ router.post('/action/:token', postLimiter, resolveOrgByActionToken, async (req, 
         .concat(full.tenant_email ? [full.tenant_email] : [])
         .filter(Boolean);
 
+      const confirmVars = {
+        '%Viewer Name%':    full.viewer_name || '',
+        '%Viewer Email%':   full.viewer_email || '',
+        '%Viewer Phone%':   full.viewer_phone || '',
+        '%Viewer Message%': full.viewer_message || '',
+        '%Viewing Date%':   formatWhen(full.proposed_datetime),
+        '%Unit Name%':      full.unit_name || '',
+        '%Property Name%':  full.property_name || '',
+        '%Property Address%': [full.street_address, full.city, full.state].filter(Boolean).join(', '),
+        '%Host Name%':      employeeDisplayName(full),
+      };
+
       for (const to of recipients) {
-        sendMail({
-          to,
-          subject: `Viewing confirmed: ${full.unit_name} — ${formatWhen(full.proposed_datetime)}`,
-          html,
-          attachments: ics ? [ics] : undefined,
+        sendViewingMail(req.pool, req.orgId, {
+          templateType: 'Viewing-Confirmation',
+          variables: confirmVars,
+          fallback: {
+            subject: `Viewing confirmed: ${full.unit_name} — ${formatWhen(full.proposed_datetime)}`,
+            html: fallbackConfirmHtml,
+          },
+          mailOpts: { to, attachments: ics ? [ics] : undefined },
         }).catch(e => console.error('[viewing-public] confirmation email failed:', e.message));
       }
     } else if (newStatus === 2) {
@@ -695,17 +783,34 @@ router.post('/action/:token', postLimiter, resolveOrgByActionToken, async (req, 
       const recipients = [full.viewer_email];
       if (full.tenant_decision === 1 && full.tenant_email) recipients.push(full.tenant_email);
       if (full.employee_decision === 1) recipients.push(full.employee_email);
-      const html = bodyDeclined({
+
+      const fallbackDeclinedHtml = bodyDeclined({
         viewer_name: full.viewer_name,
         property_name: full.property_name,
         unit_name: full.unit_name,
         proposed_datetime: full.proposed_datetime,
       });
+
+      const declineVars = {
+        '%Viewer Name%':   full.viewer_name || '',
+        '%Viewer Email%':  full.viewer_email || '',
+        '%Viewer Phone%':  full.viewer_phone || '',
+        '%Viewing Date%':  formatWhen(full.proposed_datetime),
+        '%Unit Name%':     full.unit_name || '',
+        '%Property Name%': full.property_name || '',
+        '%Property Address%': [full.street_address, full.city, full.state].filter(Boolean).join(', '),
+        '%Host Name%':     employeeDisplayName(full),
+      };
+
       for (const to of recipients) {
-        sendMail({
-          to,
-          subject: `Viewing declined: ${full.unit_name}`,
-          html,
+        sendViewingMail(req.pool, req.orgId, {
+          templateType: 'Viewing-Declined',
+          variables: declineVars,
+          fallback: {
+            subject: `Viewing declined: ${full.unit_name}`,
+            html: fallbackDeclinedHtml,
+          },
+          mailOpts: { to },
         }).catch(e => console.error('[viewing-public] declined email failed:', e.message));
       }
     }
@@ -810,7 +915,7 @@ router.post('/manage/:token/cancel', postLimiter, resolveOrgByManageToken, async
       console.error('[viewing-public] cancel ICS build failed:', e.message);
     }
 
-    const html = bodyCancelled({
+    const fallbackCancelledHtml = bodyCancelled({
       viewer_name: full.viewer_name,
       property_name: full.property_name,
       unit_name: full.unit_name,
@@ -819,12 +924,27 @@ router.post('/manage/:token/cancel', postLimiter, resolveOrgByManageToken, async
     const recipients = [full.viewer_email, full.employee_email]
       .concat(full.tenant_email ? [full.tenant_email] : [])
       .filter(Boolean);
+
+    const cancelVars = {
+      '%Viewer Name%':   full.viewer_name || '',
+      '%Viewer Email%':  full.viewer_email || '',
+      '%Viewer Phone%':  full.viewer_phone || '',
+      '%Viewing Date%':  formatWhen(full.proposed_datetime),
+      '%Unit Name%':     full.unit_name || '',
+      '%Property Name%': full.property_name || '',
+      '%Property Address%': [full.street_address, full.city, full.state].filter(Boolean).join(', '),
+      '%Host Name%':     employeeDisplayName(full),
+    };
+
     for (const to of recipients) {
-      sendMail({
-        to,
-        subject: `Viewing cancelled: ${full.unit_name}`,
-        html,
-        attachments: ics ? [ics] : undefined,
+      sendViewingMail(req.pool, req.orgId, {
+        templateType: 'Viewing-Cancelled',
+        variables: cancelVars,
+        fallback: {
+          subject: `Viewing cancelled: ${full.unit_name}`,
+          html: fallbackCancelledHtml,
+        },
+        mailOpts: { to, attachments: ics ? [ics] : undefined },
       }).catch(e => console.error('[viewing-public] cancel email failed:', e.message));
     }
 
