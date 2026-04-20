@@ -109,7 +109,12 @@ router.post('/login', async (req, res) => {
     );
 
     res.cookie('__s_t', token, {
-      httpOnly: true,
+      // Intentionally false — the frontend reads __s_t from document.cookie to
+      // attach it as a Bearer token on API requests. Flipping this to true
+      // breaks all authenticated requests. See lib/api.js axios request
+      // interceptor. Long-term fix: switch to withCredentials + server-reads
+      // cookie, then this can become true.
+      httpOnly: false,
       secure: process.env.NODE_ENV === 'production',
       maxAge: 7200 * 1000
     });
