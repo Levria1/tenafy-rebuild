@@ -190,7 +190,7 @@ router.get('/unit/:unit_id/basic', authenticate, async (req, res) => {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
     const [units] = await req.pool.execute(
-      'SELECT u.id, u.name, u.rent_price_min, u.status, u.property_id, p.display_name as property_name FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ? AND u.active_status = 1',
+      'SELECT u.id, u.name, u.rent_price_min, u.status, u.active_status, u.property_id, p.display_name as property_name FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ?',
       [unit_id, orgId]
     );
     if (units.length === 0) {
@@ -232,8 +232,11 @@ router.get('/unit/:unit_id', authenticate, async (req, res) => {
   try {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
+    // NOTE: deliberately NOT filtering active_status here. Staff need to view
+    // inactive units to reactivate them, see history, or fix data. List pages
+    // and dropdowns still filter active_status = 1 for UX.
     const [units] = await req.pool.execute(
-      'SELECT u.*, p.display_name as property_name, p.street_address as property_address FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ? AND u.active_status = 1',
+      'SELECT u.*, p.display_name as property_name, p.street_address as property_address FROM unit u LEFT JOIN property p ON u.property_id = p.id WHERE u.id = ? AND p.org_id = ?',
       [unit_id, orgId]
     );
     if (units.length === 0) {
