@@ -461,6 +461,7 @@ export const viewingApi = {
   assignEmployee: (linkId, employee_id) => api.patch(`/api/viewing/link/${linkId}/employee`, { employee_id: employee_id || null }),
   // Bookings
   listBookings: (unitId) => api.get(`/api/viewing/unit/${unitId}/bookings`),
+  listAllBookings: (params) => api.get('/api/viewing/bookings', { params }),
   getBooking: (id) => api.get(`/api/viewing/bookings/${id}`),
   cancelBooking: (id) => api.patch(`/api/viewing/bookings/${id}/cancel`),
 };

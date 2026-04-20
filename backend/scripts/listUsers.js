@@ -19,7 +19,8 @@ const mysql = require('mysql2/promise');
   try {
     const orgId = process.env.DEFAULT_ORG_ID || '8300127259922432';
     const [rows] = await conn.execute(
-      `SELECT id, username, first_name, last_name, email, google_calendar_id
+      `SELECT id, username, first_name, last_name, email,
+              google_calendar_id, viewing_buffer_minutes
        FROM user
        WHERE status = 1 AND org_id = ?
        ORDER BY first_name, last_name`,
@@ -32,6 +33,7 @@ const mysql = require('mysql2/promise');
       name: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
       email: r.email,
       calendar: r.google_calendar_id || '(none)',
+      buffer:   r.viewing_buffer_minutes != null ? `${r.viewing_buffer_minutes}m` : '30m',
     })));
   } finally {
     await conn.end();

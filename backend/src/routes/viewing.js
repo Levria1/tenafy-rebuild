@@ -251,6 +251,88 @@ router.get('/unit/:unitId/bookings', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /bookings — list bookings across all units (staff dashboard)
+//   Query params (all optional):
+//     status       one of 0,1,2,3 (or CSV like "0,1") — booking status filter
+//     employee_id  bigint-string — filter by assigned employee
+//     property_id  bigint-string
+//     unit_id      bigint-string
+//     from         YYYY-MM-DD — proposed_datetime >=
+//     to           YYYY-MM-DD — proposed_datetime <=
+//     limit        default 100
+// ---------------------------------------------------------------------------
+router.get('/bookings', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { status, employee_id, property_id, unit_id, from, to } = req.query;
+    const limit = Math.min(parseInt(req.query.limit || '100', 10) || 100, 500);
+
+    const where = ['p.org_id = ?'];
+    const params = [orgId];
+
+    if (status !== undefined && status !== '') {
+      const statuses = String(status).split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n));
+      if (statuses.length === 1) {
+        where.push('vb.status = ?');
+        params.push(statuses[0]);
+      } else if (statuses.length > 1) {
+        where.push(`vb.status IN (${statuses.map(() => '?').join(',')})`);
+        params.push(...statuses);
+      }
+    }
+    if (employee_id) { where.push('vb.employee_id = ?'); params.push(employee_id); }
+    if (property_id) { where.push('vb.property_id = ?'); params.push(property_id); }
+    if (unit_id)     { where.push('vb.unit_id = ?');     params.push(unit_id); }
+    if (from)        { where.push('vb.proposed_datetime >= ?'); params.push(from); }
+    if (to)          { where.push('vb.proposed_datetime <= ?'); params.push(to + ' 23:59:59'); }
+
+    const [rows] = await req.pool.execute(
+      `SELECT vb.id, vb.viewer_name, vb.viewer_email, vb.viewer_phone, vb.viewer_message,
+              vb.proposed_datetime, vb.duration_minutes, vb.created_at,
+              vb.tenant_decision, vb.employee_decision, vb.status, vb.source,
+              vb.unit_id, vb.property_id, vb.employee_id,
+              u.name AS unit_name,
+              p.display_name AS property_name,
+              usr.first_name AS employee_first_name,
+              usr.last_name AS employee_last_name
+       FROM viewing_booking vb
+       JOIN unit u     ON vb.unit_id = u.id
+       JOIN property p ON vb.property_id = p.id
+       JOIN user usr   ON vb.employee_id = usr.id
+       WHERE ${where.join(' AND ')}
+       ORDER BY vb.proposed_datetime DESC
+       LIMIT ${limit}`,
+      params
+    );
+
+    ok(res, rows.map(r => ({
+      id: String(r.id),
+      viewer_name: r.viewer_name,
+      viewer_email: r.viewer_email,
+      viewer_phone: r.viewer_phone,
+      viewer_message: r.viewer_message,
+      proposed_datetime: r.proposed_datetime,
+      duration_minutes: r.duration_minutes,
+      created_at: r.created_at,
+      tenant_decision: r.tenant_decision,
+      employee_decision: r.employee_decision,
+      status: r.status,
+      source: r.source,
+      unit: { id: String(r.unit_id), name: r.unit_name },
+      property: { id: String(r.property_id), name: r.property_name },
+      employee: {
+        id: String(r.employee_id),
+        first_name: r.employee_first_name,
+        last_name: r.employee_last_name,
+      },
+    })));
+  } catch (err) {
+    console.error('[viewing] list all bookings error:', err);
+    fail(res, 'Failed to list bookings');
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /bookings/:id — booking detail
 // ---------------------------------------------------------------------------
 router.get('/bookings/:id', async (req, res) => {

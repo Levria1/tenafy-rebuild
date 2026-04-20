@@ -8,7 +8,7 @@ import {
 } from 'antd';
 import {
   CopyOutlined, ReloadOutlined, StopOutlined, PlusOutlined, SearchOutlined,
-  UserAddOutlined, ThunderboltOutlined,
+  UserAddOutlined, ThunderboltOutlined, CalendarOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
 import useIsMobile from '../../../hooks/useIsMobile';
@@ -274,6 +274,9 @@ export default function ViewingsOverviewPage() {
           <Text type="secondary">Every unit in the org with its shareable booking link.</Text>
         </div>
         <Space wrap>
+          <Link href="/property/viewings/bookings">
+            <Button icon={<CalendarOutlined />}>View Bookings</Button>
+          </Link>
           <Button
             type="primary"
             icon={<ThunderboltOutlined />}

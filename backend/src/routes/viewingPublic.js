@@ -316,6 +316,63 @@ async function upsertViewerContact(pool, orgId, { name, email, phone, unitName, 
   return contactId;
 }
 
+/**
+ * Fetch all bookings that block a proposed slot for a given employee + unit.
+ *
+ * A "blocking" booking is one that:
+ *   - is still active (status 0 pending or 1 confirmed)
+ *   - belongs to the same employee OR the same unit
+ *   - overlaps the [rangeStart, rangeEnd] window
+ *
+ * The employee's `viewing_buffer_minutes` is applied: existing bookings are
+ * widened by (buffer) on each side when checking. So if Dennis has a 30-min
+ * buffer and a viewing at 14:00-14:30, the window [13:30, 15:00] is blocked
+ * from new bookings assigned to Dennis.
+ *
+ * @returns { conflicts: [ {id, proposed_datetime, duration_minutes, employee_id, unit_id} ], bufferMin }
+ */
+async function findBlockingBookings(pool, { employeeId, unitId, rangeStart, rangeEnd }) {
+  // Look up employee's buffer
+  let bufferMin = 30;
+  try {
+    const [[row]] = await pool.execute(
+      'SELECT viewing_buffer_minutes AS b FROM user WHERE id = ?',
+      [employeeId]
+    );
+    if (row && row.b != null) bufferMin = Number(row.b) || 0;
+  } catch {
+    // Column may not exist yet — keep default
+  }
+
+  // Pad the query range by the buffer so MySQL filter catches near-misses too.
+  const padStart = new Date(new Date(rangeStart).getTime() - bufferMin * 60 * 1000);
+  const padEnd   = new Date(new Date(rangeEnd).getTime()   + bufferMin * 60 * 1000);
+
+  const [rows] = await pool.execute(
+    `SELECT id, proposed_datetime, duration_minutes, employee_id, unit_id
+     FROM viewing_booking
+     WHERE status IN (0, 1)
+       AND (employee_id = ? OR unit_id = ?)
+       AND proposed_datetime >= ? AND proposed_datetime <= ?`,
+    [employeeId, unitId, padStart, padEnd]
+  );
+  return { conflicts: rows, bufferMin };
+}
+
+/**
+ * Return true if a proposed slot overlaps an existing booking (with buffer).
+ * Pass `excludeBookingId` to ignore a specific booking (e.g. when updating).
+ */
+function overlapsWithBuffer(proposedStart, proposedEnd, existing, bufferMin) {
+  const existStart = new Date(existing.proposed_datetime).getTime() - bufferMin * 60 * 1000;
+  const existEnd   = new Date(existing.proposed_datetime).getTime()
+                   + (Number(existing.duration_minutes) || 30) * 60 * 1000
+                   + bufferMin * 60 * 1000;
+  const propStart = new Date(proposedStart).getTime();
+  const propEnd   = new Date(proposedEnd).getTime();
+  return propStart < existEnd && propEnd > existStart;
+}
+
 async function findActiveLeaseForUnit(pool, unitId) {
   const [rows] = await pool.execute(
     `SELECT l.id AS leasing_id, l.tenant_id,
@@ -399,6 +456,54 @@ router.get('/link/:token', resolveOrgByViewingToken, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /link/:token/availability — returns busy slots for the next N days
+//
+// The frontend calls this when the form loads so it can grey out already-taken
+// time slots in the picker. Returns a flat list of {start, end} windows that
+// should be treated as unavailable (includes the buffer).
+//
+// Query: ?from=YYYY-MM-DD&to=YYYY-MM-DD (optional; defaults to today..+60d)
+// ---------------------------------------------------------------------------
+router.get('/link/:token/availability', resolveOrgByViewingToken, async (req, res) => {
+  try {
+    const link = await findLinkByToken(req.pool, req.viewingToken);
+    if (!link || link.status !== 1 || !link.employee_id) {
+      return fail(res, 'Link not available', 404);
+    }
+
+    const now = new Date();
+    const defaultEnd = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+    const rangeStart = req.query.from ? new Date(req.query.from) : now;
+    const rangeEnd   = req.query.to   ? new Date(req.query.to)   : defaultEnd;
+
+    const { conflicts, bufferMin } = await findBlockingBookings(req.pool, {
+      employeeId: link.employee_id,
+      unitId:     link.unit_id,
+      rangeStart,
+      rangeEnd,
+    });
+
+    // Widen each booking by the buffer so the frontend can treat them as
+    // single "no-go" windows without needing to know the buffer itself.
+    const busy = conflicts.map(b => {
+      const start = new Date(new Date(b.proposed_datetime).getTime() - bufferMin * 60 * 1000);
+      const end   = new Date(new Date(b.proposed_datetime).getTime()
+                           + (Number(b.duration_minutes) || 30) * 60 * 1000
+                           + bufferMin * 60 * 1000);
+      return { start: start.toISOString(), end: end.toISOString() };
+    });
+
+    ok(res, {
+      buffer_minutes: bufferMin,
+      busy,
+    });
+  } catch (err) {
+    console.error('[viewing-public] GET /availability error:', err);
+    fail(res, 'Failed to load availability');
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /link/:token/bookings — create a booking request
 // ---------------------------------------------------------------------------
 router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, async (req, res) => {
@@ -430,6 +535,25 @@ router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, asyn
     if (!link || link.status !== 1) return fail(res, 'Link not found or no longer active', 404);
     if (!link.employee_id || !link.employee_email) {
       return fail(res, 'This link is not ready yet. The property team has not assigned a host — please try again shortly.', 409);
+    }
+
+    // Conflict check — reject if another pending/confirmed booking overlaps
+    // (either same employee or same unit). Applies the employee's buffer.
+    const proposedStart = new Date(proposed_datetime);
+    const proposedEnd   = new Date(proposedStart.getTime() + durationMin * 60 * 1000);
+    const { conflicts, bufferMin } = await findBlockingBookings(req.pool, {
+      employeeId: link.employee_id,
+      unitId: link.unit_id,
+      rangeStart: proposedStart,
+      rangeEnd: proposedEnd,
+    });
+    const hit = conflicts.find(b => overlapsWithBuffer(proposedStart, proposedEnd, b, bufferMin));
+    if (hit) {
+      return fail(
+        res,
+        'That time is no longer available. Please pick a different slot.',
+        409
+      );
     }
 
     // Determine occupancy

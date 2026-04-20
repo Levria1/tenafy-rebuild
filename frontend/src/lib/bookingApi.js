@@ -14,6 +14,7 @@ const bookingApi = axios.create({
 
 export const viewingPublic = {
   getLink: (token) => bookingApi.get(`/api/viewing-public/link/${token}`),
+  getAvailability: (token, params) => bookingApi.get(`/api/viewing-public/link/${token}/availability`, { params }),
   submitBooking: (token, data) => bookingApi.post(`/api/viewing-public/link/${token}/bookings`, data),
   getAction: (token) => bookingApi.get(`/api/viewing-public/action/${token}`),
   decide: (token, decision) => bookingApi.post(`/api/viewing-public/action/${token}`, { decision }),

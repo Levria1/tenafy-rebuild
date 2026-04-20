@@ -27,27 +27,72 @@ const disabledPickerDate = (d) => {
   return false;
 };
 
-const disabledPickerTime = () => {
-  const disabledHours = [];
-  for (let h = 0; h < 24; h++) {
-    if (h < OPEN_HOUR || h > LATEST_START_HOUR) disabledHours.push(h);
-  }
-  return {
-    disabledHours: () => disabledHours,
-    disabledMinutes: (selectedHour) => {
-      // For the last allowed hour (18:00), only :00, :15, :30 are valid starts
-      // (18:30 + 30 = 19:00 = close). Block :45.
-      if (selectedHour === LATEST_START_HOUR) return [45];
-      return [];
-    },
+/**
+ * Given the busy windows from the availability API, return the set of
+ * disabled time-picker constraints for a selected date. A candidate slot
+ * (pickedDate at HH:MM for DURATION_MIN) is disabled if it overlaps any
+ * busy window.
+ */
+function buildDisabledTime(busyWindows, pickedDate) {
+  return () => {
+    if (!pickedDate) {
+      const disabledHours = [];
+      for (let h = 0; h < 24; h++) {
+        if (h < OPEN_HOUR || h > LATEST_START_HOUR) disabledHours.push(h);
+      }
+      return { disabledHours: () => disabledHours };
+    }
+
+    const day = dayjs(pickedDate).startOf('day');
+    const dayEnd = day.add(1, 'day');
+    const windows = (busyWindows || [])
+      .map(w => ({ start: dayjs(w.start), end: dayjs(w.end) }))
+      .filter(w => w.end.isAfter(day) && w.start.isBefore(dayEnd));
+
+    // Helper — does a candidate [candStart, candEnd] overlap any busy window?
+    const overlaps = (candStart, candEnd) =>
+      windows.some(w => candStart.isBefore(w.end) && candEnd.isAfter(w.start));
+
+    return {
+      disabledHours: () => {
+        const out = [];
+        for (let h = 0; h < 24; h++) {
+          if (h < OPEN_HOUR || h > LATEST_START_HOUR) { out.push(h); continue; }
+          // An hour is disabled only if EVERY minute-slot in it is blocked.
+          let allBlocked = true;
+          const minutes = h === LATEST_START_HOUR ? [0, 15, 30] : [0, 15, 30, 45];
+          for (const m of minutes) {
+            const candStart = day.hour(h).minute(m);
+            const candEnd = candStart.add(DURATION_MIN, 'minute');
+            if (!overlaps(candStart, candEnd)) { allBlocked = false; break; }
+          }
+          if (allBlocked) out.push(h);
+        }
+        return out;
+      },
+      disabledMinutes: (selectedHour) => {
+        const out = [];
+        const minutes = selectedHour === LATEST_START_HOUR ? [0, 15, 30] : [0, 15, 30, 45];
+        for (const m of minutes) {
+          const candStart = day.hour(selectedHour).minute(m);
+          const candEnd = candStart.add(DURATION_MIN, 'minute');
+          if (overlaps(candStart, candEnd)) out.push(m);
+        }
+        // Always block :45 on the last allowed hour (ends after 19:00)
+        if (selectedHour === LATEST_START_HOUR && !out.includes(45)) out.push(45);
+        return out;
+      },
+    };
   };
-};
+}
 
 export default function ViewingBookingFormPage() {
   const { token } = useParams();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [busyWindows, setBusyWindows] = useState([]);
+  const [pickedDate, setPickedDate] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(null);
   const [form] = Form.useForm();
@@ -58,6 +103,10 @@ export default function ViewingBookingFormPage() {
       .then((r) => setDetail(r.data.data))
       .catch((e) => setError(e?.response?.data?.message || 'Link not found or no longer active'))
       .finally(() => setLoading(false));
+    // Fetch taken slots so the picker can grey them out.
+    viewingPublic.getAvailability(token)
+      .then((r) => setBusyWindows(r.data?.data?.busy || []))
+      .catch(() => { /* non-fatal — picker just won't grey out */ });
   }, [token]);
 
   const onFinish = async (values) => {
@@ -75,6 +124,12 @@ export default function ViewingBookingFormPage() {
       setSuccess(res.data.data);
     } catch (e) {
       setError(e?.response?.data?.message || 'Failed to submit request');
+      // If it was a conflict, refresh availability so the picker shows the fresh state
+      if (e?.response?.status === 409) {
+        viewingPublic.getAvailability(token)
+          .then((r) => setBusyWindows(r.data?.data?.busy || []))
+          .catch(() => {});
+      }
     } finally {
       setSubmitting(false);
     }
@@ -207,7 +262,8 @@ export default function ViewingBookingFormPage() {
             format="YYYY-MM-DD HH:mm"
             style={{ width: '100%' }}
             disabledDate={disabledPickerDate}
-            disabledTime={disabledPickerTime}
+            disabledTime={buildDisabledTime(busyWindows, pickedDate)}
+            onChange={(d) => setPickedDate(d)}
             placeholder="Pick when you'd like to visit"
           />
         </Form.Item>

@@ -528,6 +528,29 @@ async function promoteServiceTasksForOrg(pool, orgId) {
 }
 
 // ---------------------------------------------------------------------------
+// Viewing booking auto-decline: pending bookings older than 24h → declined
+// ---------------------------------------------------------------------------
+
+async function autoDeclineStaleViewingsForOrg(pool, /* orgId */) {
+  // status 0 = pending, 2 = declined
+  // Mark both tenant_decision and employee_decision as 2 (declined) so the
+  // derived status is unambiguous.
+  const [result] = await pool.execute(
+    `UPDATE viewing_booking
+     SET status = 2,
+         tenant_decision = CASE WHEN tenant_decision = 0 THEN 2 ELSE tenant_decision END,
+         employee_decision = CASE WHEN employee_decision = 0 THEN 2 ELSE employee_decision END,
+         tenant_decided_at = COALESCE(tenant_decided_at, NOW()),
+         employee_decided_at = COALESCE(employee_decided_at, NOW())
+     WHERE status = 0
+       AND created_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)`
+  );
+  if (result.affectedRows > 0) {
+    console.log(`[Scheduler] Auto-declined ${result.affectedRows} stale viewing booking(s)`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-org job runner — runs a job against ALL active orgs
 // ---------------------------------------------------------------------------
 
@@ -607,6 +630,12 @@ function startScheduler() {
   cron.schedule('0 6 * * *', () => {
     console.log('[Scheduler] Promoting pending service tasks to in-progress...');
     runForAllOrgs('serviceAutoProgress', promoteServiceTasksForOrg);
+  });
+
+  // Hourly - auto-decline pending viewing bookings older than 24h
+  cron.schedule('15 * * * *', () => {
+    console.log('[Scheduler] Auto-declining stale viewing bookings...');
+    runForAllOrgs('viewingAutoDecline', autoDeclineStaleViewingsForOrg);
   });
 
   // Run once at startup to fix stale statuses

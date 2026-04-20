@@ -105,6 +105,12 @@ const LANDLORD_PERMISSIONS = [
   { key: 'LANDLORD/LISTING_DETAIL', label: 'Listing Detail', group: 'Listings' },
   { key: 'LANDLORD/LISTING_EDIT', label: 'Listing Edit', group: 'Listings' },
   { key: 'LANDLORD/LISTING_DELETE', label: 'Listing Delete', group: 'Listings' },
+  // Chatbot
+  { key: 'LANDLORD/CHAT_SESSION_LIST',     label: 'View Chat Sessions',   group: 'Chatbot' },
+  { key: 'LANDLORD/CHAT_SESSION_TAKEOVER', label: 'Take Over Chat',       group: 'Chatbot' },
+  { key: 'LANDLORD/CHAT_SETTINGS_VIEW',    label: 'View Chat Settings',   group: 'Chatbot' },
+  { key: 'LANDLORD/CHAT_SETTINGS_EDIT',    label: 'Edit Chat Settings',   group: 'Chatbot' },
+  { key: 'LANDLORD/CHAT_ANALYTICS_VIEW',   label: 'View Chat Analytics',  group: 'Chatbot' },
 ];
 
 // POST /api/role/list - List roles
