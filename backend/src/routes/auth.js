@@ -156,13 +156,20 @@ router.post('/forget-password/initialize', async (req, res) => {
   try {
     const { email } = req.body;
 
-    const orgInfo = await resolveOrgByEmail(email);
+    // Usernames are email addresses in this system, but the master-DB
+    // org_user_map table only reliably has `username` populated (not `email`).
+    // Try both: email column first, then fall back to username.
+    let orgInfo = await resolveOrgByEmail(email);
+    if (!orgInfo) orgInfo = await resolveOrgByUsername(email);
     if (!orgInfo) {
       return res.status(404).json({ code: 4001, message: 'Invalid mailbox' });
     }
 
     const orgPool = orgInfo.pool;
-    const [users] = await orgPool.execute('SELECT id, status FROM user WHERE email = ?', [email]);
+    const [users] = await orgPool.execute(
+      'SELECT id, email, status FROM user WHERE email = ? OR username = ? LIMIT 1',
+      [email, email]
+    );
 
     if (users.length === 0) {
       return res.status(404).json({ code: 4001, message: 'Invalid mailbox' });
@@ -179,13 +186,15 @@ router.post('/forget-password/initialize', async (req, res) => {
       [users[0].id, resetCode]
     );
 
-    // Dispatch the email. If it fails, we still log the code so an admin can
-    // read it from pm2 logs as a fallback (matches pre-existing behaviour).
+    // Dispatch the email. Prefer user.email (actual mailbox) over the username,
+    // but fall back to the submitted value if user.email is empty. If the send
+    // fails, log the code so an admin can read it from pm2 logs.
+    const toEmail = users[0].email || email;
     try {
-      await sendResetCodeEmail(orgPool, orgInfo.orgId, email, resetCode);
+      await sendResetCodeEmail(orgPool, orgInfo.orgId, toEmail, resetCode);
     } catch (mailErr) {
       console.error('[auth] forget-password email failed:', mailErr.message);
-      console.log(`[auth] Password reset code for ${email}: ${resetCode}`);
+      console.log(`[auth] Password reset code for ${toEmail}: ${resetCode}`);
     }
 
     res.json({ code: 200, message: 'Password reset code sent' });
@@ -205,7 +214,8 @@ router.post('/forget-password/validate', async (req, res) => {
       return res.status(400).json({ code: 400, message: 'Email is required' });
     }
 
-    const orgInfo = await resolveOrgByEmail(email);
+    let orgInfo = await resolveOrgByEmail(email);
+    if (!orgInfo) orgInfo = await resolveOrgByUsername(email);
     if (!orgInfo) {
       return res.status(400).json({ code: 4003, message: 'Invalid or expired code' });
     }
@@ -236,7 +246,8 @@ router.post('/forget-password/reset', async (req, res) => {
       return res.status(400).json({ code: 400, message: 'Email is required' });
     }
 
-    const orgInfo = await resolveOrgByEmail(email);
+    let orgInfo = await resolveOrgByEmail(email);
+    if (!orgInfo) orgInfo = await resolveOrgByUsername(email);
     if (!orgInfo) {
       return res.status(400).json({ code: 4003, message: 'Invalid or expired code' });
     }
