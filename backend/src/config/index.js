@@ -22,11 +22,21 @@ module.exports = {
     enabled: process.env.CHAT_ENABLED !== 'false', // default on; set CHAT_ENABLED=false to globally disable
     provider: process.env.LLM_PROVIDER || 'minimax',
     maxToolIterations: parseInt(process.env.CHAT_MAX_TOOL_ITERATIONS || '6'),
+    // When true, llmClient falls back to OpenRouter if MiniMax fails after its
+    // own retries. Requires OPENROUTER_API_KEY to actually do anything.
+    fallbackEnabled: process.env.LLM_FALLBACK_ENABLED === 'true',
     minimax: {
       apiKey:  process.env.MINIMAX_API_KEY  || '',
       groupId: process.env.MINIMAX_GROUP_ID || '',
       baseUrl: process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.chat/v1',
       model:   process.env.MINIMAX_MODEL    || 'MiniMax-Text-01',
+    },
+    openrouter: {
+      apiKey:  process.env.OPENROUTER_API_KEY  || '',
+      baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+      // Leave blank to let OpenRouter use your account/API-key default model.
+      // Or set explicitly (e.g. 'openai/gpt-4o-mini', 'openrouter/auto').
+      model:   process.env.OPENROUTER_MODEL    || '',
     },
   },
 };

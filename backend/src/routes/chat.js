@@ -12,7 +12,7 @@ const router = express.Router();
 
 const config = require('../config');
 const { authenticate } = require('../middleware/auth');
-const { chat: llmChat } = require('../services/miniMaxClient');
+const { chat: llmChat } = require('../services/llmClient');
 const { toolsForCapabilities } = require('../services/chatTools');
 
 router.use(authenticate);

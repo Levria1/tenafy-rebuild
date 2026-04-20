@@ -60,8 +60,31 @@ function postJson(urlStr, headers, body) {
   });
 }
 
+// Retryable errors (transient server-side / network issues).
+// 529 = MiniMax "overloaded"; 502/503/504 = gateway / upstream issues;
+// ETIMEDOUT/ECONNRESET = network blip.
+const RETRYABLE_STATUS = new Set([429, 502, 503, 504, 529]);
+const RETRYABLE_CODES  = new Set(['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN']);
+const MAX_ATTEMPTS     = 4;          // total attempts (initial + 3 retries)
+const BACKOFF_MS       = [1000, 3000, 6000]; // delays between attempts 1->2, 2->3, 3->4
+
+function isRetryable(err) {
+  if (err && RETRYABLE_STATUS.has(err.status)) return true;
+  if (err && err.code && RETRYABLE_CODES.has(err.code)) return true;
+  // MiniMax returns the 529 as an HTTP error from postJson; also check body
+  if (err && err.body && err.body.error && err.body.error.type === 'overloaded_error') return true;
+  return false;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 /**
- * One round-trip to MiniMax.
+ * One round-trip to MiniMax with retry-on-overload.
+ *
+ * Retries up to 3 times with exponential backoff (1s, 3s, 6s) on transient
+ * errors like 529 overloaded, 503/504 gateway issues, or network blips.
+ * Non-retryable errors (auth, malformed request, real 4xx) bubble up immediately.
+ *
  * @param {Array}  messages  OpenAI-style messages array (role+content, plus tool_calls / tool responses)
  * @param {Array}  tools     Function-calling tool definitions
  * @param {object} opts      { temperature?, model?, toolChoice? }
@@ -86,23 +109,43 @@ async function chat(messages, tools, opts = {}) {
   }
 
   const headers = { Authorization: `Bearer ${cfg.apiKey}` };
-  const resp = await postJson(url, headers, body);
 
-  // MiniMax wraps success info under `base_resp`; bubble up useful failures.
-  if (resp.base_resp && resp.base_resp.status_code && resp.base_resp.status_code !== 0) {
-    const err = new Error(`MiniMax error ${resp.base_resp.status_code}: ${resp.base_resp.status_msg}`);
-    err.body = resp;
-    throw err;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const resp = await postJson(url, headers, body);
+
+      // MiniMax wraps success info under `base_resp`; bubble up useful failures.
+      if (resp.base_resp && resp.base_resp.status_code && resp.base_resp.status_code !== 0) {
+        const err = new Error(`MiniMax error ${resp.base_resp.status_code}: ${resp.base_resp.status_msg}`);
+        err.body = resp;
+        // status_code 1040/1041 are MiniMax's rate-limit codes — also retry
+        if ([1040, 1041].includes(resp.base_resp.status_code)) err.status = 429;
+        throw err;
+      }
+
+      const choice = resp.choices && resp.choices[0];
+      if (!choice) throw new Error('MiniMax returned no choices');
+
+      return {
+        message: choice.message || {},
+        finish_reason: choice.finish_reason,
+        usage: resp.usage || {},
+      };
+    } catch (err) {
+      lastErr = err;
+      const retryable = isRetryable(err);
+      const hasMore = attempt < MAX_ATTEMPTS;
+      if (retryable && hasMore) {
+        const waitMs = BACKOFF_MS[attempt - 1] || 6000;
+        console.warn(`[miniMaxClient] attempt ${attempt}/${MAX_ATTEMPTS} failed (${err.status || err.code || 'unknown'}) — retrying in ${waitMs}ms`);
+        await sleep(waitMs);
+        continue;
+      }
+      throw err;
+    }
   }
-
-  const choice = resp.choices && resp.choices[0];
-  if (!choice) throw new Error('MiniMax returned no choices');
-
-  return {
-    message: choice.message || {},
-    finish_reason: choice.finish_reason,
-    usage: resp.usage || {},
-  };
+  throw lastErr;
 }
 
 module.exports = { chat };
