@@ -114,7 +114,7 @@ export default function LeasingEditPage() {
           start_date: d.start_date ? dayjs(d.start_date) : undefined,
           end_date: d.end_date ? dayjs(d.end_date) : undefined,
           type: d.type != null ? Number(d.type) : 0,
-          contract_type: d.contract_type != null ? Number(d.contract_type) : 0,
+          contract_type: d.contract_type ? Number(d.contract_type) : undefined,
           price: d.price || d.amount || '',
           deposit: d.deposit || '',
           due_date: d.due_date ? Number(d.due_date) : undefined,
@@ -283,9 +283,13 @@ export default function LeasingEditPage() {
           <div style={{ height: 16 }} />
           <Row gutter={16}>
             <Col span={6}>
-              <FLabel>Tenant Status</FLabel>
-              <Form.Item name="contract_type" noStyle>
-                <Select options={CONTRACT_TYPES} allowClear />
+              <FLabel required>Tenant Status</FLabel>
+              <Form.Item
+                name="contract_type"
+                noStyle
+                rules={[{ required: true, message: 'Please select tenant status' }]}
+              >
+                <Select options={CONTRACT_TYPES} placeholder="Select status" />
               </Form.Item>
             </Col>
           </Row>

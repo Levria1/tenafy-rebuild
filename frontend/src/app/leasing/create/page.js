@@ -451,9 +451,13 @@ export default function LeaseCreatePage() {
           </Form.Item>
         </div>
         <div style={{ marginTop: 16, width: 200 }}>
-          <FLabel>TENANT STATUS</FLabel>
-          <Form.Item name="contract_type" noStyle initialValue={0}>
-            <Select style={{ width: 200 }} allowClear>
+          <FLabel required>TENANT STATUS</FLabel>
+          <Form.Item
+            name="contract_type"
+            noStyle
+            rules={[{ required: true, message: 'Please select tenant status' }]}
+          >
+            <Select style={{ width: 200 }} placeholder="Select status">
               <Select.Option value={1}>MR (May Renew)</Select.Option>
               <Select.Option value={2}>MTM (Month To Month)</Select.Option>
               <Select.Option value={3}>NR (Not Renewing)</Select.Option>
@@ -782,7 +786,6 @@ export default function LeaseCreatePage() {
           layout="vertical"
           initialValues={{
             type: 0,
-            contract_type: 0,
             landlord_expired_days: 30,
             tenant_renewal_days: 30,
           }}
