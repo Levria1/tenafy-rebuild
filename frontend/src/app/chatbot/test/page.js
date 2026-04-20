@@ -71,7 +71,6 @@ export default function TestChatPage() {
       setMessages((ms) => [...ms, {
         role: 'assistant',
         content: reply,
-        meta: usage ? `${usage.tokens_in}→${usage.tokens_out} tokens` : undefined,
       }]);
     } catch (e) {
       const msg = e?.response?.data?.message || e.message || 'Request failed';
