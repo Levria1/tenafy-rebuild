@@ -62,18 +62,22 @@ router.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    // 1. Resolve org from master DB
-    const orgInfo = await resolveOrgByUsername(username);
+    // 1. Resolve org from master DB — try username first, fall back to email.
+    // This lets users log in with whichever field they remember. Useful for
+    // accounts where username and email differ (e.g. "Dennese" vs the email).
+    let orgInfo = await resolveOrgByUsername(username);
+    if (!orgInfo) orgInfo = await resolveOrgByEmail(username);
     if (!orgInfo) {
       return res.status(401).json({ code: 9000, message: 'Login failed: Bad username or password' });
     }
 
     const orgPool = orgInfo.pool;
 
-    // 2. Look up user in org database
+    // 2. Look up user in org database — match on either username OR email.
     const [users] = await orgPool.execute(
-      'SELECT id, username, password, email, org_id, first_name, last_name, status FROM user WHERE username = ?',
-      [username]
+      `SELECT id, username, password, email, org_id, first_name, last_name, status
+       FROM user WHERE username = ? OR email = ? LIMIT 1`,
+      [username, username]
     );
 
     if (users.length === 0) {
