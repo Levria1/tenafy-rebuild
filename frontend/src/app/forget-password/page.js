@@ -10,6 +10,7 @@ export default function ForgetPasswordPage() {
   const [current, setCurrent] = useState(0);
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
   const router = useRouter();
 
   const onEmailSubmit = async (values) => {
@@ -35,6 +36,7 @@ export default function ForgetPasswordPage() {
     try {
       const response = await auth.validateCode({ ...values, email });
       if (response.data.code === 200) {
+        setCode(values.code);
         setCurrent(2);
         message.success('Code verified successfully');
       } else {
@@ -50,7 +52,11 @@ export default function ForgetPasswordPage() {
   const onResetSubmit = async (values) => {
     setLoading(true);
     try {
-      const response = await auth.resetPassword({ ...values, email });
+      const response = await auth.resetPassword({
+        email,
+        code,
+        password: values.new_password,
+      });
       if (response.data.code === 200) {
         message.success('Password reset successfully');
         router.push('/login');
