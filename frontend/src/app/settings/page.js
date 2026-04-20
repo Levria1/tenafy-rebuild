@@ -24,6 +24,7 @@ function SettingsPage() {
   const [categories, setCategories] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [users, setUsers] = useState([]);
+  const [userStatusFilter, setUserStatusFilter] = useState('all'); // 'all' | 'active' | 'inactive'
   // amenities managed by AmenitySettings component
   const [roles, setRoles] = useState([]);
   const [emailTemplates, setEmailTemplates] = useState([]);
@@ -38,7 +39,7 @@ function SettingsPage() {
 
   useEffect(() => {
     loadData();
-  }, [activeTab]);
+  }, [activeTab, userStatusFilter]);
 
   const loadData = async () => {
     try {
@@ -50,7 +51,10 @@ function SettingsPage() {
         const response = await settings.getPaymentMethods();
         if (response.data.code === 200) setPaymentMethods(response.data.data || []);
       } else if (activeTab === 'users') {
-        const response = await user.listUsers({}, { page: 1, limit: 50 });
+        const body = {};
+        if (userStatusFilter === 'active')   body.status = 1;
+        if (userStatusFilter === 'inactive') body.status = 0;
+        const response = await user.listUsers(body, { page: 1, limit: 500 });
         if (response.data.code === 200) setUsers(response.data.data.content || []);
       } else if (activeTab === 'roles') {
         const response = await role.list({}, { page: 1, limit: 50 });
@@ -283,7 +287,19 @@ function SettingsPage() {
   const userTabs = [
     ...(canSeeUsers ? [{ key: 'users', label: 'User Management', children: (
       <Card>
-        <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/users/create')} block={isMobile}>Add User</Button></div>
+        <div style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/users/create')} block={isMobile}>Add User</Button>
+          <Select
+            value={userStatusFilter}
+            onChange={setUserStatusFilter}
+            style={{ width: 180 }}
+            options={[
+              { value: 'all',      label: 'All users' },
+              { value: 'active',   label: 'Active only' },
+              { value: 'inactive', label: 'Deactivated only' },
+            ]}
+          />
+        </div>
         {isMobile ? (
           <MobileCardList dataSource={users} renderCard={renderUserCard} loading={loading} rowKey="id" />
         ) : (
