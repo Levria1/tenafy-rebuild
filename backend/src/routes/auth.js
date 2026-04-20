@@ -5,6 +5,33 @@ const bcrypt = require('bcryptjs');
 const config = require('../config');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 const { authenticate } = require('../middleware/auth');
+const { sendMail, sendMailWithAccount } = require('../config/mailer');
+const { findSmtpAccount } = require('../services/emailService');
+
+/**
+ * Send the password-reset email using the org's SMTP account if configured,
+ * falling back to env-based sendMail. Fire-and-forget — caller should await
+ * but ignore errors (we don't want to block UX on SMTP failure).
+ */
+async function sendResetCodeEmail(pool, orgId, toEmail, code) {
+  const subject = `Your Tenafy password reset code`;
+  const html = `
+    <p>Hi,</p>
+    <p>You requested a password reset for your Tenafy account.</p>
+    <p style="font-size:24px;font-weight:600;letter-spacing:4px;
+              background:#f5f5f5;padding:12px 16px;display:inline-block;border-radius:4px;">
+      ${code}
+    </p>
+    <p>This code is valid for 1 hour. If you didn't request this, you can safely ignore this email.</p>
+    <p style="color:#888;font-size:12px;">— Tenafy</p>
+  `;
+  const text = `Your Tenafy password reset code: ${code}\nThis code expires in 1 hour.`;
+  const mailOpts = { to: toEmail, subject, html, text };
+
+  const account = await findSmtpAccount(pool, orgId, null);
+  if (account) return sendMailWithAccount(account, mailOpts);
+  return sendMail(mailOpts);
+}
 
 // Helper: look up org pool by username via master DB org_user_map
 async function resolveOrgByUsername(username) {
@@ -147,7 +174,14 @@ router.post('/forget-password/initialize', async (req, res) => {
       [users[0].id, resetCode]
     );
 
-    console.log(`Password reset code for ${email}: ${resetCode}`);
+    // Dispatch the email. If it fails, we still log the code so an admin can
+    // read it from pm2 logs as a fallback (matches pre-existing behaviour).
+    try {
+      await sendResetCodeEmail(orgPool, orgInfo.orgId, email, resetCode);
+    } catch (mailErr) {
+      console.error('[auth] forget-password email failed:', mailErr.message);
+      console.log(`[auth] Password reset code for ${email}: ${resetCode}`);
+    }
 
     res.json({ code: 200, message: 'Password reset code sent' });
   } catch (error) {

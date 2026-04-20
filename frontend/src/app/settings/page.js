@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm } from 'antd';
+import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../components/Layout';
 import { settings, user, amenity, role, emailTemplate, smtpAccount, bookingPlatform, salesAgent } from '../../lib/api';
@@ -97,10 +97,27 @@ function SettingsPage() {
     { title: 'Actions', key: 'actions', render: (_, r) => (
       <Space>
         {canEditRole && <Button type="link" onClick={() => router.push(`/settings/role/${r.id}/edit`)}>Edit</Button>}
-        {canDeleteRole && <Button type="link" danger onClick={async () => {
-          try { await role.delete(r.id); message.success('Deleted'); loadData(); }
-          catch (error) { message.error('Failed to delete'); }
-        }}>Delete</Button>}
+        {canDeleteRole && (
+          r.status === 1 ? (
+            <Tooltip title="Deactivate this role first (Edit → set Inactive), then Delete will be available">
+              <Button type="link" danger disabled>Delete</Button>
+            </Tooltip>
+          ) : (
+            <Popconfirm
+              title="Delete this role permanently?"
+              description="This cannot be undone. Any users still assigned to this role will lose their permissions."
+              okText="Yes, delete"
+              okButtonProps={{ danger: true }}
+              cancelText="Cancel"
+              onConfirm={async () => {
+                try { await role.delete(r.id); message.success('Role deleted'); loadData(); }
+                catch (error) { message.error(error?.response?.data?.message || 'Failed to delete'); }
+              }}
+            >
+              <Button type="link" danger>Delete</Button>
+            </Popconfirm>
+          )
+        )}
       </Space>
     )},
   ];
@@ -129,6 +146,27 @@ function SettingsPage() {
     { title: 'Actions', key: 'actions', render: (_, r) => (
       <Space>
         {canEditUser && <Button type="link" onClick={() => router.push(`/settings/users/${r.id}/edit`)}>Edit</Button>}
+        {canDeleteUser && (
+          r.status === 1 ? (
+            <Tooltip title="Deactivate this user first (Edit → Active off), then Delete will be available">
+              <Button type="link" danger disabled>Delete</Button>
+            </Tooltip>
+          ) : (
+            <Popconfirm
+              title="Delete this user permanently?"
+              description="This cannot be undone. Their record will be removed from the system."
+              okText="Yes, delete"
+              okButtonProps={{ danger: true }}
+              cancelText="Cancel"
+              onConfirm={async () => {
+                try { await user.deleteUser(r.id); message.success('User deleted'); loadData(); }
+                catch (e) { message.error(e?.response?.data?.message || 'Failed to delete'); }
+              }}
+            >
+              <Button type="link" danger>Delete</Button>
+            </Popconfirm>
+          )
+        )}
       </Space>
     )},
   ];
@@ -182,11 +220,26 @@ function SettingsPage() {
         {r.role_name && <Tag>{r.role_name}</Tag>}
         <Tag color={r.status === 1 ? 'green' : 'red'}>{r.status === 1 ? 'Active' : 'Inactive'}</Tag>
       </div>
-      {canEditUser && (
-        <div style={{ marginTop: 8 }}>
+      <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
+        {canEditUser && (
           <Button type="link" style={{ padding: 0 }} onClick={() => router.push(`/settings/users/${r.id}/edit`)}>Edit</Button>
-        </div>
-      )}
+        )}
+        {canDeleteUser && r.status !== 1 && (
+          <Popconfirm
+            title="Delete this user permanently?"
+            description="This cannot be undone."
+            okText="Yes, delete"
+            okButtonProps={{ danger: true }}
+            cancelText="Cancel"
+            onConfirm={async () => {
+              try { await user.deleteUser(r.id); message.success('User deleted'); loadData(); }
+              catch (e) { message.error(e?.response?.data?.message || 'Failed to delete'); }
+            }}
+          >
+            <Button type="link" danger style={{ padding: 0 }}>Delete</Button>
+          </Popconfirm>
+        )}
+      </div>
     </Card>
   );
 
@@ -199,12 +252,23 @@ function SettingsPage() {
           <Tag color={r.status === 1 ? 'green' : 'red'}>{r.status === 1 ? 'Active' : 'Inactive'}</Tag>
         </div>
       </div>
-      <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+      <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
         {canEditRole && <Button type="link" style={{ padding: 0 }} onClick={() => router.push(`/settings/role/${r.id}/edit`)}>Edit</Button>}
-        {canDeleteRole && <Button type="link" danger style={{ padding: 0 }} onClick={async () => {
-          try { await role.delete(r.id); message.success('Deleted'); loadData(); }
-          catch (error) { message.error('Failed to delete'); }
-        }}>Delete</Button>}
+        {canDeleteRole && r.status !== 1 && (
+          <Popconfirm
+            title="Delete this role permanently?"
+            description="This cannot be undone."
+            okText="Yes, delete"
+            okButtonProps={{ danger: true }}
+            cancelText="Cancel"
+            onConfirm={async () => {
+              try { await role.delete(r.id); message.success('Role deleted'); loadData(); }
+              catch (error) { message.error(error?.response?.data?.message || 'Failed to delete'); }
+            }}
+          >
+            <Button type="link" danger style={{ padding: 0 }}>Delete</Button>
+          </Popconfirm>
+        )}
       </div>
     </Card>
   );
@@ -217,6 +281,7 @@ function SettingsPage() {
   const canEditRole = hasPermission ? hasPermission('LANDLORD/ROLE_EDIT') : false;
   const canDeleteRole = hasPermission ? hasPermission('LANDLORD/ROLE_DELETE') : false;
   const canEditUser = hasPermission ? hasPermission('LANDLORD/USER_EDIT') : false;
+  const canDeleteUser = hasPermission ? hasPermission('LANDLORD/USER_DELETE') : false;
 
   // Group tabs by section — each sidebar link only shows its own tabs
   const accountTabs = [
