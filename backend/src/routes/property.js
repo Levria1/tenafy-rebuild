@@ -776,8 +776,8 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
          WHERE l.deleted_at IS NULL
            AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
        ) lt ON lt.unit_id = u.id AND lt.rn = 1
-       WHERE u.property_id = ? AND p.org_id = ?
-       ORDER BY u.active_status DESC, u.name`,
+       WHERE u.property_id = ? AND p.org_id = ? AND u.active_status = 1
+       ORDER BY u.name`,
       [property_id, orgId]
     );
     res.json({ code: 200, data: units });
