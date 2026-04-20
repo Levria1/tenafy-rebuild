@@ -144,7 +144,7 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
           <span style={{ fontWeight: 600, fontSize: 14, ...(isInactive ? { color: '#999' } : {}) }}>{unit.name}</span>
           {isInactive
             ? <Tag color="default" style={{ fontSize: 11, lineHeight: '18px' }}>Inactive</Tag>
-            : <Tag color={isOccupied ? 'red' : 'green'} style={{ fontSize: 11, lineHeight: '18px' }}>{isOccupied ? 'Occupied' : 'Vacant'}</Tag>}
+            : <Tag color={isOccupied ? 'green' : 'red'} style={{ fontSize: 11, lineHeight: '18px' }}>{isOccupied ? 'Occupied' : 'Vacant'}</Tag>}
         </div>
         <div style={{ color: '#888', fontSize: 12 }}>{unit.type ? formatUnitType(unit.type) : 'Apartment'}</div>
         <div style={{ color: '#666', fontSize: 12, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
@@ -157,8 +157,8 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
         <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Tenant</div>
         {tenantName ? (
           <>
-            <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#fff1f0', border: '2px solid #ff4d4f', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 4px' }}>
-              <UserOutlined style={{ fontSize: 14, color: '#ff4d4f' }} />
+            <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#f0f0f0', border: '2px solid #d9d9d9', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 4px' }}>
+              <UserOutlined style={{ fontSize: 14, color: '#8c8c8c' }} />
             </div>
             <div style={{ fontSize: 11, color: '#333' }}>{tenantName}</div>
           </>
