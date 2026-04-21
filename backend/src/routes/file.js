@@ -52,8 +52,23 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB per file
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB per file (videos from phones can be large)
 });
+
+// Wrap multer middleware so LIMIT_FILE_SIZE etc. return a clear user-facing error
+// instead of bubbling up as a generic 500 "Failed to add update".
+function multerSingle(field) {
+  return (req, res, next) => {
+    upload.single(field)(req, res, (err) => {
+      if (!err) return next();
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ code: 413, message: 'File too large. Max size is 500 MB per file.' });
+      }
+      console.error('Upload middleware error:', err);
+      return res.status(400).json({ code: 400, message: err.message || 'Upload failed' });
+    });
+  };
+}
 
 // MIME type lookup
 const MIME_TYPES = {
@@ -179,7 +194,7 @@ router.get('/download/:identifier', async (req, res) => {
 router.use(authenticate);
 
 // POST /api/file/image/upload - Upload image
-router.post('/image/upload', authenticate, upload.single('file'), async (req, res) => {
+router.post('/image/upload', authenticate, multerSingle('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ code: 415, message: 'Please upload pictures in PNG, JPG, JPEG format' });
@@ -215,11 +230,14 @@ router.post('/image/upload', authenticate, upload.single('file'), async (req, re
 });
 
 // POST /api/file/upload - Upload any file
-router.post('/upload', authenticate, upload.single('file'), async (req, res) => {
+router.post('/upload', authenticate, multerSingle('file'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ code: 400, message: 'No file uploaded' });
+      console.error('[file/upload] no req.file. headers:', req.headers['content-type'], 'body keys:', Object.keys(req.body || {}));
+      return res.status(400).json({ code: 400, message: 'No file uploaded (multer did not parse a file field)' });
     }
+
+    console.log('[file/upload] got file:', { name: req.file.originalname, size: req.file.size, mime: req.file.mimetype });
 
     const orgId = req.user.orgId;
     const savedFilename = req.file.filename;
@@ -229,9 +247,13 @@ router.post('/upload', authenticate, upload.single('file'), async (req, res) => 
     const fileSize = req.file.size;
     const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
+    // mime_type column is varchar(100). Most are short but be defensive.
+    const mimeForDb = (mimeType || 'application/octet-stream').toUpperCase().slice(0, 100);
+    const extForDb = ext.replace('.', '').slice(0, 10);
+
     await req.pool.execute(
       'INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())',
-      [id.toString(), savedFilename, originalName, ext.replace('.', ''), mimeType.toUpperCase(), fileSize, 'local', orgId]
+      [id.toString(), savedFilename, originalName, extForDb, mimeForDb, fileSize, 'local', orgId]
     );
 
     res.json({
@@ -246,7 +268,12 @@ router.post('/upload', authenticate, upload.single('file'), async (req, res) => 
     });
   } catch (error) {
     console.error('Upload file error:', error);
-    res.status(500).json({ code: 500, message: 'Failed to upload file' });
+    // Surface the real reason so we can debug from DevTools without tailing pm2
+    res.status(500).json({
+      code: 500,
+      message: 'Failed to upload file',
+      debug: { name: error.name, message: error.message, code: error.code, sqlMessage: error.sqlMessage }
+    });
   }
 });
 
