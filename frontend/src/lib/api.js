@@ -67,7 +67,7 @@ export const property = {
   delete: (id) => api.delete(`/api/property/${id}`),
   clone: (id) => api.get(`/api/property/${id}/clone`),
   // Unit methods
-  getUnits: (propertyId) => api.get(`/api/property/${propertyId}/unit`),
+  getUnits: (propertyId, opts = {}) => api.get(`/api/property/${propertyId}/unit`, { params: opts.showInactive ? { show_inactive: 1 } : {} }),
   getUnit: (unitId) => api.get(`/api/property/unit/${unitId}`),
   getUnitBasic: (unitId) => api.get(`/api/property/unit/${unitId}/basic`),
   createUnit: (propertyId, data) => api.post(`/api/property/${propertyId}/unit`, data),

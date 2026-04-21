@@ -748,10 +748,13 @@ router.delete('/:id', authenticate, async (req, res) => {
 });
 
 // GET /api/property/:property_id/unit - List units for property (with current tenant)
+// Pass ?show_inactive=1 to include inactive units (for reactivation).
 router.get('/:property_id/unit', authenticate, async (req, res) => {
   try {
     const { property_id } = req.params;
     const orgId = req.user.orgId;
+    const showInactive = req.query.show_inactive === '1' || req.query.show_inactive === 'true';
+    const activeClause = showInactive ? '' : ' AND u.active_status = 1';
     const [units] = await req.pool.execute(
       `SELECT u.*,
               lt.tenant_id,
@@ -776,8 +779,8 @@ router.get('/:property_id/unit', authenticate, async (req, res) => {
          WHERE l.deleted_at IS NULL
            AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
        ) lt ON lt.unit_id = u.id AND lt.rn = 1
-       WHERE u.property_id = ? AND p.org_id = ? AND u.active_status = 1
-       ORDER BY u.name`,
+       WHERE u.property_id = ? AND p.org_id = ?${activeClause}
+       ORDER BY u.active_status DESC, u.name`,
       [property_id, orgId]
     );
     res.json({ code: 200, data: units });

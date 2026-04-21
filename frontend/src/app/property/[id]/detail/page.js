@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Button, Spin, Tag, Space, message, Tabs, Modal, Dropdown } from 'antd';
+import { Button, Spin, Tag, Space, message, Tabs, Modal, Dropdown, Switch } from 'antd';
 import {
   ArrowLeftOutlined, PlusOutlined, HomeOutlined, UserOutlined,
   RightOutlined, EditOutlined, DeleteOutlined, CopyOutlined, EllipsisOutlined,
@@ -263,19 +263,20 @@ export default function PropertyDetailPage() {
   const [loading, setLoading] = useState(true);
   const [propertyData, setPropertyData] = useState(null);
   const [units, setUnits] = useState([]);
+  const [showInactiveUnits, setShowInactiveUnits] = useState(false);
   const [graphData, setGraphData] = useState([]);
   const [amenities, setAmenities] = useState([]);
 
   useEffect(() => {
     if (params.id) loadAll();
-  }, [params.id]);
+  }, [params.id, showInactiveUnits]);
 
   const loadAll = async () => {
     try {
       setLoading(true);
       const [propRes, unitsRes, graphRes, amenitiesRes] = await Promise.all([
         property.get(params.id),
-        property.getUnits(params.id),
+        property.getUnits(params.id, { showInactive: showInactiveUnits }),
         accounting.getPropertyGraph(params.id, { months: 12 }).catch(() => ({ data: { data: [] } })),
         property.getPropertyAmenities(params.id).catch(() => ({ data: { data: [] } })),
       ]);
@@ -405,6 +406,10 @@ export default function PropertyDetailPage() {
               label: 'Property Units',
               children: (
                 <div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', padding: '8px 0', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: '#666' }}>Show inactive</span>
+                    <Switch size="small" checked={showInactiveUnits} onChange={setShowInactiveUnits} />
+                  </div>
                   {units.length === 0
                     ? <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>No units found</div>
                     : units.map(unit => <UnitCard key={unit.id} unit={unit} propertyId={params.id} router={router} isMobile={isMobile} />)}
