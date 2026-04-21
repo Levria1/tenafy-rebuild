@@ -440,11 +440,12 @@ router.post('/setting/account/add', authenticate, async (req, res) => {
   try {
     const { name } = req.body;
     const orgId = req.user.orgId;
-    const [result] = await req.pool.execute(
-      'INSERT INTO account_setting (org_id, name, enabled, created_at) VALUES (?, ?, 1, NOW())',
-      [orgId, name]
+    const id = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+    await req.pool.execute(
+      'INSERT INTO account_setting (id, org_id, name, enabled) VALUES (?, ?, ?, 1)',
+      [id, orgId, name]
     );
-    res.json({ code: 200, message: 'Account setting created', data: { id: result.insertId } });
+    res.json({ code: 200, message: 'Account setting created', data: { id } });
   } catch (error) {
     console.error('Create account setting error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create account setting' });
