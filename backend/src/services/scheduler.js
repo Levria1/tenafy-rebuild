@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const { sendMail } = require('../config/mailer');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
+const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 const {
   sendInvoiceToTenant,
@@ -166,6 +167,26 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
         );
 
         if (!existing) {
+          // Prorate the final invoice if the lease ends mid-period
+          const periodAfter = advanceInvoiceDate(nextDueDate, lease.invoicing, lease.due_date);
+          const periodEnd = new Date(periodAfter);
+          periodEnd.setDate(periodEnd.getDate() - 1);
+
+          const thisAmount = computeRentInvoiceAmount({
+            rent: lease.price,
+            invoicing: lease.invoicing,
+            periodStart: nextDueDate,
+            periodEnd,
+            leaseEnd: lease.end_date,
+          });
+
+          if (thisAmount === null) {
+            // Lease already over before this period started — skip.
+            cursor = nextDueDate;
+            iterations++;
+            continue;
+          }
+
           const invoiceCode = await generateInvoiceCode(pool, orgId);
           const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
@@ -174,7 +195,7 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
               invoice_code, amount, due_on, status, category, currency_id, type, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, NOW())`,
             [invoiceId, orgId, lease.tenant_id, lease.unit_id, lease.id, lease.property_id,
-             invoiceCode, lease.price, nextDueDateStr, catId, currId]
+             invoiceCode, thisAmount, nextDueDateStr, catId, currId]
           );
 
           invoicesCreated++;

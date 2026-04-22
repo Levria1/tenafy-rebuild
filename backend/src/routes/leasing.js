@@ -4,6 +4,7 @@ const { authenticate } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 
 const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequenceCode');
+const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -707,7 +708,7 @@ router.post('/', authenticate, async (req, res) => {
 
       // Helper: create a single invoice with collision-safe code generation
       // Returns { invoiceId, invoiceCode, dueDate } for email sending
-      const createOneInvoice = async (dueDate, status) => {
+      const createOneInvoice = async (dueDate, status, amount) => {
         const invoiceCode = await generateInvoiceCode(req.pool, orgId);
         const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
         await req.pool.execute(
@@ -716,7 +717,7 @@ router.post('/', authenticate, async (req, res) => {
             booking_platform_id, sales_agent_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NOW())`,
           [invoiceId, orgId, tenant_id, unit_id, leaseId.toString(), propertyId,
-           invoiceCode, invoiceAmount, dueDate, status, rentCategoryId, currencyId,
+           invoiceCode, amount, dueDate, status, rentCategoryId, currencyId,
            booking_platform_id || null, sales_agent_id || null]
         );
         return { invoiceId, invoiceCode, dueDate };
@@ -737,21 +738,37 @@ router.post('/', authenticate, async (req, res) => {
           const dateStr = cursor.toISOString().split('T')[0];
           const isPast = cursor.getTime() <= todayMs;
 
+          // Compute this period's end (day before the next scheduled due date)
+          const nextCursor = advanceInvoiceDate(cursor, invoicing, due_date);
+          const periodEnd = new Date(nextCursor);
+          periodEnd.setDate(periodEnd.getDate() - 1);
+
+          // Prorate if lease ends inside this period; otherwise full amount
+          const thisAmount = computeRentInvoiceAmount({
+            rent: invoiceAmount,
+            invoicing,
+            periodStart: cursor,
+            periodEnd,
+            leaseEnd: end_date,
+          });
+
+          if (thisAmount === null) break; // lease already over before this period
+
           if (isPast) {
-            createdInvoices.push(await createOneInvoice(dateStr, mark_past_paid ? 1 : 0));
+            createdInvoices.push(await createOneInvoice(dateStr, mark_past_paid ? 1 : 0, thisAmount));
           } else {
-            createdInvoices.push(await createOneInvoice(dateStr, 0));
+            createdInvoices.push(await createOneInvoice(dateStr, 0, thisAmount));
             break;
           }
-          cursor = advanceInvoiceDate(cursor, invoicing, due_date);
+          cursor = nextCursor;
           count++;
         }
       } else {
-        // NON-RECURRING: Create just ONE invoice
+        // NON-RECURRING: Create just ONE invoice (full amount; no prior bill to prorate against)
         const invoiceDate = first_invoice_date || start_date || today;
         const isPast = new Date(invoiceDate).getTime() <= todayMs;
         const invoiceStatus = (isPast && mark_past_paid) ? 1 : 0;
-        createdInvoices.push(await createOneInvoice(invoiceDate, invoiceStatus));
+        createdInvoices.push(await createOneInvoice(invoiceDate, invoiceStatus, invoiceAmount));
       }
 
       // Send invoice posted emails (fire-and-forget, don't block lease creation)
