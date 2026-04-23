@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Form, Input, Button, Card, message } from 'antd';
+import { Form, Input, Button, Card, message, Modal } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import Cookies from 'js-cookie';
 import { auth } from '../../lib/api';
@@ -20,10 +20,18 @@ export default function LoginPage() {
         message.success('Login successful');
         router.push('/dashboard');
       } else {
-        message.error(response.data.message || 'Login failed');
+        Modal.error({
+          title: 'Login failed',
+          content: response.data.message || 'Login failed',
+          okText: 'OK',
+        });
       }
     } catch (error) {
-      message.error(error.response?.data?.message || 'Login failed');
+      Modal.error({
+        title: 'Login failed',
+        content: error.response?.data?.message || 'Login failed',
+        okText: 'OK',
+      });
     } finally {
       setLoading(false);
     }
