@@ -765,6 +765,8 @@ CREATE TABLE `unit` (
   `key_code` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `wifi_information` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `payment_information` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `account_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `bank_details` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `internal_note` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `listing_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `status` tinyint NOT NULL DEFAULT '0' COMMENT '0:vancant;1:occupied;',
