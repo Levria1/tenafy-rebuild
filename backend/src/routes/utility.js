@@ -408,44 +408,62 @@ router.post('/meter-reading', authenticate, async (req, res) => {
     // Also update current_reading on meter for backward compat
     await req.pool.execute('UPDATE utility_meter SET current_reading = ? WHERE id = ?', [reading_value, meter_id]);
 
-    // If Move-Out reading (type 1), sync to the most recent lease's check_out_meter
-    if (Number(reading_type) === 1) {
+    // Auto-sync lease meter values when the reading is a Move-In/Move-Out type.
+    // Strategy:
+    //  1. Meter must be mapped to a specific unit (master meters can't target a lease).
+    //  2. Prefer the lease whose date range contains reading_date; otherwise fall
+    //     back to the most recent non-deleted lease for that unit. This fixes the
+    //     bug where a cancelled or future-scheduled lease with a later start_date
+    //     was being picked over the actual active lease.
+    //  3. Log the outcome so operators can see from pm2 why a sync did or didn't
+    //     happen, and report back in the response so the UI can surface it too.
+    let autoSync = null;
+    const readingTypeNum = Number(reading_type ?? 0);
+    if (readingTypeNum === 0 || readingTypeNum === 1) {
+      const targetCol = readingTypeNum === 0 ? 'check_in_meter' : 'check_out_meter';
+      const targetStampCol = readingTypeNum === 0 ? 'check_in_meter_updated_at' : 'check_out_meter_updated_at';
       const [[meterUnit]] = await req.pool.execute('SELECT unit_id FROM utility_meter WHERE id = ?', [meter_id]);
-      if (meterUnit?.unit_id) {
-        // Find the most recent lease for this unit (active or ended)
-        const [[activeLease]] = await req.pool.execute(
-          `SELECT id FROM leasing WHERE unit_id = ? AND deleted_at IS NULL
+      const unitId = meterUnit?.unit_id;
+
+      if (!unitId) {
+        autoSync = { synced: false, reason: 'meter is not mapped to a specific unit (master/property meter)' };
+      } else {
+        const readingDate = reading_date || new Date().toISOString().split('T')[0];
+        // First try: lease whose period contains the reading_date
+        const [[containing]] = await req.pool.execute(
+          `SELECT id, start_date, end_date FROM leasing
+           WHERE unit_id = ? AND deleted_at IS NULL
+             AND start_date <= ?
+             AND (end_date IS NULL OR end_date >= ?)
            ORDER BY start_date DESC LIMIT 1`,
-          [meterUnit.unit_id]
+          [unitId, readingDate, readingDate]
         );
-        if (activeLease) {
-          await req.pool.execute(
-            'UPDATE leasing SET check_out_meter = ?, check_out_meter_updated_at = NOW() WHERE id = ?',
-            [reading_value, activeLease.id]
+        // Fallback: most recent lease for this unit (future or past)
+        let targetLease = containing;
+        if (!targetLease) {
+          const [[fallback]] = await req.pool.execute(
+            `SELECT id, start_date, end_date FROM leasing
+             WHERE unit_id = ? AND deleted_at IS NULL
+             ORDER BY start_date DESC LIMIT 1`,
+            [unitId]
           );
+          targetLease = fallback;
+        }
+        if (targetLease) {
+          await req.pool.execute(
+            `UPDATE leasing SET ${targetCol} = ?, ${targetStampCol} = NOW() WHERE id = ?`,
+            [reading_value, targetLease.id]
+          );
+          autoSync = { synced: true, leaseId: String(targetLease.id), column: targetCol, matchedBy: containing ? 'date_range' : 'most_recent_fallback' };
+          console.log(`[utility/reading] Auto-sync ${targetCol}=${reading_value} on lease ${targetLease.id} (${autoSync.matchedBy})`);
+        } else {
+          autoSync = { synced: false, reason: 'no lease found for this unit' };
+          console.log(`[utility/reading] Auto-sync skipped: no lease for unit ${unitId}`);
         }
       }
     }
 
-    // If Move-In reading (type 0), sync to the most recent lease's check_in_meter
-    if (Number(reading_type) === 0) {
-      const [[meterUnit2]] = await req.pool.execute('SELECT unit_id FROM utility_meter WHERE id = ?', [meter_id]);
-      if (meterUnit2?.unit_id) {
-        const [[activeLease2]] = await req.pool.execute(
-          `SELECT id FROM leasing WHERE unit_id = ? AND deleted_at IS NULL
-           ORDER BY start_date DESC LIMIT 1`,
-          [meterUnit2.unit_id]
-        );
-        if (activeLease2) {
-          await req.pool.execute(
-            'UPDATE leasing SET check_in_meter = ?, check_in_meter_updated_at = NOW() WHERE id = ?',
-            [reading_value, activeLease2.id]
-          );
-        }
-      }
-    }
-
-    res.json({ code: 200, message: 'Reading logged', data: { id, warning } });
+    res.json({ code: 200, message: 'Reading logged', data: { id, warning, autoSync } });
   } catch (error) {
     console.error('Log meter reading error:', error);
     res.status(500).json({ code: 500, message: 'Failed to log reading' });
