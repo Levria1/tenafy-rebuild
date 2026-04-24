@@ -430,24 +430,45 @@ router.post('/meter-reading', authenticate, async (req, res) => {
       if (!unitId) {
         autoSync = { synced: false, reason: 'meter is not mapped to a specific unit (master/property meter)' };
       } else {
-        // Lease active on reading_date (the "current" lease at that moment)
-        const [[current]] = await req.pool.execute(
-          `SELECT id, start_date, end_date FROM leasing
-           WHERE unit_id = ? AND deleted_at IS NULL
-             AND start_date <= ?
-             AND (end_date IS NULL OR end_date >= ?)
-           ORDER BY start_date DESC LIMIT 1`,
-          [unitId, readingDate, readingDate]
-        );
+        // Identify the CURRENT lease — the one the reading applies to.
+        // Preferred: the lease that owns the tenant_id attached to the reading
+        // (the meter/reading is explicitly tied to a tenant). If no tenant_id,
+        // fall back to the lease whose date range contains the reading_date.
+        let current = null;
+        if (tenant_id) {
+          const [[byTenant]] = await req.pool.execute(
+            `SELECT id, start_date, end_date FROM leasing
+             WHERE unit_id = ? AND tenant_id = ? AND deleted_at IS NULL
+             ORDER BY start_date DESC LIMIT 1`,
+            [unitId, tenant_id]
+          );
+          current = byTenant;
+        }
+        if (!current) {
+          const [[byDate]] = await req.pool.execute(
+            `SELECT id, start_date, end_date FROM leasing
+             WHERE unit_id = ? AND deleted_at IS NULL
+               AND start_date <= ?
+               AND (end_date IS NULL OR end_date >= ?)
+             ORDER BY start_date DESC LIMIT 1`,
+            [unitId, readingDate, readingDate]
+          );
+          current = byDate;
+        }
 
-        // Nearest upcoming lease after reading_date (the "next" lease)
-        const [[upcoming]] = await req.pool.execute(
-          `SELECT id, start_date, end_date FROM leasing
-           WHERE unit_id = ? AND deleted_at IS NULL
-             AND start_date > ?
-           ORDER BY start_date ASC LIMIT 1`,
-          [unitId, readingDate]
-        );
+        // Find the NEXT lease — strictly the one that comes chronologically
+        // after the current lease on this unit. Unrelated to reading_date.
+        let nextLease = null;
+        if (current) {
+          const [[n]] = await req.pool.execute(
+            `SELECT id, start_date, end_date FROM leasing
+             WHERE unit_id = ? AND deleted_at IS NULL
+               AND start_date > ?
+             ORDER BY start_date ASC LIMIT 1`,
+            [unitId, current.start_date]
+          );
+          nextLease = n;
+        }
 
         if (readingTypeNum === 1) {
           // Move-Out: record on current lease + hand off to next lease
@@ -458,22 +479,21 @@ router.post('/meter-reading', authenticate, async (req, res) => {
             );
             updates.push({ leaseId: String(current.id), column: 'check_out_meter', role: 'current' });
           }
-          if (upcoming) {
+          if (nextLease) {
             await req.pool.execute(
               'UPDATE leasing SET check_in_meter = ?, check_in_meter_updated_at = NOW() WHERE id = ?',
-              [reading_value, upcoming.id]
+              [reading_value, nextLease.id]
             );
-            updates.push({ leaseId: String(upcoming.id), column: 'check_in_meter', role: 'next' });
+            updates.push({ leaseId: String(nextLease.id), column: 'check_in_meter', role: 'next' });
           }
         } else {
-          // Move-In: target the current lease if the date falls inside it, else the next one
-          const target = current || upcoming;
-          if (target) {
+          // Move-In: write to the current lease (the tenant who's moving in)
+          if (current) {
             await req.pool.execute(
               'UPDATE leasing SET check_in_meter = ?, check_in_meter_updated_at = NOW() WHERE id = ?',
-              [reading_value, target.id]
+              [reading_value, current.id]
             );
-            updates.push({ leaseId: String(target.id), column: 'check_in_meter', role: current ? 'current' : 'next' });
+            updates.push({ leaseId: String(current.id), column: 'check_in_meter', role: 'current' });
           }
         }
 
