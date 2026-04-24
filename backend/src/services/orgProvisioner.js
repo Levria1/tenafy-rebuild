@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const mysql = require('mysql2/promise');
 const config = require('../config');
 const { getMasterPool } = require('../config/poolRegistry');
+const { seedOrgDefaults } = require('./orgSeedDefaults');
 
 async function provisionOrg({ orgId, displayName, adminUsername, adminPassword, adminEmail, adminFirstName, adminLastName }) {
   const dbName = `tena_org_${orgId}`;
@@ -108,6 +109,11 @@ async function provisionOrg({ orgId, displayName, adminUsername, adminPassword, 
       'INSERT INTO user_role (user_id, role_id) VALUES (?, ?)',
       [userId, roleId]
     );
+
+    // 4b. Seed operational defaults (currency, sequences, categories) so the
+    // new org can actually create leases/invoices out of the box.
+    const seedResult = await seedOrgDefaults(tempConn, orgId);
+    console.log(`Seeded defaults: ${seedResult.currency} currency, ${seedResult.sequences} sequences, ${seedResult.categories} categories`);
 
     // 5. Register in master database
     await masterPool.execute(
