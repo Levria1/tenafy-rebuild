@@ -409,28 +409,29 @@ router.post('/meter-reading', authenticate, async (req, res) => {
     await req.pool.execute('UPDATE utility_meter SET current_reading = ? WHERE id = ?', [reading_value, meter_id]);
 
     // Auto-sync lease meter values when the reading is a Move-In/Move-Out type.
-    // Strategy:
-    //  1. Meter must be mapped to a specific unit (master meters can't target a lease).
-    //  2. Prefer the lease whose date range contains reading_date; otherwise fall
-    //     back to the most recent non-deleted lease for that unit. This fixes the
-    //     bug where a cancelled or future-scheduled lease with a later start_date
-    //     was being picked over the actual active lease.
-    //  3. Log the outcome so operators can see from pm2 why a sync did or didn't
-    //     happen, and report back in the response so the UI can surface it too.
+    //
+    // Behaviour:
+    //  - Move-Out (type 1): update the CURRENT lease's check_out_meter AND the
+    //    NEXT (upcoming) lease's check_in_meter — so when one tenant checks out
+    //    the next tenant automatically inherits the meter as their starting point.
+    //  - Move-In  (type 0): update the current-or-upcoming lease's check_in_meter.
+    //
+    // Meter must be mapped to a specific unit (master meters can't target leases).
+    // Logs to pm2 and returns an { autoSync } block in the response so operators
+    // can see from DevTools / logs why a sync did or didn't happen.
     let autoSync = null;
     const readingTypeNum = Number(reading_type ?? 0);
     if (readingTypeNum === 0 || readingTypeNum === 1) {
-      const targetCol = readingTypeNum === 0 ? 'check_in_meter' : 'check_out_meter';
-      const targetStampCol = readingTypeNum === 0 ? 'check_in_meter_updated_at' : 'check_out_meter_updated_at';
       const [[meterUnit]] = await req.pool.execute('SELECT unit_id FROM utility_meter WHERE id = ?', [meter_id]);
       const unitId = meterUnit?.unit_id;
+      const readingDate = reading_date || new Date().toISOString().split('T')[0];
+      const updates = []; // collect { leaseId, column, role } for response/logs
 
       if (!unitId) {
         autoSync = { synced: false, reason: 'meter is not mapped to a specific unit (master/property meter)' };
       } else {
-        const readingDate = reading_date || new Date().toISOString().split('T')[0];
-        // First try: lease whose period contains the reading_date
-        const [[containing]] = await req.pool.execute(
+        // Lease active on reading_date (the "current" lease at that moment)
+        const [[current]] = await req.pool.execute(
           `SELECT id, start_date, end_date FROM leasing
            WHERE unit_id = ? AND deleted_at IS NULL
              AND start_date <= ?
@@ -438,27 +439,52 @@ router.post('/meter-reading', authenticate, async (req, res) => {
            ORDER BY start_date DESC LIMIT 1`,
           [unitId, readingDate, readingDate]
         );
-        // Fallback: most recent lease for this unit (future or past)
-        let targetLease = containing;
-        if (!targetLease) {
-          const [[fallback]] = await req.pool.execute(
-            `SELECT id, start_date, end_date FROM leasing
-             WHERE unit_id = ? AND deleted_at IS NULL
-             ORDER BY start_date DESC LIMIT 1`,
-            [unitId]
-          );
-          targetLease = fallback;
-        }
-        if (targetLease) {
-          await req.pool.execute(
-            `UPDATE leasing SET ${targetCol} = ?, ${targetStampCol} = NOW() WHERE id = ?`,
-            [reading_value, targetLease.id]
-          );
-          autoSync = { synced: true, leaseId: String(targetLease.id), column: targetCol, matchedBy: containing ? 'date_range' : 'most_recent_fallback' };
-          console.log(`[utility/reading] Auto-sync ${targetCol}=${reading_value} on lease ${targetLease.id} (${autoSync.matchedBy})`);
+
+        // Nearest upcoming lease after reading_date (the "next" lease)
+        const [[upcoming]] = await req.pool.execute(
+          `SELECT id, start_date, end_date FROM leasing
+           WHERE unit_id = ? AND deleted_at IS NULL
+             AND start_date > ?
+           ORDER BY start_date ASC LIMIT 1`,
+          [unitId, readingDate]
+        );
+
+        if (readingTypeNum === 1) {
+          // Move-Out: record on current lease + hand off to next lease
+          if (current) {
+            await req.pool.execute(
+              'UPDATE leasing SET check_out_meter = ?, check_out_meter_updated_at = NOW() WHERE id = ?',
+              [reading_value, current.id]
+            );
+            updates.push({ leaseId: String(current.id), column: 'check_out_meter', role: 'current' });
+          }
+          if (upcoming) {
+            await req.pool.execute(
+              'UPDATE leasing SET check_in_meter = ?, check_in_meter_updated_at = NOW() WHERE id = ?',
+              [reading_value, upcoming.id]
+            );
+            updates.push({ leaseId: String(upcoming.id), column: 'check_in_meter', role: 'next' });
+          }
         } else {
-          autoSync = { synced: false, reason: 'no lease found for this unit' };
-          console.log(`[utility/reading] Auto-sync skipped: no lease for unit ${unitId}`);
+          // Move-In: target the current lease if the date falls inside it, else the next one
+          const target = current || upcoming;
+          if (target) {
+            await req.pool.execute(
+              'UPDATE leasing SET check_in_meter = ?, check_in_meter_updated_at = NOW() WHERE id = ?',
+              [reading_value, target.id]
+            );
+            updates.push({ leaseId: String(target.id), column: 'check_in_meter', role: current ? 'current' : 'next' });
+          }
+        }
+
+        if (updates.length) {
+          autoSync = { synced: true, updates };
+          for (const u of updates) {
+            console.log(`[utility/reading] Auto-sync ${u.column}=${reading_value} on ${u.role} lease ${u.leaseId}`);
+          }
+        } else {
+          autoSync = { synced: false, reason: 'no current or upcoming lease found for this unit' };
+          console.log(`[utility/reading] Auto-sync skipped: no lease for unit ${unitId} at ${readingDate}`);
         }
       }
     }
