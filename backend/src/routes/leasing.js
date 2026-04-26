@@ -485,8 +485,8 @@ router.get('/:id/settlement', authenticate, async (req, res) => {
       .reduce((sum, i) => sum + Number(i.amount_paid), 0);
     const securityDeposit = depositInflow - depositOutflow;
 
-    // Security deposit return = security deposit + tenant credits
-    const securityDepositReturn = securityDeposit + tenantCredits;
+    // Security deposit return = security deposit + tenant credits - outstanding payments
+    const securityDepositReturn = securityDeposit + tenantCredits - outstandingPayments;
 
     res.json({
       code: 200,

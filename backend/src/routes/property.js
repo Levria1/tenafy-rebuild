@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 
 
@@ -89,7 +89,7 @@ router.get('/all', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [properties] = await req.pool.execute(
-      'SELECT id, display_name, street_address, city, status FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
+      'SELECT id, display_name, street_address, city, status, leasing_cost FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
       [orgId]
     );
     res.json({ code: 200, data: properties });
@@ -565,6 +565,30 @@ router.put('/:id/amenities', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Update property amenities error:', error);
     res.status(500).json({ code: 500, message: 'Failed to update property amenities' });
+  }
+});
+
+// PATCH /api/property/:id/leasing-cost - Update property leasing cost (for Vacancy Cost report)
+router.patch('/:id/leasing-cost', authenticate, requirePermission('LANDLORD/REPORT/LEASING_COST_EDIT'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { leasing_cost } = req.body;
+    const orgId = req.user.orgId;
+
+    if (leasing_cost === undefined || leasing_cost === null || isNaN(Number(leasing_cost))) {
+      return res.status(400).json({ code: 400, message: 'leasing_cost must be a valid number' });
+    }
+
+    const cost = Math.max(0, Number(leasing_cost));
+    await req.pool.execute(
+      'UPDATE property SET leasing_cost = ? WHERE id = ? AND org_id = ?',
+      [cost, id, orgId]
+    );
+
+    res.json({ code: 200, message: 'Leasing cost updated' });
+  } catch (error) {
+    console.error('Update leasing cost error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to update leasing cost' });
   }
 });
 

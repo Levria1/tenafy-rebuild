@@ -111,6 +111,7 @@ export const property = {
   getUnitServices: (unitId, params) => api.get(`/api/property/unit/${unitId}/services`, { params }),
   getUnitServiceCosts: (unitId, data, params) => api.post(`/api/property/unit/${unitId}/service-costs`, data, { params }),
   getUnitPropertyInfo: (unitId) => api.get(`/api/property/unit/${unitId}/property-info`),
+  updateLeasingCost: (id, leasing_cost) => api.patch(`/api/property/${id}/leasing-cost`, { leasing_cost }),
 };
 
 export const tenant = {
@@ -365,6 +366,11 @@ export const activityLog = {
   list: (params) => api.get('/api/activity-log/list', { params }),
   getUsers: () => api.get('/api/activity-log/users'),
   getEntityTypes: () => api.get('/api/activity-log/entity-types'),
+};
+
+export const reports = {
+  vacancyCost: (params) => api.get('/api/reports/vacancy-cost', { params }),
+  vacancyCostUnits: (params) => api.get('/api/reports/vacancy-cost/units', { params }),
 };
 
 export const cleaning = {

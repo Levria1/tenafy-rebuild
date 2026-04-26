@@ -111,6 +111,8 @@ const LANDLORD_PERMISSIONS = [
   { key: 'LANDLORD/CHAT_SETTINGS_VIEW',    label: 'View Chat Settings',   group: 'Chatbot' },
   { key: 'LANDLORD/CHAT_SETTINGS_EDIT',    label: 'Edit Chat Settings',   group: 'Chatbot' },
   { key: 'LANDLORD/CHAT_ANALYTICS_VIEW',   label: 'View Chat Analytics',  group: 'Chatbot' },
+  // Reports
+  { key: 'LANDLORD/REPORT/LEASING_COST_EDIT', label: 'Edit Leasing Cost (Vacancy Report)', group: 'Reports' },
 ];
 
 // POST /api/role/list - List roles

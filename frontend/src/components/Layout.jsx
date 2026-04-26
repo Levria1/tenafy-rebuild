@@ -152,6 +152,7 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     label: 'Reports',
     children: [
       { key: '/reports/user-logs', label: <Link href="/reports/user-logs">User Logs</Link> },
+      { key: '/reports/vacancy-cost', label: <Link href="/reports/vacancy-cost">Vacancy Cost</Link> },
     ],
   });
 
