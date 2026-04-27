@@ -86,7 +86,7 @@ END`;
 router.post('/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status, startDate, endDate, type, tenantStatus, propertyId, unitId, sortField, sortOrder } = req.body || {};
+    const { search, status, startDate, endDate, type, tenantStatus, propertyId, unitId, bookingPlatformId, sortField, sortOrder } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
@@ -119,6 +119,10 @@ router.post('/list', authenticate, async (req, res) => {
     if (unitId) {
       whereClause += ' AND l.unit_id = ?';
       params.push(unitId);
+    }
+    if (bookingPlatformId) {
+      whereClause += ' AND l.booking_platform_id = ?';
+      params.push(bookingPlatformId);
     }
     if (startDate) {
       whereClause += ' AND l.start_date >= ?';

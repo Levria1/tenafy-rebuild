@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
 import MainLayout, { useAuth } from '../../components/Layout';
-import { leasing, property as propertyApi } from '../../lib/api';
+import { leasing, property as propertyApi, bookingPlatform as bookingPlatformApi } from '../../lib/api';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
 
@@ -36,13 +36,23 @@ export default function LeasingPage() {
   const [filterTenantStatus, setFilterTenantStatus] = useState(null);
   const [filterProperty, setFilterProperty] = useState(null);
   const [filterUnit, setFilterUnit] = useState(null);
+  const [filterBookingPlatform, setFilterBookingPlatform] = useState(null);
   const [units, setUnits] = useState([]);
   const [unitsLoading, setUnitsLoading] = useState(false);
+  const [bookingPlatforms, setBookingPlatforms] = useState([]);
   const [filters, setFilters] = useState({});
 
   useEffect(() => {
     loadProperties();
+    loadBookingPlatforms();
   }, []);
+
+  const loadBookingPlatforms = async () => {
+    try {
+      const res = await bookingPlatformApi.list();
+      if (res.data.code === 200) setBookingPlatforms(res.data.data || []);
+    } catch (e) { /* ignore */ }
+  };
 
   useEffect(() => {
     loadLeases();
@@ -121,7 +131,7 @@ export default function LeasingPage() {
   };
 
   // Filter
-  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterProperty, filterUnit].filter(v => v !== null).length;
+  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterProperty, filterUnit, filterBookingPlatform].filter(v => v !== null).length;
 
   const applyFilters = () => {
     const f = {};
@@ -130,6 +140,7 @@ export default function LeasingPage() {
     if (filterTenantStatus !== null) f.tenantStatus = filterTenantStatus;
     if (filterProperty !== null) f.propertyId = filterProperty;
     if (filterUnit !== null) f.unitId = filterUnit;
+    if (filterBookingPlatform !== null) f.bookingPlatformId = filterBookingPlatform;
     setFilters(f);
     setPagination(p => ({ ...p, current: 1 }));
     setFilterOpen(false);
@@ -141,6 +152,7 @@ export default function LeasingPage() {
     setFilterTenantStatus(null);
     setFilterProperty(null);
     setFilterUnit(null);
+    setFilterBookingPlatform(null);
     setUnits([]);
     setFilters({});
     setPagination(p => ({ ...p, current: 1 }));
@@ -227,6 +239,24 @@ export default function LeasingPage() {
           </Select>
         </div>
       )}
+
+      {/* Booking Platform */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Booking Platform</div>
+        <Select
+          placeholder="All Booking Platforms"
+          allowClear
+          style={{ width: '100%' }}
+          value={filterBookingPlatform}
+          onChange={(v) => setFilterBookingPlatform(v ?? null)}
+          showSearch
+          optionFilterProp="children"
+        >
+          {bookingPlatforms.map(bp => (
+            <Select.Option key={bp.id} value={bp.id}>{bp.name}</Select.Option>
+          ))}
+        </Select>
+      </div>
 
       <Divider style={{ margin: '12px 0' }} />
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>

@@ -263,7 +263,9 @@ function CalendarInner() {
   const headerHeight = 36;
   const rowHeight = 36;
   const unitColWidth = 220;
-  const tenantColWidth = 220;
+  const tenantColWidth = 160;
+  const endDateColWidth = 80;
+  const statusColWidth = 60;
 
   return (
     <MainLayout>
@@ -349,7 +351,9 @@ function CalendarInner() {
                 <th style={{ position: 'sticky', left: unitColWidth, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: tenantColWidth, minWidth: tenantColWidth }}>
                   TENANT
                 </th>
-                <th style={{ position: 'sticky', left: unitColWidth + tenantColWidth, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '2px solid #e8e8e8', textAlign: 'right', fontSize: 12, fontWeight: 700, minWidth: 80 }}>
+                <th style={{ position: 'sticky', left: unitColWidth + tenantColWidth, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: endDateColWidth, minWidth: endDateColWidth }} />
+                <th style={{ position: 'sticky', left: unitColWidth + tenantColWidth + endDateColWidth, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: statusColWidth, minWidth: statusColWidth }} />
+                <th style={{ position: 'sticky', left: unitColWidth + tenantColWidth + endDateColWidth + statusColWidth, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '2px solid #e8e8e8', textAlign: 'right', fontSize: 12, fontWeight: 700, minWidth: 80 }}>
                   RENT
                 </th>
                 {months.map((m, i) => {
@@ -365,7 +369,7 @@ function CalendarInner() {
             <tbody>
               {/* Count row */}
               <tr style={{ background: '#fafafa', borderBottom: '2px solid #e8e8e8' }}>
-                <td colSpan={3} style={{ position: 'sticky', left: 0, zIndex: 1, background: '#fafafa', padding: '4px 12px', borderRight: '2px solid #e8e8e8', fontSize: 11, fontWeight: 600, color: '#666' }}>
+                <td colSpan={5} style={{ position: 'sticky', left: 0, zIndex: 1, background: '#fafafa', padding: '4px 12px', borderRight: '2px solid #e8e8e8', fontSize: 11, fontWeight: 600, color: '#666' }}>
                   {statusFilter ? `${statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)} Count` : 'Unit Count'}
                 </td>
                 {months.map((m, mi) => {
@@ -397,12 +401,22 @@ function CalendarInner() {
                     </td>
                     <td style={{ position: 'sticky', left: unitColWidth, zIndex: 1, background: '#fff', padding: '6px 12px', borderRight: '1px solid #e8e8e8', borderBottom: '1px solid #f0f0f0', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: tenantColWidth }}>
                       {unit.current_tenant
-                        ? <Tooltip title={CONTRACT_TYPE_LABEL[unit.current_contract_type] ? `Tenant Status: ${CONTRACT_TYPE_LABEL[unit.current_contract_type]} (${CONTRACT_TYPE_MAP[unit.current_contract_type]})` : 'No tenant status set'}>
-                            <span>{unit.current_tenant}{unit.current_end_date ? <span style={{ color: '#999', marginLeft: 4 }}>[{toDate(unit.current_end_date).format('MMM D').toUpperCase()}]</span> : null}{CONTRACT_TYPE_MAP[unit.current_contract_type] ? <span style={{ color: '#999', marginLeft: 4 }}>({CONTRACT_TYPE_MAP[unit.current_contract_type]})</span> : null}</span>
-                          </Tooltip>
+                        ? <span>{unit.current_tenant}</span>
                         : <span style={{ color: '#ccc' }}>—</span>}
                     </td>
-                    <td style={{ position: 'sticky', left: unitColWidth + tenantColWidth, zIndex: 1, background: '#fff', padding: '6px 12px', borderRight: '2px solid #e8e8e8', borderBottom: '1px solid #f0f0f0', fontSize: 12, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <td style={{ position: 'sticky', left: unitColWidth + tenantColWidth, zIndex: 1, background: '#fff', padding: '6px 12px', borderRight: '1px solid #e8e8e8', borderBottom: '1px solid #f0f0f0', fontSize: 12, whiteSpace: 'nowrap', color: '#999', width: endDateColWidth, minWidth: endDateColWidth }}>
+                      {unit.current_tenant && unit.current_end_date
+                        ? toDate(unit.current_end_date).format('MMM D').toUpperCase()
+                        : ''}
+                    </td>
+                    <td style={{ position: 'sticky', left: unitColWidth + tenantColWidth + endDateColWidth, zIndex: 1, background: '#fff', padding: '6px 12px', borderRight: '1px solid #e8e8e8', borderBottom: '1px solid #f0f0f0', fontSize: 12, whiteSpace: 'nowrap', color: '#999', width: statusColWidth, minWidth: statusColWidth }}>
+                      {unit.current_tenant && CONTRACT_TYPE_MAP[unit.current_contract_type]
+                        ? <Tooltip title={CONTRACT_TYPE_LABEL[unit.current_contract_type] ? `Tenant Status: ${CONTRACT_TYPE_LABEL[unit.current_contract_type]} (${CONTRACT_TYPE_MAP[unit.current_contract_type]})` : 'No tenant status set'}>
+                            <span>{CONTRACT_TYPE_MAP[unit.current_contract_type]}</span>
+                          </Tooltip>
+                        : ''}
+                    </td>
+                    <td style={{ position: 'sticky', left: unitColWidth + tenantColWidth + endDateColWidth + statusColWidth, zIndex: 1, background: '#fff', padding: '6px 12px', borderRight: '2px solid #e8e8e8', borderBottom: '1px solid #f0f0f0', fontSize: 12, textAlign: 'right', whiteSpace: 'nowrap' }}>
                       {unit.current_rent ? `$${Number(unit.current_rent).toLocaleString()}` : <span style={{ color: '#ccc' }}>—</span>}
                     </td>
                     {months.map((m, mi) => {

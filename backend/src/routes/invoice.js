@@ -9,7 +9,7 @@ const { generateInvoiceCode } = require('../utils/sequenceCode');
 router.post('/invoices', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, searchFields, status, tenantId, propertyId, startDate, endDate, type, tenantStatus, category, leasing_id } = req.body || {};
+    const { search, searchFields, status, tenantId, propertyId, startDate, endDate, type, tenantStatus, category, leasing_id, bookingPlatformId } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
@@ -101,6 +101,10 @@ router.post('/invoices', authenticate, async (req, res) => {
       whereClause += ' AND i.leasing_id = ?';
       params.push(leasing_id);
     }
+    if (bookingPlatformId) {
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing lf WHERE lf.id = i.leasing_id AND lf.booking_platform_id = ?)';
+      params.push(bookingPlatformId);
+    }
     if (startDate) {
       whereClause += ' AND i.due_on >= ?';
       params.push(startDate);
@@ -114,6 +118,7 @@ router.post('/invoices', authenticate, async (req, res) => {
       `SELECT i.*, t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               p.display_name as property_name, u.name as unit_name, cs.name as category_name,
               bp.name as booking_platform_name, sa.name as sales_agent_name,
+              lbp.name as lease_booking_platform_name,
               COALESCE(paid.total_paid, 0) as amount_paid,
               CASE i.status
                 WHEN 1 THEN 0
@@ -130,6 +135,8 @@ router.post('/invoices', authenticate, async (req, res) => {
        LEFT JOIN category_setting cs ON i.category = cs.id
        LEFT JOIN booking_platform bp ON i.booking_platform_id = bp.id
        LEFT JOIN sales_agent sa ON i.sales_agent_id = sa.id
+       LEFT JOIN leasing l ON i.leasing_id = l.id
+       LEFT JOIN booking_platform lbp ON l.booking_platform_id = lbp.id
        LEFT JOIN (
          SELECT al.invoice_code, a.org_id, SUM(al.amount) as total_paid
          FROM accounting_line al

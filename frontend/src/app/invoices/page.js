@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
 import MainLayout, { useAuth } from '../../components/Layout';
-import { invoice, accountingApi, property as propertyApi, pdf } from '../../lib/api';
+import { invoice, accountingApi, property as propertyApi, pdf, bookingPlatform as bookingPlatformApi } from '../../lib/api';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
 
@@ -84,6 +84,8 @@ export default function InvoicesPage() {
   const [filterTenantStatus, setFilterTenantStatus] = useState(null);
   const [filterCategory, setFilterCategory] = useState(null);
   const [filterProperty, setFilterProperty] = useState(null);
+  const [filterBookingPlatform, setFilterBookingPlatform] = useState(null);
+  const [bookingPlatforms, setBookingPlatforms] = useState([]);
   const [filters, setFilters] = useState({});
 
   useEffect(() => {
@@ -96,12 +98,14 @@ export default function InvoicesPage() {
 
   const loadSettings = async () => {
     try {
-      const [catRes, propRes] = await Promise.all([
+      const [catRes, propRes, bpRes] = await Promise.all([
         accountingApi.getCategories(),
         propertyApi.getAll(),
+        bookingPlatformApi.list(),
       ]);
       if (catRes.data.code === 200) setCategories(catRes.data.data || []);
       if (propRes.data.code === 200) setProperties(propRes.data.data || []);
+      if (bpRes.data.code === 200) setBookingPlatforms(bpRes.data.data || []);
     } catch (e) { /* ignore */ }
   };
 
@@ -161,7 +165,7 @@ export default function InvoicesPage() {
   ];
 
   // Filter
-  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterCategory, filterProperty].filter(v => v !== null).length;
+  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterCategory, filterProperty, filterBookingPlatform].filter(v => v !== null).length;
 
   const applyFilters = () => {
     const f = {};
@@ -170,6 +174,7 @@ export default function InvoicesPage() {
     if (filterTenantStatus !== null) f.tenantStatus = filterTenantStatus;
     if (filterCategory !== null) f.category = filterCategory;
     if (filterProperty !== null) f.propertyId = filterProperty;
+    if (filterBookingPlatform !== null) f.bookingPlatformId = filterBookingPlatform;
     setFilters(f);
     setPagination(p => ({ ...p, current: 1 }));
     setFilterOpen(false);
@@ -181,6 +186,7 @@ export default function InvoicesPage() {
     setFilterTenantStatus(null);
     setFilterCategory(null);
     setFilterProperty(null);
+    setFilterBookingPlatform(null);
     setFilters({});
     setPagination(p => ({ ...p, current: 1 }));
   };
@@ -254,6 +260,24 @@ export default function InvoicesPage() {
         >
           {properties.map(p => (
             <Select.Option key={p.id} value={p.id}>{p.display_name}</Select.Option>
+          ))}
+        </Select>
+      </div>
+
+      {/* Booking Platform */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Booking Platform</div>
+        <Select
+          placeholder="All Booking Platforms"
+          allowClear
+          style={{ width: '100%' }}
+          value={filterBookingPlatform}
+          onChange={(v) => setFilterBookingPlatform(v ?? null)}
+          showSearch
+          optionFilterProp="children"
+        >
+          {bookingPlatforms.map(bp => (
+            <Select.Option key={bp.id} value={bp.id}>{bp.name}</Select.Option>
           ))}
         </Select>
       </div>
@@ -371,6 +395,10 @@ export default function InvoicesPage() {
       },
     },
     {
+      title: 'BOOKING PLATFORM', dataIndex: 'lease_booking_platform_name', key: 'lease_booking_platform', width: 150,
+      render: (v) => v || '-',
+    },
+    {
       title: 'PROPERTY (Unit)', dataIndex: 'property_unit', key: 'property_unit', width: 200,
       sorter: true,
       sortOrder: sortInfo.field === 'property_unit' ? sortInfo.order : null,
@@ -470,6 +498,14 @@ export default function InvoicesPage() {
         {contactName && (
           <div style={{ marginBottom: 4 }}>
             <Text style={{ color: '#333' }}>{contactName}</Text>
+          </div>
+        )}
+
+        {/* Booking platform */}
+        {record.lease_booking_platform_name && (
+          <div style={{ marginBottom: 4 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>Booking: </Text>
+            <Text style={{ fontSize: 12 }}>{record.lease_booking_platform_name}</Text>
           </div>
         )}
 

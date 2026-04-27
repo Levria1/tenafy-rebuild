@@ -5,7 +5,7 @@ import { Table, Card, Select, DatePicker, Button, InputNumber, message, Typograp
 import { ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { reports, property as propertyApi } from '../../../lib/api';
-import { useAuth } from '../../../components/Layout';
+import MainLayout, { useAuth } from '../../../components/Layout';
 import useIsMobile from '../../../hooks/useIsMobile';
 import MobileCardList from '../../../components/mobile/MobileCardList';
 
@@ -539,17 +539,42 @@ export default function VacancyCostPage() {
       children: (
         <>
           <Card size="small" style={{ marginBottom: 16 }}>
-            <Select
-              mode="multiple"
-              placeholder="All Units"
-              value={selectedUnits}
-              onChange={(v) => setSelectedUnits(v)}
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              style={{ width: isMobile ? '100%' : 340 }}
-              options={availableUnits}
-            />
+            <div style={isMobile
+              ? { display: 'flex', flexDirection: 'column', gap: 8 }
+              : { display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }
+            }>
+              <Select
+                mode="multiple"
+                placeholder="All Properties"
+                value={selectedProperties}
+                onChange={handlePropertyChange}
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                style={{ width: isMobile ? '100%' : 280 }}
+                options={properties.map(p => ({
+                  label: p.display_name,
+                  value: String(p.id),
+                }))}
+              />
+              <Select
+                mode="multiple"
+                placeholder={selectedProperties.length === 0 ? 'Select a property first' : 'All Units'}
+                value={selectedUnits}
+                onChange={(v) => setSelectedUnits(v)}
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                disabled={selectedProperties.length === 0}
+                style={{ width: isMobile ? '100%' : 340 }}
+                options={availableUnits.map(u => ({
+                  label: selectedProperties.length === 1
+                    ? u.label.split(' — ').slice(1).join(' — ') || u.label
+                    : u.label,
+                  value: u.value,
+                }))}
+              />
+            </div>
           </Card>
           {isMobile ? (
             <MobileCardList
@@ -608,10 +633,11 @@ export default function VacancyCostPage() {
   ];
 
   return (
-    <div style={{ padding: 0 }}>
-      <h1 style={{ marginBottom: 20, fontSize: 22 }}>Vacancy Cost</h1>
+    <MainLayout>
+      <div style={{ padding: 0 }}>
+        <h1 style={{ marginBottom: 20, fontSize: 22 }}>Vacancy Cost</h1>
 
-      {activeTab !== 'setup' && (
+        {activeTab !== 'setup' && (
         <Card size="small" style={{ marginBottom: 16 }}>
           <div style={isMobile
             ? { display: 'flex', flexDirection: 'column', gap: 8 }
@@ -623,20 +649,22 @@ export default function VacancyCostPage() {
               style={{ width: isMobile ? '100%' : 260 }}
               allowClear={false}
             />
-            <Select
-              mode="multiple"
-              placeholder="All Properties"
-              value={selectedProperties}
-              onChange={handlePropertyChange}
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              style={{ width: isMobile ? '100%' : 280 }}
-              options={properties.map(p => ({
-                label: p.display_name,
-                value: String(p.id),
-              }))}
-            />
+            {activeTab !== 'units' && (
+              <Select
+                mode="multiple"
+                placeholder="All Properties"
+                value={selectedProperties}
+                onChange={handlePropertyChange}
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                style={{ width: isMobile ? '100%' : 280 }}
+                options={properties.map(p => ({
+                  label: p.display_name,
+                  value: String(p.id),
+                }))}
+              />
+            )}
             <Button
               icon={<ReloadOutlined />}
               onClick={handleReset}
@@ -648,11 +676,12 @@ export default function VacancyCostPage() {
         </Card>
       )}
 
-      <Tabs
-        activeKey={activeTab}
-        onChange={handleTabChange}
-        items={tabItems}
-      />
-    </div>
+        <Tabs
+          activeKey={activeTab}
+          onChange={handleTabChange}
+          items={tabItems}
+        />
+      </div>
+    </MainLayout>
   );
 }
