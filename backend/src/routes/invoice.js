@@ -26,6 +26,7 @@ router.post('/invoices', authenticate, async (req, res) => {
       'amount': 'i.amount',
       'outstanding': 'outstanding',
       'days_late': 'days_late',
+      'lease_booking_platform': 'lbp.name',
     };
     const sortBy = req.query.sort || req.body.sort;
     const sortOrder = (req.query.order || req.body.order || '').toLowerCase() === 'ascend' ? 'ASC' : 'DESC';

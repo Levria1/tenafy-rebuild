@@ -396,6 +396,8 @@ export default function InvoicesPage() {
     },
     {
       title: 'BOOKING PLATFORM', dataIndex: 'lease_booking_platform_name', key: 'lease_booking_platform', width: 150,
+      sorter: true,
+      sortOrder: sortInfo.field === 'lease_booking_platform' ? sortInfo.order : null,
       render: (v) => v || '-',
     },
     {

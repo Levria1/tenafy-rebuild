@@ -6,6 +6,7 @@ import { SearchOutlined, ReloadOutlined, ExpandOutlined } from '@ant-design/icon
 import { activityLog } from '../../../lib/api';
 import useIsMobile from '../../../hooks/useIsMobile';
 import MobileCardList from '../../../components/mobile/MobileCardList';
+import MainLayout from '../../../components/Layout';
 import dayjs from 'dayjs';
 
 const { RangePicker } = DatePicker;
@@ -176,8 +177,9 @@ export default function UserLogsPage() {
   };
 
   return (
-    <div style={{ padding: 0 }}>
-      <h1 style={{ marginBottom: 20, fontSize: 22 }}>User Logs</h1>
+    <MainLayout>
+      <div style={{ padding: 0 }}>
+        <h1 style={{ marginBottom: 20, fontSize: 22 }}>User Logs</h1>
 
       <Card size="small" style={{ marginBottom: 16 }}>
         <div style={isMobile
@@ -280,6 +282,7 @@ export default function UserLogsPage() {
           scroll={{ x: 1100 }}
         />
       )}
-    </div>
+      </div>
+    </MainLayout>
   );
 }
