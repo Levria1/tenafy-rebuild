@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, Suspense } from 'react';
 import { Select, Spin, Input, DatePicker, Tooltip } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import Link from 'next/link';
 import MainLayout from '../../../components/Layout';
 import { leasing, property as propertyApi } from '../../../lib/api';
 
@@ -240,9 +241,9 @@ function CalendarInner() {
     );
   };
 
-  // Get the primary tenant name to display in the cell
+  // Get the primary tenant name to display in the cell, plus the lease id for linking
   const getCellLabel = (cellInfo, month) => {
-    if (cellInfo.leases.length === 0) return '';
+    if (cellInfo.leases.length === 0) return { text: '', leaseId: null };
     // Show the lease that covers most of this month
     const monthStart = month.startOf('month');
     const monthEnd = month.endOf('month');
@@ -257,7 +258,8 @@ function CalendarInner() {
       if (days > bestDays) { bestDays = days; best = l; }
     }
     const ct = CONTRACT_TYPE_MAP[best.contract_type];
-    return ct ? `${best.tenant_name} (${ct})` : best.tenant_name;
+    const text = ct ? `${best.tenant_name} (${ct})` : best.tenant_name;
+    return { text, leaseId: best.id || null };
   };
 
   const headerHeight = 36;
@@ -401,7 +403,9 @@ function CalendarInner() {
                     </td>
                     <td style={{ position: 'sticky', left: unitColWidth, zIndex: 1, background: '#fff', padding: '6px 12px', borderRight: '1px solid #e8e8e8', borderBottom: '1px solid #f0f0f0', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: tenantColWidth }}>
                       {unit.current_tenant
-                        ? <span>{unit.current_tenant}</span>
+                        ? (unit.current_lease_id
+                            ? <Link href={`/leasing/${unit.current_lease_id}/detail`} style={{ color: '#1890ff' }}>{unit.current_tenant}</Link>
+                            : <span>{unit.current_tenant}</span>)
                         : <span style={{ color: '#ccc' }}>—</span>}
                     </td>
                     <td style={{ position: 'sticky', left: unitColWidth + tenantColWidth, zIndex: 1, background: '#fff', padding: '6px 12px', borderRight: '1px solid #e8e8e8', borderBottom: '1px solid #f0f0f0', fontSize: 12, whiteSpace: 'nowrap', color: '#999', width: endDateColWidth, minWidth: endDateColWidth }}>
@@ -439,7 +443,9 @@ function CalendarInner() {
                             maxWidth: 130,
                             outline: isCurrentMonth ? '2px solid #1677ff20' : 'none',
                           }}>
-                            {label}
+                            {label.text && label.leaseId
+                              ? <Link href={`/leasing/${label.leaseId}/detail`} style={{ color: 'inherit', textDecoration: 'none' }}>{label.text}</Link>
+                              : label.text}
                           </td>
                         </Tooltip>
                       );

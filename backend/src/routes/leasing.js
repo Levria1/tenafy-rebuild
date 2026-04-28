@@ -216,6 +216,7 @@ router.get('/calendar', authenticate, async (req, res) => {
     // Get units with current active tenant via subquery
     const [units] = await req.pool.execute(
       `SELECT DISTINCT u.id AS unit_id, u.name AS unit_name, p.id AS property_id, p.display_name AS property_name,
+              cur_l.id AS current_lease_id,
               cur_t.first_name AS current_tenant_first, cur_t.last_name AS current_tenant_last,
               cur_t.company_name AS current_tenant_company, cur_t.type AS current_tenant_type,
               cur_l.amount AS current_rent, cur_l.contract_type AS current_contract_type, cur_l.end_date AS current_end_date
@@ -291,6 +292,7 @@ router.get('/calendar', authenticate, async (req, res) => {
         id: String(u.unit_id),
         name: u.unit_name,
         current_tenant: currentTenantName,
+        current_lease_id: u.current_lease_id ? String(u.current_lease_id) : null,
         current_contract_type: u.current_contract_type ?? null,
         current_end_date: u.current_end_date || null,
         current_rent: u.current_rent || null,

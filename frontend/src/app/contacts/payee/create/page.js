@@ -18,7 +18,7 @@ export default function PayeeCreatePage() {
       message.success('Payee created successfully');
       router.push('/contacts?tab=payees');
     } catch (error) {
-      message.error('Failed to create payee');
+      message.error(error.response?.data?.message || 'Failed to create payee');
     } finally {
       setLoading(false);
     }

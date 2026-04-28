@@ -88,6 +88,40 @@ export default function InvoicesPage() {
   const [bookingPlatforms, setBookingPlatforms] = useState([]);
   const [filters, setFilters] = useState({});
 
+  // Column visibility (persisted to localStorage)
+  const ALL_COLUMNS = [
+    { key: 'status', label: 'Status' },
+    { key: 'invoice_code', label: 'Invoice #' },
+    { key: 'due_on', label: 'Due Date' },
+    { key: 'contact', label: 'Contact' },
+    { key: 'lease_booking_platform', label: 'Booking Platform' },
+    { key: 'property_unit', label: 'Property (Unit)' },
+    { key: 'total_paid', label: 'Total / Paid' },
+    { key: 'outstanding', label: 'Outstanding' },
+    { key: 'days_late', label: 'Days Late' },
+    { key: 'category', label: 'Category' },
+    { key: 'note', label: 'Notes' },
+    { key: 'actions', label: 'Action' },
+  ];
+  const STORAGE_KEY = 'invoices.visibleColumns.v1';
+  const [visibleColumns, setVisibleColumns] = useState(ALL_COLUMNS.map(c => c.key));
+  const [columnsPopoverOpen, setColumnsPopoverOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) setVisibleColumns(parsed);
+      }
+    } catch (e) { /* ignore */ }
+  }, []);
+
+  const handleColumnsChange = (vals) => {
+    setVisibleColumns(vals);
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(vals)); } catch (e) { /* ignore */ }
+  };
+
   useEffect(() => {
     loadSettings();
   }, []);
@@ -290,6 +324,25 @@ export default function InvoicesPage() {
     </div>
   );
 
+  // Columns visibility toggle content
+  const columnsPopoverContent = (
+    <div style={{ width: 200, padding: '4px 0' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+        <Button size="small" onClick={() => handleColumnsChange(ALL_COLUMNS.map(c => c.key))}>All</Button>
+        <Button size="small" onClick={() => handleColumnsChange([])}>None</Button>
+      </div>
+      <Checkbox.Group
+        value={visibleColumns}
+        onChange={handleColumnsChange}
+        style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+      >
+        {ALL_COLUMNS.map(opt => (
+          <Checkbox key={opt.key} value={opt.key}>{opt.label}</Checkbox>
+        ))}
+      </Checkbox.Group>
+    </div>
+  );
+
   // Search field checkboxes dropdown content
   const searchFieldContent = (
     <div style={{ padding: '4px 0' }}>
@@ -395,10 +448,11 @@ export default function InvoicesPage() {
       },
     },
     {
-      title: 'BOOKING PLATFORM', dataIndex: 'lease_booking_platform_name', key: 'lease_booking_platform', width: 150,
+      title: 'BOOKING PLATFORM', dataIndex: 'lease_booking_platform_name', key: 'lease_booking_platform', width: 110,
       sorter: true,
       sortOrder: sortInfo.field === 'lease_booking_platform' ? sortInfo.order : null,
-      render: (v) => v || '-',
+      ellipsis: { showTitle: false },
+      render: (v) => v ? <Tooltip title={v} placement="topLeft">{v}</Tooltip> : '-',
     },
     {
       title: 'PROPERTY (Unit)', dataIndex: 'property_unit', key: 'property_unit', width: 200,
@@ -599,6 +653,9 @@ export default function InvoicesPage() {
             <Popover content={filterContent} title="Filters" trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
               <Button icon={<FilterOutlined />} size="small">Filter {activeFilterCount > 0 ? activeFilterCount : '0'}</Button>
             </Popover>
+            <Popover content={columnsPopoverContent} title="Columns" trigger="click" open={columnsPopoverOpen} onOpenChange={setColumnsPopoverOpen} placement="bottomRight">
+              <Button size="small">Columns</Button>
+            </Popover>
           </div>
         </div>
       ) : (
@@ -628,6 +685,9 @@ export default function InvoicesPage() {
             />
             <Popover content={filterContent} title="Filters" trigger="click" open={filterOpen} onOpenChange={setFilterOpen} placement="bottomRight">
               <Button icon={<FilterOutlined />}>Filter {activeFilterCount > 0 ? activeFilterCount : '0'}</Button>
+            </Popover>
+            <Popover content={columnsPopoverContent} title="Columns" trigger="click" open={columnsPopoverOpen} onOpenChange={setColumnsPopoverOpen} placement="bottomRight">
+              <Button>Columns</Button>
             </Popover>
             {canCreate && (
               <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/invoices/create')}>
@@ -687,7 +747,7 @@ export default function InvoicesPage() {
         />
       ) : (
         <Table
-          columns={columns}
+          columns={columns.filter(c => visibleColumns.includes(c.key))}
           dataSource={invoices}
           rowKey="id"
           loading={loading}

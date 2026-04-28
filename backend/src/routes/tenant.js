@@ -151,6 +151,18 @@ router.post('/', authenticate, async (req, res) => {
             company_name, type, sex, id_card, profession, budget, employer, salary,
             emergency_contact, referral, notes, cleaning_notes, status, lead_source_id } = req.body;
     const orgId = req.user.orgId;
+
+    // Reject duplicate primary email (case-insensitive, ignoring soft-deleted rows)
+    if (email && String(email).trim()) {
+      const [dup] = await req.pool.execute(
+        'SELECT id FROM tenant WHERE org_id = ? AND deleted_at IS NULL AND LOWER(email) = LOWER(?) LIMIT 1',
+        [orgId, String(email).trim()]
+      );
+      if (dup.length > 0) {
+        return res.status(400).json({ code: 400, message: 'This email address is already in use' });
+      }
+    }
+
     const tenantId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
     await req.pool.execute(
