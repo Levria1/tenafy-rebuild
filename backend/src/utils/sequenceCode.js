@@ -12,11 +12,21 @@ const SEQUENCE_TABLE_MAP = {
 /**
  * Extract the numeric suffix from a code string.
  * e.g. "TRIV31399" → 31399, "LEA0000002105" → 2105, "INV-1234" → 1234
+ *
+ * Guard: ignore numbers above INT_MAX. The `sequence.seq_next` column is INT
+ * (max 2,147,483,647). Legacy/imported orgs sometimes have garbage codes whose
+ * numeric tail is a snowflake ID (~19 digits) — extracting that and writing
+ * it to seq_next overflows the column and breaks all future code generation.
  */
+const SEQ_NEXT_INT_MAX = 2_000_000_000; // headroom under signed INT max
+
 function extractNumber(code) {
   if (!code) return 0;
   const match = code.match(/(\d+)\s*$/);
-  return match ? parseInt(match[1], 10) : 0;
+  if (!match) return 0;
+  const n = parseInt(match[1], 10);
+  if (!Number.isFinite(n) || n > SEQ_NEXT_INT_MAX) return 0;
+  return n;
 }
 
 /**
