@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload, Spin } from 'antd';
+import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload, Spin, Checkbox } from 'antd';
 import { UploadOutlined, CloudUploadOutlined, UserOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../../components/Layout';
@@ -220,6 +220,9 @@ export default function TenantEditPage() {
                     <Label>PHONE</Label>
                     <Form.Item name="phone" noStyle>
                       <Input placeholder="Please input phone number" />
+                    </Form.Item>
+                    <Form.Item name="whatsapp_opt_out" valuePropName="checked" noStyle>
+                      <Checkbox style={{ marginTop: 6 }}>Opt out of WhatsApp notifications</Checkbox>
                     </Form.Item>
                   </div>
                 </div>

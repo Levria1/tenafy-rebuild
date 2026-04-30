@@ -282,6 +282,20 @@ export const emailTemplate = {
   preview: (data) => api.post('/api/email-template/preview', data),
 };
 
+export const whatsappTemplate = {
+  list: (data, params) => api.post('/api/whatsapp-template/list', data, { params }),
+  getAll: (params) => api.get('/api/whatsapp-template/all', { params }),
+  getTypes: () => api.get('/api/whatsapp-template/types/get'),
+  getVariables: () => api.get('/api/whatsapp-template/variable/get'),
+  get: (id) => api.get(`/api/whatsapp-template/${id}`),
+  create: (data) => api.post('/api/whatsapp-template', data),
+  update: (id, data) => api.put(`/api/whatsapp-template/${id}`, data),
+  delete: (id) => api.delete(`/api/whatsapp-template/${id}`),
+  send: (data) => api.post('/api/whatsapp-template/send', data),
+  preview: (data) => api.post('/api/whatsapp-template/preview', data),
+  ping: () => api.get('/api/whatsapp-template/connection/ping'),
+};
+
 export const settings = {
   // Categories
   getCategories: () => api.get('/api/user/setting/category/list'),
@@ -320,6 +334,9 @@ export const settings = {
   // Email settings (whitelist)
   getEmailSettings: () => api.get('/api/user/setting/email'),
   updateEmailSettings: (data) => api.put('/api/user/setting/email', data),
+  getWhatsAppSettings: () => api.get('/api/user/setting/whatsapp'),
+  updateWhatsAppSettings: (data) => api.put('/api/user/setting/whatsapp', data),
+  clearWhatsAppKey: () => api.delete('/api/user/setting/whatsapp/key'),
   // API Keys
   checkApiEnabled: () => api.get('/api/user/setting/api-keys/enabled'),
   getApiKeys: () => api.get('/api/user/setting/api-keys'),

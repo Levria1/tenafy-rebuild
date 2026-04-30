@@ -40,6 +40,7 @@ app.use('/api/role', require('./routes/role'));
 app.use('/api/file', require('./routes/file'));
 app.use('/api/amenity', require('./routes/amenity'));
 app.use('/api/email-template', require('./routes/emailTemplate'));
+app.use('/api/whatsapp-template', require('./routes/whatsappTemplate'));
 app.use('/api/smtp-account', require('./routes/smtpAccount'));
 app.use('/api/notification', require('./routes/notification'));
 app.use('/api/tenant-portal', require('./routes/tenantPortal'));

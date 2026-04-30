@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../components/Layout';
-import { settings, user, amenity, role, emailTemplate, smtpAccount, bookingPlatform, salesAgent } from '../../lib/api';
+import { settings, user, amenity, role, emailTemplate, whatsappTemplate, smtpAccount, bookingPlatform, salesAgent } from '../../lib/api';
 import { useCallback } from 'react';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
@@ -28,6 +28,7 @@ function SettingsPage() {
   // amenities managed by AmenitySettings component
   const [roles, setRoles] = useState([]);
   const [emailTemplates, setEmailTemplates] = useState([]);
+  const [whatsappTemplates, setWhatsappTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // Sync tab from URL param
@@ -62,6 +63,9 @@ function SettingsPage() {
       } else if (activeTab === 'emailTemplates') {
         const response = await emailTemplate.list({}, { page: 1, limit: 50 });
         if (response.data.code === 200) setEmailTemplates(response.data.data.content || []);
+      } else if (activeTab === 'whatsappTemplates') {
+        const response = await whatsappTemplate.list({}, { page: 1, limit: 50 });
+        if (response.data.code === 200) setWhatsappTemplates(response.data.data.content || []);
       }
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -349,6 +353,51 @@ function SettingsPage() {
     { key: 'emailSettings', label: 'Settings', children: <EmailWhitelistSettings /> },
   ];
 
+  const whatsappTemplateColumns = [
+    { title: 'Name', dataIndex: 'name', key: 'name' },
+    { title: 'Type', dataIndex: 'type', key: 'type' },
+    { title: 'Default', dataIndex: 'is_default_template', key: 'def',
+      render: (v) => (v === 1 ? <Tag color="green">Default</Tag> : null) },
+    { title: 'Actions', key: 'actions', render: (_, r) => (
+      <Space>
+        {canEditTemplate && <Button type="link" onClick={() => router.push(`/settings/whatsapp-templates/${r.id}/edit`)}>Edit</Button>}
+        {canDeleteTemplate && <Button type="link" danger onClick={async () => {
+          try { await whatsappTemplate.delete(r.id); message.success('Deleted'); loadData(); }
+          catch { message.error('Failed to delete'); }
+        }}>Delete</Button>}
+      </Space>
+    )},
+  ];
+
+  const renderWhatsappTemplateCard = (r) => (
+    <Card size="small" style={{ borderRadius: 8 }}>
+      <div style={{ fontWeight: 500, marginBottom: 4 }}>{r.name}</div>
+      {r.type && <Tag>{r.type}</Tag>}
+      {r.is_default_template === 1 && <Tag color="green">Default</Tag>}
+      <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+        {canEditTemplate && <Button type="link" style={{ padding: 0 }} onClick={() => router.push(`/settings/whatsapp-templates/${r.id}/edit`)}>Edit</Button>}
+        {canDeleteTemplate && <Button type="link" danger style={{ padding: 0 }} onClick={async () => {
+          try { await whatsappTemplate.delete(r.id); message.success('Deleted'); loadData(); }
+          catch { message.error('Failed to delete'); }
+        }}>Delete</Button>}
+      </div>
+    </Card>
+  );
+
+  const whatsappTabs = [
+    { key: 'whatsappTemplates', label: 'WhatsApp Templates', children: (
+      <Card>
+        {canCreateTemplate && <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/whatsapp-templates/create')} block={isMobile}>Add Template</Button></div>}
+        {isMobile ? (
+          <MobileCardList dataSource={whatsappTemplates} renderCard={renderWhatsappTemplateCard} loading={loading} rowKey="id" />
+        ) : (
+          <Table columns={whatsappTemplateColumns} dataSource={whatsappTemplates} rowKey="id" loading={loading} pagination={false} />
+        )}
+      </Card>
+    )},
+    { key: 'whatsappSettings', label: 'Settings', children: <WhatsAppWhitelistSettings /> },
+  ];
+
   const userTabs = [
     ...(canSeeUsers ? [{ key: 'users', label: 'User Management', children: (
       <Card>
@@ -399,6 +448,7 @@ function SettingsPage() {
   const accountingKeys = ['categories', 'payment', 'accounts', 'sequences'];
   const amenityKeys = ['amenities'];
   const emailKeys = ['emailTemplates', 'smtpAccounts', 'emailSettings'];
+  const whatsappKeys = ['whatsappTemplates', 'whatsappSettings'];
   const userKeys = ['users', 'roles'];
   const apiKeyKeys = ['apiKeys'];
   const bookingKeys = ['bookingPlatforms', 'salesAgents', 'leadSources'];
@@ -419,6 +469,9 @@ function SettingsPage() {
   } else if (emailKeys.includes(activeTab)) {
     tabItems = emailTabs;
     pageTitle = 'Email Settings';
+  } else if (whatsappKeys.includes(activeTab)) {
+    tabItems = whatsappTabs;
+    pageTitle = 'WhatsApp Settings';
   } else if (userKeys.includes(activeTab)) {
     tabItems = userTabs;
     pageTitle = 'User Management';
@@ -1526,6 +1579,177 @@ function EmailWhitelistSettings() {
         Save
       </Button>
     </Card>
+  );
+}
+
+function WhatsAppWhitelistSettings() {
+  const [apiUrl, setApiUrl] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [keySet, setKeySet] = useState(false);
+  const [keyMasked, setKeyMasked] = useState('');
+  const [enabled, setEnabled] = useState(false);
+  const [phones, setPhones] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [pingStatus, setPingStatus] = useState(null);
+  const [pinging, setPinging] = useState(false);
+
+  const loadSettings = async () => {
+    try {
+      const r = await settings.getWhatsAppSettings();
+      if (r.data.code === 200) {
+        const d = r.data.data;
+        setApiUrl(d.whatsapp_api_url || '');
+        setKeySet(!!d.whatsapp_api_key_set);
+        setKeyMasked(d.whatsapp_api_key_masked || '');
+        setEnabled(d.whatsapp_whitelist_enabled);
+        setPhones(d.whatsapp_whitelist || '');
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    (async () => {
+      await loadSettings();
+      setLoading(false);
+      handlePing();
+    })();
+  }, []);
+
+  const handlePing = async () => {
+    setPinging(true);
+    try {
+      const r = await whatsappTemplate.ping();
+      setPingStatus(r.data.data || null);
+    } catch {
+      setPingStatus({ configured: false, ok: false, error: 'request failed' });
+    } finally {
+      setPinging(false);
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await settings.updateWhatsAppSettings({
+        whatsapp_api_url: apiUrl,
+        whatsapp_api_key: apiKey, // backend ignores empty string — preserves stored key
+        whatsapp_whitelist_enabled: enabled,
+        whatsapp_whitelist: phones,
+      });
+      message.success('WhatsApp settings saved');
+      setApiKey(''); // clear input — stored value remains
+      await loadSettings();
+      handlePing();
+    } catch (err) {
+      message.error('Failed to save WhatsApp settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClearKey = async () => {
+    try {
+      await settings.clearWhatsAppKey();
+      message.success('API key cleared');
+      setApiKey('');
+      await loadSettings();
+      handlePing();
+    } catch {
+      message.error('Failed to clear key');
+    }
+  };
+
+  if (loading) return <Card loading />;
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="large">
+      <Card>
+        <h3 style={{ marginBottom: 4 }}>Your WhatsApp Connection</h3>
+        <p style={{ color: '#666', marginBottom: 16, fontSize: 13 }}>
+          Each organization runs its own TaneChat WhatsApp instance. Enter the integration URL and API key that <strong>your</strong> TaneChat server is configured with — Tenafy will route this org's WhatsApp sends to that endpoint, completely isolated from other organizations.
+        </p>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'block', marginBottom: 6, fontWeight: 500 }}>Integration URL</label>
+          <Input
+            value={apiUrl}
+            onChange={e => setApiUrl(e.target.value)}
+            placeholder="https://your-tanechat-domain.com/api/integration"
+          />
+          <div style={{ marginTop: 4, color: '#999', fontSize: 12 }}>
+            Don't include a trailing slash. The path must end with <code>/api/integration</code>.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'block', marginBottom: 6, fontWeight: 500 }}>API Key</label>
+          <Input.Password
+            value={apiKey}
+            onChange={e => setApiKey(e.target.value)}
+            placeholder={keySet ? `Stored: ${keyMasked} — leave blank to keep, type to replace` : 'Paste your INTEGRATION_API_KEY'}
+            visibilityToggle
+          />
+          {keySet && (
+            <Button type="link" danger style={{ padding: 0, marginTop: 4, fontSize: 12 }} onClick={handleClearKey}>
+              Clear stored API key
+            </Button>
+          )}
+        </div>
+
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+          <Space>
+            {pingStatus == null ? <Tag>Unknown</Tag>
+              : !pingStatus.configured ? <Tag color="default">Not configured</Tag>
+              : pingStatus.ok ? <Tag color="green">Connected</Tag>
+              : <Tag color="red">Unreachable</Tag>}
+            <Button onClick={handlePing} loading={pinging}>Test Connection</Button>
+          </Space>
+          {pingStatus && pingStatus.configured && !pingStatus.ok && pingStatus.error && (
+            <div style={{ marginTop: 8, color: '#ff4d4f', fontSize: 12 }}>{pingStatus.error}</div>
+          )}
+          {pingStatus && !pingStatus.configured && (
+            <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
+              Save the URL + API key first, then test the connection.
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <Card>
+        <h3 style={{ marginBottom: 4 }}>WhatsApp Whitelist</h3>
+        <p style={{ color: '#666', marginBottom: 20, fontSize: 13 }}>
+          When enabled, WhatsApp messages will only be sent to phone numbers listed below. All other recipients will be silently skipped (and recorded in the whatsapp_log as <code>whitelist_blocked</code>). Use this to safely test sending before going live.
+        </p>
+
+        <div style={{ marginBottom: 20 }}>
+          <Space>
+            <Switch checked={enabled} onChange={setEnabled} />
+            <span style={{ fontWeight: 500 }}>
+              {enabled ? 'Whitelist ON — only whitelisted phones will receive messages' : 'Whitelist OFF — all phones will be sent normally'}
+            </span>
+          </Space>
+        </div>
+
+        {enabled && (
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ display: 'block', marginBottom: 6, fontWeight: 500 }}>Whitelisted Phone Numbers</label>
+            <Input.TextArea
+              rows={6}
+              value={phones}
+              onChange={e => setPhones(e.target.value)}
+              placeholder={"Enter phones with country code, one per line:\n85291234567\n85298765432"}
+              style={{ fontFamily: 'monospace', fontSize: 13 }}
+            />
+            <div style={{ marginTop: 4, color: '#999', fontSize: 12 }}>
+              One number per line. Country code required. Non-digits are ignored on the server.
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <Button type="primary" onClick={handleSave} loading={saving} size="large">Save All WhatsApp Settings</Button>
+    </Space>
   );
 }
 

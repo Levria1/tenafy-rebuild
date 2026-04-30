@@ -644,6 +644,20 @@ async function sendTemplateEmail(pool, orgId, {
     console.error('[EmailService] Failed to write email_log:', logErr.message);
   }
 
+  // 8. Parallel WhatsApp send (best-effort, fire-and-forget)
+  // Looks up its own template in whatsapp_template — silent skip if none exists.
+  // Lazy require avoids a circular dependency (whatsappService imports from this file).
+  try {
+    const { sendTemplateWhatsApp } = require('./whatsappService');
+    sendTemplateWhatsApp(pool, orgId, {
+      templateType, templateId, leaseId, category,
+      dueDate, overdueAmount, invoiceCode, invoiceId,
+      extraVariables,
+    }).catch(err => console.error('[WhatsApp] template send failed:', err.message));
+  } catch (waErr) {
+    console.error('[WhatsApp] sendTemplateWhatsApp dispatch failed:', waErr.message);
+  }
+
   return result || null;
 }
 

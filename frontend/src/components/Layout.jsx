@@ -189,6 +189,20 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     });
   }
 
+  // WhatsApp settings sub-group (reuses email template permission)
+  const whatsappSettingsChildren = [];
+  if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) {
+    whatsappSettingsChildren.push({ key: '/settings?tab=whatsappTemplates', label: <Link href="/settings?tab=whatsappTemplates">WhatsApp Templates</Link> });
+    whatsappSettingsChildren.push({ key: '/settings?tab=whatsappSettings', label: <Link href="/settings?tab=whatsappSettings">Connection & Whitelist</Link> });
+  }
+  if (whatsappSettingsChildren.length > 0) {
+    settingsChildren.push({
+      key: '/settings/whatsapp',
+      label: 'WhatsApp Settings',
+      children: whatsappSettingsChildren,
+    });
+  }
+
   // User Management sub-group
   const canSeeUsers = hasPermission('LANDLORD/USER_LIST');
   const canSeeRoles = hasPermission('LANDLORD/ROLE_LIST');
@@ -529,6 +543,8 @@ function MainLayout({ children }) {
         keys.push('/settings/accounting');
       } else if (['emailTemplates'].includes(tab)) {
         keys.push('/settings/email');
+      } else if (['whatsappTemplates', 'whatsappSettings'].includes(tab)) {
+        keys.push('/settings/whatsapp');
       } else if (['users', 'roles'].includes(tab)) {
         keys.push('/settings/users');
       }

@@ -61,6 +61,116 @@ router.put('/setting/email', authenticate, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// WhatsApp Settings (whitelist) — mirrors email whitelist pattern
+// ---------------------------------------------------------------------------
+
+// GET /api/user/setting/whatsapp
+// Returns per-org WhatsApp config + whitelist. API key is masked unless ?reveal=1.
+router.get('/setting/whatsapp', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[org]] = await req.pool.execute(
+      'SELECT whatsapp_api_url, whatsapp_api_key, whatsapp_whitelist_enabled, whatsapp_whitelist FROM organization WHERE id = ?',
+      [orgId]
+    );
+    if (!org) return res.json({ code: 404, message: 'Organization not found' });
+
+    let enabled = false;
+    if (org.whatsapp_whitelist_enabled) {
+      if (Buffer.isBuffer(org.whatsapp_whitelist_enabled)) {
+        enabled = org.whatsapp_whitelist_enabled[0] === 1;
+      } else {
+        enabled = Boolean(org.whatsapp_whitelist_enabled);
+      }
+    }
+
+    // Mask API key — show only last 4 chars to confirm what's stored
+    const rawKey = org.whatsapp_api_key || '';
+    const maskedKey = rawKey ? '••••••••' + rawKey.slice(-4) : '';
+
+    res.json({
+      code: 200,
+      data: {
+        whatsapp_api_url: org.whatsapp_api_url || '',
+        whatsapp_api_key_masked: maskedKey,
+        whatsapp_api_key_set: !!rawKey,
+        whatsapp_whitelist_enabled: enabled,
+        whatsapp_whitelist: org.whatsapp_whitelist || '',
+      },
+    });
+  } catch (err) {
+    console.error('Get WhatsApp settings error:', err);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// PUT /api/user/setting/whatsapp
+// Accepts: whatsapp_api_url, whatsapp_api_key (optional — only updates if non-empty),
+//          whatsapp_whitelist_enabled, whatsapp_whitelist
+router.put('/setting/whatsapp', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const {
+      whatsapp_api_url,
+      whatsapp_api_key,
+      whatsapp_whitelist_enabled,
+      whatsapp_whitelist,
+    } = req.body;
+
+    // Only update the API key if a non-empty value was sent — lets the UI submit
+    // the form without re-entering the key every time.
+    if (typeof whatsapp_api_key === 'string' && whatsapp_api_key.trim() !== '') {
+      await req.pool.execute(
+        `UPDATE organization
+            SET whatsapp_api_url = ?, whatsapp_api_key = ?,
+                whatsapp_whitelist_enabled = ?, whatsapp_whitelist = ?
+          WHERE id = ?`,
+        [
+          whatsapp_api_url || null,
+          whatsapp_api_key.trim(),
+          whatsapp_whitelist_enabled ? 1 : 0,
+          whatsapp_whitelist || null,
+          orgId,
+        ]
+      );
+    } else {
+      await req.pool.execute(
+        `UPDATE organization
+            SET whatsapp_api_url = ?,
+                whatsapp_whitelist_enabled = ?, whatsapp_whitelist = ?
+          WHERE id = ?`,
+        [
+          whatsapp_api_url || null,
+          whatsapp_whitelist_enabled ? 1 : 0,
+          whatsapp_whitelist || null,
+          orgId,
+        ]
+      );
+    }
+
+    res.json({ code: 200, message: 'WhatsApp settings updated' });
+  } catch (err) {
+    console.error('Update WhatsApp settings error:', err);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// DELETE /api/user/setting/whatsapp/key — clear the stored API key (e.g. rotating)
+router.delete('/setting/whatsapp/key', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    await req.pool.execute(
+      'UPDATE organization SET whatsapp_api_key = NULL WHERE id = ?',
+      [orgId]
+    );
+    res.json({ code: 200, message: 'WhatsApp API key cleared' });
+  } catch (err) {
+    console.error('Clear WhatsApp key error:', err);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
 // GET /api/setting/category/list - Get categories
 router.get('/setting/category/list', authenticate, async (req, res) => {
   try {

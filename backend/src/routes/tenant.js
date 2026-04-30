@@ -149,7 +149,8 @@ router.post('/', authenticate, async (req, res) => {
   try {
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
             company_name, type, sex, id_card, profession, budget, employer, salary,
-            emergency_contact, referral, notes, cleaning_notes, status, lead_source_id } = req.body;
+            emergency_contact, referral, notes, cleaning_notes, status, lead_source_id,
+            whatsapp_opt_out } = req.body;
     const orgId = req.user.orgId;
 
     // Reject duplicate primary email (case-insensitive, ignoring soft-deleted rows)
@@ -168,13 +169,14 @@ router.post('/', authenticate, async (req, res) => {
     await req.pool.execute(
       `INSERT INTO tenant (id, org_id, first_name, last_name, middle_name, email, secondary_email, phone,
        birth_date, company_name, type, sex, id_card, profession, budget, employer, salary,
-       emergency_contact, referral, notes, cleaning_notes, status, lead_source_id, category, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+       emergency_contact, referral, notes, cleaning_notes, status, lead_source_id, whatsapp_opt_out, category, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
       [tenantId, orgId, first_name || null, last_name || null, middle_name || null,
        email || null, secondary_email || null, phone || null, birth_date || null,
        company_name || null, type ?? 0, sex ?? 0, id_card || null, profession || null,
        budget || null, employer || null, salary || null, emergency_contact || null,
-       referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null]
+       referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null,
+       whatsapp_opt_out ? 1 : 0]
     );
     await logActivity(req, 'CREATE', 'tenant', tenantId, 'Created tenant ' + [first_name, last_name].filter(Boolean).join(' '));
     res.json({ code: 200, message: 'Tenant created', data: { id: tenantId } });
@@ -226,17 +228,20 @@ router.put('/:id/profile', authenticate, async (req, res) => {
     const { id } = req.params;
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
             company_name, type, sex, id_card, profession, budget, employer, salary,
-            emergency_contact, referral, notes, cleaning_notes, status, lead_source_id } = req.body;
+            emergency_contact, referral, notes, cleaning_notes, status, lead_source_id,
+            whatsapp_opt_out } = req.body;
 
     await req.pool.execute(
       `UPDATE tenant SET first_name = ?, last_name = ?, middle_name = ?, email = ?, secondary_email = ?,
        phone = ?, birth_date = ?, company_name = ?, type = ?, sex = ?, id_card = ?, profession = ?,
        budget = ?, employer = ?, salary = ?, emergency_contact = ?, referral = ?, notes = ?,
-       cleaning_notes = ?, status = ?, lead_source_id = ?, updated_at = NOW() WHERE id = ?`,
+       cleaning_notes = ?, status = ?, lead_source_id = ?, whatsapp_opt_out = ?,
+       updated_at = NOW() WHERE id = ?`,
       [first_name || null, last_name || null, middle_name || null, email || null, secondary_email || null,
        phone || null, birth_date || null, company_name || null, type ?? 0, sex ?? 0,
        id_card || null, profession || null, budget || null, employer || null, salary || null,
-       emergency_contact || null, referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null, id]
+       emergency_contact || null, referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null,
+       whatsapp_opt_out ? 1 : 0, id]
     );
     await logActivity(req, 'UPDATE', 'tenant', id, 'Updated tenant ' + [first_name, last_name].filter(Boolean).join(' '));
     res.json({ code: 200, message: 'Tenant updated' });

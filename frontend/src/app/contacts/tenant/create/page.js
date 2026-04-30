@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload } from 'antd';
+import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload, Checkbox } from 'antd';
 import { UploadOutlined, CloudUploadOutlined, UserOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
@@ -195,6 +195,9 @@ export default function TenantCreatePage() {
                     <Label>PHONE</Label>
                     <Form.Item name="phone" noStyle>
                       <Input placeholder="Please input phone number" />
+                    </Form.Item>
+                    <Form.Item name="whatsapp_opt_out" valuePropName="checked" noStyle>
+                      <Checkbox style={{ marginTop: 6 }}>Opt out of WhatsApp notifications</Checkbox>
                     </Form.Item>
                   </div>
                 </div>
