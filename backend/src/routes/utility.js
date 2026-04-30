@@ -1350,11 +1350,15 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
     const proratedCredit = utilityCredit > 0 ? Math.round((utilityCredit * 12 / 365) * periodDays * 100) / 100 : 0;
     const netAmount = Math.max(0, Math.round((grossAmount - proratedCredit) * 100) / 100);
 
-    // 1. Check next tenant's lease first (needed for settlement record)
+    // 1. Find the next tenant's lease — defined as the chronologically next lease
+    //    on the same unit relative to the LEASE BEING CHECKED OUT, not the
+    //    settlement date. This way late settlements (e.g. settling Tenant A on
+    //    Apr 5 when Tenant B already moved in Apr 1) still hand off correctly.
+    //    Mirrors the move-out reading flow at line ~462.
     const [[nextLease]] = await req.pool.execute(
-      `SELECT id FROM leasing WHERE unit_id = ? AND deleted_at IS NULL AND id != ? AND start_date >= ?
+      `SELECT id FROM leasing WHERE unit_id = ? AND deleted_at IS NULL AND id != ? AND start_date > ?
        ORDER BY start_date ASC LIMIT 1`,
-      [lease.unit_id, leasing_id, settlementDate]
+      [lease.unit_id, leasing_id, lease.start_date]
     );
 
     // 2. Create settlement record FIRST to prevent orphan data if something fails
