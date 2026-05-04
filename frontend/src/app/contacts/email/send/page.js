@@ -9,7 +9,7 @@ import { ArrowLeftOutlined, SendOutlined } from '@ant-design/icons';
 import dynamic from 'next/dynamic';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
-import { emailTemplate, tenant as tenantApi, invoice as invoiceApi } from '../../../../lib/api';
+import { emailTemplate, tenant as tenantApi, invoice as invoiceApi, contact as contactApi } from '../../../../lib/api';
 
 // ReactQuill — dynamic import to avoid SSR issues
 const ReactQuill = dynamic(() => import('react-quill-new'), { ssr: false });
@@ -49,6 +49,10 @@ function SendEmailPage() {
   const [selectedInvoiceCode, setSelectedInvoiceCode] = useState(null);
   const [tenantName, setTenantName] = useState('');
 
+  // Group send context
+  const [groupName, setGroupName] = useState('');
+  const [groupRecipientCount, setGroupRecipientCount] = useState(0);
+
   const router = useRouter();
   const searchParams = useSearchParams();
   const category = searchParams.get('category');
@@ -56,6 +60,7 @@ function SendEmailPage() {
   const urlLeaseId = searchParams.get('leaseId');
   const urlInvoiceId = searchParams.get('invoiceId');
   const urlInvoiceCode = searchParams.get('invoiceCode');
+  const groupId = searchParams.get('group');
 
   useEffect(() => {
     loadInitialData();
@@ -79,6 +84,11 @@ function SendEmailPage() {
       // Pre-fill recipients and load tenant leases
       await prefillRecipients(tenants);
 
+      // If a group was passed, load its members' emails and pre-fill the To field.
+      if (groupId) {
+        await loadGroupRecipients(groupId);
+      }
+
       // If we have a tenantId, load their leases
       if (tenantId) {
         await loadTenantLeases(tenantId, tenants);
@@ -98,6 +108,32 @@ function SendEmailPage() {
       console.error('Failed to load data:', error);
     } finally {
       setPageLoading(false);
+    }
+  };
+
+  const loadGroupRecipients = async (gid) => {
+    try {
+      // Fetch group meta (name) and member emails in parallel.
+      const [groupRes, emailsRes] = await Promise.all([
+        contactApi.getEmailGroup(gid).catch(() => null),
+        contactApi.getEmailGroupEmailsById(gid),
+      ]);
+      if (groupRes?.data?.code === 200 && groupRes.data.data?.name) {
+        setGroupName(groupRes.data.data.name);
+      }
+      if (emailsRes?.data?.code === 200) {
+        const rows = emailsRes.data.data || [];
+        const emails = rows.map(r => r.email).filter(Boolean);
+        setGroupRecipientCount(emails.length);
+        if (emails.length === 0) {
+          message.warning('This group has no active members with email addresses.');
+        } else {
+          form.setFieldsValue({ to: emails.join('; ') });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load group recipients:', err);
+      message.error('Failed to load group recipients');
     }
   };
 
@@ -231,7 +267,9 @@ function SendEmailPage() {
     }
 
     const effectiveLeaseId = selectedLeaseId || urlLeaseId;
-    if (!effectiveLeaseId) {
+    // Group sends go to many tenants — there's no single lease to resolve
+    // variables against. Staff is expected to write a generic message.
+    if (!effectiveLeaseId && !groupId) {
       return message.warning('Please select a lease so variables can be resolved');
     }
 
@@ -300,8 +338,8 @@ function SendEmailPage() {
     }));
   }, [tenantInvoices]);
 
-  // Determine if we need to show the lease picker
-  const showLeasePicker = tenantId && !urlLeaseId;
+  // Determine if we need to show the lease picker — never for group sends.
+  const showLeasePicker = tenantId && !urlLeaseId && !groupId;
   // Show invoice picker when a lease is selected (or from URL) and template is invoice/overdue related
   const isInvoiceTemplate = selectedTemplate &&
     (selectedTemplate.type || '').match(/Invoice|Overdue|Deposit/i);
@@ -320,10 +358,24 @@ function SendEmailPage() {
         </Button>
 
         <Card
-          title={tenantName ? `Send Email — ${tenantName}` : 'Send Email'}
+          title={
+            groupId
+              ? `Send Email — Group: ${groupName || '...'}`
+              : tenantName ? `Send Email — ${tenantName}` : 'Send Email'
+          }
           loading={pageLoading}
         >
           <Form form={form} layout="vertical" onFinish={onFinish}>
+
+            {groupId && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message={`Sending to ${groupRecipientCount} active tenant${groupRecipientCount === 1 ? '' : 's'} in this group`}
+                description="Variables that depend on a single lease (e.g. %Unit Name%, %Invoice Number%) won't resolve for group sends. Use a generic message."
+              />
+            )}
 
             {/* Template Selection */}
             <Form.Item label="Email Template">
