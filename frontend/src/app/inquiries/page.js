@@ -4,11 +4,11 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Table, Input, Button, Space, Select, Tag, Card, Empty, message,
-  Popconfirm, Typography, Tooltip,
+  Popconfirm, Typography, Tooltip, Switch,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, UserAddOutlined, CalendarOutlined,
-  DeleteOutlined, EyeOutlined,
+  DeleteOutlined, EyeOutlined, EditOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../components/Layout';
@@ -35,6 +35,7 @@ export default function InquiriesPage() {
   const [leadSourceFilter, setLeadSourceFilter] = useState('');
   const [leadSources, setLeadSources] = useState([]);
   const [viewingModal, setViewingModal] = useState({ open: false, inquiry: null });
+  const [showDelete, setShowDelete] = useState(false);
 
   useEffect(() => {
     settings.getLeadSources().then(r => {
@@ -125,13 +126,23 @@ export default function InquiriesPage() {
     },
     {
       title: 'Actions',
-      width: 260,
+      width: showDelete ? 300 : 260,
       fixed: 'right',
       render: (_, r) => (
         <Space size={4}>
           <Tooltip title="View">
             <Button size="small" icon={<EyeOutlined />} onClick={() => router.push(`/inquiries/${r.id}`)} />
           </Tooltip>
+          <Tooltip title="Edit">
+            <Button size="small" icon={<EditOutlined />} onClick={() => router.push(`/inquiries/${r.id}/edit`)} />
+          </Tooltip>
+          <Button
+            size="small"
+            icon={<CalendarOutlined />}
+            onClick={() => onCreateViewing(r)}
+          >
+            Viewing
+          </Button>
           <Button
             size="small"
             type="primary"
@@ -141,16 +152,11 @@ export default function InquiriesPage() {
           >
             Contact
           </Button>
-          <Button
-            size="small"
-            icon={<CalendarOutlined />}
-            onClick={() => onCreateViewing(r)}
-          >
-            Viewing
-          </Button>
-          <Popconfirm title="Delete this inquiry?" onConfirm={() => onDelete(r.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
+          {showDelete && (
+            <Popconfirm title="Delete this inquiry?" onConfirm={() => onDelete(r.id)}>
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -178,14 +184,20 @@ export default function InquiriesPage() {
         {dayjs(r.inquiry_date).format('YYYY-MM-DD')}
       </div>
       <Space size={4} wrap>
+        <Button size="small" onClick={() => router.push(`/inquiries/${r.id}`)}>View</Button>
+        <Button size="small" icon={<EditOutlined />} onClick={() => router.push(`/inquiries/${r.id}/edit`)}>Edit</Button>
+        <Button size="small" icon={<CalendarOutlined />} onClick={() => onCreateViewing(r)}>
+          Viewing
+        </Button>
         <Button size="small" type="primary" icon={<UserAddOutlined />}
                 disabled={!!r.tenant_id} onClick={() => onConvertToContact(r.id)}>
           Contact
         </Button>
-        <Button size="small" icon={<CalendarOutlined />} onClick={() => onCreateViewing(r)}>
-          Viewing
-        </Button>
-        <Button size="small" onClick={() => router.push(`/inquiries/${r.id}`)}>View</Button>
+        {showDelete && (
+          <Popconfirm title="Delete this inquiry?" onConfirm={() => onDelete(r.id)}>
+            <Button size="small" danger icon={<DeleteOutlined />}>Delete</Button>
+          </Popconfirm>
+        )}
       </Space>
     </Card>
   );
@@ -228,6 +240,10 @@ export default function InquiriesPage() {
             onChange={(v) => { setPage(1); setLeadSourceFilter(v || ''); }}
             options={leadSources.map(s => ({ label: s.name, value: String(s.id) }))}
           />
+          <span style={{ marginLeft: 8, fontSize: 12, color: '#666' }}>
+            <Switch size="small" checked={showDelete} onChange={setShowDelete} style={{ marginRight: 6 }} />
+            Show Delete
+          </span>
         </Space>
 
         {isMobile ? (

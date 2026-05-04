@@ -4,9 +4,11 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import {
   Card, Descriptions, Button, Space, Tag, message, Spin, Empty, List, Typography,
+  Popconfirm,
 } from 'antd';
 import {
   UserAddOutlined, CalendarOutlined, ArrowLeftOutlined, EditOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
@@ -71,6 +73,8 @@ export default function InquiryDetailPage() {
             <Tag color={STATUS_COLORS[data.status]}>{STATUS_LABELS[data.status]}</Tag>
           </Space>
           <Space wrap>
+            <Button icon={<EditOutlined />} onClick={() => router.push(`/inquiries/${id}/edit`)}>Edit</Button>
+            <Button icon={<CalendarOutlined />} onClick={onCreateViewing}>Create Viewing</Button>
             <Button
               type="primary"
               icon={<UserAddOutlined />}
@@ -79,7 +83,20 @@ export default function InquiryDetailPage() {
             >
               {data.tenant_id ? 'Already a Contact' : 'Create Contact'}
             </Button>
-            <Button icon={<CalendarOutlined />} onClick={onCreateViewing}>Create Viewing</Button>
+            <Popconfirm
+              title="Delete this inquiry?"
+              onConfirm={async () => {
+                try {
+                  await inquiry.delete(id);
+                  message.success('Inquiry deleted');
+                  router.push('/inquiries');
+                } catch (e) {
+                  message.error('Failed to delete inquiry');
+                }
+              }}
+            >
+              <Button danger icon={<DeleteOutlined />}>Delete</Button>
+            </Popconfirm>
           </Space>
         </div>
 
