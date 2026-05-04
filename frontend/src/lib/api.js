@@ -303,7 +303,6 @@ export const inquiry = {
   create: (data) => api.post('/api/inquiry', data),
   update: (id, data) => api.put(`/api/inquiry/${id}`, data),
   delete: (id) => api.delete(`/api/inquiry/${id}`),
-  convertToContact: (id, data) => api.post(`/api/inquiry/${id}/convert-to-contact`, data || {}),
   linkContact: (id, tenantId) => api.post(`/api/inquiry/${id}/link-contact`, { tenant_id: String(tenantId) }),
 };
 
