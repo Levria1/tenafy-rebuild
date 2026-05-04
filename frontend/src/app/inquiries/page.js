@@ -111,6 +111,14 @@ export default function InquiriesPage() {
       ellipsis: true,
       render: (v) => v || <Text type="secondary">—</Text>,
     },
+    {
+      title: 'Notes',
+      dataIndex: 'notes',
+      ellipsis: true,
+      render: (v) => v
+        ? <Tooltip title={<div style={{ whiteSpace: 'pre-wrap', maxWidth: 400 }}>{v}</div>}><span>{v}</span></Tooltip>
+        : <Text type="secondary">—</Text>,
+    },
     { title: 'Phone Number', dataIndex: 'phone', width: 140 },
     {
       title: 'User',
@@ -261,7 +269,7 @@ export default function InquiriesPage() {
             columns={columns}
             dataSource={data}
             loading={loading}
-            scroll={{ x: 1300 }}
+            scroll={{ x: 1500 }}
             pagination={{
               current: page,
               pageSize,

@@ -119,9 +119,6 @@ export default function InquiryDetailPage() {
                 {data.property_name}{data.unit_name ? ` · ${data.unit_name}` : ''}
               </Descriptions.Item>
             )}
-            <Descriptions.Item label="Notes" span={2}>
-              <div style={{ whiteSpace: 'pre-wrap' }}>{data.notes || '—'}</div>
-            </Descriptions.Item>
             {data.tenant_id && (
               <Descriptions.Item label="Linked Contact" span={2}>
                 <a onClick={() => router.push(`/contacts/tenant/${data.tenant_id}/detail`)}>
@@ -130,6 +127,12 @@ export default function InquiryDetailPage() {
               </Descriptions.Item>
             )}
           </Descriptions>
+        </Card>
+
+        <Card title="Notes" size="small" style={{ marginBottom: 16 }}>
+          <div style={{ whiteSpace: 'pre-wrap', minHeight: 60, color: data.notes ? '#333' : '#999' }}>
+            {data.notes || 'No notes yet.'}
+          </div>
         </Card>
 
         <Card title="Linked Viewings" size="small">
