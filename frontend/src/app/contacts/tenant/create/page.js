@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload, Checkbox } from 'antd';
+import { Suspense, useState, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload, Checkbox, Alert } from 'antd';
 import { UploadOutlined, CloudUploadOutlined, UserOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
-import { tenant, settings } from '../../../../lib/api';
+import { tenant, settings, inquiry } from '../../../../lib/api';
 
 const sectionTitleStyle = {
   fontSize: 13,
@@ -29,19 +29,46 @@ const labelStyle = {
 
 const requiredStar = { color: '#d4880f', marginRight: 2 };
 
-export default function TenantCreatePage() {
+export default function TenantCreatePageWrapper() {
+  return <Suspense fallback={<div />}><TenantCreatePage /></Suspense>;
+}
+
+function TenantCreatePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isMobile } = useIsMobile();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [displayAsCompany, setDisplayAsCompany] = useState(false);
   const [leadSources, setLeadSources] = useState([]);
 
+  // When this page is opened from an inquiry's "Create Contact" action, the
+  // inquiry id and the lead's known fields are passed in via query params.
+  // After the tenant is successfully created, we link it back to the inquiry
+  // (stamps inquiry.tenant_id, flips status to converted). If the user
+  // cancels, no tenant is created — preserving the inquiry's open state.
+  const inquiryId = searchParams.get('inquiry_id');
+
   useEffect(() => {
     settings.getLeadSources().then(res => {
       if (res.data.code === 200) setLeadSources(res.data.data || []);
     }).catch(() => {});
   }, []);
+
+  // Pre-fill the form from URL params on first render.
+  useEffect(() => {
+    const prefill = {};
+    const fields = ['first_name', 'last_name', 'email', 'phone', 'notes'];
+    for (const f of fields) {
+      const v = searchParams.get(f);
+      if (v) prefill[f] = v;
+    }
+    const lsId = searchParams.get('lead_source_id');
+    if (lsId) prefill.lead_source_id = Number(lsId);
+    if (Object.keys(prefill).length) {
+      form.setFieldsValue(prefill);
+    }
+  }, [searchParams, form]);
 
   const onFinish = async (values) => {
     try {
@@ -56,6 +83,19 @@ export default function TenantCreatePage() {
       const response = await tenant.create(payload);
       if (response.data.code === 200) {
         message.success('Tenant created successfully');
+        // If we came from an inquiry, link the newly-created tenant to it.
+        const newTenantId = response.data.data?.id || response.data.id;
+        if (inquiryId && newTenantId) {
+          try {
+            await inquiry.linkContact(inquiryId, newTenantId);
+            router.push(`/inquiries/${inquiryId}`);
+            return;
+          } catch (e) {
+            // Tenant already saved — surface but still navigate.
+            console.error('Failed to link inquiry:', e);
+            message.warning('Tenant created, but failed to link back to the inquiry.');
+          }
+        }
         router.push('/contacts/tenants');
       } else {
         message.error(response.data.message || 'Failed to create tenant');
@@ -77,7 +117,19 @@ export default function TenantCreatePage() {
   return (
     <MainLayout>
       <div style={{ padding: '0 0 24px 0' }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 20, color: '#333' }}>Add Tenant</h2>
+        <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 20, color: '#333' }}>
+          {inquiryId ? 'Convert Inquiry to Contact' : 'Add Tenant'}
+        </h2>
+
+        {inquiryId && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Creating a contact from an inquiry"
+            description="Fill in any required fields and click save. The inquiry will be linked to this contact and marked as converted. If you cancel, no contact is created and the inquiry stays open."
+          />
+        )}
 
         <Form form={form} onFinish={onFinish} layout="vertical" initialValues={{ sex: 1, status: 1 }}>
           <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 24 }}>

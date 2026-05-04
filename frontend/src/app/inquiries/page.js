@@ -64,16 +64,18 @@ export default function InquiriesPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const onConvertToContact = async (id) => {
-    try {
-      const r = await inquiry.convertToContact(id);
-      if (r.data?.code === 200) {
-        message.success('Contact created');
-        router.push(`/contacts/tenant/${r.data.data.tenant_id}/edit`);
-      }
-    } catch (e) {
-      message.error(e.response?.data?.message || 'Failed to create contact');
-    }
+  // Route to the tenant create form pre-filled with the inquiry's data.
+  // The tenant is only persisted when staff clicks Save on that form; if
+  // they cancel, the inquiry stays open and no contact is created.
+  const onConvertToContact = (record) => {
+    const params = new URLSearchParams({ inquiry_id: String(record.id) });
+    if (record.first_name) params.set('first_name', record.first_name);
+    if (record.last_name) params.set('last_name', record.last_name);
+    if (record.email) params.set('email', record.email);
+    if (record.phone) params.set('phone', record.phone);
+    if (record.notes) params.set('notes', record.notes);
+    if (record.lead_source_id) params.set('lead_source_id', String(record.lead_source_id));
+    router.push(`/contacts/tenant/create?${params.toString()}`);
   };
 
   const onCreateViewing = (record) => {
@@ -156,7 +158,7 @@ export default function InquiriesPage() {
             type="primary"
             icon={<UserAddOutlined />}
             disabled={!!r.tenant_id}
-            onClick={() => onConvertToContact(r.id)}
+            onClick={() => onConvertToContact(r)}
           >
             Contact
           </Button>
@@ -198,7 +200,7 @@ export default function InquiriesPage() {
           Viewing
         </Button>
         <Button size="small" type="primary" icon={<UserAddOutlined />}
-                disabled={!!r.tenant_id} onClick={() => onConvertToContact(r.id)}>
+                disabled={!!r.tenant_id} onClick={() => onConvertToContact(r)}>
           Contact
         </Button>
         {showDelete && (

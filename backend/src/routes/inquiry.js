@@ -300,4 +300,42 @@ router.post('/:id/convert-to-contact', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// POST /:id/link-contact
+//
+// Links an EXISTING tenant id to this inquiry. Used by the tenant-create
+// flow when the inquiry's "Create Contact" button routes to the tenant
+// create form (rather than auto-creating a tenant): once the user submits
+// the form and the tenant exists, the frontend calls this endpoint to
+// stamp the inquiry.tenant_id and flip status to 1 (converted).
+//
+// Body: { tenant_id }
+// ---------------------------------------------------------------------------
+router.post('/:id/link-contact', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { tenant_id } = req.body || {};
+    if (!tenant_id) return fail(res, 'tenant_id is required', 400);
+
+    // Verify tenant belongs to this org.
+    const [t] = await req.pool.execute(
+      'SELECT id FROM tenant WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1',
+      [tenant_id, orgId]
+    );
+    if (!t.length) return fail(res, 'Tenant not found', 404);
+
+    const [r] = await req.pool.execute(
+      'UPDATE inquiry SET tenant_id = ?, status = 1 WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
+      [tenant_id, req.params.id, orgId]
+    );
+    if (!r.affectedRows) return fail(res, 'Inquiry not found', 404);
+
+    logActivity(req, { action: 'LINK_CONTACT', entityType: 'INQUIRY', entityId: req.params.id }).catch(() => {});
+    ok(res, { tenant_id: String(tenant_id) });
+  } catch (err) {
+    console.error('[inquiry] link-contact error:', err);
+    fail(res, 'Failed to link contact');
+  }
+});
+
 module.exports = router;

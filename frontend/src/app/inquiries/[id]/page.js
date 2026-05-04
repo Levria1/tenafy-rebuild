@@ -43,16 +43,15 @@ export default function InquiryDetailPage() {
 
   useEffect(() => { if (id) load(); }, [id]);
 
-  const onConvertToContact = async () => {
-    try {
-      const r = await inquiry.convertToContact(id);
-      if (r.data?.code === 200) {
-        message.success('Contact created');
-        router.push(`/contacts/tenant/${r.data.data.tenant_id}/edit`);
-      }
-    } catch (e) {
-      message.error(e.response?.data?.message || 'Failed to create contact');
-    }
+  const onConvertToContact = () => {
+    const params = new URLSearchParams({ inquiry_id: String(id) });
+    if (data.first_name) params.set('first_name', data.first_name);
+    if (data.last_name) params.set('last_name', data.last_name);
+    if (data.email) params.set('email', data.email);
+    if (data.phone) params.set('phone', data.phone);
+    if (data.notes) params.set('notes', data.notes);
+    if (data.lead_source_id) params.set('lead_source_id', String(data.lead_source_id));
+    router.push(`/contacts/tenant/create?${params.toString()}`);
   };
 
   const onCreateViewing = () => setViewingModalOpen(true);
