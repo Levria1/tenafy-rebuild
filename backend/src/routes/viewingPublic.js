@@ -263,57 +263,37 @@ async function findBookingByToken(pool, token, column) {
   return rows[0] || null;
 }
 
-// Upsert a `tenant` contact for the prospective viewer.
+// Create an `inquiry` row for the prospective viewer.
 //
-// - If a non-deleted contact with the same email already exists in this org,
-//   we reuse it (updating blank name/phone fields) so we don't duplicate leads.
-// - Otherwise we insert a new row with category=3 ("prospect"), status=0
-//   (pending), and a note identifying where the lead came from.
+// Public viewers never get auto-promoted into the contacts (tenant) table —
+// staff must explicitly click "Create Contact" on the inquiry. This keeps
+// Contacts clean. The viewing_booking row links back via inquiry_id.
 //
-// Return the contact id (string, bigint-safe).
-async function upsertViewerContact(pool, orgId, { name, email, phone, unitName, propertyName }) {
-  const contactId = newId();
+// Return the inquiry id (string, bigint-safe).
+async function createInquiryForViewer(pool, orgId, { name, email, phone, message, unitId, propertyId, unitName, propertyName, source = 'web' }) {
+  const inquiryId = newId();
   const normalizedEmail = String(email).trim().toLowerCase();
-  const [firstName, ...rest] = String(name).trim().split(/\s+/);
+  const [firstName, ...rest] = String(name || '').trim().split(/\s+/);
   const lastName = rest.join(' ') || null;
-  const sourceNote = `Lead — submitted via public viewing request for ${unitName || 'unit'}` +
-                     (propertyName ? ` at ${propertyName}` : '') +
-                     ` on ${new Date().toISOString().slice(0, 10)}.`;
+  const sourceNote =
+    `Submitted via public viewing request for ${unitName || 'unit'}` +
+    (propertyName ? ` at ${propertyName}` : '') +
+    ` on ${new Date().toISOString().slice(0, 10)}.` +
+    (message ? `\n\nMessage: ${String(message).slice(0, 2000)}` : '');
 
-  // Look for an existing contact with this email in this org.
-  const [existing] = await pool.execute(
-    `SELECT id, first_name, last_name, phone, notes
-     FROM tenant
-     WHERE org_id = ? AND email = ? AND deleted_at IS NULL
-     LIMIT 1`,
-    [orgId, normalizedEmail]
-  );
-
-  if (existing.length) {
-    const e = existing[0];
-    // Fill in any missing fields without overwriting what staff may have edited.
-    const updates = [];
-    const params = [];
-    if (!e.first_name && firstName) { updates.push('first_name = ?'); params.push(firstName); }
-    if (!e.last_name && lastName)   { updates.push('last_name = ?');  params.push(lastName); }
-    if (!e.phone && phone)          { updates.push('phone = ?');      params.push(phone); }
-    // Append, don't overwrite, the notes.
-    const mergedNotes = (e.notes ? e.notes.trim() + '\n\n' : '') + sourceNote;
-    updates.push('notes = ?'); params.push(mergedNotes);
-    params.push(e.id);
-    await pool.execute(`UPDATE tenant SET ${updates.join(', ')} WHERE id = ?`, params);
-    return String(e.id);
-  }
-
-  // Brand-new lead — insert with category=3 (prospect).
   await pool.execute(
-    `INSERT INTO tenant
-       (id, org_id, first_name, last_name, email, phone, notes,
-        type, status, category, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?,  0, 0, 3, NOW(), NOW())`,
-    [contactId, orgId, firstName || null, lastName, normalizedEmail, phone || null, sourceNote]
+    `INSERT INTO inquiry
+       (id, org_id, inquiry_date, first_name, last_name, email, phone, notes,
+        unit_id, property_id, source, status)
+     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?,  ?, ?, ?, 0)`,
+    [
+      inquiryId, orgId,
+      firstName || null, lastName, normalizedEmail,
+      phone || null, sourceNote,
+      unitId || null, propertyId || null, source,
+    ]
   );
-  return contactId;
+  return inquiryId;
 }
 
 /**
@@ -560,20 +540,24 @@ router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, asyn
     const lease = await findActiveLeaseForUnit(req.pool, link.unit_id);
     const hasTenant = Boolean(lease && lease.tenant_id && lease.email);
 
-    // Upsert the viewer into the org's contacts list (category=3 prospect).
-    // Best-effort — if this fails we still want to accept the booking, so log
-    // and continue with a null contact id.
-    let viewerContactId = null;
+    // Create an inquiry row for this lead (NOT a tenant — staff must
+    // explicitly promote later). Best-effort — if this fails we still want to
+    // accept the booking, so log and continue with a null inquiry id.
+    let inquiryId = null;
     try {
-      viewerContactId = await upsertViewerContact(req.pool, req.orgId, {
+      inquiryId = await createInquiryForViewer(req.pool, req.orgId, {
         name: viewer_name,
         email: viewer_email,
         phone: viewer_phone,
+        message: viewer_message,
+        unitId: link.unit_id,
+        propertyId: link.property_id,
         unitName: link.unit_name,
         propertyName: link.property_name,
+        source: 'web',
       });
     } catch (e) {
-      console.error('[viewing-public] contact upsert failed:', e.message);
+      console.error('[viewing-public] inquiry create failed:', e.message);
     }
 
     // Generate IDs / tokens
@@ -595,21 +579,23 @@ router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, asyn
       [registryRows]
     );
 
-    // Insert booking
+    // Insert booking — viewer_contact_id stays null (no tenant created here);
+    // inquiry_id is the new linkage back to the lead row.
     await req.pool.execute(
       `INSERT INTO viewing_booking (
         id, link_id, unit_id, property_id, employee_id,
-        leasing_id, tenant_id, viewer_contact_id,
+        leasing_id, tenant_id, viewer_contact_id, inquiry_id,
         viewer_name, viewer_email, viewer_phone, viewer_message,
         proposed_datetime, duration_minutes,
         tenant_action_token, employee_action_token, viewer_manage_token,
         tenant_decision, employee_decision, status, source, ics_uid
-       ) VALUES (?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?,  ?, ?, ?,  ?, 0, 0, 'web', ?)`,
+       ) VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?,  ?, ?, ?,  ?, 0, 0, 'web', ?)`,
       [
         bookingId, link.id, link.unit_id, link.property_id, link.employee_id,
         lease ? lease.leasing_id : null,
         lease ? lease.tenant_id : null,
-        viewerContactId,
+        null,
+        inquiryId,
         viewer_name, viewer_email, viewer_phone || null, viewer_message || null,
         when, durationMin,
         tenantTok, employeeTok, manageTok,
@@ -1103,21 +1089,13 @@ router.post('/lead/:token', postLimiter, resolveOrgByViewingToken, async (req, r
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
       return fail(res, 'A valid email address is required', 400);
     }
-    const contactId = await upsertViewerContact(req.pool, req.orgId, {
-      name, email, phone,
+    const inquiryId = await createInquiryForViewer(req.pool, req.orgId, {
+      name, email, phone, message,
       unitName: 'general inquiry',
       propertyName: null,
+      source: 'web',
     });
-
-    // Append the free-form message to the contact notes so staff see context.
-    if (message) {
-      await req.pool.execute(
-        `UPDATE tenant SET notes = CONCAT(COALESCE(notes, ''), '\n\nInquiry: ', ?)
-         WHERE id = ?`,
-        [String(message).slice(0, 2000), contactId]
-      );
-    }
-    ok(res, { contact_id: contactId });
+    ok(res, { inquiry_id: inquiryId });
   } catch (err) {
     console.error('[viewing-public] lead error:', err);
     fail(res, 'Failed to capture lead');

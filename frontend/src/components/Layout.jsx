@@ -66,6 +66,7 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   // Contacts — show parent only if user can see at least one child
   const contactChildren = [];
   if (hasPermission('LANDLORD/TENANT_LIST')) contactChildren.push({ key: '/contacts/tenants', label: <Link href="/contacts/tenants">Tenants</Link> });
+  if (hasPermission('LANDLORD/TENANT_LIST')) contactChildren.push({ key: '/inquiries', label: <Link href="/inquiries">Inquiries</Link> });
   if (hasPermission('LANDLORD/EMAIL_GROUP_LIST')) contactChildren.push({ key: '/contacts/groups', label: <Link href="/contacts/groups">Groups</Link> });
   if (hasPermission('LANDLORD/PAYEE_LIST')) contactChildren.push({ key: '/contacts/payees', label: <Link href="/contacts/payees">Payees</Link> });
   if (hasPermission('LANDLORD/SERVICE_VENDOR_LIST')) contactChildren.push({ key: '/contacts/service-vendors', label: <Link href="/contacts/service-vendors">Service Vendors</Link> });

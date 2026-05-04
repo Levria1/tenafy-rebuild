@@ -297,6 +297,15 @@ export const whatsappTemplate = {
   ping: () => api.get('/api/whatsapp-template/connection/ping'),
 };
 
+export const inquiry = {
+  list: (params) => api.get('/api/inquiry/list', { params }),
+  get: (id) => api.get(`/api/inquiry/${id}`),
+  create: (data) => api.post('/api/inquiry', data),
+  update: (id, data) => api.put(`/api/inquiry/${id}`, data),
+  delete: (id) => api.delete(`/api/inquiry/${id}`),
+  convertToContact: (id, data) => api.post(`/api/inquiry/${id}/convert-to-contact`, data || {}),
+};
+
 export const settings = {
   // Categories
   getCategories: () => api.get('/api/user/setting/category/list'),
@@ -488,6 +497,7 @@ export const viewingApi = {
   listAllBookings: (params) => api.get('/api/viewing/bookings', { params }),
   getBooking: (id) => api.get(`/api/viewing/bookings/${id}`),
   cancelBooking: (id) => api.patch(`/api/viewing/bookings/${id}/cancel`),
+  createManualBooking: (data) => api.post('/api/viewing/bookings/manual', data),
 };
 
 export const salesAgent = {

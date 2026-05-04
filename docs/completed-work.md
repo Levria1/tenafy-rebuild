@@ -4,6 +4,31 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Inquiries Module + Public Viewing Cutover (2026-05-04)
+
+### New Inquiry table — leads separated from contacts
+- **Why**: Public viewing form was upserting every web submission into `tenant` with `category=3`, polluting the Contacts page with strangers.
+- **Migration** ([backend/src/migrations/inquiry.sql](backend/src/migrations/inquiry.sql)): new `inquiry` table + `viewing_booking.inquiry_id` column. Idempotent. Runs per org DB.
+
+### Backend
+- **New routes** ([backend/src/routes/inquiry.js](backend/src/routes/inquiry.js)) — list/get/create/update/delete + `POST /:id/convert-to-contact`.
+- **New endpoint** ([backend/src/routes/viewing.js](backend/src/routes/viewing.js)): `POST /bookings/manual` — staff-side confirmed booking, stamps `inquiry_id`, skips approval flow.
+- **Cutover** ([backend/src/routes/viewingPublic.js](backend/src/routes/viewingPublic.js)): public booking + `/lead/:token` no longer write `tenant` cat=3 prospects. Now create `inquiry` rows; `viewing_booking.inquiry_id` ties bookings back to leads.
+
+### Frontend
+- **List/create/detail** under [frontend/src/app/inquiries/](frontend/src/app/inquiries/) — table with Date, Lead Source, First/Last Name, Email, Phone, User, Status, Actions. Mobile card list. Search + filters.
+- **CreateViewingModal** ([frontend/src/app/inquiries/CreateViewingModal.jsx](frontend/src/app/inquiries/CreateViewingModal.jsx)) — pick property/unit/employee/datetime, pre-fills viewer info from inquiry. Used on both list and detail pages.
+- **Sidebar** ([frontend/src/components/Layout.jsx](frontend/src/components/Layout.jsx)): Contacts → Inquiries (gated on `LANDLORD/TENANT_LIST`).
+- **api.js**: new `inquiry` namespace + `viewingApi.createManualBooking()`.
+
+### Lead source reuses `lead_source_setting` (Settings → Lead Sources). No new permission seeded — uses TENANT_LIST.
+
+### Open follow-ups
+- Old prospects in tenant cat=3 from before cutover: not migrated. Backfill script available on request.
+- "Send Email" on `/contacts/groups` passes `?group=<id>` but `/contacts/email/send` ignores it.
+
+---
+
 ## Session: Checkout Credit Fix, React Hooks Bug, Public API Expansion (2026-04-16)
 
 ### Utility Checkout Settlement Credit Calculation Fix

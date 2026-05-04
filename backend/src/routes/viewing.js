@@ -583,4 +583,84 @@ router.post('/unit/:unitId/regenerate', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// POST /bookings/manual — staff-created booking (no public flow, no approvals)
+//
+// Used when staff schedules a viewing directly from an inquiry. The booking
+// is created in confirmed state (status=1, both decisions=approved). If
+// `inquiry_id` is provided, it's stamped on the booking so the inquiry
+// detail page can show it under "Linked Viewings".
+//
+// Body: {
+//   inquiry_id?, unit_id, employee_id, proposed_datetime,
+//   duration_minutes?, viewer_name, viewer_email, viewer_phone, viewer_message?
+// }
+// ---------------------------------------------------------------------------
+router.post('/bookings/manual', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const {
+      inquiry_id, unit_id, employee_id,
+      proposed_datetime, duration_minutes,
+      viewer_name, viewer_email, viewer_phone, viewer_message,
+    } = req.body || {};
+
+    if (!unit_id || !employee_id || !proposed_datetime || !viewer_name) {
+      return fail(res, 'unit_id, employee_id, proposed_datetime, and viewer_name are required', 400);
+    }
+
+    // Verify unit belongs to this org and pull property_id.
+    const [units] = await req.pool.execute(
+      `SELECT u.id, u.property_id FROM unit u
+       JOIN property p ON u.property_id = p.id
+       WHERE u.id = ? AND p.org_id = ? LIMIT 1`,
+      [unit_id, orgId]
+    );
+    if (!units.length) return fail(res, 'Unit not found', 404);
+
+    // Verify employee belongs to this org.
+    const [users] = await req.pool.execute(
+      'SELECT id FROM user WHERE id = ? AND status = 1 LIMIT 1',
+      [employee_id]
+    );
+    if (!users.length) return fail(res, 'Employee not found', 400);
+
+    // If inquiry_id provided, verify it belongs to this org.
+    if (inquiry_id) {
+      const [inq] = await req.pool.execute(
+        'SELECT id FROM inquiry WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1',
+        [inquiry_id, orgId]
+      );
+      if (!inq.length) return fail(res, 'Inquiry not found', 400);
+    }
+
+    const bookingId = newId();
+    const icsUid = `${bookingId}@tenafy-viewing`;
+    const durationMin = Number(duration_minutes) || 30;
+
+    await req.pool.execute(
+      `INSERT INTO viewing_booking (
+         id, link_id, unit_id, property_id, employee_id,
+         viewer_contact_id, inquiry_id,
+         viewer_name, viewer_email, viewer_phone, viewer_message,
+         proposed_datetime, duration_minutes,
+         tenant_decision, employee_decision, status, source, ics_uid,
+         tenant_decided_at, employee_decided_at, created_at
+       ) VALUES (?, NULL, ?, ?, ?,  NULL, ?,  ?, ?, ?, ?,  ?, ?,  3, 1, 1, 'manual', ?,  NOW(), NOW(), NOW())`,
+      [
+        bookingId, unit_id, units[0].property_id, employee_id,
+        inquiry_id || null,
+        viewer_name, viewer_email || null, viewer_phone || null, viewer_message || null,
+        new Date(proposed_datetime), durationMin,
+        icsUid,
+      ]
+    );
+
+    ok(res, { id: bookingId });
+  } catch (err) {
+    console.error('[viewing] manual booking error:', err);
+    fail(res, 'Failed to create booking');
+  }
+});
+
 module.exports = router;
