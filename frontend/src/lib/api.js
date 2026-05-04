@@ -171,6 +171,7 @@ export const invoice = {
   getByCode: (invoiceCode) => api.get('/api/invoice/code', { params: { invoiceCode } }),
   create: (data) => api.post('/api/invoice', data),
   publish: (data) => api.post('/api/invoice/publish', data),
+  publishPreview: (params) => api.get('/api/invoice/publish-preview', { params }),
   update: (id, data) => api.put(`/api/invoice/${id}`, data),
   delete: (id) => api.delete(`/api/invoice/${id}`),
   getSums: (data) => api.post('/api/invoice/paid-outstanding', data),

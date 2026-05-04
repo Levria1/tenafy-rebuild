@@ -63,33 +63,7 @@ function toDateString(date) {
   return `${y}-${m}-${d}`;
 }
 
-function advanceInvoiceDate(date, schedule, dueDay) {
-  const inv = String(schedule).toLowerCase();
-  const next = new Date(date);
-  if (inv === '1' || inv === 'daily') { next.setDate(next.getDate() + 1); }
-  else if (inv === '7' || inv === 'weekly') { next.setDate(next.getDate() + 7); }
-  else if (inv === '14' || inv === 'bi-weekly') { next.setDate(next.getDate() + 14); }
-  else if (inv === '28') { next.setDate(next.getDate() + 28); }
-  else if (inv === '30' || inv === 'monthly') {
-    next.setMonth(next.getMonth() + 1);
-    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
-  } else if (inv === '60' || inv === 'bi-monthly') {
-    next.setMonth(next.getMonth() + 2);
-    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
-  } else if (inv === '90' || inv === 'quarterly') {
-    next.setMonth(next.getMonth() + 3);
-    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
-  } else if (inv === '180' || inv === 'bi-annually') {
-    next.setMonth(next.getMonth() + 6);
-    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
-  } else if (inv === '365' || inv === 'annually') {
-    next.setFullYear(next.getFullYear() + 1);
-    if (dueDay) { const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate(); next.setDate(Math.min(Number(dueDay), maxDay)); }
-  } else {
-    next.setMonth(next.getMonth() + 1);
-  }
-  return next;
-}
+const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
 
 function daysDiff(date1, date2) {
   const d1 = new Date(toDateString(date1));

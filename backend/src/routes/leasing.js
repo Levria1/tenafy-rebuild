@@ -5,6 +5,7 @@ const { logActivity } = require('../utils/activityLog');
 
 const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
+const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -14,53 +15,7 @@ const {
   loadTemplate,
 } = require('../services/emailService');
 
-// Helper: advance a date by one invoice period
-function advanceInvoiceDate(date, schedule, dueDay) {
-  const inv = String(schedule).toLowerCase();
-  const next = new Date(date);
-  if (inv === '1' || inv === 'daily') {
-    next.setDate(next.getDate() + 1);
-  } else if (inv === '7' || inv === 'weekly') {
-    next.setDate(next.getDate() + 7);
-  } else if (inv === '14' || inv === 'bi-weekly') {
-    next.setDate(next.getDate() + 14);
-  } else if (inv === '28') {
-    next.setDate(next.getDate() + 28);
-  } else if (inv === '30' || inv === 'monthly') {
-    next.setMonth(next.getMonth() + 1);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
-  } else if (inv === '60' || inv === 'bi-monthly') {
-    next.setMonth(next.getMonth() + 2);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
-  } else if (inv === '90' || inv === 'quarterly') {
-    next.setMonth(next.getMonth() + 3);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
-  } else if (inv === '180' || inv === 'bi-annually') {
-    next.setMonth(next.getMonth() + 6);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
-  } else if (inv === '365' || inv === 'annually') {
-    next.setFullYear(next.getFullYear() + 1);
-    if (dueDay) {
-      const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(Number(dueDay), maxDay));
-    }
-  } else {
-    next.setMonth(next.getMonth() + 1); // default monthly
-  }
-  return next;
-}
+// advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
 // Helper: compute lease status purely from dates
 // 0=Inactive (past end date), 1=Active (current), 2=Upcoming (future start date)

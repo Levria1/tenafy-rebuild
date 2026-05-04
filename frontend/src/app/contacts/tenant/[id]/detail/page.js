@@ -86,6 +86,7 @@ function TenantDetailPage() {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [leadSources, setLeadSources] = useState([]);
   const [publishLoading, setPublishLoading] = useState(false);
+  const [publishPreview, setPublishPreview] = useState(null); // { amount, prorated, days, error }
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
@@ -162,6 +163,26 @@ function TenantDetailPage() {
   useEffect(() => {
     if (activeTab === 'accounting') loadInvoices();
   }, [activeTab, loadInvoices]);
+
+  // Fetch the prorated publish-preview whenever the active lease's
+  // next_invoice_date changes — so the button can show the actual amount.
+  useEffect(() => {
+    const active = leases.find(l => l.status === 1);
+    if (!active || !active.next_invoice_date) { setPublishPreview(null); return; }
+    let cancelled = false;
+    invoice.publishPreview({
+      leasing_id: active.id,
+      due_date: dayjs(active.next_invoice_date).format('YYYY-MM-DD'),
+    }).then(r => {
+      if (cancelled) return;
+      if (r.data.code === 200) setPublishPreview(r.data.data);
+      else setPublishPreview({ error: r.data.message });
+    }).catch(err => {
+      if (cancelled) return;
+      setPublishPreview({ error: err.response?.data?.message || 'Preview failed' });
+    });
+    return () => { cancelled = true; };
+  }, [leases]);
 
   const statusMap = { 0: { text: 'Open', color: 'blue' }, 1: { text: 'Paid', color: 'green' }, 2: { text: 'Overdue', color: 'red' } };
   // Compute effective status: show "Partial" when partially paid
@@ -385,6 +406,7 @@ function TenantDetailPage() {
                   type="primary"
                   icon={<DollarOutlined />}
                   loading={publishLoading}
+                  disabled={!!publishPreview?.error}
                   onClick={async () => {
                     try {
                       setPublishLoading(true);
@@ -398,7 +420,9 @@ function TenantDetailPage() {
                         type: 0,
                       });
                       if (res.data.code === 200) {
-                        message.success(`Invoice ${res.data.data?.invoice_code || ''} published successfully`);
+                        const d = res.data.data || {};
+                        const proratedNote = d.prorated ? ` (prorated, ${d.days} day${d.days === 1 ? '' : 's'})` : '';
+                        message.success(`Invoice ${d.invoice_code || ''} published${proratedNote}`);
                         loadLeases();
                       } else {
                         message.error(res.data.message || 'Failed to publish invoice');
@@ -421,8 +445,15 @@ function TenantDetailPage() {
                     height: 36,
                   }}
                 >
-                  Publish Invoice
+                  {publishPreview && !publishPreview.error
+                    ? `Publish ${fmt(publishPreview.amount)}${publishPreview.prorated ? ` (prorated, ${publishPreview.days} day${publishPreview.days === 1 ? '' : 's'})` : ''}`
+                    : 'Publish Invoice'}
                 </Button>
+                {publishPreview?.error && (
+                  <span style={{ marginLeft: 12, color: '#ff4d4f', fontSize: 12 }}>
+                    {publishPreview.error}
+                  </span>
+                )}
                 <Button
                   type="default"
                   icon={<MailOutlined />}

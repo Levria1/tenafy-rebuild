@@ -4,6 +4,49 @@ const { authenticate, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 
 const { generateInvoiceCode } = require('../utils/sequenceCode');
+const { computeRentInvoiceAmount, inclusiveDays } = require('../utils/rentProrata');
+const { advanceInvoiceDate, periodEndFor } = require('../utils/invoiceSchedule');
+
+// Internal helper used by both /publish and /publish-preview to figure out the
+// authoritative amount for a given lease + due_date. Returns:
+//   { amount, prorated, days, periodStart, periodEnd, error }
+// where `error` is set with a message if the period is invalid (e.g. lease ended).
+async function resolvePublishAmount(pool, { leasing_id, due_date, fallbackAmount }) {
+  const [[lease]] = await pool.execute(
+    'SELECT amount, invoicing, due_date AS due_day, end_date FROM leasing WHERE id = ? AND deleted_at IS NULL',
+    [leasing_id]
+  );
+  if (!lease) return { error: 'Lease not found' };
+
+  const fullRent = Number(lease.amount) || Number(fallbackAmount) || 0;
+  const periodStart = new Date(due_date);
+
+  // Open-ended lease OR no invoicing schedule → can't prorate, use full rent
+  if (!lease.end_date || !lease.invoicing) {
+    return { amount: fullRent, prorated: false, days: null, periodStart, periodEnd: null };
+  }
+
+  const periodEnd = periodEndFor(periodStart, lease.invoicing, lease.due_day);
+  const prorated = computeRentInvoiceAmount({
+    rent: fullRent,
+    invoicing: lease.invoicing,
+    periodStart,
+    periodEnd,
+    leaseEnd: lease.end_date,
+  });
+
+  if (prorated === null) {
+    return { error: 'Lease has already ended before this period — no invoice should be published', periodStart, periodEnd };
+  }
+
+  // Was this period actually shortened? Compare against fullRent.
+  const wasProrated = Math.round(prorated * 100) !== Math.round(fullRent * 100);
+  const days = wasProrated
+    ? inclusiveDays(periodStart, new Date(lease.end_date))
+    : null;
+
+  return { amount: prorated, prorated: wasProrated, days, periodStart, periodEnd };
+}
 
 // POST /api/invoice/invoices - List invoices with paging
 router.post('/invoices', authenticate, async (req, res) => {
@@ -235,8 +278,39 @@ router.post('/', authenticate, requirePermission('LANDLORD/INVOICE_CREATE'), asy
   }
 });
 
+// GET /api/invoice/publish-preview?leasing_id=X&due_date=YYYY-MM-DD
+// Returns the authoritative amount that /publish would write, plus prorata
+// metadata so the UI can show "Publish $5,520 (prorated, 10 days)" before click.
+router.get('/publish-preview', authenticate, async (req, res) => {
+  try {
+    const { leasing_id, due_date } = req.query;
+    if (!leasing_id || !due_date) {
+      return res.status(400).json({ code: 400, message: 'leasing_id and due_date are required' });
+    }
+    const result = await resolvePublishAmount(req.pool, { leasing_id, due_date });
+    if (result.error) {
+      return res.status(400).json({ code: 400, message: result.error });
+    }
+    res.json({
+      code: 200,
+      data: {
+        amount: result.amount,
+        prorated: result.prorated,
+        days: result.days,
+        period_start: result.periodStart ? result.periodStart.toISOString().slice(0, 10) : null,
+        period_end: result.periodEnd ? result.periodEnd.toISOString().slice(0, 10) : null,
+      },
+    });
+  } catch (err) {
+    console.error('Publish preview error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to compute preview' });
+  }
+});
+
 // POST /api/invoice/publish - Publish next invoice for a lease
-// Creates the next invoice based on the lease's schedule and next_invoice_date
+// Creates the next invoice based on the lease's schedule and next_invoice_date.
+// The amount is recomputed server-side via rentProrata so a manual click matches
+// the scheduler's behavior exactly (final period gets prorated when lease ends mid-cycle).
 router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE'), async (req, res) => {
   try {
     const { tenant_id, unit_id, leasing_id, property_id, amount, due_date, category, currency_id, type, tag_id } = req.body;
@@ -254,6 +328,17 @@ router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE
     if (existing) {
       return res.status(409).json({ code: 409, message: 'Invoice already exists for this date' });
     }
+
+    // Server-side authoritative amount (handles end-of-lease prorata).
+    // Falls back to client-supplied `amount` when the lease has no invoicing schedule
+    // or no end_date — i.e. when prorata cannot apply.
+    const resolved = await resolvePublishAmount(req.pool, {
+      leasing_id, due_date, fallbackAmount: amount,
+    });
+    if (resolved.error) {
+      return res.status(400).json({ code: 400, message: resolved.error });
+    }
+    const finalAmount = resolved.amount;
 
     // Generate Snowflake ID
     const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -300,10 +385,20 @@ router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE
         invoice_code, amount, due_on, status, category, currency_id, type, tag_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, NOW())`,
       [invoiceId, orgId, tenant_id, unit_id || null, leasing_id, propId,
-       code, amount, due_date, catId, currId, type || 0, tag_id || null]
+       code, finalAmount, due_date, catId, currId, type || 0, tag_id || null]
     );
 
-    res.json({ code: 200, message: 'Invoice published', data: { id: invoiceId, invoice_code: code } });
+    res.json({
+      code: 200,
+      message: 'Invoice published',
+      data: {
+        id: invoiceId,
+        invoice_code: code,
+        amount: finalAmount,
+        prorated: resolved.prorated,
+        days: resolved.days,
+      },
+    });
   } catch (error) {
     console.error('Publish invoice error:', error);
     res.status(500).json({ code: 500, message: 'Failed to publish invoice' });
