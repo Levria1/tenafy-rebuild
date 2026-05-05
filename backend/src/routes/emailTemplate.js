@@ -32,7 +32,7 @@ router.post('/list', authenticate, async (req, res) => {
     }
 
     const [templates] = await req.pool.execute(
-      'SELECT id, template_name as name, subject, template_type as type, template_content as body, status, bcc, cc, reply_to, `from`, is_default_template, created_time FROM email_template WHERE ' + whereClause + ' ORDER BY template_name LIMIT ' + limit + ' OFFSET ' + offset,
+      'SELECT id, template_name as name, subject, template_type as type, template_content as body, status, bcc, cc, reply_to, `from`, to_address, is_default_template, created_time FROM email_template WHERE ' + whereClause + ' ORDER BY template_name LIMIT ' + limit + ' OFFSET ' + offset,
       params
     );
     const [[{ total }]] = await req.pool.execute(
@@ -234,7 +234,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     const [templates] = await req.pool.execute(
-      'SELECT id, template_name as name, subject, template_type as type, template_content as body, status, bcc, cc, reply_to, `from`, is_default_template, before_date, date_first, date_second FROM email_template WHERE id = ? AND org_id = ?',
+      'SELECT id, template_name as name, subject, template_type as type, template_content as body, status, bcc, cc, reply_to, `from`, to_address, is_default_template, before_date, date_first, date_second FROM email_template WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
 
@@ -254,7 +254,7 @@ router.post('/', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_CREATE
   try {
     const {
       name, subject, body, type,
-      bcc, cc, reply_to, from: fromAddr,
+      bcc, cc, reply_to, from: fromAddr, to_address,
       is_default_template,
       before_date, date_first, date_second,
     } = req.body;
@@ -273,11 +273,11 @@ router.post('/', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_CREATE
     await req.pool.execute(
       `INSERT INTO email_template
        (id, org_id, template_name, subject, template_content, template_type, status,
-        bcc, cc, reply_to, \`from\`, is_default_template, before_date, date_first, date_second, created_time)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        bcc, cc, reply_to, \`from\`, to_address, is_default_template, before_date, date_first, date_second, created_time)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         id.toString(), orgId, name, subject, body, type,
-        bcc || null, cc || null, reply_to || null, fromAddr || null,
+        bcc || null, cc || null, reply_to || null, fromAddr || null, to_address || null,
         (is_default_template === 1 || is_default_template === true) ? 1 : 2,
         before_date != null ? (before_date ? 1 : 0) : 1,
         date_first || null, date_second || null,
@@ -297,7 +297,7 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_EDIT
     const { id } = req.params;
     const {
       name, subject, body, type, status,
-      bcc, cc, reply_to, from: fromAddr,
+      bcc, cc, reply_to, from: fromAddr, to_address,
       is_default_template,
       before_date, date_first, date_second,
     } = req.body;
@@ -314,14 +314,14 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_EDIT
     await req.pool.execute(
       `UPDATE email_template SET
          template_name = ?, subject = ?, template_content = ?, template_type = ?, status = ?,
-         bcc = ?, cc = ?, reply_to = ?, \`from\` = ?,
+         bcc = ?, cc = ?, reply_to = ?, \`from\` = ?, to_address = ?,
          is_default_template = ?,
          before_date = ?, date_first = ?, date_second = ?,
          updated_time = NOW()
        WHERE id = ? AND org_id = ?`,
       [
         name, subject, body, type, status ?? 1,
-        bcc || null, cc || null, reply_to || null, fromAddr || null,
+        bcc || null, cc || null, reply_to || null, fromAddr || null, to_address || null,
         (is_default_template === 1 || is_default_template === true) ? 1 : 2,
         before_date != null ? (before_date ? 1 : 0) : 1,
         date_first || null, date_second || null,

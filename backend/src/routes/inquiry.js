@@ -139,6 +139,7 @@ router.post('/', async (req, res) => {
     const {
       inquiry_date, lead_source_id, first_name, last_name,
       email, phone, notes, unit_id, property_id, source,
+      desired_start_date, budget, reminder_date,
     } = req.body || {};
 
     if (!first_name && !last_name && !email && !phone) {
@@ -150,8 +151,9 @@ router.post('/', async (req, res) => {
       `INSERT INTO inquiry
          (id, org_id, inquiry_date, lead_source_id,
           first_name, last_name, email, phone, notes,
-          unit_id, property_id, created_by_user_id, source, status)
-       VALUES (?, ?, COALESCE(?, NOW()), ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, 0)`,
+          unit_id, property_id, created_by_user_id, source, status,
+          desired_start_date, budget, reminder_date)
+       VALUES (?, ?, COALESCE(?, NOW()), ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, 0,  ?, ?, ?)`,
       [
         id, orgId, inquiry_date || null, lead_source_id || null,
         first_name || null, last_name || null,
@@ -159,6 +161,9 @@ router.post('/', async (req, res) => {
         phone || null, notes || null,
         unit_id || null, property_id || null,
         userId, source || 'manual',
+        desired_start_date || null,
+        budget !== undefined && budget !== '' && budget !== null ? Number(budget) : null,
+        reminder_date || null,
       ]
     );
 
@@ -179,16 +184,23 @@ router.put('/:id', async (req, res) => {
     const fields = [
       'inquiry_date', 'lead_source_id', 'first_name', 'last_name',
       'email', 'phone', 'notes', 'unit_id', 'property_id', 'status',
+      'desired_start_date', 'budget', 'reminder_date',
     ];
     const sets = [];
     const params = [];
     for (const f of fields) {
       if (req.body[f] !== undefined) {
         sets.push(`${f} = ?`);
-        params.push(
-          f === 'email' && req.body[f] ? String(req.body[f]).trim().toLowerCase() : req.body[f] || null
-        );
+        let v = req.body[f];
+        if (f === 'email' && v) v = String(v).trim().toLowerCase();
+        else if (f === 'budget' && v !== '' && v !== null && v !== undefined) v = Number(v);
+        else if (v === '' || v === undefined) v = null;
+        params.push(v);
       }
+    }
+    // If reminder_date changed, clear reminder_sent_at so the new date will fire
+    if (req.body.reminder_date !== undefined) {
+      sets.push('reminder_sent_at = NULL');
     }
     if (!sets.length) return fail(res, 'No fields to update', 400);
     params.push(req.params.id, orgId);

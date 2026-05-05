@@ -108,6 +108,18 @@ export default function InquiriesPage() {
     { title: 'First Name', dataIndex: 'first_name', width: 130 },
     { title: 'Last Name', dataIndex: 'last_name', width: 130 },
     {
+      title: 'Start',
+      dataIndex: 'desired_start_date',
+      width: 120,
+      render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : <Text type="secondary">—</Text>,
+    },
+    {
+      title: 'Budget',
+      dataIndex: 'budget',
+      width: 110,
+      render: (v) => v != null && v !== '' ? Number(v).toLocaleString() : <Text type="secondary">—</Text>,
+    },
+    {
       title: 'Email',
       dataIndex: 'email',
       ellipsis: true,

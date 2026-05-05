@@ -186,6 +186,11 @@ export default function CreateEmailTemplatePage() {
                       <Input placeholder="sender@example.com" />
                     </Form.Item>
                   </Col>
+                  <Col xs={12} md={8}>
+                    <Form.Item name="to_address" label="To (override)" tooltip="Optional. If set, sends to this address instead of the auto-resolved recipient. Used by templates not tied to a lease (e.g. Inquiry Reminder).">
+                      <Input placeholder="recipient@example.com" />
+                    </Form.Item>
+                  </Col>
                   <Col xs={12} md={4}>
                     <Form.Item name="is_default_template" label="Default Template" valuePropName="checked">
                       <Switch />

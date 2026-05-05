@@ -202,6 +202,7 @@ CREATE TABLE `email_template` (
   `cc` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `reply_to` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `from` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `to_address` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `template_content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `org_id` bigint NOT NULL,
   `created_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,

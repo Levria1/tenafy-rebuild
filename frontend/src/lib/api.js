@@ -174,6 +174,7 @@ export const invoice = {
   publishPreview: (params) => api.get('/api/invoice/publish-preview', { params }),
   update: (id, data) => api.put(`/api/invoice/${id}`, data),
   delete: (id) => api.delete(`/api/invoice/${id}`),
+  emailToTenant: (id) => api.post(`/api/invoice/${id}/email-to-tenant`),
   getSums: (data) => api.post('/api/invoice/paid-outstanding', data),
   getInitializationPayer: (params) => api.get('/api/invoice/initialization-payer', { params }),
   getInitializationProperty: (params) => api.get('/api/invoice/initialization-property', { params }),

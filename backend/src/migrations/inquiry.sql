@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS inquiry (
   property_id BIGINT DEFAULT NULL,
   created_by_user_id BIGINT DEFAULT NULL,
   tenant_id BIGINT DEFAULT NULL,
+  desired_start_date DATE DEFAULT NULL,
+  budget DECIMAL(12,2) DEFAULT NULL,
+  reminder_date DATE DEFAULT NULL,
+  reminder_sent_at DATETIME DEFAULT NULL,
   status TINYINT NOT NULL DEFAULT 0,
   source VARCHAR(20) NOT NULL DEFAULT 'manual',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -22,7 +26,8 @@ CREATE TABLE IF NOT EXISTS inquiry (
   deleted_at DATETIME DEFAULT NULL,
   INDEX idx_org_status (org_id, status, deleted_at),
   INDEX idx_org_email (org_id, email),
-  INDEX idx_tenant (tenant_id)
+  INDEX idx_tenant (tenant_id),
+  INDEX idx_reminder (reminder_date, reminder_sent_at, deleted_at)
 );
 
 -- Link viewing bookings back to the inquiry that produced them (nullable).

@@ -24,128 +24,214 @@ function row(doc, label, value, y, labelX = 58, valueX = 220) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/pdf/invoice/:id  —  Generate invoice PDF
+// Invoice PDF — shared loader + renderer
 // ─────────────────────────────────────────────────────────────────────────────
+async function loadInvoicePdfData(pool, id, orgId) {
+  const [invoices] = await pool.execute(
+    `SELECT i.*,
+            t.first_name as tenant_first_name, t.last_name as tenant_last_name,
+            t.email as tenant_email, t.phone as tenant_phone,
+            t.company_name as tenant_company_name, t.type as tenant_type,
+            u.name as unit_name, u.account_name as unit_account_name,
+            p.display_name as property_name, p.street_address as property_address,
+            p.city as property_city, p.state as property_state,
+            p.currency as property_currency
+     FROM invoice i
+     LEFT JOIN tenant t ON i.tenant_id = t.id
+     LEFT JOIN unit u ON i.unit_id = u.id
+     LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
+     WHERE i.id = ? AND i.org_id = ? AND i.deleted_at IS NULL`,
+    [id, orgId]
+  );
+  if (invoices.length === 0) return null;
+  const inv = invoices[0];
+
+  let amountPaid = 0;
+  if (inv.invoice_code) {
+    const [paidRows] = await pool.execute(
+      `SELECT COALESCE(SUM(al.amount), 0) AS paid
+       FROM accounting_line al
+       JOIN accounting a ON al.accounting_id = a.id
+       WHERE al.invoice_code = ? AND a.org_id = ?
+         AND a.type = 0 AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
+      [inv.invoice_code, orgId]
+    );
+    amountPaid = parseFloat(paidRows?.[0]?.paid) || 0;
+  }
+  const amountTotal = parseFloat(inv.amount) || 0;
+  const outstanding = Math.max(0, amountTotal - amountPaid);
+
+  const [orgRows] = await pool.execute(
+    'SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]
+  ).catch(() => [[]]);
+  const org = orgRows?.[0] || {};
+
+  return { inv, org, amountTotal, amountPaid, outstanding };
+}
+
+function renderInvoicePdf(doc, { inv, org, amountTotal, amountPaid, outstanding }) {
+  const companyName = inv.unit_account_name || org.company_name || '';
+  const currencyCode = inv.property_currency || org.default_currency || 'USD';
+  const currSymbol = { USD: '$', HKD: 'HK$', GBP: '£', EUR: '€', SGD: 'S$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$', MYR: 'RM', PHP: '₱', THB: '฿', JPY: '¥', CNY: '¥', KRW: '₩', INR: '₹', AED: 'AED ' }[currencyCode] || (currencyCode + ' ');
+  const fmtCurr = (v) => `${currSymbol}${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';
+
+  const invoiceNo = inv.invoice_code || inv.id;
+  const today = new Date();
+  const dueDate = inv.due_on ? new Date(inv.due_on) : null;
+  let statusText = 'OPEN';
+  let statusColor = '#faad14';
+  if (inv.status === 1 || (amountPaid >= amountTotal && amountTotal > 0)) {
+    statusText = 'PAID';
+    statusColor = '#52c41a';
+  } else if (inv.status === 2 || (dueDate && dueDate < today && outstanding > 0)) {
+    statusText = 'OVERDUE';
+    statusColor = '#ff4d4f';
+  }
+
+  const W = doc.page.width;
+  const M = 40;
+  const CW = W - M * 2;
+
+  let y = 25;
+  if (org.logo) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const logoPath = path.join(__dirname, '../../uploads', org.logo);
+      if (fs.existsSync(logoPath)) {
+        doc.image(logoPath, M, y, { height: 45 });
+      }
+    } catch (e) { /* skip logo on error */ }
+    y += 55;
+  } else {
+    y += 10;
+  }
+
+  doc.rect(0, y, W, 65).fill('#f0f0f0');
+  doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text('Invoice', M, y + 12);
+  if (companyName) {
+    doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
+  }
+  doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold')
+     .text(`Date: ${fmtDate(inv.created_at || inv.due_on || new Date())}`, W - M - 220, y + 15, { width: 220, align: 'right' });
+  doc.fillColor('#666666').fontSize(9).font('Helvetica')
+     .text(`Invoice: #${invoiceNo}`, W - M - 220, y + 36, { width: 220, align: 'right' });
+
+  y += 80;
+
+  const badgeW = statusText.length * 6 + 16;
+  doc.rect(M, y, badgeW, 18).fill(statusColor);
+  doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold')
+     .text(statusText, M, y + 4, { width: badgeW, align: 'center' });
+  y += 30;
+
+  const halfW = CW / 2;
+  doc.rect(M, y, halfW - 2, 80).fill('#f8f9fb');
+  doc.rect(M + halfW + 2, y, halfW - 2, 80).fill('#f8f9fb');
+
+  doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('BILLED TO', M + 12, y + 8);
+  const tenantName = inv.tenant_type === 1
+    ? (inv.tenant_company_name || `${inv.tenant_first_name || ''} ${inv.tenant_last_name || ''}`.trim())
+    : `${inv.tenant_first_name || ''} ${inv.tenant_last_name || ''}`.trim();
+  doc.fillColor('#333333').fontSize(9).font('Helvetica')
+     .text(tenantName || '-', M + 12, y + 22)
+     .text(inv.tenant_email || '', M + 12, y + 35)
+     .text(inv.tenant_phone || '', M + 12, y + 48);
+
+  doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('PROPERTY / UNIT', M + halfW + 14, y + 8);
+  const addressParts = [inv.property_address, inv.property_city, inv.property_state].filter(Boolean).join(', ');
+  doc.fillColor('#333333').fontSize(9).font('Helvetica')
+     .text(inv.property_name || '-', M + halfW + 14, y + 22)
+     .text(inv.unit_name ? `Unit ${inv.unit_name}` : '', M + halfW + 14, y + 35)
+     .text(addressParts || '', M + halfW + 14, y + 48, { width: halfW - 30 });
+
+  y += 95;
+
+  doc.rect(M, y, CW, 22).fill('#f0f0f0');
+  doc.fillColor('#333333').fontSize(9).font('Helvetica-Bold')
+     .text('DESCRIPTION', M + 10, y + 6)
+     .text('INVOICE #', M + CW * 0.55, y + 6)
+     .text('AMOUNT', M + CW - 80, y + 6, { width: 70, align: 'right' });
+  y += 22;
+
+  doc.rect(M, y, CW, 28).fill('#ffffff');
+  doc.fillColor('#333333').fontSize(9).font('Helvetica')
+     .text(inv.note || 'Invoice', M + 10, y + 8, { width: CW * 0.5 - 10 })
+     .text(invoiceNo, M + CW * 0.55, y + 8)
+     .font('Helvetica-Bold')
+     .text(fmtCurr(amountTotal), M + CW - 80, y + 8, { width: 70, align: 'right' });
+  y += 28;
+
+  doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
+  y += 15;
+
+  const totalsX = M + CW - 220;
+  const totalsW = 220;
+  const totalsRow = (label, value, bold) => {
+    const f = bold ? 'Helvetica-Bold' : 'Helvetica';
+    const sz = bold ? 12 : 10;
+    doc.fillColor(bold ? '#333333' : '#555555').fontSize(sz).font(f)
+       .text(label, totalsX, y, { width: totalsW / 2 })
+       .text(value, totalsX + totalsW / 2, y, { width: totalsW / 2, align: 'right' });
+    y += bold ? 22 : 16;
+  };
+
+  totalsRow('Amount:', fmtCurr(amountTotal), false);
+  totalsRow('Amount Paid:', fmtCurr(amountPaid), false);
+  doc.moveTo(totalsX, y).lineTo(totalsX + totalsW, y).strokeColor('#333333').lineWidth(1.5).stroke();
+  y += 8;
+  totalsRow('Outstanding:', fmtCurr(outstanding), true);
+
+  y += 10;
+  doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
+  y += 15;
+
+  const detailCols = [];
+  if (inv.due_on) detailCols.push({ label: 'DUE DATE', value: fmtDate(inv.due_on) });
+  detailCols.push({ label: 'INVOICE #', value: invoiceNo });
+  detailCols.push({ label: 'STATUS', value: statusText });
+  const colWidth = CW / detailCols.length;
+  detailCols.forEach((col, i) => {
+    const x = M + (i * colWidth);
+    doc.fillColor('#999999').fontSize(8).font('Helvetica-Bold').text(col.label, x, y);
+    doc.fillColor('#333333').fontSize(10).font('Helvetica').text(col.value, x, y + 12);
+  });
+}
+
 router.get('/invoice/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
+    const data = await loadInvoicePdfData(req.pool, id, orgId);
+    if (!data) return res.status(404).json({ code: 404, message: 'Invoice not found' });
 
-    // Fetch invoice + related data
-    const [invoices] = await req.pool.execute(
-      `SELECT i.*,
-              t.first_name as tenant_first_name, t.last_name as tenant_last_name,
-              t.email as tenant_email, t.phone as tenant_phone,
-              u.name as unit_name,
-              p.display_name as property_name, p.street_address as property_address
-       FROM invoice i
-       LEFT JOIN tenant t ON i.tenant_id = t.id
-       LEFT JOIN unit u ON i.unit_id = u.id
-       LEFT JOIN property p ON u.property_id = p.id
-       WHERE i.id = ? AND i.org_id = ?`,
-      [id, orgId]
-    );
-
-    if (invoices.length === 0) {
-      return res.status(404).json({ code: 404, message: 'Invoice not found' });
-    }
-
-    // Fetch landlord/org settings
-    const [orgRows] = await req.pool.execute(
-      'SELECT * FROM org_setting WHERE org_id = ? LIMIT 1',
-      [orgId]
-    ).catch(() => [[]]);
-
-    const inv = invoices[0];
-    const org = orgRows?.[0] || {};
-
-    // Build PDF
-    const doc = new PDFDocument({ margin: 50, size: 'A4' });
+    const invoiceNo = data.inv.invoice_code || id;
+    const doc = new PDFDocument({ margin: 0, size: 'A4' });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="invoice-${inv.invoice_code || id}.pdf"`);
+    res.setHeader('Content-Disposition', `inline; filename="invoice-${invoiceNo}.pdf"`);
     doc.pipe(res);
-
-    // ── Header ──────────────────────────────────────────────────────────────
-    doc.rect(0, 0, doc.page.width, 80).fill('#1a3c8f');
-    doc.fillColor('#ffffff').fontSize(22).font('Helvetica-Bold').text('INVOICE', 50, 25);
-    doc.fontSize(10).font('Helvetica').text(org.company_name || 'Property Management', 50, 52);
-
-    // Invoice number top-right
-    doc.fillColor('#ffffff').fontSize(11).font('Helvetica-Bold')
-       .text(`# ${inv.invoice_code || id}`, doc.page.width - 200, 25, { width: 150, align: 'right' });
-    doc.fontSize(9).font('Helvetica')
-       .text(`Date: ${inv.created_at ? new Date(inv.created_at).toLocaleDateString() : '-'}`, doc.page.width - 200, 45, { width: 150, align: 'right' })
-       .text(`Due: ${inv.due_on ? new Date(inv.due_on).toLocaleDateString() : '-'}`, doc.page.width - 200, 58, { width: 150, align: 'right' });
-
-    let y = 100;
-
-    // ── Status badge ────────────────────────────────────────────────────────
-    const statusColor = inv.status === 1 ? '#52c41a' : '#faad14';
-    const statusText = inv.status === 1 ? 'PAID' : 'UNPAID';
-    doc.rect(50, y, 60, 18).fill(statusColor);
-    doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold').text(statusText, 52, y + 4, { width: 56, align: 'center' });
-    y += 30;
-
-    // ── Billed To / Property ─────────────────────────────────────────────────
-    const colW = (doc.page.width - 100) / 2;
-    doc.rect(50, y, colW - 5, 90).fill('#f8f8f8').stroke('#eeeeee');
-    doc.rect(50 + colW + 5, y, colW - 5, 90).fill('#f8f8f8').stroke('#eeeeee');
-
-    doc.fillColor('#1a3c8f').fontSize(9).font('Helvetica-Bold').text('BILLED TO', 58, y + 8);
-    doc.fillColor('#333333').fontSize(9).font('Helvetica')
-       .text(`${inv.tenant_first_name || ''} ${inv.tenant_last_name || ''}`.trim() || 'N/A', 58, y + 20)
-       .text(inv.tenant_email || '-', 58, y + 32)
-       .text(inv.tenant_phone || '-', 58, y + 44);
-
-    doc.fillColor('#1a3c8f').fontSize(9).font('Helvetica-Bold').text('PROPERTY / UNIT', 58 + colW + 5, y + 8);
-    doc.fillColor('#333333').fontSize(9).font('Helvetica')
-       .text(inv.property_name || '-', 58 + colW + 5, y + 20)
-       .text(inv.property_address || '-', 58 + colW + 5, y + 32, { width: colW - 20 })
-       .text(`Unit: ${inv.unit_name || '-'}`, 58 + colW + 5, y + 56);
-
-    y += 105;
-
-    // ── Description table ────────────────────────────────────────────────────
-    doc.rect(50, y, doc.page.width - 100, 20).fill('#1a3c8f');
-    doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold')
-       .text('DESCRIPTION', 58, y + 6)
-       .text('AMOUNT', doc.page.width - 130, y + 6, { width: 70, align: 'right' });
-    y += 25;
-
-    doc.rect(50, y, doc.page.width - 100, 30).fill('#f8f8f8').stroke('#eeeeee');
-    doc.fillColor('#333333').fontSize(10).font('Helvetica')
-       .text(inv.note || 'Rent', 58, y + 9)
-       .text(`$${Number(inv.amount || 0).toFixed(2)}`, doc.page.width - 130, y + 9, { width: 70, align: 'right' });
-    y += 40;
-
-    hLine(doc, y);
-    y += 10;
-
-    // ── Total ─────────────────────────────────────────────────────────────────
-    doc.rect(doc.page.width - 200, y, 150, 30).fill('#1a3c8f');
-    doc.fillColor('#ffffff').fontSize(11).font('Helvetica-Bold')
-       .text('TOTAL DUE', doc.page.width - 195, y + 8)
-       .text(`$${Number(inv.amount || 0).toFixed(2)}`, doc.page.width - 195, y + 8, { width: 135, align: 'right' });
-    y += 50;
-
-    // ── Notes ─────────────────────────────────────────────────────────────────
-    if (org.invoice_notes || inv.notes) {
-      y = sectionHeader(doc, 'NOTES', y);
-      doc.fontSize(9).font('Helvetica').fillColor('#555555').text(org.invoice_notes || inv.notes || '', 58, y, { width: doc.page.width - 120 });
-      y += 30;
-    }
-
-    // ── Footer ────────────────────────────────────────────────────────────────
-    doc.rect(0, doc.page.height - 40, doc.page.width, 40).fill('#f0f4ff');
-    doc.fillColor('#888888').fontSize(8).font('Helvetica')
-       .text(`Generated by Tenafy | ${new Date().toLocaleDateString()}`, 50, doc.page.height - 25, { align: 'center', width: doc.page.width - 100 });
-
+    renderInvoicePdf(doc, data);
     doc.end();
   } catch (error) {
     console.error('Generate invoice PDF error:', error);
     if (!res.headersSent) res.status(500).json({ code: 500, message: 'Failed to generate PDF' });
   }
 });
+
+async function generateInvoicePdfBuffer(pool, id, orgId) {
+  const data = await loadInvoicePdfData(pool, id, orgId);
+  if (!data) throw new Error('Invoice not found');
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 0, size: 'A4' });
+    const chunks = [];
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    renderInvoicePdf(doc, data);
+    doc.end();
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/pdf/lease/:id  —  Generate lease PDF
@@ -378,17 +464,18 @@ router.get('/receipt/:paymentId', authenticate, async (req, res) => {
     // ── Header bar (light grey) ──────────────────────────────────────────────
     doc.rect(0, y, W, 65).fill('#f0f0f0');
 
-    // Left side: RECEIPT title + company name
-    doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text('RECEIPT', M, y + 12);
+    // Left side: Bank account name (from unit.account_name) as title, fallback to RECEIPT
+    const titleText = companyName || 'RECEIPT';
+    doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text(titleText, M, y + 12);
     if (companyName) {
       doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
     }
 
-    // Right side: receipt number + date
+    // Right side: date on top (larger), receipt number below (smaller)
     doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold')
-       .text(`# ${receiptNo}`, W - M - 160, y + 15, { width: 160, align: 'right' });
+       .text(`Date: ${fmtDate(pmt.payment_date || new Date())}`, W - M - 200, y + 15, { width: 200, align: 'right' });
     doc.fillColor('#666666').fontSize(9).font('Helvetica')
-       .text(`Date: ${fmtDate(pmt.payment_date || new Date())}`, W - M - 160, y + 32, { width: 160, align: 'right' });
+       .text(`Receipt: #${receiptNo}`, W - M - 200, y + 36, { width: 200, align: 'right' });
 
     y += 80;
 
@@ -583,10 +670,11 @@ async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
 
     // Header bar
     doc.rect(0, y, W, 65).fill('#f0f0f0');
-    doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text('RECEIPT', M, y + 12);
+    const titleText = companyName || 'RECEIPT';
+    doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text(titleText, M, y + 12);
     if (companyName) doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
-    doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold').text(`# ${receiptNo}`, W - M - 160, y + 15, { width: 160, align: 'right' });
-    doc.fillColor('#666666').fontSize(9).font('Helvetica').text(`Date: ${fmtDate(pmt.payment_date || new Date())}`, W - M - 160, y + 32, { width: 160, align: 'right' });
+    doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold').text(`Date: ${fmtDate(pmt.payment_date || new Date())}`, W - M - 200, y + 15, { width: 200, align: 'right' });
+    doc.fillColor('#666666').fontSize(9).font('Helvetica').text(`Receipt: #${receiptNo}`, W - M - 200, y + 36, { width: 200, align: 'right' });
     y += 80;
 
     // Status
@@ -666,3 +754,4 @@ async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
 
 module.exports = router;
 module.exports.generateReceiptPdfBuffer = generateReceiptPdfBuffer;
+module.exports.generateInvoicePdfBuffer = generateInvoicePdfBuffer;

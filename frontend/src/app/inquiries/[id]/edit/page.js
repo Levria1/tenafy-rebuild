@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Form, Input, Button, Select, DatePicker, message, Card, Spin } from 'antd';
+import { Form, Input, Button, Select, DatePicker, InputNumber, message, Card, Spin } from 'antd';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
 import { inquiry, settings } from '../../../../lib/api';
@@ -40,6 +40,9 @@ export default function InquiryEditPage() {
           phone: d.phone || '',
           notes: d.notes || '',
           status: d.status,
+          desired_start_date: d.desired_start_date ? dayjs(d.desired_start_date) : null,
+          budget: d.budget != null ? Number(d.budget) : null,
+          reminder_date: d.reminder_date ? dayjs(d.reminder_date) : null,
         });
       }
     }).catch(() => message.error('Failed to load inquiry'))
@@ -51,7 +54,9 @@ export default function InquiryEditPage() {
     try {
       const payload = {
         ...values,
-        inquiry_date: values.inquiry_date ? values.inquiry_date.format('YYYY-MM-DD HH:mm:ss') : null,
+        inquiry_date: values.inquiry_date ? values.inquiry_date.format('YYYY-MM-DD') : null,
+        desired_start_date: values.desired_start_date ? values.desired_start_date.format('YYYY-MM-DD') : null,
+        reminder_date: values.reminder_date ? values.reminder_date.format('YYYY-MM-DD') : null,
       };
       const r = await inquiry.update(id, payload);
       if (r.data?.code === 200) {
@@ -78,7 +83,7 @@ export default function InquiryEditPage() {
         <Card>
           <Form form={form} layout="vertical" onFinish={onFinish}>
             <Form.Item label="Date" name="inquiry_date" rules={[{ required: true, message: 'Date is required' }]}>
-              <DatePicker showTime style={{ width: '100%' }} format="YYYY-MM-DD HH:mm" />
+              <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
             </Form.Item>
             <Form.Item label="Lead Source" name="lead_source_id">
               <Select
@@ -101,6 +106,15 @@ export default function InquiryEditPage() {
             </Form.Item>
             <Form.Item label="Phone Number" name="phone">
               <Input />
+            </Form.Item>
+            <Form.Item label="Desired Start Date" name="desired_start_date" tooltip="When the prospect wants to start renting">
+              <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+            </Form.Item>
+            <Form.Item label="Budget" name="budget">
+              <InputNumber style={{ width: '100%' }} min={0} step={100} placeholder="Monthly budget" />
+            </Form.Item>
+            <Form.Item label="Reminder Date" name="reminder_date" tooltip="An email reminder will be sent to you on this date using the Inquiry-Reminder template. Changing this date re-enables the reminder.">
+              <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
             </Form.Item>
             <Form.Item label="Notes" name="notes">
               <Input.TextArea rows={4} />

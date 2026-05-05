@@ -63,6 +63,8 @@ const TEMPLATE_TYPES = [
   { value: 'Viewing-Confirmation', label: 'Viewing Confirmation (All)' },
   { value: 'Viewing-Declined', label: 'Viewing Declined (Viewer)' },
   { value: 'Viewing-Cancelled', label: 'Viewing Cancelled (All)' },
+  // Inquiry follow-up reminder (sent to staff who created the inquiry)
+  { value: 'Inquiry-Reminder', label: 'Inquiry Reminder (Staff)' },
 ];
 
 const TOGGLE_MAP = {
@@ -119,6 +121,18 @@ const TEMPLATE_VARIABLES = [
   { key: '%Approve URL%', description: 'Approve link (employee/tenant emails)' },
   { key: '%Decline URL%', description: 'Decline link (employee/tenant emails)' },
   { key: '%Manage URL%', description: 'Viewer self-manage / cancel link' },
+  // --- Inquiry-Reminder variables ---
+  { key: '%Inquiry Name%', description: 'Inquiry contact full name' },
+  { key: '%Inquiry Email%', description: 'Inquiry contact email' },
+  { key: '%Inquiry Phone%', description: 'Inquiry contact phone' },
+  { key: '%Inquiry Notes%', description: 'Inquiry notes' },
+  { key: '%Inquiry Source%', description: 'Lead source name' },
+  { key: '%Inquiry Date%', description: 'Date the inquiry was created' },
+  { key: '%Desired Start Date%', description: 'Date the prospect wants to start' },
+  { key: '%Budget%', description: 'Prospect budget' },
+  { key: '%Inquiry Property%', description: 'Property of interest' },
+  { key: '%Inquiry Unit%', description: 'Unit of interest' },
+  { key: '%Inquiry Link%', description: 'Link to the inquiry detail page' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -512,6 +526,7 @@ async function sendTemplateEmail(pool, orgId, {
   invoiceId,
   toOverride,
   extraVariables,
+  extraCc,
   attachments,
 } = {}) {
   // 1. Load template
@@ -544,7 +559,11 @@ async function sendTemplateEmail(pool, orgId, {
   }
 
   // 4. Determine recipient
+  // Precedence: explicit toOverride > template.to_address > role-based (landlord/tenant)
   let recipient = toOverride;
+  if (!recipient && template.to_address) {
+    recipient = template.to_address;
+  }
   if (!recipient) {
     if (templateType && templateType.toLowerCase().includes('landlord')) {
       recipient = await getLandlordEmail(pool, orgId);
@@ -607,8 +626,14 @@ async function sendTemplateEmail(pool, orgId, {
     from: template.from || undefined,
   };
 
-  // Add CC/BCC if template has them
-  if (template.cc) mailOpts.cc = template.cc;
+  // Add CC/BCC if template has them; merge in any extraCc passed by caller
+  const ccList = [];
+  if (template.cc) ccList.push(template.cc);
+  if (extraCc) {
+    if (Array.isArray(extraCc)) ccList.push(...extraCc.filter(Boolean));
+    else ccList.push(extraCc);
+  }
+  if (ccList.length > 0) mailOpts.cc = ccList.join(', ');
   if (template.bcc) mailOpts.bcc = template.bcc;
   if (template.reply_to) mailOpts.replyTo = template.reply_to;
   if (attachments && attachments.length > 0) mailOpts.attachments = attachments;

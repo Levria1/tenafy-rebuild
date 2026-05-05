@@ -546,6 +546,123 @@ async function autoDeclineStaleViewingsForOrg(pool, /* orgId */) {
 }
 
 // ---------------------------------------------------------------------------
+// Inquiry reminders — email staff who created the inquiry on reminder_date
+// ---------------------------------------------------------------------------
+
+async function sendInquiryRemindersForOrg(pool, orgId) {
+  const { sendTemplateEmail, loadTemplate } = require('./emailService');
+
+  // Find inquiries whose reminder is due and not yet sent
+  let rows;
+  try {
+    [rows] = await pool.execute(
+      `SELECT i.id, i.first_name, i.last_name, i.email, i.phone, i.notes,
+              i.inquiry_date, i.desired_start_date, i.budget, i.reminder_date,
+              ls.name AS lead_source_name,
+              p.display_name AS property_name, un.name AS unit_name,
+              CONCAT(COALESCE(u.first_name,''),' ',COALESCE(u.last_name,'')) AS staff_name,
+              u.email AS staff_email
+       FROM inquiry i
+       LEFT JOIN lead_source_setting ls ON i.lead_source_id = ls.id
+       LEFT JOIN user u ON i.created_by_user_id = u.id
+       LEFT JOIN property p ON i.property_id = p.id
+       LEFT JOIN unit un ON i.unit_id = un.id
+       WHERE i.org_id = ?
+         AND i.deleted_at IS NULL
+         AND i.reminder_date IS NOT NULL
+         AND i.reminder_date <= CURDATE()
+         AND i.reminder_sent_at IS NULL`,
+      [orgId]
+    );
+  } catch (err) {
+    // Table or columns may not exist yet on older DBs — skip silently
+    if (/Unknown column|doesn't exist/i.test(err.message)) return;
+    throw err;
+  }
+
+  if (!rows.length) return;
+
+  const appUrl = process.env.APP_URL || '';
+
+  for (const r of rows) {
+    if (!r.staff_email) {
+      console.log(`[Scheduler][inquiryReminders] Inquiry ${r.id} has no staff email; skipping.`);
+      continue;
+    }
+
+    const fullName = [r.first_name, r.last_name].filter(Boolean).join(' ') || '(no name)';
+    const fmtDate = (d) => d ? new Date(d).toISOString().slice(0, 10) : '';
+    const extraVariables = {
+      '%Inquiry Name%': fullName,
+      '%Inquiry Email%': r.email || '',
+      '%Inquiry Phone%': r.phone || '',
+      '%Inquiry Notes%': r.notes || '',
+      '%Inquiry Source%': r.lead_source_name || '',
+      '%Inquiry Date%': fmtDate(r.inquiry_date),
+      '%Desired Start Date%': fmtDate(r.desired_start_date),
+      '%Budget%': r.budget != null ? String(r.budget) : '',
+      '%Inquiry Property%': r.property_name || '',
+      '%Inquiry Unit%': r.unit_name || '',
+      '%Inquiry Link%': appUrl ? `${appUrl}/inquiries/${r.id}` : `/inquiries/${r.id}`,
+    };
+
+    let sent = false;
+    try {
+      // Look up the template first to decide the primary recipient.
+      // - If template has its own `to_address`, send to that and CC staff.
+      // - Otherwise, send to staff (no CC needed — they ARE the recipient).
+      const tpl = await loadTemplate(pool, orgId, 'Inquiry-Reminder');
+      const tplHasTo = !!(tpl && tpl.to_address);
+      const result = await sendTemplateEmail(pool, orgId, {
+        templateType: 'Inquiry-Reminder',
+        toOverride: tplHasTo ? undefined : r.staff_email,
+        extraCc: tplHasTo ? r.staff_email : undefined,
+        extraVariables,
+      });
+      sent = !!result;
+    } catch (err) {
+      console.error(`[Scheduler][inquiryReminders] Send failed for inquiry ${r.id}:`, err.message);
+    }
+
+    // Plain fallback if no template configured
+    if (!sent) {
+      try {
+        const subject = `Inquiry reminder — ${fullName}`;
+        const html = `
+          <p>This is your reminder to follow up on the inquiry below.</p>
+          <ul>
+            <li><strong>Name:</strong> ${fullName}</li>
+            <li><strong>Email:</strong> ${r.email || '—'}</li>
+            <li><strong>Phone:</strong> ${r.phone || '—'}</li>
+            <li><strong>Lead source:</strong> ${r.lead_source_name || '—'}</li>
+            <li><strong>Property/Unit:</strong> ${[r.property_name, r.unit_name].filter(Boolean).join(' · ') || '—'}</li>
+            <li><strong>Desired start:</strong> ${fmtDate(r.desired_start_date) || '—'}</li>
+            <li><strong>Budget:</strong> ${r.budget != null ? r.budget : '—'}</li>
+          </ul>
+          <p><strong>Notes:</strong><br>${(r.notes || '').replace(/\n/g, '<br>') || '—'}</p>
+          ${appUrl ? `<p><a href="${appUrl}/inquiries/${r.id}">Open inquiry</a></p>` : ''}
+        `;
+        await sendMail({ to: r.staff_email, subject, html });
+        sent = true;
+      } catch (err) {
+        console.error(`[Scheduler][inquiryReminders] Plain fallback failed for inquiry ${r.id}:`, err.message);
+      }
+    }
+
+    if (sent) {
+      try {
+        await pool.execute(
+          'UPDATE inquiry SET reminder_sent_at = NOW() WHERE id = ? AND org_id = ?',
+          [r.id, orgId]
+        );
+      } catch (err) {
+        console.error(`[Scheduler][inquiryReminders] Failed to stamp reminder_sent_at on ${r.id}:`, err.message);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-org job runner — runs a job against ALL active orgs
 // ---------------------------------------------------------------------------
 
@@ -631,6 +748,12 @@ function startScheduler() {
   cron.schedule('15 * * * *', () => {
     console.log('[Scheduler] Auto-declining stale viewing bookings...');
     runForAllOrgs('viewingAutoDecline', autoDeclineStaleViewingsForOrg);
+  });
+
+  // Daily at 08:30 - inquiry reminders (Inquiry-Reminder template to creator)
+  cron.schedule('30 8 * * *', () => {
+    console.log('[Scheduler] Sending inquiry reminders...');
+    runForAllOrgs('inquiryReminders', sendInquiryRemindersForOrg);
   });
 
   // Run once at startup to fix stale statuses

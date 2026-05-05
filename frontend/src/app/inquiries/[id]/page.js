@@ -102,13 +102,24 @@ export default function InquiryDetailPage() {
         <Card style={{ marginBottom: 16 }}>
           <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered>
             <Descriptions.Item label="Date">
-              {data.inquiry_date ? dayjs(data.inquiry_date).format('YYYY-MM-DD HH:mm') : '—'}
+              {data.inquiry_date ? dayjs(data.inquiry_date).format('YYYY-MM-DD') : '—'}
             </Descriptions.Item>
             <Descriptions.Item label="Lead Source">{data.lead_source_name || '—'}</Descriptions.Item>
             <Descriptions.Item label="First Name">{data.first_name || '—'}</Descriptions.Item>
             <Descriptions.Item label="Last Name">{data.last_name || '—'}</Descriptions.Item>
             <Descriptions.Item label="Email">{data.email || '—'}</Descriptions.Item>
             <Descriptions.Item label="Phone">{data.phone || '—'}</Descriptions.Item>
+            <Descriptions.Item label="Desired Start">
+              {data.desired_start_date ? dayjs(data.desired_start_date).format('YYYY-MM-DD') : '—'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Budget">
+              {data.budget != null ? Number(data.budget).toLocaleString() : '—'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Reminder">
+              {data.reminder_date
+                ? `${dayjs(data.reminder_date).format('YYYY-MM-DD')}${data.reminder_sent_at ? ' (sent)' : ''}`
+                : '—'}
+            </Descriptions.Item>
             <Descriptions.Item label="User">
               {(data.created_by_name && data.created_by_name.trim()) || data.created_by_email || '—'}
             </Descriptions.Item>

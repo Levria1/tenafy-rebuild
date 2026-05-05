@@ -6,6 +6,9 @@ const { logActivity } = require('../utils/activityLog');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount, inclusiveDays } = require('../utils/rentProrata');
 const { advanceInvoiceDate, periodEndFor } = require('../utils/invoiceSchedule');
+const { generateInvoicePdfBuffer } = require('./pdf');
+const { sendTemplateEmail } = require('../services/emailService');
+const { sendMail, sendMailWithAccount } = require('../config/mailer');
 
 // Internal helper used by both /publish and /publish-preview to figure out the
 // authoritative amount for a given lease + due_date. Returns:
@@ -612,6 +615,59 @@ router.get('/property/:unit_id', authenticate, async (req, res) => {
 });
 
 // GET /api/invoice/:id - Get invoice detail
+// POST /api/invoice/:id/email-to-tenant — email the invoice PDF to the tenant
+router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+
+    const [[inv]] = await req.pool.execute(
+      `SELECT i.id, i.invoice_code, i.leasing_id, i.due_on, i.amount, i.tenant_id, i.category,
+              t.email AS tenant_email, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name
+       FROM invoice i
+       LEFT JOIN tenant t ON i.tenant_id = t.id
+       WHERE i.id = ? AND i.org_id = ? AND i.deleted_at IS NULL`,
+      [id, orgId]
+    );
+    if (!inv) return res.status(404).json({ code: 404, message: 'Invoice not found' });
+    if (!inv.tenant_email) return res.status(400).json({ code: 400, message: 'Tenant has no email on file' });
+
+    const pdfBuffer = await generateInvoicePdfBuffer(req.pool, id, orgId);
+    const filename = `invoice-${inv.invoice_code || id}.pdf`;
+    const attachments = [{ filename, content: pdfBuffer, contentType: 'application/pdf' }];
+
+    // Try sending via the Invoice-Tenant template if one exists; otherwise fall back to a plain email
+    let result = null;
+    try {
+      result = await sendTemplateEmail(req.pool, orgId, {
+        templateType: 'Invoice-Tenant',
+        leaseId: inv.leasing_id,
+        invoiceId: inv.id,
+        invoiceCode: inv.invoice_code,
+        category: inv.category,
+        dueDate: inv.due_on,
+        attachments,
+        toOverride: inv.tenant_email,
+      });
+    } catch (e) {
+      result = null;
+    }
+
+    if (!result) {
+      // No template configured (or send failed) — send a plain email with the PDF attached
+      const tenantName = `${inv.tenant_first_name || ''} ${inv.tenant_last_name || ''}`.trim() || 'Tenant';
+      const subject = `Invoice ${inv.invoice_code || ''}`.trim();
+      const html = `<p>Hi ${tenantName},</p><p>Please find your invoice attached.</p><p>Regards,</p>`;
+      await sendMail({ to: inv.tenant_email, subject, html, attachments });
+    }
+
+    res.json({ code: 200, message: 'Invoice emailed to tenant', data: { to: inv.tenant_email } });
+  } catch (error) {
+    console.error('Email invoice to tenant error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to email invoice' });
+  }
+});
+
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
