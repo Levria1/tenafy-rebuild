@@ -11,7 +11,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
-import { leasing, property, tenant, emailTemplate, file as fileApi, settings, bookingPlatform, salesAgent } from '../../../lib/api';
+import { leasing, property, tenant, file as fileApi, settings, bookingPlatform, salesAgent } from '../../../lib/api';
 
 const { TextArea } = Input;
 
@@ -38,7 +38,6 @@ export default function LeaseCreatePage() {
   const [allUnits, setAllUnits] = useState([]);
   const [filteredUnits, setFilteredUnits] = useState([]);
   const [tenants, setTenants] = useState([]);
-  const [templates, setTemplates] = useState([]);
   const [platforms, setPlatforms] = useState([]);
   const [agents, setAgents] = useState([]);
 
@@ -61,16 +60,14 @@ export default function LeaseCreatePage() {
 
   const loadData = async () => {
     try {
-      const [propsRes, tenantsRes, templatesRes, platformsRes, agentsRes] = await Promise.all([
+      const [propsRes, tenantsRes, platformsRes, agentsRes] = await Promise.all([
         property.getAllWithUnits(),
         leasing.getTenants(),
-        emailTemplate.getAll({ type: 'lease' }),
         bookingPlatform.list(),
         salesAgent.list(),
       ]);
       setProperties(propsRes.data.data || []);
       setTenants(tenantsRes.data.data || []);
-      setTemplates(templatesRes.data.data || []);
       setPlatforms(platformsRes.data.data || []);
       setAgents(agentsRes.data.data || []);
 
@@ -87,14 +84,12 @@ export default function LeaseCreatePage() {
       console.error('Failed to load data:', error);
       // Fallback: try loading units separately
       try {
-        const [propsRes, tenantsRes, templatesRes] = await Promise.all([
+        const [propsRes, tenantsRes] = await Promise.all([
           property.getAll(),
           leasing.getTenants(),
-          emailTemplate.getAll({ type: 'lease' }),
         ]);
         setProperties(propsRes.data.data || []);
         setTenants(tenantsRes.data.data || []);
-        setTemplates(templatesRes.data.data || []);
       } catch (e2) {
         message.error('Failed to load data');
       }
@@ -168,7 +163,6 @@ export default function LeaseCreatePage() {
     if (t) {
       form.setFieldsValue({
         contact_phone: t.phone || '',
-        email_to: t.email || '',
       });
     }
   };
@@ -266,8 +260,6 @@ export default function LeaseCreatePage() {
       tenant_renewal_days: values.tenant_renewal_days || 0,
       tenant_deposit_posted: values.tenant_deposit_posted || false,
       payment_receipt: values.payment_receipt || false,
-      // email
-      email_template_id: values.email_template_id || null,
       access_setting: values.access_setting || null,
       all_past: values.all_past || false,
       mark_past_paid: values.mark_past_paid || false,
@@ -630,44 +622,6 @@ export default function LeaseCreatePage() {
   // ─── Step 3: Email & Settings ───────────────────────────────
   const renderStep3 = () => (
     <>
-      <Card size="small" title="Email Template" style={{ marginBottom: 16 }}>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item name="email_template_id" label="Email Template">
-              <Select placeholder="Select template" allowClear>
-                {templates.map(t => (
-                  <Select.Option key={t.id} value={t.id}>{t.name}</Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item name="email_to" label="To">
-              <Input placeholder="Tenant email" />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="email_reply_to" label="Reply To">
-              <Input placeholder="Reply-to email" />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item name="email_cc" label="CC">
-              <Input placeholder="CC email addresses" />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="email_bcc" label="BCC">
-              <Input placeholder="BCC email addresses" />
-            </Form.Item>
-          </Col>
-        </Row>
-      </Card>
-
       <Card size="small" title="Email Notifications" style={{ marginBottom: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px' }}>
           <Form.Item name="tenant_posted" valuePropName="checked" style={{ marginBottom: 0 }}>

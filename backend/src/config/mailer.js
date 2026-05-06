@@ -68,7 +68,11 @@ async function sendMail({ to, subject, html, text, from, cc, bcc, replyTo, attac
   if (replyTo) mailOptions.replyTo = replyTo;
   if (attachments) mailOptions.attachments = attachments;
 
+  console.log(`[Mailer.sendMail] from=${mailOptions.from} to=${mailOptions.to} cc=${mailOptions.cc || '(none)'} bcc=${mailOptions.bcc || '(none)'}`);
+
   const info = await transport.sendMail(mailOptions);
+
+  console.log(`[Mailer.sendMail] sent ok messageId=${info.messageId} accepted=${JSON.stringify(info.accepted)} rejected=${JSON.stringify(info.rejected)}`);
 
   // Log preview URL for Ethereal test emails
   const previewUrl = nodemailer.getTestMessageUrl(info);
@@ -131,7 +135,12 @@ async function sendMailWithAccount(account, { to, subject, html, text, from, cc,
   if (replyTo) mailOptions.replyTo = replyTo;
   if (attachments) mailOptions.attachments = attachments;
 
+  console.log(`[Mailer.sendMailWithAccount] account=${account.email} from=${mailOptions.from} to=${mailOptions.to} cc=${mailOptions.cc || '(none)'} bcc=${mailOptions.bcc || '(none)'}`);
+
   const info = await transport.sendMail(mailOptions);
+
+  console.log(`[Mailer.sendMailWithAccount] sent ok messageId=${info.messageId} accepted=${JSON.stringify(info.accepted)} rejected=${JSON.stringify(info.rejected)}`);
+
   return { messageId: info.messageId };
 }
 

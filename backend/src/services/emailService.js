@@ -407,19 +407,40 @@ function getSampleVariables() {
 /**
  * Replace all %Variable% placeholders in content with resolved values.
  * Also handles &nbsp; variants (HTML editors sometimes encode spaces).
+ *
+ * When `htmlMode` is true (the body comes from a rich-text editor and contains
+ * HTML tags), multi-line variable values get their `\n` chars converted to
+ * `<br>` so they render as line breaks instead of collapsing to spaces.
+ * Leading/trailing whitespace is also stripped from values to avoid stray
+ * blank lines in the rendered email.
  */
-function substituteVariables(content, variablesMap) {
+function substituteVariables(content, variablesMap, htmlMode = false) {
   if (!content) return '';
+
+  const formatValue = (v) => {
+    if (v == null) return '';
+    let s = String(v);
+    if (!htmlMode) return s;
+    // Trim leading/trailing whitespace+newlines so a value like "\nAccount: ...\n"
+    // doesn't render as a leading or trailing blank line in the email.
+    s = s.replace(/^[\s\r\n]+|[\s\r\n]+$/g, '');
+    // Convert remaining newlines to <br> so multi-line property fields (bank
+    // details, payment instructions, etc.) render with line breaks instead of
+    // collapsing to spaces inside the surrounding <p>/<div>.
+    s = s.replace(/\r\n|\r|\n/g, '<br>');
+    return s;
+  };
 
   let result = content;
   for (const [key, value] of Object.entries(variablesMap)) {
+    const formatted = formatValue(value);
     // Replace normal version: %Name - Lease%
-    result = result.split(key).join(value || '');
+    result = result.split(key).join(formatted);
 
     // Replace &nbsp; version: %Name&nbsp;-&nbsp;Lease%
     const nbspKey = key.replace(/ /g, '&nbsp;');
     if (nbspKey !== key) {
-      result = result.split(nbspKey).join(value || '');
+      result = result.split(nbspKey).join(formatted);
     }
   }
   return result;
@@ -551,10 +572,11 @@ async function sendTemplateEmail(pool, orgId, {
 
   // 3. Substitute in subject and body
   const renderedSubject = substituteVariables(template.subject || '', variables);
-  let renderedBody = substituteVariables(template.template_content || '', variables);
+  const bodyIsHtml = /<[a-z][\s\S]*>/i.test(template.template_content || '');
+  let renderedBody = substituteVariables(template.template_content || '', variables, bodyIsHtml);
 
-  // Convert plain-text newlines to HTML line breaks (unless body already contains HTML tags)
-  if (!/<[a-z][\s\S]*>/i.test(renderedBody)) {
+  // Plain-text bodies: convert raw newlines to <br>
+  if (!bodyIsHtml) {
     renderedBody = renderedBody.replace(/\n/g, '<br>\n');
   }
 
@@ -638,6 +660,8 @@ async function sendTemplateEmail(pool, orgId, {
   if (template.reply_to) mailOpts.replyTo = template.reply_to;
   if (attachments && attachments.length > 0) mailOpts.attachments = attachments;
 
+  console.log(`[EmailService] Sending type=${templateType} to=${mailOpts.to} cc=${mailOpts.cc || '(none)'} bcc=${mailOpts.bcc || '(none)'} from=${mailOpts.from || '(default)'} (template.cc raw=${JSON.stringify(template.cc)} template.bcc raw=${JSON.stringify(template.bcc)})`);
+
   // 6. Send — try matching SMTP account first, fall back to .env credentials
   let result;
   let status = 'sent';
@@ -645,8 +669,10 @@ async function sendTemplateEmail(pool, orgId, {
   try {
     const smtpAccount = await findSmtpAccount(pool, orgId, mailOpts.from);
     if (smtpAccount) {
+      console.log(`[EmailService] Routing through smtp_account=${smtpAccount.email}`);
       result = await sendMailWithAccount(smtpAccount, mailOpts);
     } else {
+      console.log(`[EmailService] No matching smtp_account, using .env transport`);
       result = await sendMail(mailOpts);
     }
   } catch (err) {
@@ -708,10 +734,10 @@ async function previewTemplate(pool, orgId, { templateId, templateType, leaseId,
   }
 
   const renderedSubject = substituteVariables(template.subject || '', variables);
-  let renderedBody = substituteVariables(template.template_content || '', variables);
+  const bodyIsHtml = /<[a-z][\s\S]*>/i.test(template.template_content || '');
+  let renderedBody = substituteVariables(template.template_content || '', variables, bodyIsHtml);
 
-  // Convert plain-text newlines to HTML line breaks (unless body already contains HTML tags)
-  if (!/<[a-z][\s\S]*>/i.test(renderedBody)) {
+  if (!bodyIsHtml) {
     renderedBody = renderedBody.replace(/\n/g, '<br>\n');
   }
 

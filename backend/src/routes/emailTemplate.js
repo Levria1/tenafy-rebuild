@@ -104,6 +104,8 @@ router.post('/send', authenticate, async (req, res) => {
       subject: manualSubject, body: manualBody, cc, bcc, replyTo,
     } = req.body;
 
+    console.log(`[email-template/send] templateId=${templateId} templateType=${templateType} toOverride=${toOverride} cc=${cc || '(none)'} bcc=${bcc || '(none)'} hasManualSubject=${!!manualSubject} hasManualBody=${!!manualBody}`);
+
     // Parse toOverride — could be comma/semicolon-separated list
     let recipients = [];
     if (toOverride) {
@@ -127,10 +129,9 @@ router.post('/send', authenticate, async (req, res) => {
       for (const recipient of recipients) {
         try {
           const renderedSubject = substituteVariables(manualSubject, variables);
-          let renderedBody = substituteVariables(manualBody, variables);
-
-          // Convert plain-text newlines to HTML line breaks (unless body already contains HTML tags)
-          if (!/<[a-z][\s\S]*>/i.test(renderedBody)) {
+          const bodyIsHtml = /<[a-z][\s\S]*>/i.test(manualBody);
+          let renderedBody = substituteVariables(manualBody, variables, bodyIsHtml);
+          if (!bodyIsHtml) {
             renderedBody = renderedBody.replace(/\n/g, '<br>\n');
           }
           const { from: manualFrom } = req.body;
