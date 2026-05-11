@@ -95,7 +95,8 @@ const TEMPLATE_VARIABLES = [
   { key: '%Wifi Details - Property%', description: 'WiFi details' },
   { key: '%Payment Info - Property%', description: 'Payment instructions' },
   { key: '%Unit Information - Lease%', description: 'Unit information from lease' },
-  { key: '%Outstandings%', description: 'Total outstanding balance with currency' },
+  { key: '%Outstandings%', description: 'Total outstanding balance for the lease (all unpaid invoices)' },
+  { key: '%Invoice Outstanding%', description: 'Outstanding amount for the specific invoice being referenced' },
   { key: '%Monthly utility credit%', description: 'Monthly utility credit amount' },
   { key: '%Security deposit amount%', description: 'Security deposit amount' },
   { key: '%Payment Month%', description: 'Payment month name (e.g. March)' },
@@ -266,7 +267,11 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
   const r = rows[0];
   const sym = getCurrencySymbol(r.currency);
 
-  // 2. Compute outstanding balance for this lease
+  // 2. Compute outstanding balance for this lease.
+  // Both sides must cover the SAME set of invoices, otherwise payments against
+  // already-Paid invoices get subtracted from the unpaid-only invoiced total
+  // and produce a large negative number. Use all non-deleted invoices in the
+  // lease — fully-paid ones net to zero, open/overdue ones net to remainder.
   let outstanding = 0;
   try {
     const [[outRow]] = await pool.execute(
@@ -281,12 +286,40 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
            ) AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL
          ), 0) AS total_paid
        FROM invoice i
-       WHERE i.leasing_id = ? AND i.status IN (0, 2) AND i.deleted_at IS NULL`,
+       WHERE i.leasing_id = ? AND i.deleted_at IS NULL`,
       [leaseId, orgId, leaseId]
     );
     outstanding = (parseFloat(outRow.total_invoiced) || 0) - (parseFloat(outRow.total_paid) || 0);
   } catch (err) {
     console.error('[EmailService] Error computing outstanding:', err.message);
+  }
+
+  // 2b. Compute outstanding for the specific invoice being referenced (if any).
+  let invoiceOutstanding = 0;
+  let invoiceOutstandingResolved = false;
+  if (invoiceId || invoiceCode) {
+    try {
+      const [[invOutRow]] = await pool.execute(
+        `SELECT
+           COALESCE(i.amount, 0) AS amount,
+           COALESCE((
+             SELECT SUM(al.amount) FROM accounting_line al
+             JOIN accounting a ON al.accounting_id = a.id
+             WHERE al.invoice_code = i.invoice_code
+               AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL
+           ), 0) AS paid
+         FROM invoice i
+         WHERE ${invoiceId ? 'i.id = ?' : 'i.invoice_code = ?'} AND i.deleted_at IS NULL
+         LIMIT 1`,
+        [orgId, invoiceId || invoiceCode]
+      );
+      if (invOutRow) {
+        invoiceOutstanding = (parseFloat(invOutRow.amount) || 0) - (parseFloat(invOutRow.paid) || 0);
+        invoiceOutstandingResolved = true;
+      }
+    } catch (err) {
+      console.error('[EmailService] Error computing invoice outstanding:', err.message);
+    }
   }
 
   // 3. Compute overdue amount if not supplied
@@ -359,6 +392,7 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
     '%Payment Info - Property%': paymentInfo,
     '%Unit Information - Lease%': r.unit_information || '',
     '%Outstandings%': formatAmount(sym, outstanding),
+    '%Invoice Outstanding%': invoiceOutstandingResolved ? formatAmount(sym, invoiceOutstanding) : '',
     '%Monthly utility credit%': formatAmount(sym, r.credits),
     '%Security deposit amount%': formatAmount(sym, r.deposit),
     '%Payment Month%': formatMonth(effectiveDueDate),
@@ -388,6 +422,7 @@ function getSampleVariables() {
     '%Payment Info - Property%': 'Bank transfer to Account #XXXX',
     '%Unit Information - Lease%': 'Studio apartment, furnished',
     '%Outstandings%': '$1,200.00',
+    '%Invoice Outstanding%': '$800.00',
     '%Monthly utility credit%': '$50.00',
     '%Security deposit amount%': '$2,400.00',
     '%Payment Month%': 'March',
