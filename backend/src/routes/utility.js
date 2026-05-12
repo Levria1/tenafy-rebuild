@@ -749,6 +749,35 @@ router.post('/bill', authenticate, async (req, res) => {
     for (const meter of meters) {
       const isCommon = meter.unit_id == null ? 1 : 0;
 
+      let tenantId = null;
+      let leasingId = null;
+      let leaseStart = null;
+      let leaseEnd = null;
+      let utilityCredit = 0;
+      let leaseCheckInMeter = null;
+
+      // Find tenant with an active lease at the END of the billing period.
+      // If a tenant checked out mid-period, they would have been settled via
+      // checkout settlement already — so only include tenants still active at period_end.
+      if (!isCommon && meter.unit_id) {
+        const [[lease]] = await req.pool.execute(
+          `SELECT l.id, l.tenant_id, l.start_date, l.end_date, l.utility_credit, l.check_in_meter
+           FROM leasing l
+           WHERE l.unit_id = ? AND l.deleted_at IS NULL
+             AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)
+           ORDER BY l.start_date DESC LIMIT 1`,
+          [meter.unit_id, period_end, period_end]
+        );
+        if (lease) {
+          tenantId = lease.tenant_id;
+          leasingId = lease.id;
+          leaseStart = lease.start_date;
+          leaseEnd = lease.end_date;
+          utilityCredit = Number(lease.utility_credit) || 0;
+          leaseCheckInMeter = lease.check_in_meter != null ? Number(lease.check_in_meter) : null;
+        }
+      }
+
       // Get last reading — check both meter_reading log AND the ending_reading from the most recent
       // finalized bill line for this meter (whichever is higher), so that creating a new bill after
       // finalizing the previous one always picks up the correct starting value.
@@ -763,39 +792,19 @@ router.post('/bill', authenticate, async (req, res) => {
          ORDER BY b.period_end DESC LIMIT 1`,
         [meter.id]
       );
-      // Use the highest value among: last reading log, last finalized bill ending, or meter current_reading
+      // Use the highest value among: last reading log, last finalized bill ending,
+      // meter current_reading, or — when a new tenant moved into this unit during
+      // the billing period — that tenant's check_in_meter. The check_in_meter
+      // represents what the meter read on the new tenant's move-in date, so any
+      // consumption between the previous tenant's checkout reading and that value
+      // belongs to the vacancy gap (landlord), not the new tenant.
       const candidates = [
         lastReading ? Number(lastReading.reading_value) : 0,
         lastBillLine ? Number(lastBillLine.ending_reading) : 0,
-        Number(meter.current_reading) || 0
+        Number(meter.current_reading) || 0,
+        leaseCheckInMeter != null ? leaseCheckInMeter : 0,
       ];
       const startReading = Math.max(...candidates);
-      let tenantId = null;
-      let leasingId = null;
-      let leaseStart = null;
-      let leaseEnd = null;
-      let utilityCredit = 0;
-
-      // Find tenant with an active lease at the END of the billing period.
-      // If a tenant checked out mid-period, they would have been settled via
-      // checkout settlement already — so only include tenants still active at period_end.
-      if (!isCommon && meter.unit_id) {
-        const [[lease]] = await req.pool.execute(
-          `SELECT l.id, l.tenant_id, l.start_date, l.end_date, l.utility_credit
-           FROM leasing l
-           WHERE l.unit_id = ? AND l.deleted_at IS NULL
-             AND l.start_date <= ? AND (l.end_date >= ? OR l.end_date IS NULL)
-           ORDER BY l.start_date DESC LIMIT 1`,
-          [meter.unit_id, period_end, period_end]
-        );
-        if (lease) {
-          tenantId = lease.tenant_id;
-          leasingId = lease.id;
-          leaseStart = lease.start_date;
-          leaseEnd = lease.end_date;
-          utilityCredit = Number(lease.utility_credit) || 0;
-        }
-      }
 
       const lineId = genId();
       await req.pool.execute(
