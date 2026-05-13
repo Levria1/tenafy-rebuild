@@ -55,7 +55,7 @@ async function resolvePublishAmount(pool, { leasing_id, due_date, fallbackAmount
 router.post('/invoices', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, searchFields, status, tenantId, propertyId, startDate, endDate, type, tenantStatus, category, leasing_id, bookingPlatformId } = req.body || {};
+    const { search, searchFields, status, tenantId, propertyId, startDate, endDate, type, tenantStatus, category, leasing_id, bookingPlatformId, salesAgentId } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
