@@ -41,8 +41,10 @@ router.post('/login', async (req, res) => {
       { expiresIn: config.jwtExpiresIn }
     );
 
+    // httpOnly:false so the frontend MasterLayout can read the cookie via
+    // js-cookie to gate access — same quirk as the regular org-admin login.
     res.cookie('__s_t', token, {
-      httpOnly: true,
+      httpOnly: false,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 24 * 60 * 60 * 1000
