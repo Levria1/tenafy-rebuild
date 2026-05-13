@@ -896,6 +896,20 @@ export default function InvoicesPage() {
               </div>
             </div>
 
+            {/* Booking Platform + Sales Agent side by side. Falls back to the
+                lease's values for historical invoices that pre-date the
+                per-invoice snapshot. */}
+            <div style={{ display: 'flex', margin: '8px 0', paddingLeft: 0 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Booking Platform:</div>
+                <div>{selectedInvoice.booking_platform_name || selectedInvoice.lease_booking_platform_name || '-'}</div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Sales Agent:</div>
+                <div>{selectedInvoice.sales_agent_name || selectedInvoice.lease_sales_agent_name || '-'}</div>
+              </div>
+            </div>
+
             {/* Notes */}
             <div style={{ margin: '12px 0' }}>
               <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Notes:</div>

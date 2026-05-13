@@ -166,6 +166,7 @@ router.post('/invoices', authenticate, async (req, res) => {
               p.display_name as property_name, u.name as unit_name, cs.name as category_name,
               bp.name as booking_platform_name, sa.name as sales_agent_name,
               lbp.name as lease_booking_platform_name,
+              lsa.name as lease_sales_agent_name,
               COALESCE(paid.total_paid, 0) as amount_paid,
               CASE i.status
                 WHEN 1 THEN 0
@@ -184,6 +185,7 @@ router.post('/invoices', authenticate, async (req, res) => {
        LEFT JOIN sales_agent sa ON i.sales_agent_id = sa.id
        LEFT JOIN leasing l ON i.leasing_id = l.id
        LEFT JOIN booking_platform lbp ON l.booking_platform_id = lbp.id
+       LEFT JOIN sales_agent lsa ON l.sales_agent_id = lsa.id
        LEFT JOIN (
          SELECT al.invoice_code, a.org_id, SUM(al.amount) as total_paid
          FROM accounting_line al
@@ -239,7 +241,7 @@ router.post('/invoices', authenticate, async (req, res) => {
 // POST /api/invoice - Create invoice
 router.post('/', authenticate, requirePermission('LANDLORD/INVOICE_CREATE'), async (req, res) => {
   try {
-    const { tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_date, status, category, currency_id, type, tag_id } = req.body;
+    const { tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_date, status, category, currency_id, type, tag_id, booking_platform_id, sales_agent_id } = req.body;
     const orgId = req.user.orgId;
 
     // Generate Snowflake ID
@@ -269,9 +271,25 @@ router.post('/', authenticate, requirePermission('LANDLORD/INVOICE_CREATE'), asy
       currId = cur ? cur.id : null;
     }
 
+    // Snapshot booking_platform / sales_agent from the parent lease when the
+    // caller didn't supply them — so every invoice carries its own copy and we
+    // never need a runtime fallback to the lease.
+    let platformId = booking_platform_id || null;
+    let agentId = sales_agent_id || null;
+    if (leasing_id && (!platformId || !agentId)) {
+      const [[leaseRow]] = await req.pool.execute(
+        'SELECT booking_platform_id, sales_agent_id FROM leasing WHERE id = ? LIMIT 1',
+        [leasing_id]
+      );
+      if (leaseRow) {
+        if (!platformId) platformId = leaseRow.booking_platform_id || null;
+        if (!agentId) agentId = leaseRow.sales_agent_id || null;
+      }
+    }
+
     await req.pool.execute(
-      'INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_on, status, category, currency_id, type, tag_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())',
-      [invoiceId, orgId, tenant_id, unit_id || null, leasing_id || null, property_id || null, code, amount, note || null, due_date, status || 0, catId, currId, type || 0, tag_id || null]
+      'INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_on, status, category, currency_id, type, tag_id, booking_platform_id, sales_agent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())',
+      [invoiceId, orgId, tenant_id, unit_id || null, leasing_id || null, property_id || null, code, amount, note || null, due_date, status || 0, catId, currId, type || 0, tag_id || null, platformId, agentId]
     );
     await logActivity(req, 'CREATE', 'invoice', invoiceId, 'Created invoice ' + (code || invoiceId));
     res.json({ code: 200, message: 'Invoice created', data: { id: invoiceId, invoice_code: code } });
@@ -383,12 +401,27 @@ router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE
       if (unitRow) propId = unitRow.property_id;
     }
 
+    // Snapshot booking_platform / sales_agent from the lease so published
+    // (scheduled / recurring) invoices carry their own copy.
+    let platformId = null;
+    let agentId = null;
+    const [[leaseRow]] = await req.pool.execute(
+      'SELECT booking_platform_id, sales_agent_id FROM leasing WHERE id = ? LIMIT 1',
+      [leasing_id]
+    );
+    if (leaseRow) {
+      platformId = leaseRow.booking_platform_id || null;
+      agentId = leaseRow.sales_agent_id || null;
+    }
+
     await req.pool.execute(
       `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
-        invoice_code, amount, due_on, status, category, currency_id, type, tag_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, NOW())`,
+        invoice_code, amount, due_on, status, category, currency_id, type, tag_id,
+        booking_platform_id, sales_agent_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, NOW())`,
       [invoiceId, orgId, tenant_id, unit_id || null, leasing_id, propId,
-       code, finalAmount, due_date, catId, currId, type || 0, tag_id || null]
+       code, finalAmount, due_date, catId, currId, type || 0, tag_id || null,
+       platformId, agentId]
     );
 
     res.json({
@@ -517,6 +550,7 @@ router.get('/initialization-leasing', authenticate, async (req, res) => {
 
     const [leases] = await req.pool.execute(
       `SELECT l.id, l.lease_no, l.start_date, l.end_date, l.price,
+              l.booking_platform_id, l.sales_agent_id,
               u.name as unit_name, p.display_name as property_name,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name
        FROM leasing l

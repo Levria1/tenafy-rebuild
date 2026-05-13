@@ -566,12 +566,21 @@ router.get('/invoices', async (req, res) => {
       `SELECT i.*, cs.name AS category_name,
               t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
               t.company_name AS tenant_company_name,
-              u.name AS unit_name, p.display_name AS property_name
+              u.name AS unit_name, p.display_name AS property_name,
+              bp.name AS booking_platform_name,
+              sa.name AS sales_agent_name,
+              lbp.name AS lease_booking_platform_name,
+              lsa.name AS lease_sales_agent_name
        FROM invoice i
        LEFT JOIN category_setting cs ON i.category = cs.id
        LEFT JOIN tenant t ON i.tenant_id = t.id
        LEFT JOIN unit u ON i.unit_id = u.id
        LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
+       LEFT JOIN booking_platform bp ON i.booking_platform_id = bp.id
+       LEFT JOIN sales_agent sa ON i.sales_agent_id = sa.id
+       LEFT JOIN leasing l ON i.leasing_id = l.id
+       LEFT JOIN booking_platform lbp ON l.booking_platform_id = lbp.id
+       LEFT JOIN sales_agent lsa ON l.sales_agent_id = lsa.id
        WHERE ${whereClause}
        ORDER BY i.due_on DESC`,
       params
@@ -594,13 +603,21 @@ router.get('/invoices/:id', async (req, res) => {
               t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
               t.company_name AS tenant_company_name, t.email AS tenant_email,
               p.display_name AS property_name, u.name AS unit_name,
-              l.lease_no
+              l.lease_no,
+              bp.name AS booking_platform_name,
+              sa.name AS sales_agent_name,
+              lbp.name AS lease_booking_platform_name,
+              lsa.name AS lease_sales_agent_name
        FROM invoice i
        LEFT JOIN category_setting cs ON i.category = cs.id
        LEFT JOIN tenant t ON i.tenant_id = t.id
        LEFT JOIN unit u ON i.unit_id = u.id
        LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
        LEFT JOIN leasing l ON i.leasing_id = l.id
+       LEFT JOIN booking_platform bp ON i.booking_platform_id = bp.id
+       LEFT JOIN sales_agent sa ON i.sales_agent_id = sa.id
+       LEFT JOIN booking_platform lbp ON l.booking_platform_id = lbp.id
+       LEFT JOIN sales_agent lsa ON l.sales_agent_id = lsa.id
        WHERE i.id = ? AND i.org_id = ? AND i.deleted_at IS NULL`,
       [id, orgId]
     );

@@ -80,6 +80,7 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
     `SELECT
        l.id, l.tenant_id, l.unit_id, l.amount AS price, l.invoicing, l.due_date,
        l.first_invoice_date, l.start_date, l.end_date, l.all_past, l.currency_id,
+       l.booking_platform_id, l.sales_agent_id,
        p.org_id AS org_id, p.display_name AS property_name, u.name AS unit_name, u.property_id
      FROM leasing l
      JOIN unit u ON l.unit_id = u.id
@@ -166,10 +167,12 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
 
           await pool.execute(
             `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
-              invoice_code, amount, due_on, status, category, currency_id, type, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, NOW())`,
+              invoice_code, amount, due_on, status, category, currency_id, type,
+              booking_platform_id, sales_agent_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, NOW())`,
             [invoiceId, orgId, lease.tenant_id, lease.unit_id, lease.id, lease.property_id,
-             invoiceCode, thisAmount, nextDueDateStr, catId, currId]
+             invoiceCode, thisAmount, nextDueDateStr, catId, currId,
+             lease.booking_platform_id || null, lease.sales_agent_id || null]
           );
 
           invoicesCreated++;

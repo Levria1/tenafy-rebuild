@@ -6,7 +6,7 @@ import { Form, Input, Button, Select, DatePicker, InputNumber, message, Row, Col
 import { UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
-import { invoice, settings, contact } from '../../../../lib/api';
+import { invoice, settings, contact, bookingPlatform, salesAgent } from '../../../../lib/api';
 
 export default function InvoiceEditPage() {
   const router = useRouter();
@@ -23,6 +23,8 @@ export default function InvoiceEditPage() {
   const [leases, setLeases] = useState([]);
   const [categories, setCategories] = useState([]);
   const [tags, setTags] = useState([]);
+  const [platforms, setPlatforms] = useState([]);
+  const [agents, setAgents] = useState([]);
   const [currencySymbol, setCurrencySymbol] = useState('HK$');
 
   // Original invoice data
@@ -34,12 +36,14 @@ export default function InvoiceEditPage() {
 
   const loadAllData = async () => {
     try {
-      const [invRes, payersRes, propsRes, catsRes, tagsRes] = await Promise.all([
+      const [invRes, payersRes, propsRes, catsRes, tagsRes, platformsRes, agentsRes] = await Promise.all([
         invoice.get(invoiceId),
         invoice.getInitializationPayer({}),
         invoice.getInitializationProperty({}),
         settings.getCategories(),
         contact.getAllTags().catch(() => ({ data: { data: [] } })),
+        bookingPlatform.list().catch(() => ({ data: { data: [] } })),
+        salesAgent.list().catch(() => ({ data: { data: [] } })),
       ]);
 
       const inv = invRes.data.code === 200 ? invRes.data.data : null;
@@ -47,11 +51,15 @@ export default function InvoiceEditPage() {
       const propsData = propsRes.data.code === 200 ? (propsRes.data.data || []) : [];
       const catsData = catsRes.data.code === 200 ? (catsRes.data.data || []) : [];
       const tagsData = tagsRes.data?.data || [];
+      const platformsData = platformsRes.data?.data || [];
+      const agentsData = agentsRes.data?.data || [];
 
       setTenants(payersData);
       setProperties(propsData);
       setCategories(catsData);
       setTags(tagsData);
+      setPlatforms(platformsData);
+      setAgents(agentsData);
 
       if (!inv) {
         message.error('Invoice not found');
@@ -97,6 +105,8 @@ export default function InvoiceEditPage() {
         amount: inv.amount ? Number(inv.amount) : undefined,
         tag_id: inv.tag_id || undefined,
         note: inv.note || '',
+        booking_platform_id: inv.booking_platform_id || undefined,
+        sales_agent_id: inv.sales_agent_id || undefined,
       });
     } catch (error) {
       console.error('Failed to load invoice data:', error);
@@ -158,6 +168,23 @@ export default function InvoiceEditPage() {
     await reloadLeases({ unitId });
   };
 
+  // When a lease is picked, default booking_platform / sales_agent to the
+  // lease's values — only if the user hasn't already set them.
+  const onLeaseChange = (leaseId) => {
+    if (!leaseId) return;
+    const lease = leases.find(l => String(l.id) === String(leaseId));
+    if (!lease) return;
+    const current = form.getFieldsValue(['booking_platform_id', 'sales_agent_id']);
+    const updates = {};
+    if (!current.booking_platform_id && lease.booking_platform_id) {
+      updates.booking_platform_id = lease.booking_platform_id;
+    }
+    if (!current.sales_agent_id && lease.sales_agent_id) {
+      updates.sales_agent_id = lease.sales_agent_id;
+    }
+    if (Object.keys(updates).length) form.setFieldsValue(updates);
+  };
+
   const onFinish = async (values) => {
     try {
       setLoading(true);
@@ -172,6 +199,8 @@ export default function InvoiceEditPage() {
         amount: values.amount,
         tag_id: values.tag_id || null,
         note: values.note || null,
+        booking_platform_id: values.booking_platform_id || null,
+        sales_agent_id: values.sales_agent_id || null,
       };
       const res = await invoice.update(invoiceId, payload);
       if (res.data.code === 200) {
@@ -285,6 +314,7 @@ export default function InvoiceEditPage() {
                     showSearch
                     optionFilterProp="children"
                     allowClear
+                    onChange={onLeaseChange}
                     style={{ width: '100%' }}
                   >
                     {leases.map(l => {
@@ -352,6 +382,42 @@ export default function InvoiceEditPage() {
                   <Select placeholder="Please select the tag" allowClear style={{ width: '100%' }}>
                     {tags.map(tg => (
                       <Select.Option key={tg.id} value={tg.id}>{tg.name}</Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </Col>
+            </Row>
+
+            {/* Booking platform + sales agent — defaults to lease values, override per invoice */}
+            <Row gutter={[24, 16]} style={{ marginTop: 20 }}>
+              <Col xs={24} sm={12} md={6}>
+                <FLabel>BOOKING PLATFORM</FLabel>
+                <Form.Item name="booking_platform_id" noStyle>
+                  <Select
+                    placeholder="None"
+                    showSearch
+                    optionFilterProp="children"
+                    allowClear
+                    style={{ width: '100%' }}
+                  >
+                    {platforms.map(p => (
+                      <Select.Option key={p.id} value={p.id}>{p.name}</Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={6}>
+                <FLabel>SALES AGENT</FLabel>
+                <Form.Item name="sales_agent_id" noStyle>
+                  <Select
+                    placeholder="None"
+                    showSearch
+                    optionFilterProp="children"
+                    allowClear
+                    style={{ width: '100%' }}
+                  >
+                    {agents.map(a => (
+                      <Select.Option key={a.id} value={a.id}>{a.name}</Select.Option>
                     ))}
                   </Select>
                 </Form.Item>
