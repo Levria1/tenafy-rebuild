@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
 import MainLayout, { useAuth } from '../../components/Layout';
-import { invoice, accountingApi, property as propertyApi, pdf, bookingPlatform as bookingPlatformApi } from '../../lib/api';
+import { invoice, accountingApi, property as propertyApi, pdf, bookingPlatform as bookingPlatformApi, salesAgent as salesAgentApi } from '../../lib/api';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
 
@@ -86,6 +86,8 @@ export default function InvoicesPage() {
   const [filterProperty, setFilterProperty] = useState(null);
   const [filterBookingPlatform, setFilterBookingPlatform] = useState(null);
   const [bookingPlatforms, setBookingPlatforms] = useState([]);
+  const [filterSalesAgent, setFilterSalesAgent] = useState(null);
+  const [salesAgents, setSalesAgents] = useState([]);
   const [filters, setFilters] = useState({});
 
   // Column visibility (persisted to localStorage)
@@ -132,14 +134,16 @@ export default function InvoicesPage() {
 
   const loadSettings = async () => {
     try {
-      const [catRes, propRes, bpRes] = await Promise.all([
+      const [catRes, propRes, bpRes, saRes] = await Promise.all([
         accountingApi.getCategories(),
         propertyApi.getAll(),
         bookingPlatformApi.list(),
+        salesAgentApi.list().catch(() => ({ data: { data: [] } })),
       ]);
       if (catRes.data.code === 200) setCategories(catRes.data.data || []);
       if (propRes.data.code === 200) setProperties(propRes.data.data || []);
       if (bpRes.data.code === 200) setBookingPlatforms(bpRes.data.data || []);
+      setSalesAgents(saRes.data?.data || []);
     } catch (e) { /* ignore */ }
   };
 
@@ -199,7 +203,7 @@ export default function InvoicesPage() {
   ];
 
   // Filter
-  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterCategory, filterProperty, filterBookingPlatform].filter(v => v !== null).length;
+  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterCategory, filterProperty, filterBookingPlatform, filterSalesAgent].filter(v => v !== null).length;
 
   const applyFilters = () => {
     const f = {};
@@ -209,6 +213,7 @@ export default function InvoicesPage() {
     if (filterCategory !== null) f.category = filterCategory;
     if (filterProperty !== null) f.propertyId = filterProperty;
     if (filterBookingPlatform !== null) f.bookingPlatformId = filterBookingPlatform;
+    if (filterSalesAgent !== null) f.salesAgentId = filterSalesAgent;
     setFilters(f);
     setPagination(p => ({ ...p, current: 1 }));
     setFilterOpen(false);
@@ -221,6 +226,7 @@ export default function InvoicesPage() {
     setFilterCategory(null);
     setFilterProperty(null);
     setFilterBookingPlatform(null);
+    setFilterSalesAgent(null);
     setFilters({});
     setPagination(p => ({ ...p, current: 1 }));
   };
@@ -312,6 +318,24 @@ export default function InvoicesPage() {
         >
           {bookingPlatforms.map(bp => (
             <Select.Option key={bp.id} value={bp.id}>{bp.name}</Select.Option>
+          ))}
+        </Select>
+      </div>
+
+      {/* Sales Agent */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Sales Agent</div>
+        <Select
+          placeholder="All Sales Agents"
+          allowClear
+          style={{ width: '100%' }}
+          value={filterSalesAgent}
+          onChange={(v) => setFilterSalesAgent(v ?? null)}
+          showSearch
+          optionFilterProp="children"
+        >
+          {salesAgents.map(sa => (
+            <Select.Option key={sa.id} value={sa.id}>{sa.name}</Select.Option>
           ))}
         </Select>
       </div>

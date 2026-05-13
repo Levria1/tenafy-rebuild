@@ -152,6 +152,10 @@ router.post('/invoices', authenticate, async (req, res) => {
       whereClause += ' AND EXISTS (SELECT 1 FROM leasing lf WHERE lf.id = i.leasing_id AND lf.booking_platform_id = ?)';
       params.push(bookingPlatformId);
     }
+    if (salesAgentId) {
+      whereClause += ' AND EXISTS (SELECT 1 FROM leasing lf WHERE lf.id = i.leasing_id AND lf.sales_agent_id = ?)';
+      params.push(salesAgentId);
+    }
     if (startDate) {
       whereClause += ' AND i.due_on >= ?';
       params.push(startDate);
