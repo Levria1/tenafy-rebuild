@@ -263,6 +263,8 @@ export default function LeaseCreatePage() {
       access_setting: values.access_setting || null,
       all_past: values.all_past || false,
       mark_past_paid: values.mark_past_paid || false,
+      booking_platform_id: values.booking_platform_id || null,
+      sales_agent_id: values.sales_agent_id || null,
     };
   };
 
