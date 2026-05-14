@@ -876,7 +876,16 @@ router.put('/:id', authenticate, async (req, res) => {
       additionalTenantIds,
       mark_past_paid,
       booking_platform_id, sales_agent_id,
-      payment_receipt
+      payment_receipt,
+      // Email notifications + access/sharing — mirror the create-lease payload
+      tenant_posted, landlord_posted,
+      tenant_due, landlord_due,
+      tenant_overdue, landlord_overdue,
+      tenant_deposit_posted,
+      tenant_checkin, tenant_checkout,
+      landlord_expired, landlord_expired_days,
+      tenant_renewal, tenant_renewal_days,
+      access_setting, share_lease, all_past
     } = req.body;
 
     // Server-side overlap check on edit — check if new dates/unit conflict with other leases
@@ -938,6 +947,24 @@ router.put('/:id', authenticate, async (req, res) => {
     if (booking_platform_id !== undefined) { fields.push('booking_platform_id = ?'); params.push(booking_platform_id || null); }
     if (sales_agent_id !== undefined) { fields.push('sales_agent_id = ?'); params.push(sales_agent_id || null); }
     if (payment_receipt !== undefined) { fields.push('payment_receipt = ?'); params.push(payment_receipt ? 1 : 0); }
+    // Email notifications
+    if (tenant_posted !== undefined) { fields.push('tenant_posted = ?'); params.push(tenant_posted ? 1 : 0); }
+    if (landlord_posted !== undefined) { fields.push('landlord_posted = ?'); params.push(landlord_posted ? 1 : 0); }
+    if (tenant_due !== undefined) { fields.push('tenant_due = ?'); params.push(tenant_due ? 1 : 0); }
+    if (landlord_due !== undefined) { fields.push('landlord_due = ?'); params.push(landlord_due ? 1 : 0); }
+    if (tenant_overdue !== undefined) { fields.push('tenant_overdue = ?'); params.push(tenant_overdue ? 1 : 0); }
+    if (landlord_overdue !== undefined) { fields.push('landlord_overdue = ?'); params.push(landlord_overdue ? 1 : 0); }
+    if (tenant_deposit_posted !== undefined) { fields.push('tenant_deposit_posted = ?'); params.push(tenant_deposit_posted ? 1 : 0); }
+    if (tenant_checkin !== undefined) { fields.push('tenant_checkin = ?'); params.push(tenant_checkin ? 1 : 0); }
+    if (tenant_checkout !== undefined) { fields.push('tenant_checkout = ?'); params.push(tenant_checkout ? 1 : 0); }
+    if (landlord_expired !== undefined) { fields.push('landlord_expired = ?'); params.push(landlord_expired ? 1 : 0); }
+    if (landlord_expired_days !== undefined) { fields.push('landlord_expired_days = ?'); params.push(landlord_expired_days || 0); }
+    if (tenant_renewal !== undefined) { fields.push('tenant_renewal = ?'); params.push(tenant_renewal ? 1 : 0); }
+    if (tenant_renewal_days !== undefined) { fields.push('tenant_renewal_days = ?'); params.push(tenant_renewal_days || 0); }
+    // Access & sharing
+    if (access_setting !== undefined) { fields.push('access_setting = ?'); params.push(access_setting || null); }
+    if (share_lease !== undefined) { fields.push('share_lease = ?'); params.push(share_lease ? 1 : 0); }
+    if (all_past !== undefined) { fields.push('all_past = ?'); params.push(all_past ? 1 : 0); }
     fields.push('updated_at = NOW()');
     params.push(id);
 

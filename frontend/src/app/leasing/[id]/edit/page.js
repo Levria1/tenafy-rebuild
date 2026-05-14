@@ -130,7 +130,25 @@ export default function LeasingEditPage() {
           status: d.status != null ? Number(d.status) : 1,
           booking_platform_id: d.booking_platform_id ? String(d.booking_platform_id) : undefined,
           sales_agent_id: d.sales_agent_id ? String(d.sales_agent_id) : undefined,
-          payment_receipt: d.payment_receipt ? true : false,
+          payment_receipt: !!d.payment_receipt,
+          // Email notifications
+          tenant_posted: !!d.tenant_posted,
+          landlord_posted: !!d.landlord_posted,
+          tenant_due: !!d.tenant_due,
+          landlord_due: !!d.landlord_due,
+          tenant_overdue: !!d.tenant_overdue,
+          landlord_overdue: !!d.landlord_overdue,
+          tenant_deposit_posted: !!d.tenant_deposit_posted,
+          tenant_checkin: !!d.tenant_checkin,
+          tenant_checkout: !!d.tenant_checkout,
+          landlord_expired: !!d.landlord_expired,
+          landlord_expired_days: d.landlord_expired_days != null ? Number(d.landlord_expired_days) : 30,
+          tenant_renewal: !!d.tenant_renewal,
+          tenant_renewal_days: d.tenant_renewal_days != null ? Number(d.tenant_renewal_days) : 30,
+          // Access & sharing
+          access_setting: d.access_setting != null ? Number(d.access_setting) : undefined,
+          share_lease: !!d.share_lease,
+          all_past: !!d.all_past,
         });
       }
     } catch (error) {
@@ -186,6 +204,24 @@ export default function LeasingEditPage() {
         payment_receipt: values.payment_receipt || false,
         booking_platform_id: values.booking_platform_id || null,
         sales_agent_id: values.sales_agent_id || null,
+        // Email notifications
+        tenant_posted: !!values.tenant_posted,
+        landlord_posted: !!values.landlord_posted,
+        tenant_due: !!values.tenant_due,
+        landlord_due: !!values.landlord_due,
+        tenant_overdue: !!values.tenant_overdue,
+        landlord_overdue: !!values.landlord_overdue,
+        tenant_deposit_posted: !!values.tenant_deposit_posted,
+        tenant_checkin: !!values.tenant_checkin,
+        tenant_checkout: !!values.tenant_checkout,
+        landlord_expired: !!values.landlord_expired,
+        landlord_expired_days: values.landlord_expired_days || 0,
+        tenant_renewal: !!values.tenant_renewal,
+        tenant_renewal_days: values.tenant_renewal_days || 0,
+        // Access & sharing
+        access_setting: values.access_setting ?? null,
+        share_lease: !!values.share_lease,
+        all_past: !!values.all_past,
       };
       const res = await leasing.update(leaseId, payload);
       if (res.data.code === 200) {
@@ -489,6 +525,96 @@ export default function LeasingEditPage() {
               </Form.Item>
             </Col>
           </Row>
+        </div>
+
+        {/* Email Notifications */}
+        <div style={sectionStyle}>
+          <div style={sectionTitle}>Email Notifications</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px' }}>
+            <Form.Item name="tenant_posted" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Email tenant when invoice is posted</Checkbox>
+            </Form.Item>
+            <Form.Item name="landlord_posted" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Email landlord when invoice is posted</Checkbox>
+            </Form.Item>
+            <Form.Item name="tenant_due" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Email tenant when invoice is due</Checkbox>
+            </Form.Item>
+            <Form.Item name="landlord_due" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Email landlord when invoice is due</Checkbox>
+            </Form.Item>
+            <Form.Item name="tenant_overdue" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Email tenant when invoice is overdue</Checkbox>
+            </Form.Item>
+            <Form.Item name="landlord_overdue" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Email landlord when invoice is overdue</Checkbox>
+            </Form.Item>
+            <Form.Item name="tenant_deposit_posted" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Email tenant when deposit is posted</Checkbox>
+            </Form.Item>
+            <Form.Item name="tenant_checkin" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Email tenant on check-in</Checkbox>
+            </Form.Item>
+            <Form.Item name="tenant_checkout" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Email tenant on check-out</Checkbox>
+            </Form.Item>
+          </div>
+
+          <Divider style={{ margin: '16px 0' }} />
+
+          <Row gutter={16}>
+            <Col span={12}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <Form.Item name="landlord_expired" valuePropName="checked" style={{ marginBottom: 0 }}>
+                  <Checkbox>Notify landlord before lease expires</Checkbox>
+                </Form.Item>
+                <Form.Item name="landlord_expired_days" style={{ marginBottom: 0, width: 80 }}>
+                  <InputNumber min={0} placeholder="Days" size="small" />
+                </Form.Item>
+                <span style={{ color: '#999', fontSize: 12 }}>days before</span>
+              </div>
+            </Col>
+            <Col span={12}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <Form.Item name="tenant_renewal" valuePropName="checked" style={{ marginBottom: 0 }}>
+                  <Checkbox>Notify tenant for renewal</Checkbox>
+                </Form.Item>
+                <Form.Item name="tenant_renewal_days" style={{ marginBottom: 0, width: 80 }}>
+                  <InputNumber min={0} placeholder="Days" size="small" />
+                </Form.Item>
+                <span style={{ color: '#999', fontSize: 12 }}>days before</span>
+              </div>
+            </Col>
+          </Row>
+        </div>
+
+        {/* Access & Sharing */}
+        <div style={sectionStyle}>
+          <div style={sectionTitle}>Access & Sharing</div>
+          <Row gutter={16}>
+            <Col span={12}>
+              <FLabel>Access Setting</FLabel>
+              <Form.Item name="access_setting" noStyle>
+                <Select placeholder="Select access level" allowClear>
+                  <Select.Option value={0}>Private</Select.Option>
+                  <Select.Option value={1}>Shared</Select.Option>
+                  <Select.Option value={2}>Public</Select.Option>
+                </Select>
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <div style={{ marginTop: 24 }}>
+                <Form.Item name="share_lease" valuePropName="checked" style={{ marginBottom: 0 }}>
+                  <Checkbox>Share lease with tenant</Checkbox>
+                </Form.Item>
+              </div>
+            </Col>
+          </Row>
+          <div style={{ marginTop: 12 }}>
+            <Form.Item name="all_past" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Include all past invoices</Checkbox>
+            </Form.Item>
+          </div>
         </div>
 
         {/* Footer */}
