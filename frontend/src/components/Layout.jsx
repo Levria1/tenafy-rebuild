@@ -147,14 +147,18 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   });
 
   // Reports
+  const reportsChildren = [
+    { key: '/reports/user-logs', label: <Link href="/reports/user-logs">User Logs</Link> },
+    { key: '/reports/vacancy-cost', label: <Link href="/reports/vacancy-cost">Vacancy Cost</Link> },
+  ];
+  if (hasPermission('LANDLORD/REPORT/COMMISSION_VIEW')) {
+    reportsChildren.push({ key: '/reports/commission', label: <Link href="/reports/commission">Commission Tracker</Link> });
+  }
   items.push({
     key: '/reports',
     icon: <BarChartOutlined />,
     label: 'Reports',
-    children: [
-      { key: '/reports/user-logs', label: <Link href="/reports/user-logs">User Logs</Link> },
-      { key: '/reports/vacancy-cost', label: <Link href="/reports/vacancy-cost">Vacancy Cost</Link> },
-    ],
+    children: reportsChildren,
   });
 
   // Build settings children based on permissions

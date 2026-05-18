@@ -399,6 +399,7 @@ export const activityLog = {
 export const reports = {
   vacancyCost: (params) => api.get('/api/reports/vacancy-cost', { params }),
   vacancyCostUnits: (params) => api.get('/api/reports/vacancy-cost/units', { params }),
+  commission: (params) => api.get('/api/reports/commission', { params }),
 };
 
 export const cleaning = {
