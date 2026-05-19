@@ -425,3 +425,82 @@ Core project setup: Express backend with JWT auth, Next.js 14 frontend, MySQL da
 - Removed delete button from tenant list page (`contacts/tenants/page.js`) — cleaned up unused imports (Popconfirm, DeleteOutlined, useAuth, canDelete, handleDelete)
 - Added "Delete" option to Actions dropdown on tenant profile page (`contacts/tenant/[id]/detail/page.js`) — gated by `LANDLORD/TENANT_DELETE` permission, shows Modal.confirm, redirects to tenant list on success
 - Fixed tenant soft-delete not hiding deleted contacts: backend `POST /contacts` now excludes `status = 0` tenants by default (`tenant.js` — added `AND t.status != 0` fallback when no tenantStatus filter is applied)
+
+---
+
+## Session: 2026-05-13 to 2026-05-18 — Booking Platform / Sales Agent on Invoices + Commission Tracker + LLM bot wiring
+
+### Email — `%Outstandings%` lease-wide query fixed + new `%Invoice Outstanding%` variable
+- **Bug**: `%Outstandings%` summed invoiced amounts only for currently-Open/Overdue invoices but summed ALL accounting-line payments for the lease, producing huge negative numbers for tenants with historical payments. Reproed at $8,200 outstanding rendering as −$99,169 in an invoice-reminder email.
+- **Fix** (`backend/src/services/emailService.js:269-296`): query now sums invoiced and paid over the SAME set of invoices (all non-deleted in the lease). Paid invoices net to zero, open invoices net to remainder.
+- **New variable `%Invoice Outstanding%`** — computed from `invoiceId` (or `invoiceCode`) param, returns `invoice.amount − sum(payments for that invoice_code)`. Use this in invoice-reminder templates instead of `%Outstandings%` when you only want the one invoice's balance. Empty string when no invoice is in scope.
+- No DB migration.
+
+### Master admin login was kicking back to login (`backend/src/routes/master.js:44`)
+- Cookie was set with `httpOnly: true` but `frontend/src/app/master/layout.js` reads `__s_t` via `js-cookie` to gate access — invisible to JS by design.
+- Same "quirk" as org-admin auth — flipped to `httpOnly: false`. **Pattern to remember:** every auth cookie this app relies on must be JS-readable because the frontend reads it directly. Clear stale cookie before testing.
+
+### Invoice booking_platform / sales_agent — full per-invoice snapshot pattern
+**The bigger picture:** invoices historically inherited platform/agent only via their parent lease. Now each invoice carries its own snapshot (with the lease as a one-time source on create), so per-invoice overrides work and historic reporting is robust to lease edits.
+
+- **Schema**: `invoice.booking_platform_id` and `invoice.sales_agent_id` already existed (from `booking_commission_tables.sql`) but were never wired into the form, the create handler, or the public API.
+- **Backend create path snapshots from lease when caller doesn't supply** (`backend/src/routes/invoice.js:240-282, 402-410` and `backend/src/services/scheduler.js:80-180`):
+  - `POST /api/invoice` accepts `booking_platform_id` / `sales_agent_id` in body. If missing and `leasing_id` is set, looks up the lease's values and INSERTs them.
+  - `POST /api/invoice/publish` always snapshots from lease.
+  - Recurring scheduler — same snapshot. `generateRecurringInvoicesForOrg` SELECT now includes `l.booking_platform_id, l.sales_agent_id`, INSERT writes them.
+  - Lease-creation invoices (`leasing.js:676,770`) already passed values through.
+- **Invoice list filter `salesAgentId`** (`backend/src/routes/invoice.js:58, 151-158`) — mirrors existing `bookingPlatformId` pattern (matches via lease, EXISTS subquery).
+- **Internal `/api/invoice` list query** (`backend/src/routes/invoice.js:165-188`) returns `booking_platform_name`, `sales_agent_name`, `lease_booking_platform_name`, `lease_sales_agent_name` (lease ones for legacy invoices that pre-date the backfill).
+- **Public API** (`backend/src/routes/public.js` — both `/invoices` list and `/invoices/:id` detail) — same four name fields exposed for external integrations.
+
+### Invoice frontend — dropdowns + drawer rows + filter
+- **Create + Edit pages** (`frontend/src/app/invoices/create/page.js`, `[id]/edit/page.js`): added BOOKING PLATFORM and SALES AGENT dropdowns under the Tag row. Defaults to "None" placeholder. `onLeaseChange` auto-fills both from the lease's values (only when not already set). Payload includes both fields.
+- **Invoices list filter panel** (`frontend/src/app/invoices/page.js`): added "Sales Agent" dropdown directly below "Booking Platform" — wired to `applyFilters`, `resetFilters`, `activeFilterCount`. Backend supports `salesAgentId` query.
+- **View Invoice drawer** (`invoices/page.js:899-911`): added Booking Platform + Sales Agent as a two-column row above Notes, falling back to lease values when invoice's own value is null.
+
+### Lease create + detail fixes
+- **Create-lease bug**: `buildPayload()` in `leasing/create/page.js:266` stripped `booking_platform_id` and `sales_agent_id` despite the form fields existing. Added both to the returned payload — the backend already accepted them.
+- **Lease detail rows always show** (`leasing/[id]/detail/page.js:465`): removed the `(lease?.booking_platform_name || lease?.sales_agent_name) && (...)` conditional. Both rows now render with "-" when blank, matching Check In/Out Meter style.
+
+### Lease edit was missing entire "Email & Settings" step (step 3 of Create Lease)
+- **Backend `PUT /api/leasing/:id`** (`backend/src/routes/leasing.js:871-940`): now destructures + conditionally writes `tenant_posted, landlord_posted, tenant_due, landlord_due, tenant_overdue, landlord_overdue, tenant_deposit_posted, tenant_checkin, tenant_checkout, landlord_expired, landlord_expired_days, tenant_renewal, tenant_renewal_days, access_setting, share_lease, all_past`. All gated by `!== undefined` so partial updates remain safe. Columns all already exist on `leasing`.
+- **Lease edit page** (`leasing/[id]/edit/page.js`): added populated load values + payload entries for all 16 fields, and two new sections — Email Notifications (9 checkboxes + landlord_expired/tenant_renewal with day-counter inputs) and Access & Sharing (access_setting select + share_lease + all_past).
+
+### Invoice booking_platform/sales_agent backfill (one-shot SQL)
+Run when leases get a sales agent or booking platform filled in retroactively. Two independent UPDATEs so a row with one already set still gets the other backfilled:
+```sql
+UPDATE invoice i JOIN leasing l ON i.leasing_id = l.id
+  SET i.sales_agent_id = l.sales_agent_id
+  WHERE i.sales_agent_id IS NULL AND l.sales_agent_id IS NOT NULL
+    AND i.leasing_id IS NOT NULL AND i.deleted_at IS NULL;
+
+UPDATE invoice i JOIN leasing l ON i.leasing_id = l.id
+  SET i.booking_platform_id = l.booking_platform_id
+  WHERE i.booking_platform_id IS NULL AND l.booking_platform_id IS NOT NULL
+    AND i.leasing_id IS NOT NULL AND i.deleted_at IS NULL;
+```
+Safe to re-run.
+
+### Commission Tracker report (Reports → Commission Tracker)
+- **New endpoint** `GET /api/reports/commission?from=&to=` (`backend/src/routes/reports.js`) — gated by `requirePermission('LANDLORD/REPORT/COMMISSION_VIEW')`. Aggregates by sales agent AND by booking platform. Per-row counts: `new_leases` (lease starts in range), `active_leases` (tenancy overlaps range), prorated `revenue`.
+- **Prorating rule** (the key design decision):
+  - Recurring invoice (`leasing.invoicing` set): covered window = `[due_on, due_on + intervalDays(invoicing) - 1]`. Revenue contribution = `amount × (overlap_days_with_filter / covered_days)`.
+  - Bulk / Airbnb invoice (`leasing.invoicing` null): covered window = full lease span `[start_date, end_date]`. Same proration formula. So a $6,000 Airbnb lease Jan 1→Jun 30 filtered Jan 1→Mar 31 yields ~$2,983 (90/181 days).
+  - Filters: only `category` matching `LIKE '%rental%'`, only `type = 0` (Inflow), only non-deleted.
+  - Outflows ignored (this is a gross-revenue report).
+- **New permission**: `LANDLORD/REPORT/COMMISSION_VIEW`.
+  - Registered in catalog: `backend/src/routes/role.js:115-116` (group "Reports").
+  - Auto-granted to new orgs: `backend/src/services/orgProvisioner.js:88`.
+  - **Migration `035_commission_view_permission.sql`** grants to `role_id = 230000000001` for existing orgs.
+- **Frontend page** (`frontend/src/app/reports/commission/page.js`): RangePicker (defaults to current year), header totals, two tabs (By Sales Agent / By Booking Platform), each row expandable to drill-down lease list with "Bulk" tag on rows with null `invoicing`, CSV export per tab, permission-gated empty-state fallback.
+- **Sidebar entry** (`Layout.jsx:149-160`): Reports → Commission Tracker, hidden for users without the permission.
+
+### LLM/Telegram bot integration (separate D:/Tane/tenafy-mcp-server/ repo)
+Decision: integrate via MCP server registered with Claude Code on Linux box that runs the user's existing Telegram-to-Claude-Code wrapper. Two tools exposed: `tenafy_list_endpoints` (returns the endpoint reference and enum map on demand) and `tenafy_get(path, query)` (generic GET against `/api/public`). Credentials passed as `--env` at MCP registration, not in a .env file.
+
+Key gotcha for nvm users: when registering, use absolute path to `node` (e.g. `/home/tanereceipts/.nvm/versions/node/v24.15.0/bin/node`), not bare `node` — Claude Code spawns subprocesses without sourcing `.bashrc`, so PATH is stripped.
+
+Repo: <https://github.com/christophertsun7-gif/tenafy-mcp-server>. Public-API endpoint list duplicated in `tenafy-mcp-server/server.js` ENDPOINT_REFERENCE — update both when adding new public endpoints.
+
+### Migration order (this session)
+- `035_commission_view_permission.sql` — committed to repo, run on droplet + local with `mysql -u <user> -p<pass> tena_prod_v2 < .../035_commission_view_permission.sql`
