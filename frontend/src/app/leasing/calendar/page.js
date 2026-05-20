@@ -276,7 +276,7 @@ function CalendarInner() {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <DatePicker.RangePicker
             value={dateRange}
-            onChange={(val) => { if (val && val[0] && val[1]) setDateRange([val[0].startOf('month'), val[1].endOf('month')]); }}
+            onChange={(val) => { if (val && val[0] && val[1]) setDateRange([val[0], val[1]]); }}
             style={{ width: 260 }}
           />
           <Select

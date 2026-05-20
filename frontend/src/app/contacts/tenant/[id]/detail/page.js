@@ -11,12 +11,15 @@ import {
   EditOutlined, UserOutlined, MailOutlined,
   FileTextOutlined, DollarOutlined, PrinterOutlined,
   DownOutlined, EyeOutlined, DeleteOutlined, SearchOutlined, UndoOutlined,
+  ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
 import useIsMobile from '../../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../../components/mobile/MobileCardList';
-import { tenant, invoice, utility, settings } from '../../../../../lib/api';
+import { tenant, invoice, utility, settings, pdf } from '../../../../../lib/api';
+
+const { confirm } = Modal;
 
 const { Text } = Typography;
 
@@ -69,6 +72,7 @@ function TenantDetailPage() {
   const canDelete = hasPermission ? hasPermission('LANDLORD/TENANT_DELETE') : false;
   const canEdit = hasPermission ? hasPermission('LANDLORD/TENANT_EDIT') : false;
   const canEditInvoice = hasPermission ? hasPermission('LANDLORD/INVOICE_EDIT') : false;
+  const canDeleteInvoice = hasPermission ? hasPermission('LANDLORD/INVOICE_DELETE') : false;
   const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();
@@ -1220,13 +1224,76 @@ function TenantDetailPage() {
         open={drawerOpen}
         footer={selectedInvoice ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <Button type="primary" icon={<PrinterOutlined />} block onClick={() => window.print()}>
+            <Button type="primary" icon={<MailOutlined />} block
+              onClick={() => {
+                if (!selectedInvoice?.tenant_email) {
+                  message.error('Tenant has no email on file');
+                  return;
+                }
+                confirm({
+                  title: 'Email this invoice to the tenant?',
+                  icon: <ExclamationCircleOutlined />,
+                  content: `The invoice PDF will be emailed to ${selectedInvoice.tenant_email}.`,
+                  okText: 'Send',
+                  cancelText: 'Cancel',
+                  onOk: async () => {
+                    try {
+                      await invoice.emailToTenant(selectedInvoice.id);
+                      message.success(`Invoice emailed to ${selectedInvoice.tenant_email}`);
+                    } catch (err) {
+                      message.error(err.response?.data?.message || 'Failed to email invoice');
+                    }
+                  },
+                });
+              }}>
+              Email
+            </Button>
+            <Button type="primary" icon={<PrinterOutlined />} block
+              onClick={async () => {
+                try {
+                  const res = await pdf.fetchInvoice(selectedInvoice.id);
+                  const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+                  window.open(url, '_blank');
+                  setTimeout(() => URL.revokeObjectURL(url), 60000);
+                } catch (err) {
+                  message.error('Failed to generate invoice PDF');
+                }
+              }}>
               Print
             </Button>
             {canEditInvoice && <Button type="primary" icon={<EditOutlined />} block style={{ background: '#52c41a', borderColor: '#52c41a' }}
               onClick={() => { closeDrawer(); router.push(`/invoices/${selectedInvoice.id}/edit`); }}>
               Edit
             </Button>}
+            {canDeleteInvoice && (
+              <Button danger type="primary" icon={<DeleteOutlined />} block
+                onClick={() => {
+                  confirm({
+                    title: 'Are you sure you want to delete this invoice?',
+                    icon: <ExclamationCircleOutlined />,
+                    content: 'Please note that any deleted invoices can not be recovered.',
+                    okText: 'Delete',
+                    okType: 'danger',
+                    cancelText: 'Cancel',
+                    onOk: async () => {
+                      try {
+                        const res = await invoice.delete(selectedInvoice.id);
+                        if (res.data.code === 200) {
+                          message.success('Delete Invoice Success!');
+                          closeDrawer();
+                          loadInvoices();
+                        } else {
+                          message.error(res.data.message || 'Failed to delete invoice');
+                        }
+                      } catch (err) {
+                        message.error('Failed to delete invoice');
+                      }
+                    },
+                  });
+                }}>
+                Delete
+              </Button>
+            )}
             <Button block onClick={closeDrawer}>
               Close
             </Button>

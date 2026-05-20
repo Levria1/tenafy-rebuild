@@ -81,12 +81,219 @@ router.get('/units/available', async (req, res) => {
   }
 });
 
-// GET /api/public/properties?date=YYYY-MM-DD
-// All active properties with total/available unit counts.
+// GET /api/public/units/search
+// TaneChat-facing smart search. Filters + vacancy_gap sort.
+// Query params:
+//   move_in_date  (ISO date, default today)   — used for filtering + gap calc
+//   move_out_date (ISO date, optional)        — excludes units booked in this range
+//   bedrooms, bathrooms                       — exact match on unit.beds/baths
+//   min_price, max_price                      — matched against last lease price OR rent_price_min/max
+//   property_id                               — filter to property
+//   amenities (csv)                           — names like "parking,gym"; unit must have ALL
+//   sort_by                                   — vacancy_gap (default), price_asc, price_desc
+//   limit                                     — default 10, max 100
+router.get('/units/search', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const moveIn = req.query.move_in_date || new Date().toISOString().split('T')[0];
+    const moveOut = req.query.move_out_date || null;
+    const bedrooms = req.query.bedrooms !== undefined ? Number(req.query.bedrooms) : null;
+    const bathrooms = req.query.bathrooms !== undefined ? Number(req.query.bathrooms) : null;
+    const minPrice = req.query.min_price !== undefined ? Number(req.query.min_price) : null;
+    const maxPrice = req.query.max_price !== undefined ? Number(req.query.max_price) : null;
+    const propertyId = req.query.property_id || null;
+    const amenityNames = (req.query.amenities || '').split(',').map(s => s.trim()).filter(Boolean);
+    const sortBy = req.query.sort_by || 'vacancy_gap';
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 100);
+
+    // Base WHERE for active units in active properties
+    let where = 'p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL AND u.active_status = 1';
+    const params = [orgId];
+    if (propertyId) { where += ' AND p.id = ?'; params.push(propertyId); }
+    if (bedrooms !== null && !Number.isNaN(bedrooms)) { where += ' AND u.beds = ?'; params.push(bedrooms); }
+    if (bathrooms !== null && !Number.isNaN(bathrooms)) { where += ' AND u.baths = ?'; params.push(bathrooms); }
+
+    // Pull candidate units with last-lease data for pricing + availability + gap
+    // - "Available on move_in_date" = no lease covers it that day
+    // - "current_move_out" = end_date of the most recent lease that ended on or before move_in_date
+    //   (if a unit has never been leased OR the last lease was further back, current_move_out is null)
+    const [rows] = await req.pool.execute(
+      `SELECT u.id AS unit_id, u.name AS unit_name, u.beds, u.baths,
+              u.size, u.size_unit, u.deposit_price, u.rent_price_min, u.rent_price_max,
+              u.amenity_detail, u.listing_url, u.photo AS unit_photo_id,
+              p.id AS property_id, p.display_name AS property_name,
+              p.street_address, p.city, p.state, p.country, p.zip_code, p.currency,
+              last_lease.price AS last_lease_price,
+              last_lease.end_date AS last_lease_end_date,
+              next_lease.start_date AS next_lease_start_date
+       FROM unit u
+       JOIN property p ON u.property_id = p.id
+       LEFT JOIN leasing active_lease
+         ON active_lease.unit_id = u.id AND active_lease.deleted_at IS NULL
+         AND active_lease.start_date <= ? AND (active_lease.end_date >= ? OR active_lease.end_date IS NULL)
+       LEFT JOIN (
+         SELECT l1.unit_id, l1.price, l1.end_date
+         FROM leasing l1
+         INNER JOIN (
+           SELECT unit_id, MAX(start_date) AS max_start FROM leasing
+           WHERE deleted_at IS NULL GROUP BY unit_id
+         ) l2 ON l1.unit_id = l2.unit_id AND l1.start_date = l2.max_start
+         WHERE l1.deleted_at IS NULL
+       ) last_lease ON last_lease.unit_id = u.id
+       LEFT JOIN (
+         SELECT unit_id, MIN(start_date) AS start_date
+         FROM leasing
+         WHERE deleted_at IS NULL AND start_date > ?
+         GROUP BY unit_id
+       ) next_lease ON next_lease.unit_id = u.id
+       WHERE ${where} AND active_lease.id IS NULL`,
+      [moveIn, moveIn, moveIn, ...params]
+    );
+
+    // If move_out_date is set, drop units where a future lease starts before move_out_date
+    let filtered = rows;
+    if (moveOut) {
+      filtered = filtered.filter(r => !r.next_lease_start_date || r.next_lease_start_date > moveOut);
+    }
+
+    // Pricing filter — use last_lease_price if available, else rent_price_min
+    if (minPrice !== null && !Number.isNaN(minPrice)) {
+      filtered = filtered.filter(r => {
+        const p = Number(r.last_lease_price ?? r.rent_price_min ?? 0);
+        return p >= minPrice;
+      });
+    }
+    if (maxPrice !== null && !Number.isNaN(maxPrice)) {
+      filtered = filtered.filter(r => {
+        const p = Number(r.last_lease_price ?? r.rent_price_max ?? r.rent_price_min ?? Infinity);
+        return p <= maxPrice;
+      });
+    }
+
+    // Amenity filter — requires ALL named amenities
+    if (amenityNames.length > 0 && filtered.length > 0) {
+      const unitIds = filtered.map(r => r.unit_id);
+      const placeholders = unitIds.map(() => '?').join(',');
+      const amenityPlaceholders = amenityNames.map(() => '?').join(',');
+      const [amRows] = await req.pool.execute(
+        `SELECT ua.unit_id, a.name
+         FROM unit_amenity ua JOIN amenity a ON ua.amenity_id = a.id
+         WHERE ua.unit_id IN (${placeholders}) AND a.name IN (${amenityPlaceholders})`,
+        [...unitIds, ...amenityNames]
+      );
+      const have = new Map();
+      for (const r of amRows) {
+        if (!have.has(String(r.unit_id))) have.set(String(r.unit_id), new Set());
+        have.get(String(r.unit_id)).add(r.name);
+      }
+      filtered = filtered.filter(r => {
+        const got = have.get(String(r.unit_id));
+        return got && amenityNames.every(n => got.has(n));
+      });
+    }
+
+    // Annotate availability + gap; collect amenity names + gallery in a second pass
+    const unitIds = filtered.map(r => r.unit_id);
+    let amenitiesByUnit = new Map();
+    let galleryByUnit = new Map();
+    if (unitIds.length > 0) {
+      const ph = unitIds.map(() => '?').join(',');
+      const [amRows] = await req.pool.execute(
+        `SELECT ua.unit_id, a.name FROM unit_amenity ua
+         JOIN amenity a ON ua.amenity_id = a.id WHERE ua.unit_id IN (${ph})`,
+        unitIds
+      );
+      for (const r of amRows) {
+        if (!amenitiesByUnit.has(String(r.unit_id))) amenitiesByUnit.set(String(r.unit_id), []);
+        amenitiesByUnit.get(String(r.unit_id)).push(r.name);
+      }
+      const [galRows] = await req.pool.execute(
+        `SELECT object_id, file_id, \`order\` FROM object_gallery
+         WHERE object_id IN (${ph}) ORDER BY \`order\``,
+        unitIds
+      );
+      const base = `${req.protocol}://${req.get('host')}`;
+      for (const r of galRows) {
+        if (!galleryByUnit.has(String(r.object_id))) galleryByUnit.set(String(r.object_id), []);
+        galleryByUnit.get(String(r.object_id)).push(`${base}/api/file/preview/${r.file_id}`);
+      }
+    }
+
+    const today = new Date(moveIn);
+    const enriched = filtered.map(r => {
+      // current_move_out = last_lease_end_date if that lease has ended (<= move_in_date)
+      let currentMoveOut = null;
+      if (r.last_lease_end_date) {
+        const endStr = r.last_lease_end_date instanceof Date
+          ? r.last_lease_end_date.toISOString().split('T')[0]
+          : String(r.last_lease_end_date).split('T')[0];
+        if (endStr <= moveIn) currentMoveOut = endStr;
+      }
+      // available_from = currentMoveOut + 1 day, OR move_in_date if no prior lease
+      let availableFrom = moveIn;
+      let vacancyGapDays = null;
+      if (currentMoveOut) {
+        const out = new Date(currentMoveOut);
+        out.setDate(out.getDate() + 1);
+        availableFrom = out.toISOString().split('T')[0];
+        vacancyGapDays = Math.max(0, Math.round((today - new Date(currentMoveOut)) / 86400000));
+      }
+      return {
+        unit_id: String(r.unit_id),
+        unit_name: r.unit_name,
+        property_id: String(r.property_id),
+        property_name: r.property_name,
+        bedrooms: r.beds,
+        bathrooms: r.baths,
+        size: r.size != null ? Number(r.size) : null,
+        size_unit: r.size_unit || null,
+        monthly_rent: r.last_lease_price != null ? Number(r.last_lease_price)
+          : r.rent_price_min != null ? Number(r.rent_price_min) : null,
+        rent_price_min: r.rent_price_min != null ? Number(r.rent_price_min) : null,
+        rent_price_max: r.rent_price_max != null ? Number(r.rent_price_max) : null,
+        deposit: r.deposit_price != null ? Number(r.deposit_price) : null,
+        currency: r.currency || null,
+        amenities: amenitiesByUnit.get(String(r.unit_id)) || [],
+        photos: galleryByUnit.get(String(r.unit_id)) || [],
+        available_from: availableFrom,
+        current_move_out: currentMoveOut,
+        vacancy_gap_days: vacancyGapDays,
+        listing_url: r.listing_url || null,
+        description: r.amenity_detail || null,
+      };
+    });
+
+    // Sort
+    if (sortBy === 'price_asc') {
+      enriched.sort((a, b) => (a.monthly_rent ?? Infinity) - (b.monthly_rent ?? Infinity));
+    } else if (sortBy === 'price_desc') {
+      enriched.sort((a, b) => (b.monthly_rent ?? -Infinity) - (a.monthly_rent ?? -Infinity));
+    } else {
+      // vacancy_gap (default): null gaps (never-leased) go last; smaller gap first
+      enriched.sort((a, b) => {
+        const ag = a.vacancy_gap_days, bg = b.vacancy_gap_days;
+        if (ag == null && bg == null) return 0;
+        if (ag == null) return 1;
+        if (bg == null) return -1;
+        return ag - bg;
+      });
+    }
+
+    const limited = enriched.slice(0, limit);
+    ok(res, limited, { total_matches: enriched.length, move_in_date: moveIn, sort_by: sortBy });
+  } catch (error) {
+    console.error('Public units search error:', error);
+    fail(res, 'Failed to search units');
+  }
+});
+
+// GET /api/public/properties?date=YYYY-MM-DD&has_available_units=true
+// All active properties with total/available unit counts + amenity names.
 router.get('/properties', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
     const date = req.query.date || new Date().toISOString().split('T')[0];
+    const onlyAvailable = req.query.has_available_units === 'true' || req.query.has_available_units === '1';
 
     const [properties] = await req.pool.execute(
       `SELECT p.id AS property_id, p.display_name AS property_name,
@@ -107,7 +314,33 @@ router.get('/properties', async (req, res) => {
       [date, date, orgId]
     );
 
-    ok(res, properties, { date });
+    // Attach amenity names per property
+    let amenitiesByProp = new Map();
+    if (properties.length > 0) {
+      const propIds = properties.map(p => p.property_id);
+      const ph = propIds.map(() => '?').join(',');
+      const [amRows] = await req.pool.execute(
+        `SELECT pa.property_id, a.name FROM property_amenity pa
+         JOIN amenity a ON pa.amenity_id = a.id
+         WHERE pa.property_id IN (${ph})`,
+        propIds
+      );
+      for (const r of amRows) {
+        if (!amenitiesByProp.has(String(r.property_id))) amenitiesByProp.set(String(r.property_id), []);
+        amenitiesByProp.get(String(r.property_id)).push(r.name);
+      }
+    }
+
+    let result = properties.map(p => ({
+      ...p,
+      total_units: Number(p.total_units),
+      available_units: Number(p.available_units),
+      amenities: amenitiesByProp.get(String(p.property_id)) || [],
+    }));
+
+    if (onlyAvailable) result = result.filter(p => p.available_units > 0);
+
+    ok(res, result, { date });
   } catch (error) {
     console.error('Public properties error:', error);
     fail(res, 'Failed to fetch properties');
@@ -202,7 +435,10 @@ router.get('/units/:id', async (req, res) => {
     );
 
     const [amenityRows] = await req.pool.execute(
-      'SELECT amenity_id FROM unit_amenity WHERE unit_id = ?', [id]
+      `SELECT ua.amenity_id, a.name
+       FROM unit_amenity ua LEFT JOIN amenity a ON ua.amenity_id = a.id
+       WHERE ua.unit_id = ?`,
+      [id]
     );
     const [galleryRows] = await req.pool.execute(
       'SELECT file_id, `order` FROM object_gallery WHERE object_id = ? ORDER BY `order`', [id]
@@ -216,19 +452,148 @@ router.get('/units/:id', async (req, res) => {
       [id]
     );
 
+    // Compute current_move_out + available_from from the latest lease
+    const [[latestLease]] = await req.pool.execute(
+      `SELECT start_date, end_date, price FROM leasing
+       WHERE unit_id = ? AND deleted_at IS NULL
+       ORDER BY start_date DESC LIMIT 1`,
+      [id]
+    );
+    let currentMoveOut = null;
+    let availableFrom = new Date().toISOString().split('T')[0];
+    if (latestLease && latestLease.end_date) {
+      const endStr = latestLease.end_date instanceof Date
+        ? latestLease.end_date.toISOString().split('T')[0]
+        : String(latestLease.end_date).split('T')[0];
+      currentMoveOut = endStr;
+      const next = new Date(endStr);
+      next.setDate(next.getDate() + 1);
+      const nextStr = next.toISOString().split('T')[0];
+      if (nextStr > availableFrom) availableFrom = nextStr;
+    }
+
+    const base = `${req.protocol}://${req.get('host')}`;
+
     res.json({
       code: 200,
       data: {
         ...unit,
         current_lease: currentLease || null,
+        // Existing fields preserved for MCP/Telegram callers
         amenity_ids: amenityRows.map(r => r.amenity_id),
         gallery: galleryRows,
         booking_token: linkRow ? linkRow.token : null,
+        // New fields for TaneChat-style consumers
+        amenities: amenityRows.map(r => r.name).filter(Boolean),
+        photos: galleryRows.map(r => `${base}/api/file/preview/${r.file_id}`),
+        availability: {
+          available_from: availableFrom,
+          current_move_out: currentMoveOut,
+          status: currentLease
+            ? 'occupied_until_move_out'
+            : currentMoveOut
+              ? 'vacant'
+              : 'never_leased',
+        },
       },
     });
   } catch (error) {
     console.error('Public unit detail error:', error);
     fail(res, 'Failed to fetch unit');
+  }
+});
+
+// GET /api/public/units/:id/availability?from_date=&to_date=
+// Walks all non-deleted leases on the unit within [from_date, to_date]
+// (defaults: today / +12 months) and returns the gaps between them as
+// availability_windows. Also reports the lease covering today, if any.
+router.get('/units/:id/availability', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const { id } = req.params;
+    const today = new Date().toISOString().split('T')[0];
+    const fromDate = req.query.from_date || today;
+    let toDate = req.query.to_date;
+    if (!toDate) {
+      const d = new Date(fromDate);
+      d.setMonth(d.getMonth() + 12);
+      toDate = d.toISOString().split('T')[0];
+    }
+
+    // Confirm unit exists in this org
+    const [[unit]] = await req.pool.execute(
+      `SELECT u.id AS unit_id, u.name AS unit_name, p.display_name AS property_name
+       FROM unit u JOIN property p ON u.property_id = p.id
+       WHERE u.id = ? AND p.org_id = ?`,
+      [id, orgId]
+    );
+    if (!unit) return fail(res, 'Unit not found', 404);
+
+    // All leases overlapping [fromDate, toDate], ordered by start
+    const [leases] = await req.pool.execute(
+      `SELECT id, start_date, end_date, tenant_id
+       FROM leasing
+       WHERE unit_id = ? AND deleted_at IS NULL
+         AND (end_date IS NULL OR end_date >= ?)
+         AND start_date <= ?
+       ORDER BY start_date ASC`,
+      [id, fromDate, toDate]
+    );
+
+    const toStr = (d) => d instanceof Date ? d.toISOString().split('T')[0] : String(d).split('T')[0];
+    const addDays = (s, n) => {
+      const d = new Date(s); d.setDate(d.getDate() + n); return d.toISOString().split('T')[0];
+    };
+
+    // Find current lease (covers today)
+    const currentLease = leases.find(l => {
+      const s = toStr(l.start_date);
+      const e = l.end_date ? toStr(l.end_date) : null;
+      return s <= today && (!e || e >= today);
+    });
+
+    // Build availability windows = the gaps in [fromDate, toDate] not covered by any lease
+    const windows = [];
+    let cursor = fromDate;
+    for (const l of leases) {
+      const s = toStr(l.start_date);
+      const e = l.end_date ? toStr(l.end_date) : null;
+      if (s > cursor) {
+        windows.push({
+          available_from: cursor,
+          available_until: addDays(s, -1),
+          reason: 'Gap before next lease',
+        });
+      }
+      if (!e) { cursor = null; break; } // open-ended lease — no more availability after this
+      if (addDays(e, 1) > cursor) cursor = addDays(e, 1);
+    }
+    if (cursor && cursor <= toDate) {
+      windows.push({
+        available_from: cursor,
+        available_until: toDate,
+        reason: 'No lease scheduled',
+      });
+    }
+
+    res.json({
+      code: 200,
+      data: {
+        unit_id: String(unit.unit_id),
+        unit_name: unit.unit_name,
+        property_name: unit.property_name,
+        from_date: fromDate,
+        to_date: toDate,
+        availability_windows: windows,
+        current_lease: currentLease ? {
+          tenant_move_out: currentLease.end_date ? toStr(currentLease.end_date) : null,
+          status: currentLease.end_date ? 'notice_given' : 'active_open_ended',
+        } : null,
+      },
+    });
+  } catch (error) {
+    console.error('Public unit availability error:', error);
+    fail(res, 'Failed to fetch availability');
   }
 });
 
