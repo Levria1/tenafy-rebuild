@@ -31,6 +31,7 @@ export default function LeasingDetailPage() {
   const [settlementLoading, setSettlementLoading] = useState(false);
   const [settlementNotes, setSettlementNotes] = useState('');
   const [notesSaving, setNotesSaving] = useState(false);
+  const [revisions, setRevisions] = useState([]);
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
@@ -54,6 +55,14 @@ export default function LeasingDetailPage() {
       message.error('Failed to load lease');
     } finally {
       setLoading(false);
+    }
+    // Load scheduled revisions in parallel; failure is non-fatal
+    try {
+      const res = await leasing.listRevisions(leaseId);
+      if (res.data.code === 200) setRevisions(res.data.data || []);
+    } catch (err) {
+      // Likely the lease_revision table doesn't exist yet — silently ignore so
+      // the page still renders pre-migration.
     }
   };
 
@@ -428,6 +437,7 @@ export default function LeasingDetailPage() {
       key: 'details',
       label: 'Details',
       children: (
+        <>
         <Descriptions bordered column={isMobile ? 1 : 2}>
           <Descriptions.Item label="Lease No">{lease?.lease_no || '-'}</Descriptions.Item>
           <Descriptions.Item label="Property">{lease?.property_name || '-'}</Descriptions.Item>
@@ -468,6 +478,55 @@ export default function LeasingDetailPage() {
             <Descriptions.Item label="Notes" span={2}>{lease.note}</Descriptions.Item>
           )}
         </Descriptions>
+        {revisions.length > 0 && (
+          <div style={{ marginTop: 24, padding: 16, background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6 }}>
+            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12, color: '#555' }}>
+              ⏰ Scheduled Rate Changes
+            </div>
+            {(() => {
+              const today = new Date().toISOString().split('T')[0];
+              const fmt = (n) => n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+              const fmtDate = (d) => {
+                if (!d) return '';
+                const s = d instanceof Date ? d.toISOString().split('T')[0] : String(d).split('T')[0];
+                return s;
+              };
+              const daysAway = (d) => {
+                const s = fmtDate(d);
+                if (!s) return 0;
+                return Math.round((new Date(s) - new Date(today)) / 86400000);
+              };
+              return revisions.map(r => {
+                const eff = fmtDate(r.effective_from);
+                const isPast = eff <= today;
+                const days = daysAway(eff);
+                return (
+                  <div key={r.id} style={{
+                    padding: '10px 12px', marginBottom: 8, background: isPast ? '#fff' : '#fffbe6',
+                    border: `1px solid ${isPast ? '#f0f0f0' : '#ffe58f'}`, borderRadius: 4, opacity: isPast ? 0.7 : 1
+                  }}>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>
+                      {isPast
+                        ? `Past — effective ${eff} (superseded)`
+                        : `Effective ${eff} (${days} day${days !== 1 ? 's' : ''} away)`}
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 13, color: '#555' }}>
+                      {r.price != null && <div>Rent: <strong>{fmt(r.price)}</strong></div>}
+                      {r.utility_credit != null && <div>Utility credit: <strong>{fmt(r.utility_credit)}</strong></div>}
+                      {r.credits && <div>Credits: <strong>{r.credits}</strong></div>}
+                      {r.deposit != null && <div>Deposit: <strong>{fmt(r.deposit)}</strong></div>}
+                      {r.note && <div style={{ fontStyle: 'italic', color: '#888', marginTop: 4 }}>{r.note}</div>}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+            <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+              Edit scheduled changes from the lease edit page.
+            </div>
+          </div>
+        )}
+        </>
       ),
     },
     {

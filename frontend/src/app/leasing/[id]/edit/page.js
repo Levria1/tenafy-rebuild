@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Form, Input, InputNumber, DatePicker, Select, Button, message, Spin, Row, Col, Divider, Switch, Checkbox } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import { Form, Input, InputNumber, DatePicker, Select, Button, message, Spin, Row, Col, Divider, Switch, Checkbox, Modal, Popconfirm } from 'antd';
+import { ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
 import { leasing, property, tenant as tenantApi, bookingPlatform, salesAgent } from '../../../../lib/api';
@@ -50,13 +50,97 @@ export default function LeasingEditPage() {
   const [makeRecurring, setMakeRecurring] = useState(false);
   const [platforms, setPlatforms] = useState([]);
   const [agents, setAgents] = useState([]);
+  // Scheduled rate changes
+  const [revisions, setRevisions] = useState([]);
+  const [revModalOpen, setRevModalOpen] = useState(false);
+  const [revEditing, setRevEditing] = useState(null); // null = new, object = editing
+  const [revForm] = Form.useForm();
   const router = useRouter();
   const params = useParams();
   const leaseId = params.id;
 
   useEffect(() => {
     loadAll();
+    loadRevisions();
   }, [leaseId]);
+
+  const loadRevisions = async () => {
+    try {
+      const res = await leasing.listRevisions(leaseId);
+      if (res.data.code === 200) setRevisions(res.data.data || []);
+    } catch (err) {
+      // lease_revision table may not exist yet — fail silently
+    }
+  };
+
+  const openRevModal = (rev) => {
+    setRevEditing(rev);
+    if (rev) {
+      const eff = rev.effective_from instanceof Date
+        ? rev.effective_from.toISOString().split('T')[0]
+        : String(rev.effective_from).split('T')[0];
+      revForm.setFieldsValue({
+        effective_from: eff ? dayjs(eff) : null,
+        price: rev.price != null ? rev.price : undefined,
+        credits: rev.credits || undefined,
+        utility_credit: rev.utility_credit != null ? rev.utility_credit : undefined,
+        deposit: rev.deposit != null ? rev.deposit : undefined,
+        note: rev.note || undefined,
+      });
+    } else {
+      revForm.resetFields();
+    }
+    setRevModalOpen(true);
+  };
+
+  const saveRevision = async () => {
+    try {
+      const vals = await revForm.validateFields();
+      const payload = {
+        effective_from: vals.effective_from ? vals.effective_from.format('YYYY-MM-DD') : null,
+        price: vals.price ?? null,
+        credits: vals.credits || null,
+        utility_credit: vals.utility_credit ?? null,
+        deposit: vals.deposit ?? null,
+        note: vals.note || null,
+      };
+      if (!payload.effective_from) {
+        message.error('Effective date is required');
+        return;
+      }
+      if (payload.price == null && payload.credits == null && payload.utility_credit == null && payload.deposit == null) {
+        message.error('Set at least one of: rent, credits, utility credit, deposit');
+        return;
+      }
+      const res = revEditing
+        ? await leasing.updateRevision(leaseId, revEditing.id, payload)
+        : await leasing.createRevision(leaseId, payload);
+      if (res.data.code === 200) {
+        message.success(revEditing ? 'Scheduled change updated' : 'Rate change scheduled');
+        setRevModalOpen(false);
+        loadRevisions();
+      } else {
+        message.error(res.data.message || 'Failed to save');
+      }
+    } catch (err) {
+      if (err?.errorFields) return; // form validation error
+      message.error(err.response?.data?.message || 'Failed to save scheduled change');
+    }
+  };
+
+  const cancelRevision = async (rev) => {
+    try {
+      const res = await leasing.deleteRevision(leaseId, rev.id);
+      if (res.data.code === 200) {
+        message.success('Scheduled change cancelled');
+        loadRevisions();
+      } else {
+        message.error(res.data.message || 'Failed to cancel');
+      }
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to cancel scheduled change');
+    }
+  };
 
   const loadAll = async () => {
     try {
@@ -500,6 +584,65 @@ export default function LeasingEditPage() {
           </Form.Item>
         </div>
 
+        {/* Scheduled Rate Changes */}
+        <div style={sectionStyle}>
+          <div style={sectionTitle}>Scheduled Rate Changes</div>
+          <div style={{ fontSize: 12, color: '#888', marginBottom: 12 }}>
+            Schedule future changes to rent, utility credit, credits, or deposit. The invoice scheduler will automatically pick up the new values on each effective date.
+          </div>
+          {revisions.length === 0 ? (
+            <div style={{ fontSize: 13, color: '#999', fontStyle: 'italic', marginBottom: 12 }}>No scheduled changes.</div>
+          ) : (
+            (() => {
+              const today = new Date().toISOString().split('T')[0];
+              const fmtNum = (n) => n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+              const fmtDate = (d) => d ? (d instanceof Date ? d.toISOString().split('T')[0] : String(d).split('T')[0]) : '';
+              return revisions.map(r => {
+                const eff = fmtDate(r.effective_from);
+                const isPast = eff <= today;
+                const days = Math.round((new Date(eff) - new Date(today)) / 86400000);
+                return (
+                  <div key={r.id} style={{
+                    padding: '10px 12px', marginBottom: 8,
+                    background: isPast ? '#fafafa' : '#fffbe6',
+                    border: `1px solid ${isPast ? '#f0f0f0' : '#ffe58f'}`,
+                    borderRadius: 4,
+                    display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
+                  }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>
+                        {isPast ? `Past — effective ${eff} (already applied)` : `⏰ Effective ${eff} (${days} day${days !== 1 ? 's' : ''} away)`}
+                      </div>
+                      <div style={{ marginTop: 4, fontSize: 13, color: '#555' }}>
+                        {r.price != null && <span style={{ marginRight: 16 }}>Rent: <strong>{fmtNum(r.price)}</strong></span>}
+                        {r.utility_credit != null && <span style={{ marginRight: 16 }}>Utility credit: <strong>{fmtNum(r.utility_credit)}</strong></span>}
+                        {r.credits && <span style={{ marginRight: 16 }}>Credits: <strong>{r.credits}</strong></span>}
+                        {r.deposit != null && <span style={{ marginRight: 16 }}>Deposit: <strong>{fmtNum(r.deposit)}</strong></span>}
+                      </div>
+                      {r.note && <div style={{ marginTop: 4, fontSize: 12, fontStyle: 'italic', color: '#888' }}>{r.note}</div>}
+                    </div>
+                    {!isPast && (
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <Button size="small" icon={<EditOutlined />} onClick={() => openRevModal(r)}>Edit</Button>
+                        <Popconfirm
+                          title="Cancel this scheduled change?"
+                          okText="Yes" cancelText="No"
+                          onConfirm={() => cancelRevision(r)}
+                        >
+                          <Button size="small" danger icon={<DeleteOutlined />}>Cancel</Button>
+                        </Popconfirm>
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            })()
+          )}
+          <Button type="dashed" icon={<PlusOutlined />} onClick={() => openRevModal(null)} block>
+            Schedule new rate change
+          </Button>
+        </div>
+
         {/* Booking & Commission */}
         <div style={sectionStyle}>
           <div style={sectionTitle}>Booking & Commission</div>
@@ -628,6 +771,56 @@ export default function LeasingEditPage() {
           </Button>
         </div>
       </Form>
+
+      {/* Schedule Rate Change Modal */}
+      <Modal
+        title={revEditing ? 'Edit Scheduled Rate Change' : 'Schedule Rate Change'}
+        open={revModalOpen}
+        onCancel={() => setRevModalOpen(false)}
+        onOk={saveRevision}
+        okText={revEditing ? 'Save Changes' : 'Schedule'}
+        destroyOnClose
+      >
+        <Form form={revForm} layout="vertical" preserve={false}>
+          <Form.Item
+            name="effective_from"
+            label="Effective From"
+            rules={[{ required: true, message: 'Effective date is required' }]}
+          >
+            <DatePicker style={{ width: '100%' }} disabledDate={(d) => d && d.isBefore(dayjs().startOf('day'))} />
+          </Form.Item>
+          <div style={{ fontSize: 12, color: '#888', marginBottom: 12 }}>
+            Leave any field blank to keep the current value. Provide at least one change.
+          </div>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="price" label="New Rent">
+                <InputNumber style={{ width: '100%' }} placeholder="e.g. 18000" min={0} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="utility_credit" label="New Utility Credit">
+                <InputNumber style={{ width: '100%' }} placeholder="e.g. 500" min={0} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="credits" label="New Credits">
+                <Input placeholder="Credits" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="deposit" label="New Deposit">
+                <InputNumber style={{ width: '100%' }} placeholder="e.g. 36000" min={0} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item name="note" label="Note (optional)">
+            <Input.TextArea rows={2} placeholder="e.g. Per annual review email of 2026-04-15" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </MainLayout>
   );
 }

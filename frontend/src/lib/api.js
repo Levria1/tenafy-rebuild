@@ -137,6 +137,11 @@ export const leasing = {
   create: (data) => api.post('/api/leasing', data),
   update: (id, data) => api.put(`/api/leasing/${id}`, data),
   delete: (id) => api.delete(`/api/leasing/${id}`),
+  // Scheduled rate changes (lease_revision rows)
+  listRevisions: (id) => api.get(`/api/leasing/${id}/revisions`),
+  createRevision: (id, data) => api.post(`/api/leasing/${id}/revisions`, data),
+  updateRevision: (id, rid, data) => api.put(`/api/leasing/${id}/revisions/${rid}`, data),
+  deleteRevision: (id, rid) => api.delete(`/api/leasing/${id}/revisions/${rid}`),
   getTenants: () => api.get('/api/leasing/tenant/list'),
   getUnitLease: (unitId) => api.get(`/api/leasing/unit/lease/${unitId}`),
   getSumAmount: (id) => api.get(`/api/leasing/sum_amount/${id}`),

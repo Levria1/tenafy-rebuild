@@ -8,7 +8,7 @@ import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../components/Layout';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
-import { accounting, accountingApi } from '../../lib/api';
+import { accounting, accountingApi, property as propertyApi } from '../../lib/api';
 
 const { RangePicker } = DatePicker;
 
@@ -54,6 +54,9 @@ function AccountingPage() {
   const [filterType, setFilterType] = useState(null); // null = all, 0 = inflow, 1 = outflow
   const [filterCategory, setFilterCategory] = useState(null);
   const [filterPaymentMethod, setFilterPaymentMethod] = useState(null);
+  const [filterProperty, setFilterProperty] = useState(null);
+  const [filterUnit, setFilterUnit] = useState(null);
+  const [properties, setProperties] = useState([]);
 
   useEffect(() => {
     loadSettings();
@@ -74,14 +77,16 @@ function AccountingPage() {
 
   const loadSettings = async () => {
     try {
-      const [catRes, acctRes, pmRes] = await Promise.all([
+      const [catRes, acctRes, pmRes, propRes] = await Promise.all([
         accountingApi.getCategories(),
         accountingApi.getAccounts(),
         accountingApi.getPaymentMethods(),
+        propertyApi.getAllWithUnits(),
       ]);
       if (catRes.data.code === 200) setCategories(catRes.data.data || []);
       if (acctRes.data.code === 200) setAccounts(acctRes.data.data || []);
       if (pmRes.data.code === 200) setPaymentMethods(pmRes.data.data || []);
+      if (propRes.data.code === 200) setProperties(propRes.data.data || []);
     } catch (e) {
       console.error('Failed to load settings');
     }
@@ -222,13 +227,21 @@ function AccountingPage() {
   };
 
   // === Filter functions ===
-  const activeFilterCount = [filterType !== null ? 1 : 0, filterCategory ? 1 : 0, filterPaymentMethod ? 1 : 0].reduce((a, b) => a + b, 0);
+  const activeFilterCount = [
+    filterType !== null ? 1 : 0,
+    filterCategory ? 1 : 0,
+    filterPaymentMethod ? 1 : 0,
+    filterProperty ? 1 : 0,
+    filterUnit ? 1 : 0,
+  ].reduce((a, b) => a + b, 0);
 
   const applyFilters = () => {
     const newFilters = {};
     if (filterType !== null) newFilters.type = filterType;
     if (filterCategory) newFilters.category = filterCategory;
     if (filterPaymentMethod) newFilters.payment_setting_id = filterPaymentMethod;
+    if (filterProperty) newFilters.propertyId = filterProperty;
+    if (filterUnit) newFilters.unitId = filterUnit;
     setFilters(newFilters);
     setPagination(p => ({ ...p, current: 1 }));
     setFilterOpen(false);
@@ -238,6 +251,8 @@ function AccountingPage() {
     setFilterType(null);
     setFilterCategory(null);
     setFilterPaymentMethod(null);
+    setFilterProperty(null);
+    setFilterUnit(null);
     setFilters({});
     setPagination(p => ({ ...p, current: 1 }));
     setFilterOpen(false);
@@ -276,6 +291,53 @@ function AccountingPage() {
           onChange={setFilterPaymentMethod}
           options={paymentMethods.map(m => ({ label: m.name, value: m.id }))}
         />
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Property</div>
+        <Select
+          placeholder="All Properties"
+          allowClear
+          style={{ width: '100%' }}
+          value={filterProperty}
+          onChange={(v) => {
+            setFilterProperty(v ?? null);
+            if (v != null && filterUnit != null) {
+              const prop = properties.find(p => String(p.id) === String(v));
+              const unitBelongs = prop?.units?.some(u => String(u.id) === String(filterUnit));
+              if (!unitBelongs) setFilterUnit(null);
+            }
+          }}
+          showSearch
+          optionFilterProp="children"
+        >
+          {properties.map(p => (
+            <Select.Option key={p.id} value={p.id}>{p.display_name}</Select.Option>
+          ))}
+        </Select>
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Unit</div>
+        <Select
+          placeholder="All Units"
+          allowClear
+          style={{ width: '100%' }}
+          value={filterUnit}
+          onChange={(v) => setFilterUnit(v ?? null)}
+          showSearch
+          optionFilterProp="children"
+        >
+          {(filterProperty != null
+            ? (properties.find(p => String(p.id) === String(filterProperty))?.units || [])
+                .map(u => ({ ...u, _propName: properties.find(p => String(p.id) === String(filterProperty))?.display_name }))
+            : properties.flatMap(p => (p.units || []).map(u => ({ ...u, _propName: p.display_name })))
+          ).map(u => (
+            <Select.Option key={u.id} value={u.id}>
+              {filterProperty != null ? u.name : `${u._propName} — ${u.name}`}
+            </Select.Option>
+          ))}
+        </Select>
       </div>
 
       <Divider style={{ margin: '12px 0' }} />

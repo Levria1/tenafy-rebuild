@@ -671,7 +671,7 @@ router.post('/account/inflow-outflow', authenticate, async (req, res) => {
 router.post('/account/lines', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { startDate, endDate, category, propertyId, search, type, account_setting_id, account_setting_ids, payment_setting_id, sortField, sortOrder } = req.body || {};
+    const { startDate, endDate, category, propertyId, unitId, search, type, account_setting_id, account_setting_ids, payment_setting_id, sortField, sortOrder } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
@@ -695,6 +695,7 @@ router.post('/account/lines', authenticate, async (req, res) => {
     }
     if (payment_setting_id) { whereClause += ' AND a.payment_setting_id = ?'; params.push(payment_setting_id); }
     if (propertyId) { whereClause += ' AND al.property_id = ?'; params.push(propertyId); }
+    if (unitId)     { whereClause += ' AND al.unit_id = ?';     params.push(unitId); }
     if (startDate)  { whereClause += ' AND a.payment_date >= ?'; params.push(startDate); }
     if (endDate)    { whereClause += ' AND a.payment_date <= ?'; params.push(endDate); }
 

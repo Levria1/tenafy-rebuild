@@ -114,6 +114,10 @@ const LANDLORD_PERMISSIONS = [
   // Reports
   { key: 'LANDLORD/REPORT/LEASING_COST_EDIT', label: 'Edit Leasing Cost (Vacancy Report)', group: 'Reports' },
   { key: 'LANDLORD/REPORT/COMMISSION_VIEW',   label: 'View Commission Tracker',            group: 'Reports' },
+  // Utilities
+  { key: 'LANDLORD/UTILITY_METER_DELETE', label: 'Delete Meter', group: 'Utilities' },
+  { key: 'LANDLORD/UTILITY_GROUP_DELETE', label: 'Delete Billing Group', group: 'Utilities' },
+  { key: 'LANDLORD/UTILITY_BILL_DELETE',  label: 'Delete Utility Bill', group: 'Utilities' },
 ];
 
 // POST /api/role/list - List roles

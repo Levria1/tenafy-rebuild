@@ -71,6 +71,7 @@ export default function InvoicesPage() {
   // Settings data for filters
   const [categories, setCategories] = useState([]);
   const [properties, setProperties] = useState([]);
+  const [filterUnit, setFilterUnit] = useState(null);
 
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -136,7 +137,7 @@ export default function InvoicesPage() {
     try {
       const [catRes, propRes, bpRes, saRes] = await Promise.all([
         accountingApi.getCategories(),
-        propertyApi.getAll(),
+        propertyApi.getAllWithUnits(),
         bookingPlatformApi.list(),
         salesAgentApi.list().catch(() => ({ data: { data: [] } })),
       ]);
@@ -203,7 +204,7 @@ export default function InvoicesPage() {
   ];
 
   // Filter
-  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterCategory, filterProperty, filterBookingPlatform, filterSalesAgent].filter(v => v !== null).length;
+  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterCategory, filterProperty, filterUnit, filterBookingPlatform, filterSalesAgent].filter(v => v !== null).length;
 
   const applyFilters = () => {
     const f = {};
@@ -212,6 +213,7 @@ export default function InvoicesPage() {
     if (filterTenantStatus !== null) f.tenantStatus = filterTenantStatus;
     if (filterCategory !== null) f.category = filterCategory;
     if (filterProperty !== null) f.propertyId = filterProperty;
+    if (filterUnit !== null) f.unitId = filterUnit;
     if (filterBookingPlatform !== null) f.bookingPlatformId = filterBookingPlatform;
     if (filterSalesAgent !== null) f.salesAgentId = filterSalesAgent;
     setFilters(f);
@@ -225,6 +227,7 @@ export default function InvoicesPage() {
     setFilterTenantStatus(null);
     setFilterCategory(null);
     setFilterProperty(null);
+    setFilterUnit(null);
     setFilterBookingPlatform(null);
     setFilterSalesAgent(null);
     setFilters({});
@@ -286,20 +289,52 @@ export default function InvoicesPage() {
         </Select>
       </div>
 
-      {/* Property & Units */}
+      {/* Property */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Property & Units</div>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Property</div>
         <Select
-          placeholder="All Property"
+          placeholder="All Properties"
           allowClear
           style={{ width: '100%' }}
           value={filterProperty}
-          onChange={(v) => setFilterProperty(v ?? null)}
+          onChange={(v) => {
+            setFilterProperty(v ?? null);
+            // If a unit is selected and it doesn't belong to the new property, clear it
+            if (v != null && filterUnit != null) {
+              const prop = properties.find(p => String(p.id) === String(v));
+              const unitBelongs = prop?.units?.some(u => String(u.id) === String(filterUnit));
+              if (!unitBelongs) setFilterUnit(null);
+            }
+          }}
           showSearch
           optionFilterProp="children"
         >
           {properties.map(p => (
             <Select.Option key={p.id} value={p.id}>{p.display_name}</Select.Option>
+          ))}
+        </Select>
+      </div>
+
+      {/* Unit */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Unit</div>
+        <Select
+          placeholder="All Units"
+          allowClear
+          style={{ width: '100%' }}
+          value={filterUnit}
+          onChange={(v) => setFilterUnit(v ?? null)}
+          showSearch
+          optionFilterProp="children"
+        >
+          {(filterProperty != null
+            ? (properties.find(p => String(p.id) === String(filterProperty))?.units || [])
+                .map(u => ({ ...u, _propName: properties.find(p => String(p.id) === String(filterProperty))?.display_name }))
+            : properties.flatMap(p => (p.units || []).map(u => ({ ...u, _propName: p.display_name })))
+          ).map(u => (
+            <Select.Option key={u.id} value={u.id}>
+              {filterProperty != null ? u.name : `${u._propName} — ${u.name}`}
+            </Select.Option>
           ))}
         </Select>
       </div>

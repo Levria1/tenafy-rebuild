@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
+import TypedDeleteModal from '../../../../components/TypedDeleteModal';
 import { property, accounting } from '../../../../lib/api';
 import { formatBeds, formatUnitType } from '../../../../lib/format';
 
@@ -264,6 +265,7 @@ export default function PropertyDetailPage() {
   const [propertyData, setPropertyData] = useState(null);
   const [units, setUnits] = useState([]);
   const [showInactiveUnits, setShowInactiveUnits] = useState(false);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [graphData, setGraphData] = useState([]);
   const [amenities, setAmenities] = useState([]);
 
@@ -293,28 +295,23 @@ export default function PropertyDetailPage() {
     }
   };
 
-  const handleDelete = () => {
-    Modal.confirm({
-      title: 'Delete Property',
-      content: 'Are you sure you want to delete this property? This action cannot be undone.',
-      okText: 'Delete',
-      okType: 'danger',
-      onOk: async () => {
-        try {
-          const res = await property.delete(params.id);
-          if (res.data.code === 200) {
-            message.success('Property deleted');
-            router.push('/property');
-          } else {
-            message.error(res.data.message || 'Failed to delete property');
-          }
-        } catch (error) {
-          // 409 = active lease exists
-          const msg = error.response?.data?.message || 'Failed to delete property';
-          message.error(msg);
-        }
-      },
-    });
+  const handleDelete = () => setDeleteModalOpen(true);
+
+  const doDelete = async () => {
+    try {
+      const res = await property.delete(params.id);
+      if (res.data.code === 200) {
+        message.success('Property deleted');
+        setDeleteModalOpen(false);
+        router.push('/property');
+      } else {
+        message.error(res.data.message || 'Failed to delete property');
+      }
+    } catch (error) {
+      // 409 = active lease exists
+      const msg = error.response?.data?.message || 'Failed to delete property';
+      message.error(msg);
+    }
   };
 
   if (loading) {
@@ -424,6 +421,14 @@ export default function PropertyDetailPage() {
           ]}
         />
       </div>
+      <TypedDeleteModal
+        open={deleteModalOpen}
+        onCancel={() => setDeleteModalOpen(false)}
+        onConfirm={doDelete}
+        itemLabel={propertyData?.display_name}
+        itemType="property"
+        warning="All units, leases, invoices, and history tied to this property will be affected. Active leases may block deletion."
+      />
     </MainLayout>
   );
 }

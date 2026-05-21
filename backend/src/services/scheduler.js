@@ -64,6 +64,7 @@ function toDateString(date) {
 }
 
 const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
+const { resolveLeaseValues } = require('../utils/leaseRevision');
 
 function daysDiff(date1, date2) {
   const d1 = new Date(toDateString(date1));
@@ -147,8 +148,18 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
           const periodEnd = new Date(periodAfter);
           periodEnd.setDate(periodEnd.getDate() - 1);
 
+          // Resolve effective rent as of this invoice's due date. If the
+          // lease has a scheduled revision (lease_revision row with
+          // effective_from <= nextDueDate), its price overrides lease.price.
+          // Otherwise this returns lease.price unchanged.
+          const effective = await resolveLeaseValues(
+            pool, lease.id, nextDueDate,
+            { price: lease.price }
+          );
+          const effectiveRent = effective.price;
+
           const thisAmount = computeRentInvoiceAmount({
-            rent: lease.price,
+            rent: effectiveRent,
             invoicing: lease.invoicing,
             periodStart: nextDueDate,
             periodEnd,

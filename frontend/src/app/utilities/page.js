@@ -3,10 +3,11 @@
 import { Suspense, useEffect, useState, useCallback } from 'react';
 import { Tabs, Table, Button, Select, Input, InputNumber, Modal, Form, Row, Col, Tag, Space, DatePicker, message, Popconfirm, Card, Typography, Descriptions, Checkbox } from 'antd';
 import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined, CheckCircleOutlined, FileTextOutlined, HistoryOutlined, EditOutlined, WarningOutlined } from '@ant-design/icons';
-import MainLayout from '../../components/Layout';
+import MainLayout, { useAuth } from '../../components/Layout';
 import { utility, property } from '../../lib/api';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
+import TypedDeleteModal from '../../components/TypedDeleteModal';
 import dayjs from 'dayjs';
 
 const { Title, Text } = Typography;
@@ -461,12 +462,18 @@ function GroupsTab() {
 // ─── SETTINGS TAB ────────────────────────────────────────────
 
 function SettingsTab() {
+  const { hasPermission } = useAuth();
+  const canDeleteMeter = hasPermission ? hasPermission('LANDLORD/UTILITY_METER_DELETE') : false;
+  const canDeleteGroup = hasPermission ? hasPermission('LANDLORD/UTILITY_GROUP_DELETE') : false;
   const [groups, setGroups] = useState([]);
   const [properties, setProperties] = useState([]);
   const [units, setUnits] = useState([]);
   const [loading, setLoading] = useState(false);
   const [groupModal, setGroupModal] = useState(false);
   const [meterModal, setMeterModal] = useState(false);
+  const [editingMeter, setEditingMeter] = useState(null); // null = adding new
+  const [deletingMeter, setDeletingMeter] = useState(null); // row pending typed-confirm delete
+  const [deletingGroup, setDeletingGroup] = useState(null); // group pending typed-confirm delete
   const [editingGroup, setEditingGroup] = useState(null);
   const [selectedGroupForMeter, setSelectedGroupForMeter] = useState(null);
   const [meters, setMeters] = useState([]);
@@ -540,12 +547,14 @@ function SettingsTab() {
     }
   };
 
-  const handleDeleteGroup = async (id) => {
+  const handleDeleteGroup = async () => {
+    if (!deletingGroup) return;
     try {
-      await utility.deleteGroup(id);
+      await utility.deleteGroup(deletingGroup.id);
       message.success('Group deleted');
+      setDeletingGroup(null);
       loadData();
-      if (selectedGroupForMeter === id) {
+      if (selectedGroupForMeter === deletingGroup.id) {
         setSelectedGroupForMeter(null);
         setMeters([]);
       }
@@ -557,9 +566,15 @@ function SettingsTab() {
   const handleSaveMeter = async () => {
     try {
       const values = await meterForm.validateFields();
-      await utility.createMeter({ ...values, group_id: selectedGroupForMeter });
-      message.success('Meter added');
+      if (editingMeter) {
+        await utility.updateMeter(editingMeter.id, values);
+        message.success('Meter updated');
+      } else {
+        await utility.createMeter({ ...values, group_id: selectedGroupForMeter });
+        message.success('Meter added');
+      }
       setMeterModal(false);
+      setEditingMeter(null);
       meterForm.resetFields();
       loadMeters(selectedGroupForMeter);
       loadData();
@@ -568,10 +583,25 @@ function SettingsTab() {
     }
   };
 
-  const handleDeleteMeter = async (id) => {
+  const openEditMeter = (row) => {
+    setEditingMeter(row);
+    setMeterCategoryValue(Number(row.meter_category));
+    meterForm.setFieldsValue({
+      meter_category: Number(row.meter_category),
+      meter_number: row.meter_number,
+      meter_type: Number(row.meter_type),
+      unit_id: row.unit_id ? String(row.unit_id) : null,
+      current_reading: Number(row.last_reading ?? row.current_reading ?? 0),
+    });
+    setMeterModal(true);
+  };
+
+  const handleDeleteMeter = async () => {
+    if (!deletingMeter) return;
     try {
-      await utility.deleteMeter(id);
+      await utility.deleteMeter(deletingMeter.id);
       message.success('Meter deleted');
+      setDeletingMeter(null);
       loadMeters(selectedGroupForMeter);
       loadData();
     } catch (err) {
@@ -595,9 +625,9 @@ function SettingsTab() {
             setSelectedGroupForMeter(row.id);
             loadMeters(row.id);
           }}>Meters</Button>
-          <Popconfirm title="Delete this group?" onConfirm={() => handleDeleteGroup(row.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
+          {canDeleteGroup && (
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => setDeletingGroup(row)} />
+          )}
         </Space>
       )
     }
@@ -610,11 +640,14 @@ function SettingsTab() {
     { title: 'Unit', key: 'unit', render: (_, row) => Number(row.meter_category) === 0 ? <Tag color="blue">Master</Tag> : row.unit_name ? `${row.property_name} - ${row.unit_name}` : <Tag color="blue">Common Area</Tag> },
     { title: 'Last Reading', key: 'last_reading', width: 140, render: (_, row) => Number(row.last_reading ?? row.current_reading).toLocaleString() },
     {
-      title: '', key: 'actions', width: 50,
+      title: '', key: 'actions', width: 100,
       render: (_, row) => (
-        <Popconfirm title="Delete this meter?" onConfirm={() => handleDeleteMeter(row.id)}>
-          <Button size="small" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
+        <Space size="small">
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEditMeter(row)} />
+          {canDeleteMeter && (
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => setDeletingMeter(row)} />
+          )}
+        </Space>
       )
     }
   ];
@@ -632,9 +665,9 @@ function SettingsTab() {
         </div>
         <Space size="small">
           <Button size="small" onClick={(e) => { e.stopPropagation(); setEditingGroup(record); groupForm.setFieldsValue({ name: record.name }); setGroupModal(true); }}>Edit</Button>
-          <Popconfirm title="Delete this group?" onConfirm={() => handleDeleteGroup(record.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} onClick={(e) => e.stopPropagation()} />
-          </Popconfirm>
+          {canDeleteGroup && (
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={(e) => { e.stopPropagation(); setDeletingGroup(record); }} />
+          )}
         </Space>
       </div>
     </Card>
@@ -655,9 +688,12 @@ function SettingsTab() {
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>Last: {Number(record.last_reading ?? record.current_reading).toLocaleString()}</Text>
-          <Popconfirm title="Delete this meter?" onConfirm={() => handleDeleteMeter(record.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
+          <Space size="small">
+            <Button size="small" icon={<EditOutlined />} onClick={() => openEditMeter(record)} />
+            {canDeleteMeter && (
+              <Button size="small" danger icon={<DeleteOutlined />} onClick={() => setDeletingMeter(record)} />
+            )}
+          </Space>
         </div>
       </Card>
     );
@@ -697,6 +733,7 @@ function SettingsTab() {
                 <Text strong>Meters in: {selectedGroup?.name}</Text>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <Button type="primary" icon={<PlusOutlined />} style={{ flex: 1 }} onClick={() => {
+                    setEditingMeter(null);
                     meterForm.resetFields();
                     setMeterCategoryValue(1);
                     setMeterModal(true);
@@ -748,6 +785,7 @@ function SettingsTab() {
                 <Text strong>Meters in: {selectedGroup?.name}</Text>
                 <Space>
                   <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+                    setEditingMeter(null);
                     meterForm.resetFields();
                     setMeterCategoryValue(1);
                     setMeterModal(true);
@@ -783,10 +821,11 @@ function SettingsTab() {
 
       {/* Meter Modal */}
       <Modal
-        title="Add Meter"
+        title={editingMeter ? 'Edit Meter' : 'Add Meter'}
         open={meterModal}
         onOk={handleSaveMeter}
-        onCancel={() => { setMeterModal(false); meterForm.resetFields(); setMeterCategoryValue(1); }}
+        okText={editingMeter ? 'Save' : 'Add'}
+        onCancel={() => { setMeterModal(false); setEditingMeter(null); meterForm.resetFields(); setMeterCategoryValue(1); }}
       >
         <Form form={meterForm} layout="vertical">
           <Form.Item name="meter_category" label="Meter Category" initialValue={1}>
@@ -812,6 +851,24 @@ function SettingsTab() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <TypedDeleteModal
+        open={!!deletingMeter}
+        onCancel={() => setDeletingMeter(null)}
+        onConfirm={handleDeleteMeter}
+        itemLabel={deletingMeter?.meter_number}
+        itemType="meter"
+        warning="All readings logged on this meter will be lost. This cannot be undone."
+      />
+
+      <TypedDeleteModal
+        open={!!deletingGroup}
+        onCancel={() => setDeletingGroup(null)}
+        onConfirm={handleDeleteGroup}
+        itemLabel={deletingGroup?.name}
+        itemType="billing group"
+        warning="The group will be deleted only if it has no meters or bills attached. Re-assign meters first if needed."
+      />
     </div>
   );
 }
@@ -1122,9 +1179,12 @@ function MetersTab() {
 // ─── BILLING TAB ─────────────────────────────────────────────
 
 function BillingTab() {
+  const { hasPermission } = useAuth();
+  const canDeleteBill = hasPermission ? hasPermission('LANDLORD/UTILITY_BILL_DELETE') : false;
   const [groups, setGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [bills, setBills] = useState([]);
+  const [deletingBill, setDeletingBill] = useState(null); // bill row pending typed-confirm delete
   const [selectedBill, setSelectedBill] = useState(null);
   const [billDetail, setBillDetail] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1204,14 +1264,16 @@ function BillingTab() {
     }
   };
 
-  const handleDeleteBill = async (id) => {
+  const handleDeleteBill = async () => {
+    if (!deletingBill) return;
     try {
-      await utility.deleteBill(id);
+      await utility.deleteBill(deletingBill.id);
       message.success('Bill deleted');
-      if (selectedBill === id) {
+      if (selectedBill === deletingBill.id) {
         setSelectedBill(null);
         setBillDetail(null);
       }
+      setDeletingBill(null);
       loadBills(selectedGroup);
     } catch (err) {
       message.error(err.response?.data?.message || 'Failed to delete');
@@ -1282,9 +1344,9 @@ function BillingTab() {
       render: (_, row) => (
         <Space>
           <Button size="small" onClick={() => { setSelectedBill(row.id); loadBillDetail(row.id); }}>View</Button>
-          <Popconfirm title="Delete this bill?" onConfirm={() => handleDeleteBill(row.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
+          {canDeleteBill && (
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => setDeletingBill(row)} />
+          )}
         </Space>
       )
     }
@@ -1800,6 +1862,15 @@ function BillingTab() {
           </div>
         )}
       </Modal>
+
+      <TypedDeleteModal
+        open={!!deletingBill}
+        onCancel={() => setDeletingBill(null)}
+        onConfirm={handleDeleteBill}
+        itemLabel={deletingBill ? `${deletingBill.group_name || 'Bill'} — ${deletingBill.period_start ? dayjs(deletingBill.period_start).format('MMM D, YYYY') : ''}` : ''}
+        itemType="utility bill"
+        warning="The bill and all its line items will be deleted. Generated invoices remain — review them separately if needed."
+      />
     </div>
   );
 }

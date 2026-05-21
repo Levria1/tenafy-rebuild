@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requirePermission } = require('../middleware/auth');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 
 const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -184,7 +184,7 @@ router.post('/unit-groups/assign', authenticate, async (req, res) => {
 });
 
 // DELETE /api/utility/group/:id
-router.delete('/group/:id', authenticate, async (req, res) => {
+router.delete('/group/:id', authenticate, requirePermission('LANDLORD/UTILITY_GROUP_DELETE'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -344,7 +344,7 @@ router.put('/meter/:id', authenticate, async (req, res) => {
 });
 
 // DELETE /api/utility/meter/:id
-router.delete('/meter/:id', authenticate, async (req, res) => {
+router.delete('/meter/:id', authenticate, requirePermission('LANDLORD/UTILITY_METER_DELETE'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -1100,7 +1100,7 @@ router.post('/bill/:id/generate-invoices', authenticate, async (req, res) => {
 });
 
 // DELETE /api/utility/bill/:id
-router.delete('/bill/:id', authenticate, async (req, res) => {
+router.delete('/bill/:id', authenticate, requirePermission('LANDLORD/UTILITY_BILL_DELETE'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;

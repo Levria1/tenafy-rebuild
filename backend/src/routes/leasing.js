@@ -1170,4 +1170,187 @@ router.post('/unit/available', authenticate, async (req, res) => {
   }
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// LEASE REVISIONS — scheduled mid-lease changes for rent / credits / etc.
+// Each row in `lease_revision` takes effect on its `effective_from` date.
+// The invoice scheduler picks the latest revision whose effective_from <= due_on.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Helper: confirm lease exists & belongs to this org
+async function verifyLeaseOwnership(pool, leaseId, orgId) {
+  const [[row]] = await pool.execute(
+    `SELECT l.id FROM leasing l
+     JOIN unit u ON l.unit_id = u.id
+     JOIN property p ON u.property_id = p.id
+     WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL`,
+    [leaseId, orgId]
+  );
+  return !!row;
+}
+
+// GET /api/leasing/:id/revisions — all non-deleted revisions for a lease
+router.get('/:id/revisions', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    if (!(await verifyLeaseOwnership(req.pool, id, orgId))) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+    const [revs] = await req.pool.execute(
+      `SELECT id, lease_id, effective_from, price, credits, utility_credit, deposit,
+              note, created_by, created_at, updated_at
+       FROM lease_revision
+       WHERE lease_id = ? AND deleted_at IS NULL
+       ORDER BY effective_from ASC, id ASC`,
+      [id]
+    );
+    res.json({ code: 200, data: revs });
+  } catch (error) {
+    console.error('List lease revisions error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to list revisions' });
+  }
+});
+
+// POST /api/leasing/:id/revisions — schedule a new revision
+// Body: { effective_from, price?, credits?, utility_credit?, deposit?, note? }
+router.post('/:id/revisions', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const userId = req.user.id;
+    const { effective_from, price, credits, utility_credit, deposit, note } = req.body || {};
+
+    if (!effective_from || !/^\d{4}-\d{2}-\d{2}$/.test(effective_from)) {
+      return res.status(400).json({ code: 400, message: 'effective_from is required (YYYY-MM-DD)' });
+    }
+    // At least one field must change
+    if (price == null && credits == null && utility_credit == null && deposit == null) {
+      return res.status(400).json({ code: 400, message: 'Provide at least one of: price, credits, utility_credit, deposit' });
+    }
+    if (!(await verifyLeaseOwnership(req.pool, id, orgId))) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+
+    const revId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+    await req.pool.execute(
+      `INSERT INTO lease_revision (id, lease_id, effective_from, price, credits, utility_credit, deposit, note, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        revId, id, effective_from,
+        price != null && price !== '' ? Number(price) : null,
+        credits != null && credits !== '' ? String(credits) : null,
+        utility_credit != null && utility_credit !== '' ? Number(utility_credit) : null,
+        deposit != null && deposit !== '' ? Number(deposit) : null,
+        note || null,
+        userId || null,
+      ]
+    );
+    await logActivity(req, 'CREATE', 'lease_revision', revId,
+      `Scheduled rate change on lease ${id} effective ${effective_from}`,
+      { lease_id: id, effective_from, price, credits, utility_credit, deposit });
+
+    res.json({ code: 200, message: 'Revision scheduled', data: { id: revId } });
+  } catch (error) {
+    console.error('Create lease revision error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to schedule revision' });
+  }
+});
+
+// PUT /api/leasing/:id/revisions/:rid — edit a not-yet-effective revision
+router.put('/:id/revisions/:rid', authenticate, async (req, res) => {
+  try {
+    const { id, rid } = req.params;
+    const orgId = req.user.orgId;
+    const { effective_from, price, credits, utility_credit, deposit, note } = req.body || {};
+
+    if (!(await verifyLeaseOwnership(req.pool, id, orgId))) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+
+    // Reject edits to revisions that have already taken effect (they're
+    // already reflected in past invoices; changing them would create drift).
+    const [[existing]] = await req.pool.execute(
+      `SELECT effective_from FROM lease_revision
+       WHERE id = ? AND lease_id = ? AND deleted_at IS NULL`,
+      [rid, id]
+    );
+    if (!existing) return res.status(404).json({ code: 404, message: 'Revision not found' });
+    const today = new Date().toISOString().split('T')[0];
+    const existingDateStr = existing.effective_from instanceof Date
+      ? existing.effective_from.toISOString().split('T')[0]
+      : String(existing.effective_from).split('T')[0];
+    if (existingDateStr <= today) {
+      return res.status(400).json({ code: 400, message: 'Cannot edit a revision that has already taken effect' });
+    }
+
+    if (effective_from && !/^\d{4}-\d{2}-\d{2}$/.test(effective_from)) {
+      return res.status(400).json({ code: 400, message: 'effective_from must be YYYY-MM-DD' });
+    }
+
+    await req.pool.execute(
+      `UPDATE lease_revision
+       SET effective_from = COALESCE(?, effective_from),
+           price          = ?,
+           credits        = ?,
+           utility_credit = ?,
+           deposit        = ?,
+           note           = ?
+       WHERE id = ? AND lease_id = ? AND deleted_at IS NULL`,
+      [
+        effective_from || null,
+        price != null && price !== '' ? Number(price) : null,
+        credits != null && credits !== '' ? String(credits) : null,
+        utility_credit != null && utility_credit !== '' ? Number(utility_credit) : null,
+        deposit != null && deposit !== '' ? Number(deposit) : null,
+        note || null,
+        rid, id,
+      ]
+    );
+    await logActivity(req, 'UPDATE', 'lease_revision', rid,
+      `Edited scheduled rate change on lease ${id}`,
+      { lease_id: id, effective_from, price, credits, utility_credit, deposit });
+
+    res.json({ code: 200, message: 'Revision updated' });
+  } catch (error) {
+    console.error('Update lease revision error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to update revision' });
+  }
+});
+
+// DELETE /api/leasing/:id/revisions/:rid — cancel a not-yet-effective revision
+router.delete('/:id/revisions/:rid', authenticate, async (req, res) => {
+  try {
+    const { id, rid } = req.params;
+    const orgId = req.user.orgId;
+    if (!(await verifyLeaseOwnership(req.pool, id, orgId))) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+    const [[existing]] = await req.pool.execute(
+      `SELECT effective_from FROM lease_revision
+       WHERE id = ? AND lease_id = ? AND deleted_at IS NULL`,
+      [rid, id]
+    );
+    if (!existing) return res.status(404).json({ code: 404, message: 'Revision not found' });
+    const today = new Date().toISOString().split('T')[0];
+    const existingDateStr = existing.effective_from instanceof Date
+      ? existing.effective_from.toISOString().split('T')[0]
+      : String(existing.effective_from).split('T')[0];
+    if (existingDateStr <= today) {
+      return res.status(400).json({ code: 400, message: 'Cannot cancel a revision that has already taken effect' });
+    }
+
+    await req.pool.execute(
+      `UPDATE lease_revision SET deleted_at = NOW() WHERE id = ? AND lease_id = ?`,
+      [rid, id]
+    );
+    await logActivity(req, 'DELETE', 'lease_revision', rid,
+      `Cancelled scheduled rate change on lease ${id}`);
+
+    res.json({ code: 200, message: 'Revision cancelled' });
+  } catch (error) {
+    console.error('Delete lease revision error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to cancel revision' });
+  }
+});
+
 module.exports = router;

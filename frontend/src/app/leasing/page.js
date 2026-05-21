@@ -10,12 +10,14 @@ import MainLayout, { useAuth } from '../../components/Layout';
 import { leasing, property as propertyApi, bookingPlatform as bookingPlatformApi } from '../../lib/api';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
+import TypedDeleteModal from '../../components/TypedDeleteModal';
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
 
 export default function LeasingPage() {
   const [leases, setLeases] = useState([]);
+  const [deletingLease, setDeletingLease] = useState(null); // lease row pending typed-confirm delete
   const [loading, setLoading] = useState(true);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
   const [search, setSearch] = useState('');
@@ -108,26 +110,27 @@ export default function LeasingPage() {
     }
   };
 
-  const handleDelete = async (id) => {
-    Modal.confirm({
-      title: 'Delete Lease',
-      content: 'Are you sure you want to delete this lease?',
-      okText: 'Delete',
-      okType: 'danger',
-      onOk: async () => {
-        try {
-          const res = await leasing.delete(id);
-          if (res.data.code === 200) {
-            message.success('Lease deleted');
-            loadLeases();
-          } else {
-            message.error('Failed to delete lease');
-          }
-        } catch (e) {
-          message.error('Failed to delete lease');
-        }
-      },
-    });
+  const handleDelete = (row) => {
+    // `row` may be the full lease object (preferred — we use the lease_no in the
+    // confirm modal) or just an ID for backward-compat with callers that only have one.
+    const lease = typeof row === 'object' ? row : leases.find(l => String(l.id) === String(row)) || { id: row };
+    setDeletingLease(lease);
+  };
+
+  const doDeleteLease = async () => {
+    if (!deletingLease) return;
+    try {
+      const res = await leasing.delete(deletingLease.id);
+      if (res.data.code === 200) {
+        message.success('Lease deleted');
+        setDeletingLease(null);
+        loadLeases();
+      } else {
+        message.error('Failed to delete lease');
+      }
+    } catch (e) {
+      message.error('Failed to delete lease');
+    }
   };
 
   // Filter
@@ -480,6 +483,14 @@ export default function LeasingPage() {
           }}
         />
       )}
+      <TypedDeleteModal
+        open={!!deletingLease}
+        onCancel={() => setDeletingLease(null)}
+        onConfirm={doDeleteLease}
+        itemLabel={deletingLease?.lease_no || (deletingLease ? `Lease ${deletingLease.id}` : '')}
+        itemType="lease"
+        warning="All invoices and accounting history tied to this lease will be affected. This cannot be undone."
+      />
     </MainLayout>
   );
 }
