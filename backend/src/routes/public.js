@@ -176,9 +176,9 @@ router.get('/units/search', async (req, res) => {
       const placeholders = unitIds.map(() => '?').join(',');
       const amenityPlaceholders = amenityNames.map(() => '?').join(',');
       const [amRows] = await req.pool.execute(
-        `SELECT ua.unit_id, a.name
+        `SELECT ua.unit_id, a.display_name AS name
          FROM unit_amenity ua JOIN amenity a ON ua.amenity_id = a.id
-         WHERE ua.unit_id IN (${placeholders}) AND a.name IN (${amenityPlaceholders})`,
+         WHERE ua.unit_id IN (${placeholders}) AND a.display_name IN (${amenityPlaceholders})`,
         [...unitIds, ...amenityNames]
       );
       const have = new Map();
@@ -199,7 +199,7 @@ router.get('/units/search', async (req, res) => {
     if (unitIds.length > 0) {
       const ph = unitIds.map(() => '?').join(',');
       const [amRows] = await req.pool.execute(
-        `SELECT ua.unit_id, a.name FROM unit_amenity ua
+        `SELECT ua.unit_id, a.display_name AS name FROM unit_amenity ua
          JOIN amenity a ON ua.amenity_id = a.id WHERE ua.unit_id IN (${ph})`,
         unitIds
       );
@@ -320,7 +320,7 @@ router.get('/properties', async (req, res) => {
       const propIds = properties.map(p => p.property_id);
       const ph = propIds.map(() => '?').join(',');
       const [amRows] = await req.pool.execute(
-        `SELECT pa.property_id, a.name FROM property_amenity pa
+        `SELECT pa.property_id, a.display_name AS name FROM property_amenity pa
          JOIN amenity a ON pa.amenity_id = a.id
          WHERE pa.property_id IN (${ph})`,
         propIds
@@ -435,7 +435,7 @@ router.get('/units/:id', async (req, res) => {
     );
 
     const [amenityRows] = await req.pool.execute(
-      `SELECT ua.amenity_id, a.name
+      `SELECT ua.amenity_id, a.display_name AS name
        FROM unit_amenity ua LEFT JOIN amenity a ON ua.amenity_id = a.id
        WHERE ua.unit_id = ?`,
       [id]
