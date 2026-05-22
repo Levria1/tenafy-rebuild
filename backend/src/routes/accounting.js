@@ -58,7 +58,9 @@ async function recalcInvoiceStatuses(pool, accountingId, orgId) {
     const isPastDue = dueOn && today > dueOn;
 
     let newStatus;
-    if (paid >= amount && amount > 0) {
+    // A $0 (or negative) amount means nothing is owed — treat as Paid.
+    // Same for invoices fully covered by payments.
+    if (amount <= 0 || paid >= amount) {
       newStatus = 1; // Paid
     } else if (isPastDue) {
       newStatus = 2; // Overdue (past due, not fully paid)
@@ -578,7 +580,8 @@ router.delete('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTI
       const today = new Date().toISOString().split('T')[0];
       const dueOn = invoice.due_on ? new Date(invoice.due_on).toISOString().split('T')[0] : null;
       const isPastDue = dueOn && today > dueOn;
-      let newStatus = paid >= amt && amt > 0 ? 1 : isPastDue ? 2 : 0;
+      // $0/negative amount or fully paid → Paid; otherwise Overdue if past due, else Open
+      let newStatus = (amt <= 0 || paid >= amt) ? 1 : isPastDue ? 2 : 0;
       if (Number(invoice.status) !== newStatus) {
         await req.pool.execute('UPDATE invoice SET status = ? WHERE id = ?', [newStatus, invoice.id]);
       }

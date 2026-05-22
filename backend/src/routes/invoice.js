@@ -832,9 +832,9 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), asy
         const isPastDue = dueOn && today > dueOn;
 
         let newStatus;
-        if (invAmount <= 0) {
-          newStatus = 0; // Open if amount is 0 or negative
-        } else if (paid >= invAmount) {
+        // A $0 (or negative) amount means nothing is owed — treat as Paid.
+        // Same for invoices fully covered by payments.
+        if (invAmount <= 0 || paid >= invAmount) {
           newStatus = 1; // Paid
         } else if (isPastDue) {
           newStatus = 2; // Overdue (past due, not fully paid)

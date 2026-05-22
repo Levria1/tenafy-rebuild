@@ -338,15 +338,22 @@ async function markOverdueInvoicesForOrg(pool, orgId) {
   );
   if (result.affectedRows > 0) console.log(`[Scheduler][org:${orgId}] Marked ${result.affectedRows} invoice(s) as overdue.`);
 
+  // Flip to Paid (1) any invoice whose outstanding has reached zero — either
+  // because total payments cover the amount, OR because the amount itself is
+  // $0/negative (e.g. an invoice was edited down or written off). Without the
+  // amount<=0 branch, $0 overdue invoices would stay Overdue forever.
   const [fixResult] = await pool.execute(
     `UPDATE invoice i SET i.status = 1
-     WHERE i.status IN (0, 2) AND i.deleted_at IS NULL AND i.org_id = ? AND i.amount > 0
-       AND i.amount <= COALESCE(
-         (SELECT SUM(al.amount) FROM accounting_line al JOIN accounting a ON al.accounting_id = a.id
-          WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL), 0)`,
+     WHERE i.status IN (0, 2) AND i.deleted_at IS NULL AND i.org_id = ?
+       AND (
+         i.amount <= 0
+         OR i.amount <= COALESCE(
+           (SELECT SUM(al.amount) FROM accounting_line al JOIN accounting a ON al.accounting_id = a.id
+            WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL AND al.deleted_at IS NULL), 0)
+       )`,
     [orgId]
   );
-  if (fixResult.affectedRows > 0) console.log(`[Scheduler][org:${orgId}] Fixed ${fixResult.affectedRows} invoice(s) that were actually paid.`);
+  if (fixResult.affectedRows > 0) console.log(`[Scheduler][org:${orgId}] Fixed ${fixResult.affectedRows} invoice(s) with zero outstanding → Paid.`);
 }
 
 // ---------------------------------------------------------------------------
