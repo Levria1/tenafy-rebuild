@@ -1158,7 +1158,13 @@ router.get('/report', authenticate, async (req, res) => {
 
       if (bills.length === 0) continue;
 
-      // Get all bill lines for these bills
+      // Get all bill lines for these bills.
+      // ORDER BY b.period_end DESC, u.name — so for each meter, the FIRST line
+      // we see in the loop below is from the most recent bill. That's the line
+      // whose tenant_id reflects the currently-active tenant. Without this
+      // ordering, an older bill's tenant (e.g. Sudharshan, who has since
+      // checked out) would shadow the newer tenant (e.g. Kuang Yu Heng) in the
+      // report header even though the latest bill_line is already correct.
       const billIds = bills.map(b => b.id);
       const placeholders = billIds.map(() => '?').join(',');
       const [lines] = await req.pool.execute(
@@ -1166,15 +1172,18 @@ router.get('/report', authenticate, async (req, res) => {
                 u.name AS unit_name, u.property_id,
                 p.display_name AS property_name,
                 t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
-                i.status AS invoice_status, i.invoice_code
+                t.company_name AS tenant_company_name, t.type AS tenant_type,
+                i.status AS invoice_status, i.invoice_code,
+                b.period_end AS bill_period_end
          FROM utility_bill_line bl
+         JOIN utility_bill b ON bl.bill_id = b.id
          LEFT JOIN utility_meter m ON bl.meter_id = m.id
          LEFT JOIN unit u ON bl.unit_id = u.id
          LEFT JOIN property p ON u.property_id = p.id
          LEFT JOIN tenant t ON bl.tenant_id = t.id
          LEFT JOIN invoice i ON bl.invoice_id = i.id
          WHERE bl.bill_id IN (${placeholders})
-         ORDER BY u.name`,
+         ORDER BY b.period_end DESC, u.name`,
         billIds
       );
 
@@ -1184,13 +1193,20 @@ router.get('/report', authenticate, async (req, res) => {
         if (Number(line.is_common_area)) continue;
         const key = line.meter_id?.toString() || line.id.toString();
         if (!unitMap[key]) {
-          const tenant = [line.tenant_first_name, line.tenant_last_name].filter(Boolean).join(' ');
+          // Because lines are sorted by bill.period_end DESC, the first
+          // occurrence per meter is the most recent bill — and its tenant_id
+          // is the currently-active tenant. (Older bills under the same meter
+          // may still point at the prior tenant, which is historically correct
+          // but should NOT drive the column header.)
+          const tenantName = Number(line.tenant_type) === 1 && line.tenant_company_name
+            ? line.tenant_company_name
+            : [line.tenant_first_name, line.tenant_last_name].filter(Boolean).join(' ');
           unitMap[key] = {
             meter_id: line.meter_id,
             meter_number: line.meter_number,
             unit_name: line.unit_name,
             property_name: line.property_name,
-            tenant_name: tenant || null,
+            tenant_name: tenantName || null,
             months: {},
           };
         }
