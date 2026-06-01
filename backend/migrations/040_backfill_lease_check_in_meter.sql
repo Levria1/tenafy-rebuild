@@ -1,36 +1,19 @@
--- One-time back-fill: for any lease where check_in_meter IS NULL but a meter
--- reading was logged on the same unit BEFORE the lease's start_date, use that
--- reading's value as the check-in meter.
+-- 040 — intentionally a no-op.
 --
--- Catches the historical case where a previous tenant was checked out BEFORE
--- the next tenant's lease was created — at checkout time there was no "next
--- lease" to write to, so the carry-over silently did nothing.
+-- This file used to backfill `leasing.check_in_meter` on every existing lease
+-- that was missing it. We decided NOT to touch historical data.
 --
--- After this migration AND the code change in POST /api/leasing, future
--- leases created after a checkout will auto-fill correctly. This SQL is
--- purely for cleaning up the existing data backlog.
+-- Going forward, new leases auto-fill `check_in_meter` from the previous
+-- tenant's last meter reading via:
+--   - Backend: POST /api/leasing back-fill in backend/src/routes/leasing.js
+--   - Frontend: prefill on the create-lease form
+-- Both call `findLastMeterReadingForUnit` in backend/src/utils/meterReadingLookup.js.
 --
--- Idempotent: re-running does nothing since matched leases will already have
--- check_in_meter set.
+-- Existing leases keep whatever check_in_meter value (or NULL) they had.
+-- If you want to backfill one specific lease later, set its check_in_meter
+-- manually in the UI or via a targeted UPDATE.
+--
+-- The migration runner still applies this file so the version number is
+-- recorded in `schema_migrations` and future migrations stay in sequence.
 
-UPDATE leasing l
-JOIN (
-  SELECT
-    l2.id AS lease_id,
-    (
-      SELECT mr.reading_value
-      FROM utility_meter_reading mr
-      JOIN utility_meter m ON mr.meter_id = m.id
-      WHERE m.unit_id = l2.unit_id
-        AND mr.reading_date < l2.start_date
-      ORDER BY mr.reading_date DESC, mr.created_at DESC
-      LIMIT 1
-    ) AS last_value
-  FROM leasing l2
-  WHERE l2.deleted_at IS NULL
-    AND l2.check_in_meter IS NULL
-) prior ON prior.lease_id = l.id
-SET l.check_in_meter = prior.last_value,
-    l.check_in_meter_updated_at = NOW()
-WHERE prior.last_value IS NOT NULL
-  AND l.check_in_meter IS NULL;
+SELECT 1;
