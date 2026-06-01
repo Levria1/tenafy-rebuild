@@ -855,16 +855,45 @@ export default function InvoicesPage() {
                   message.error('Tenant has no email on file');
                   return;
                 }
+                // Determine which scenario we're in so we can show the right confirm dialog
+                // and tell the user which template/tone the email will use.
+                const status = Number(selectedInvoice.status);
+                const amount = Number(selectedInvoice.amount) || 0;
+                const paid = Number(selectedInvoice.amount_paid) || 0;
+                const outstanding = Math.max(0, amount - paid);
+                const todayStr = new Date().toISOString().split('T')[0];
+                const dueStr = selectedInvoice.due_on
+                  ? String(selectedInvoice.due_on).split('T')[0]
+                  : (selectedInvoice.due_date ? String(selectedInvoice.due_date).split('T')[0] : null);
+                const isPaid = status === 1 || outstanding <= 0;
+                const isOverdue = !isPaid && (status === 2 || ([0, 2].includes(status) && dueStr && dueStr < todayStr));
+
+                let dialogTitle, dialogContent, okText;
+                if (isOverdue) {
+                  dialogTitle = 'Email overdue reminder to the tenant?';
+                  dialogContent = `An overdue notice (using the Overdue-Tenant template) along with the invoice PDF will be emailed to ${selectedInvoice.tenant_email}.`;
+                  okText = 'Send Overdue Reminder';
+                } else if (isPaid) {
+                  dialogTitle = 'This invoice is already paid — send anyway?';
+                  dialogContent = `Outstanding balance is $0. The regular invoice email (Invoice-Tenant template) will still be sent to ${selectedInvoice.tenant_email}. Send only if needed (e.g. resending a receipt copy).`;
+                  okText = 'Send Anyway';
+                } else {
+                  dialogTitle = 'Email this invoice to the tenant?';
+                  dialogContent = `The invoice (using the Invoice-Tenant template) and PDF will be emailed to ${selectedInvoice.tenant_email}.`;
+                  okText = 'Send';
+                }
                 confirm({
-                  title: 'Email this invoice to the tenant?',
+                  title: dialogTitle,
                   icon: <ExclamationCircleOutlined />,
-                  content: `The invoice PDF will be emailed to ${selectedInvoice.tenant_email}.`,
-                  okText: 'Send',
+                  content: dialogContent,
+                  okText,
+                  okButtonProps: isPaid ? { danger: true } : undefined,
                   cancelText: 'Cancel',
                   onOk: async () => {
                     try {
-                      await invoice.emailToTenant(selectedInvoice.id);
-                      message.success(`Invoice emailed to ${selectedInvoice.tenant_email}`);
+                      const res = await invoice.emailToTenant(selectedInvoice.id);
+                      const sentAs = res?.data?.data?.was_overdue ? 'overdue reminder' : 'invoice';
+                      message.success(`${sentAs.charAt(0).toUpperCase() + sentAs.slice(1)} emailed to ${selectedInvoice.tenant_email}`);
                     } catch (err) {
                       message.error(err.response?.data?.message || 'Failed to email invoice');
                     }

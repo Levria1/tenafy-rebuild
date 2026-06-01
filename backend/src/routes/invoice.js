@@ -664,7 +664,8 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
 
     const [[inv]] = await req.pool.execute(
-      `SELECT i.id, i.invoice_code, i.leasing_id, i.due_on, i.amount, i.tenant_id, i.category,
+      `SELECT i.id, i.invoice_code, i.leasing_id, i.due_on, i.amount, i.status,
+              i.tenant_id, i.category, i.invoice_code,
               t.email AS tenant_email, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name
        FROM invoice i
        LEFT JOIN tenant t ON i.tenant_id = t.id
@@ -674,25 +675,67 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
     if (!inv) return res.status(404).json({ code: 404, message: 'Invoice not found' });
     if (!inv.tenant_email) return res.status(400).json({ code: 400, message: 'Tenant has no email on file' });
 
+    // Compute outstanding (amount - sum of payments) to decide which template
+    // applies. Overdue templates need the outstanding figure for %Overdue Amount%.
+    const [[outRow]] = await req.pool.execute(
+      `SELECT COALESCE(SUM(al.amount), 0) AS paid
+       FROM accounting_line al
+       JOIN accounting a ON al.accounting_id = a.id
+       WHERE al.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
+      [inv.invoice_code, orgId]
+    );
+    const amount = parseFloat(inv.amount) || 0;
+    const paid = parseFloat(outRow?.paid) || 0;
+    const outstanding = Math.max(0, amount - paid);
+    const todayStr = new Date().toISOString().split('T')[0];
+    const dueStr = inv.due_on
+      ? (inv.due_on instanceof Date ? inv.due_on.toISOString().split('T')[0] : String(inv.due_on).split('T')[0])
+      : null;
+
+    // Overdue when: explicitly status=2, OR status is Open/Overdue and past due AND outstanding > 0.
+    // Fully-paid invoices (status=1 or outstanding=0) are never overdue.
+    const isPaid = Number(inv.status) === 1 || outstanding <= 0;
+    const isOverdue = !isPaid && (
+      Number(inv.status) === 2 ||
+      ([0, 2].includes(Number(inv.status)) && dueStr && dueStr < todayStr)
+    );
+
     const pdfBuffer = await generateInvoicePdfBuffer(req.pool, id, orgId);
     const filename = `invoice-${inv.invoice_code || id}.pdf`;
     const attachments = [{ filename, content: pdfBuffer, contentType: 'application/pdf' }];
 
-    // Try sending via the Invoice-Tenant template if one exists; otherwise fall back to a plain email
-    let result = null;
-    try {
-      result = await sendTemplateEmail(req.pool, orgId, {
-        templateType: 'Invoice-Tenant',
-        leaseId: inv.leasing_id,
-        invoiceId: inv.id,
-        invoiceCode: inv.invoice_code,
-        category: inv.category,
-        dueDate: inv.due_on,
-        attachments,
-        toOverride: inv.tenant_email,
-      });
-    } catch (e) {
-      result = null;
+    // Pick the right template. Fallback chain on failure:
+    //   Overdue-Tenant (if overdue) → Invoice-Tenant → plain email
+    const primaryType = isOverdue ? 'Overdue-Tenant' : 'Invoice-Tenant';
+
+    const trySend = async (templateType) => {
+      try {
+        return await sendTemplateEmail(req.pool, orgId, {
+          templateType,
+          leaseId: inv.leasing_id,
+          invoiceId: inv.id,
+          invoiceCode: inv.invoice_code,
+          category: inv.category,
+          dueDate: inv.due_on,
+          overdueAmount: templateType === 'Overdue-Tenant' ? outstanding : undefined,
+          attachments,
+          toOverride: inv.tenant_email,
+        });
+      } catch (e) {
+        console.error(`[email-to-tenant] template ${templateType} failed:`, e.message);
+        return null;
+      }
+    };
+
+    let result = await trySend(primaryType);
+    let usedTemplate = result ? primaryType : null;
+
+    // If the primary (Overdue) template wasn't configured or send failed,
+    // fall back to the regular Invoice-Tenant template so the user still
+    // gets the invoice in their inbox.
+    if (!result && primaryType !== 'Invoice-Tenant') {
+      result = await trySend('Invoice-Tenant');
+      if (result) usedTemplate = 'Invoice-Tenant';
     }
 
     if (!result) {
@@ -701,9 +744,14 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
       const subject = `Invoice ${inv.invoice_code || ''}`.trim();
       const html = `<p>Hi ${tenantName},</p><p>Please find your invoice attached.</p><p>Regards,</p>`;
       await sendMail({ to: inv.tenant_email, subject, html, attachments });
+      usedTemplate = 'plain';
     }
 
-    res.json({ code: 200, message: 'Invoice emailed to tenant', data: { to: inv.tenant_email } });
+    res.json({
+      code: 200,
+      message: 'Invoice emailed to tenant',
+      data: { to: inv.tenant_email, template: usedTemplate, was_overdue: isOverdue }
+    });
   } catch (error) {
     console.error('Email invoice to tenant error:', error);
     res.status(500).json({ code: 500, message: 'Failed to email invoice' });
