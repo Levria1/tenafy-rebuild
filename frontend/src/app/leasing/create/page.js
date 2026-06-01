@@ -11,7 +11,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
-import { leasing, property, tenant, file as fileApi, settings, bookingPlatform, salesAgent } from '../../../lib/api';
+import { leasing, property, tenant, file as fileApi, settings, bookingPlatform, salesAgent, utility } from '../../../lib/api';
 
 const { TextArea } = Input;
 
@@ -54,9 +54,47 @@ export default function LeaseCreatePage() {
   // Recurring invoice toggle
   const [makeRecurring, setMakeRecurring] = useState(true);
 
+  // Auto-prefilled check-in meter context (from previous tenant's last reading)
+  const [meterPrefillHint, setMeterPrefillHint] = useState(null);
+  // Track whether user has manually edited check_in_meter, so we don't overwrite their input
+  const [meterUserEdited, setMeterUserEdited] = useState(false);
+
   useEffect(() => {
     loadData();
   }, []);
+
+  // When unit + start_date are both set and the user hasn't typed a check-in meter,
+  // ping the backend for the most recent meter reading on this unit before that date.
+  // If found, prefill check_in_meter and show a hint of where the value came from.
+  const lookupCheckInMeter = useCallback(async (unitId, startDate) => {
+    if (!unitId || !startDate) { setMeterPrefillHint(null); return; }
+    if (meterUserEdited) return; // never override user input
+    const current = form.getFieldValue('check_in_meter');
+    if (current != null && current !== '' && Number(current) !== 0 && !meterPrefillHint) {
+      // Field has a non-prefilled value already; don't touch
+      return;
+    }
+    try {
+      const dateStr = typeof startDate === 'string' ? startDate : startDate.format('YYYY-MM-DD');
+      const res = await utility.getLastMeterReading(unitId, dateStr);
+      const data = res?.data?.data;
+      if (data && data.reading_value != null) {
+        form.setFieldsValue({ check_in_meter: Number(data.reading_value) });
+        setMeterPrefillHint({
+          value: Number(data.reading_value),
+          date: data.reading_date,
+          fromName: data.from_tenant_name,
+          meterNumber: data.meter_number,
+          typeLabel: data.reading_type_label,
+        });
+      } else {
+        setMeterPrefillHint(null);
+      }
+    } catch (err) {
+      // Non-fatal — just leave the field alone
+      setMeterPrefillHint(null);
+    }
+  }, [form, meterUserEdited, meterPrefillHint]);
 
   const loadData = async () => {
     try {
@@ -148,13 +186,19 @@ export default function LeaseCreatePage() {
     }
   }, [form]);
 
-  const handleUnitChange = () => {
+  const handleUnitChange = (unitId) => {
     setConflictResult(null);
+    setMeterPrefillHint(null);
+    setMeterUserEdited(false);
     checkConflict();
+    lookupCheckInMeter(unitId, form.getFieldValue('start_date'));
   };
 
   const handleDateChange = () => {
     checkConflict();
+    setMeterPrefillHint(null);
+    setMeterUserEdited(false);
+    lookupCheckInMeter(form.getFieldValue('unit_id'), form.getFieldValue('start_date'));
   };
 
   const handleTenantChange = (tenantId) => {
@@ -525,8 +569,20 @@ export default function LeaseCreatePage() {
           <Col span={12}>
             <FLabel>CHECK IN METER</FLabel>
             <Form.Item name="check_in_meter" noStyle>
-              <InputNumber placeholder="0.00" min={0} precision={2} style={{ maxWidth: 500, width: '100%' }} />
+              <InputNumber
+                placeholder="0.00" min={0} precision={2}
+                style={{ maxWidth: 500, width: '100%' }}
+                onChange={() => setMeterUserEdited(true)}
+              />
             </Form.Item>
+            {meterPrefillHint && (
+              <div style={{ marginTop: 4, fontSize: 11, color: '#888' }}>
+                ⓘ Auto-filled from {meterPrefillHint.fromName ? `${meterPrefillHint.fromName}'s ` : 'previous '}
+                {meterPrefillHint.typeLabel?.toLowerCase().includes('move-out') ? 'checkout' : 'reading'}
+                {' '}on {meterPrefillHint.date}
+                {meterPrefillHint.meterNumber ? ` (meter ${meterPrefillHint.meterNumber})` : ''}
+              </div>
+            )}
           </Col>
           <Col span={12}>
             <FLabel>CHECK OUT METER</FLabel>

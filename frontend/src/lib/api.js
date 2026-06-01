@@ -451,6 +451,11 @@ export const utility = {
   logMeterReading: (data) => api.post('/api/utility/meter-reading', data),
   getMeterReadings: (params) => api.get('/api/utility/meter-readings', { params }),
   getUnitReadings: (params) => api.get('/api/utility/unit-readings', { params }),
+  // Lookup the most recent reading on any unit-mapped meter before a date.
+  // Used by the create-lease form to prefill check_in_meter from the previous
+  // tenant's checkout. Returns { reading_value, reading_date, from_tenant_name, ... } or null.
+  getLastMeterReading: (unitId, beforeDate) =>
+    api.get('/api/utility/last-meter-reading', { params: { unit_id: unitId, before_date: beforeDate } }),
   // Bills
   getLastBillDate: (params) => api.get('/api/utility/last-bill-date', { params }),
   getBills: (params) => api.get('/api/utility/bills', { params }),

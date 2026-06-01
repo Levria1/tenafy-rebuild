@@ -1773,4 +1773,24 @@ router.get('/tenant/:tenantId/history', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/utility/last-meter-reading?unit_id=...&before_date=YYYY-MM-DD
+// Most recent meter reading on any unit-mapped meter for this unit, before
+// `before_date` (defaults to today). Used by the create-lease form to
+// prefill check_in_meter when the previous tenant's checkout reading was
+// logged before the new lease existed.
+const { findLastMeterReadingForUnit } = require('../utils/meterReadingLookup');
+router.get('/last-meter-reading', authenticate, async (req, res) => {
+  try {
+    const { unit_id, before_date } = req.query;
+    if (!unit_id) {
+      return res.status(400).json({ code: 400, message: 'unit_id is required' });
+    }
+    const data = await findLastMeterReadingForUnit(req.pool, unit_id, before_date || null);
+    res.json({ code: 200, data });
+  } catch (error) {
+    console.error('Get last meter reading error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to look up last meter reading' });
+  }
+});
+
 module.exports = router;

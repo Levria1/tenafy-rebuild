@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
+const { findLastMeterReadingForUnit } = require('../utils/meterReadingLookup');
 
 const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
@@ -601,6 +602,24 @@ router.post('/', authenticate, async (req, res) => {
     // Generate lease ID (snowflake-style)
     const leaseId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
 
+    // Auto-fill check_in_meter from the most recent meter reading on this
+    // unit (if any) when the request omits it. Handles the common case
+    // where the previous tenant's checkout was logged BEFORE the new
+    // lease was created — the carry-over at checkout time couldn't run
+    // because no next lease existed yet.
+    //
+    // A value explicitly supplied by the caller is always respected.
+    let resolvedCheckInMeter = check_in_meter;
+    if ((resolvedCheckInMeter === undefined || resolvedCheckInMeter === null || resolvedCheckInMeter === '')
+        && unit_id && start_date) {
+      try {
+        const prior = await findLastMeterReadingForUnit(req.pool, unit_id, start_date);
+        if (prior) resolvedCheckInMeter = prior.reading_value;
+      } catch (e) {
+        console.error('[leasing] auto check_in_meter lookup failed:', e.message);
+      }
+    }
+
     // Generate lease_no from sequence (uses highest existing + 1)
     let leaseNo = lease_no || null;
     if (!leaseNo) {
@@ -628,8 +647,8 @@ router.post('/', authenticate, async (req, res) => {
         price || 0, type || 0, invoicing || null,
         amount || price || 0, due_date || null, deposit || 0, currencyId,
         contract_type || 0, unit_information || null, note || null, credits || null, utility_credit ?? null,
-        check_in_meter ?? null, check_out_meter ?? null,
-        check_in_meter != null ? new Date() : null, check_out_meter != null ? new Date() : null,
+        resolvedCheckInMeter ?? null, check_out_meter ?? null,
+        resolvedCheckInMeter != null ? new Date() : null, check_out_meter != null ? new Date() : null,
         contact_phone || null, leaseNo, first_invoice_date || null,
         access_setting || null, share_lease ? 1 : 0, all_past ? 1 : 0,
         tenant_posted ? 1 : 0, landlord_posted ? 1 : 0,
