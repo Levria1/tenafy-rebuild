@@ -238,11 +238,21 @@ router.get('/units/search', async (req, res) => {
         availableFrom = out.toISOString().split('T')[0];
         vacancyGapDays = Math.max(0, Math.round((today - new Date(currentMoveOut)) / 86400000));
       }
+      const addressParts = [r.street_address, r.city, r.state, r.zip_code, r.country]
+        .map(s => (s == null ? '' : String(s).trim()))
+        .filter(Boolean);
+      const fullAddress = addressParts.join(', ') || null;
       return {
         unit_id: String(r.unit_id),
         unit_name: r.unit_name,
         property_id: String(r.property_id),
         property_name: r.property_name,
+        street_address: r.street_address || null,
+        city: r.city || null,
+        state: r.state || null,
+        country: r.country || null,
+        zip_code: r.zip_code || null,
+        full_address: fullAddress,
         bedrooms: r.beds,
         bathrooms: r.baths,
         size: r.size != null ? Number(r.size) : null,
