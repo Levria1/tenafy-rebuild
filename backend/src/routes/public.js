@@ -53,7 +53,7 @@ router.get('/units/available', async (req, res) => {
     const [units] = await req.pool.execute(
       `SELECT u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.amenity_type,
               p.id AS property_id, p.display_name AS property_name,
-              p.street_address, p.city, p.state, p.country, p.zip_code, p.type AS property_type,
+              p.street_address, p.city, p.state, p.district, p.country, p.zip_code, p.type AS property_type,
               last_lease.price AS last_lease_price, last_lease.end_date AS last_lease_end_date
        FROM unit u
        JOIN property p ON u.property_id = p.id
@@ -89,6 +89,8 @@ router.get('/units/available', async (req, res) => {
 //   bedrooms, bathrooms                       — exact match on unit.beds/baths
 //   min_price, max_price                      — matched against last lease price OR rent_price_min/max
 //   property_id                               — filter to property
+//   city (csv)                                — region match, e.g. "Kowloon" or "Hong Kong Island" (case-insensitive)
+//   district (csv)                            — neighbourhood match, e.g. "Causeway Bay,Wan Chai" (case-insensitive)
 //   amenities (csv)                           — names like "parking,gym"; unit must have ALL
 //   sort_by                                   — vacancy_gap (default), price_asc, price_desc
 //   limit                                     — default 10, max 100
@@ -102,6 +104,8 @@ router.get('/units/search', async (req, res) => {
     const minPrice = req.query.min_price !== undefined ? Number(req.query.min_price) : null;
     const maxPrice = req.query.max_price !== undefined ? Number(req.query.max_price) : null;
     const propertyId = req.query.property_id || null;
+    const cityNames = (req.query.city || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const districtNames = (req.query.district || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     const amenityNames = (req.query.amenities || '').split(',').map(s => s.trim()).filter(Boolean);
     const sortBy = req.query.sort_by || 'vacancy_gap';
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 100);
@@ -112,6 +116,14 @@ router.get('/units/search', async (req, res) => {
     if (propertyId) { where += ' AND p.id = ?'; params.push(propertyId); }
     if (bedrooms !== null && !Number.isNaN(bedrooms)) { where += ' AND u.beds = ?'; params.push(bedrooms); }
     if (bathrooms !== null && !Number.isNaN(bathrooms)) { where += ' AND u.baths = ?'; params.push(bathrooms); }
+    if (cityNames.length > 0) {
+      where += ` AND LOWER(TRIM(p.city)) IN (${cityNames.map(() => '?').join(',')})`;
+      params.push(...cityNames);
+    }
+    if (districtNames.length > 0) {
+      where += ` AND LOWER(TRIM(p.district)) IN (${districtNames.map(() => '?').join(',')})`;
+      params.push(...districtNames);
+    }
 
     // Pull candidate units with last-lease data for pricing + availability + gap
     // - "Available on move_in_date" = no lease covers it that day
@@ -122,7 +134,7 @@ router.get('/units/search', async (req, res) => {
               u.size, u.size_unit, u.deposit_price, u.rent_price_min, u.rent_price_max,
               u.amenity_detail, u.listing_url, u.photo AS unit_photo_id,
               p.id AS property_id, p.display_name AS property_name,
-              p.street_address, p.city, p.state, p.country, p.zip_code, p.currency,
+              p.street_address, p.city, p.state, p.district, p.country, p.zip_code, p.currency,
               last_lease.price AS last_lease_price,
               last_lease.end_date AS last_lease_end_date,
               next_lease.start_date AS next_lease_start_date
@@ -238,7 +250,7 @@ router.get('/units/search', async (req, res) => {
         availableFrom = out.toISOString().split('T')[0];
         vacancyGapDays = Math.max(0, Math.round((today - new Date(currentMoveOut)) / 86400000));
       }
-      const addressParts = [r.street_address, r.city, r.state, r.zip_code, r.country]
+      const addressParts = [r.street_address, r.district, r.city, r.state, r.zip_code, r.country]
         .map(s => (s == null ? '' : String(s).trim()))
         .filter(Boolean);
       const fullAddress = addressParts.join(', ') || null;
@@ -250,6 +262,7 @@ router.get('/units/search', async (req, res) => {
         street_address: r.street_address || null,
         city: r.city || null,
         state: r.state || null,
+        district: r.district || null,
         country: r.country || null,
         zip_code: r.zip_code || null,
         full_address: fullAddress,
@@ -307,7 +320,7 @@ router.get('/properties', async (req, res) => {
 
     const [properties] = await req.pool.execute(
       `SELECT p.id AS property_id, p.display_name AS property_name,
-              p.street_address, p.city, p.state, p.country, p.zip_code, p.type AS property_type,
+              p.street_address, p.city, p.state, p.district, p.country, p.zip_code, p.type AS property_type,
               p.currency, p.year_of_built, p.notes, p.payment_instructions, p.status,
               COUNT(u.id) AS total_units,
               SUM(CASE
@@ -405,7 +418,7 @@ router.get('/units', async (req, res) => {
     if (active_status !== undefined) { whereClause += ' AND u.active_status = ?'; params.push(active_status); }
 
     const [units] = await req.pool.execute(
-      `SELECT u.*, p.display_name AS property_name, p.street_address, p.city, p.state, p.country
+      `SELECT u.*, p.display_name AS property_name, p.street_address, p.city, p.state, p.district, p.country
        FROM unit u
        JOIN property p ON u.property_id = p.id
        WHERE ${whereClause}
@@ -427,7 +440,7 @@ router.get('/units/:id', async (req, res) => {
 
     const [units] = await req.pool.execute(
       `SELECT u.*, p.display_name AS property_name, p.street_address, p.city, p.state,
-              p.country, p.zip_code, p.currency, p.org_id
+              p.district, p.country, p.zip_code, p.currency, p.org_id
        FROM unit u JOIN property p ON u.property_id = p.id
        WHERE u.id = ? AND p.org_id = ?`,
       [id, orgId]

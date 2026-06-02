@@ -397,6 +397,15 @@ export default function PropertyPage() {
 
   useEffect(() => { loadProperties(1); }, [propertyType, propertyStatus, unitStatus]);
 
+  // Portfolio-wide unit totals across ALL active properties (not just this page).
+  // Comes from the backend /summary endpoint; excludes inactive properties.
+  const [unitTotals, setUnitTotals] = useState({ properties: 0, units: 0, occupied: 0, vacant: 0 });
+  useEffect(() => {
+    property.summary()
+      .then(res => { if (res?.data?.data) setUnitTotals(res.data.data); })
+      .catch(() => {});
+  }, []);
+
   const handleSearch = (value) => {
     setSearchText(value);
     setTimeout(() => loadProperties(1), 0);
@@ -474,9 +483,13 @@ export default function PropertyPage() {
         flexDirection: isMobile ? 'column' : 'row',
         gap: isMobile ? 10 : 0,
       }}>
-        <div style={{ fontWeight: 500, fontSize: 15 }}>
-          <span style={{ color: '#1890ff', fontSize: 18, fontWeight: 700, marginRight: 6 }}>{pagination.total}</span>
-          Total
+        <div style={{ fontWeight: 500, fontSize: 14, lineHeight: 1.7 }}>
+          <div>
+            Properties: <span style={{ color: '#1890ff', fontSize: 18, fontWeight: 700 }}>{unitTotals.properties}</span>
+          </div>
+          <div>Units: <span style={{ fontWeight: 700 }}>{unitTotals.units}</span></div>
+          <div>Occupied: <span style={{ color: '#52c41a', fontWeight: 700 }}>{unitTotals.occupied}</span></div>
+          <div>Vacant: <span style={{ color: '#ff4d4f', fontWeight: 700 }}>{unitTotals.vacant}</span></div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 12, flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
           <Input

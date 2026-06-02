@@ -84,6 +84,38 @@ router.post('/list', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/property/summary - Portfolio-wide unit totals across ALL active properties
+// (not paginated). Excludes inactive properties (status != 1) and deleted ones.
+// Occupied = active unit with a lease covering today (same rule as /list).
+router.get('/summary', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[row]] = await req.pool.execute(
+      `SELECT
+         COUNT(DISTINCT p.id) AS properties,
+         COUNT(u.id) AS units,
+         SUM(CASE WHEN u.id IS NOT NULL AND EXISTS (
+           SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
+             AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+         ) THEN 1 ELSE 0 END) AS occupied
+       FROM property p
+       LEFT JOIN unit u ON u.property_id = p.id AND u.active_status = 1
+       WHERE p.org_id = ? AND p.deleted_at IS NULL AND p.status = 1`,
+      [orgId]
+    );
+    const properties = Number(row.properties) || 0;
+    const units = Number(row.units) || 0;
+    const occupied = Number(row.occupied) || 0;
+    res.json({
+      code: 200,
+      data: { properties, units, occupied, vacant: Math.max(0, units - occupied) },
+    });
+  } catch (error) {
+    console.error('Property summary error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get property summary' });
+  }
+});
+
 // GET /api/property/all - Get all properties (for dropdowns)
 router.get('/all', authenticate, async (req, res) => {
   try {

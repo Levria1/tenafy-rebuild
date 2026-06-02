@@ -58,6 +58,7 @@ export const user = {
 
 export const property = {
   list: (data, params) => api.post('/api/property/list', data, { params }),
+  summary: () => api.get('/api/property/summary'),
   getAll: () => api.get('/api/property/all'),
   getAllWithUnits: () => api.get('/api/property/all/with_units'),
   get: (id) => api.get(`/api/property/${id}`),
