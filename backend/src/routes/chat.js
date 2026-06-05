@@ -28,6 +28,9 @@ function fail(res, message, status = 500) {
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
+function safeParseJson(v) {
+  try { return JSON.parse(v); } catch { return null; }
+}
 
 // MySQL BIT(1) columns come back as Buffer (<Buffer 00> / <Buffer 01>) in mysql2.
 // A Buffer is always truthy, so we need this helper for every BIT column.
@@ -98,6 +101,44 @@ function defaultSystemPrompt(orgDisplayName) {
     `- If a result set spans multiple neighborhoods, group the bullet points by area so the prospect can scan quickly.`,
     `- If you don't know something, say so and offer to capture their contact details via capture_lead so the team can follow up.`,
   ].join('\n');
+}
+
+// Load active rulebook entries from chat_knowledge.
+//   includeInternal=true  -> internal Tenafy bot (sees public + internal)
+//   includeInternal=false -> public/prospect channels (public only)
+async function loadKnowledge(pool, { includeInternal }) {
+  const visibilities = includeInternal ? ['public', 'internal'] : ['public'];
+  const placeholders = visibilities.map(() => '?').join(',');
+  try {
+    const [rows] = await pool.execute(
+      `SELECT kind, title, body FROM chat_knowledge
+       WHERE status = 1 AND visibility IN (${placeholders})
+       ORDER BY sort_order ASC, created_at ASC`,
+      visibilities
+    );
+    return rows;
+  } catch (err) {
+    // Table may not exist yet on a not-yet-migrated org DB — degrade gracefully.
+    console.error('[chat] loadKnowledge error:', err.message);
+    return [];
+  }
+}
+
+// Render rulebook entries into a system-prompt fragment.
+function renderKnowledge(rows) {
+  if (!rows || !rows.length) return '';
+  const rules = rows.filter(r => r.kind !== 'faq');
+  const faqs = rows.filter(r => r.kind === 'faq');
+  let out = '';
+  if (rules.length) {
+    out += `\n\nTeam rules (always follow these):\n` +
+      rules.map(r => `- ${r.body}`).join('\n');
+  }
+  if (faqs.length) {
+    out += `\n\nFAQ — use these answers when the question matches (do NOT invent beyond them):\n` +
+      faqs.map(r => `- Q: ${r.title || '(question)'}\n  A: ${r.body}`).join('\n');
+  }
+  return out;
 }
 
 // Build the OpenAI-style messages array from a session's stored history.
@@ -221,6 +262,10 @@ router.post('/message', async (req, res) => {
       if (settings.custom_instructions && settings.custom_instructions.trim()) {
         systemPrompt += `\n\nAdditional instructions from the property team:\n${settings.custom_instructions.trim()}`;
       }
+      // Append the shared rulebook (chat_knowledge). The internal bot sees both
+      // public and internal entries, so it's aware of everything TaneChat knows
+      // plus staff-only rules.
+      systemPrompt += renderKnowledge(await loadKnowledge(req.pool, { includeInternal: true }));
     }
     const sessionRow = await findOrCreateSession(req.pool, {
       channel,
@@ -504,6 +549,123 @@ router.put('/settings', async (req, res) => {
   } catch (err) {
     console.error('[chat] update settings error:', err);
     fail(res, 'Failed to update settings');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rulebook (chat_knowledge) — shared knowledge both bots draw from.
+// ---------------------------------------------------------------------------
+const KNOWLEDGE_KINDS = ['rule', 'faq'];
+const KNOWLEDGE_VISIBILITIES = ['public', 'internal'];
+
+// Writes are blocked when the org's settings are locked by the platform operator
+// (unless the caller is master admin) — same rule as PUT /settings.
+async function assertKnowledgeWritable(req) {
+  const settings = await loadBotSettings(req.pool);
+  const locked = bitToBool(settings.settings_locked);
+  const isMaster = Number(req.user?.orgType) === 6;
+  return !(locked && !isMaster);
+}
+
+router.get('/knowledge', async (req, res) => {
+  try {
+    const [rows] = await req.pool.execute(
+      `SELECT id, kind, title, body, tags, visibility, status, sort_order, source, source_ref, updated_at
+       FROM chat_knowledge
+       ORDER BY sort_order ASC, created_at ASC`
+    );
+    ok(res, rows.map(r => ({
+      ...r,
+      id: String(r.id),
+      source_ref: r.source_ref != null ? String(r.source_ref) : null,
+      status: Number(r.status),
+      tags: typeof r.tags === 'string' ? safeParseJson(r.tags) : (r.tags || null),
+    })));
+  } catch (err) {
+    console.error('[chat] list knowledge error:', err);
+    fail(res, 'Failed to load rulebook');
+  }
+});
+
+router.post('/knowledge', async (req, res) => {
+  try {
+    if (!(await assertKnowledgeWritable(req))) {
+      return fail(res, 'Settings are locked by the platform operator.', 403);
+    }
+    const b = req.body || {};
+    const body = (b.body || '').trim();
+    if (!body) return fail(res, 'Rule text (body) is required.', 400);
+    const kind = KNOWLEDGE_KINDS.includes(b.kind) ? b.kind : 'rule';
+    const visibility = KNOWLEDGE_VISIBILITIES.includes(b.visibility) ? b.visibility : 'internal';
+    const title = b.title != null ? String(b.title).trim() || null : null;
+    const tags = Array.isArray(b.tags) ? JSON.stringify(b.tags) : null;
+    const sortOrder = Number.isFinite(Number(b.sort_order)) ? parseInt(b.sort_order) : 0;
+    const id = newId();
+    await req.pool.execute(
+      `INSERT INTO chat_knowledge (id, kind, title, body, tags, visibility, status, sort_order, source)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'manual')`,
+      [id, kind, title, body, tags, visibility, sortOrder]
+    );
+    ok(res, { id });
+  } catch (err) {
+    console.error('[chat] create knowledge error:', err);
+    fail(res, 'Failed to add rule');
+  }
+});
+
+router.put('/knowledge/:id', async (req, res) => {
+  try {
+    if (!(await assertKnowledgeWritable(req))) {
+      return fail(res, 'Settings are locked by the platform operator.', 403);
+    }
+    const b = req.body || {};
+    const updates = [];
+    const params = [];
+    if (b.kind !== undefined && KNOWLEDGE_KINDS.includes(b.kind)) {
+      updates.push('kind = ?'); params.push(b.kind);
+    }
+    if (b.title !== undefined) {
+      updates.push('title = ?'); params.push(b.title ? String(b.title).trim() : null);
+    }
+    if (b.body !== undefined) {
+      const body = (b.body || '').trim();
+      if (!body) return fail(res, 'Rule text (body) cannot be empty.', 400);
+      updates.push('body = ?'); params.push(body);
+    }
+    if (b.visibility !== undefined && KNOWLEDGE_VISIBILITIES.includes(b.visibility)) {
+      updates.push('visibility = ?'); params.push(b.visibility);
+    }
+    if (b.tags !== undefined) {
+      updates.push('tags = ?'); params.push(Array.isArray(b.tags) ? JSON.stringify(b.tags) : null);
+    }
+    if (b.status !== undefined) {
+      updates.push('status = ?'); params.push(b.status ? 1 : 0);
+    }
+    if (b.sort_order !== undefined) {
+      updates.push('sort_order = ?'); params.push(parseInt(b.sort_order) || 0);
+    }
+    if (!updates.length) return ok(res, { id: req.params.id });
+    params.push(req.params.id);
+    await req.pool.execute(
+      `UPDATE chat_knowledge SET ${updates.join(', ')} WHERE id = ?`, params
+    );
+    ok(res, { id: req.params.id });
+  } catch (err) {
+    console.error('[chat] update knowledge error:', err);
+    fail(res, 'Failed to update rule');
+  }
+});
+
+router.delete('/knowledge/:id', async (req, res) => {
+  try {
+    if (!(await assertKnowledgeWritable(req))) {
+      return fail(res, 'Settings are locked by the platform operator.', 403);
+    }
+    await req.pool.execute('DELETE FROM chat_knowledge WHERE id = ?', [req.params.id]);
+    ok(res, { id: req.params.id });
+  } catch (err) {
+    console.error('[chat] delete knowledge error:', err);
+    fail(res, 'Failed to delete rule');
   }
 });
 

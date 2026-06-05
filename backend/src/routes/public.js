@@ -15,6 +15,9 @@ function ok(res, data, meta) {
 function fail(res, message, status = 500) {
   res.status(status).json({ code: status, message });
 }
+function newId() {
+  return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+}
 
 // ────────────────────────────────────────────────────────────────
 // META / HEALTH
@@ -28,6 +31,172 @@ router.get('/health', (req, res) => {
     key_name: req.apiKey.name,
     timestamp: new Date().toISOString(),
   });
+});
+
+// ────────────────────────────────────────────────────────────────
+// CHATBOT — shared rulebook (public-tier only)
+// ────────────────────────────────────────────────────────────────
+
+// GET /api/public/chat/knowledge
+// Returns the PUBLIC-visibility rulebook entries (chat_knowledge) so external
+// channels (TaneChat / WhatsApp) can apply the same rules as the internal bot.
+// Internal-only entries are NEVER returned here — the PII/permission boundary.
+//
+// Response: { rules:[{id,body,tags}], faqs:[{id,question,answer,tags}],
+//             prompt_block, version, updated_at }
+//   - prompt_block: a ready-to-append system-prompt fragment (TaneChat can splice
+//     it straight into its prompt without re-rendering).
+//   - version: cache key. Also sent as an ETag — pass it back in If-None-Match
+//     and you'll get a 304 when nothing changed.
+router.get('/chat/knowledge', async (req, res) => {
+  try {
+    let rows = [];
+    try {
+      const [r] = await req.pool.execute(
+        `SELECT id, kind, title, body, tags, updated_at
+         FROM chat_knowledge
+         WHERE status = 1 AND visibility = 'public'
+         ORDER BY sort_order ASC, created_at ASC`
+      );
+      rows = r;
+    } catch (e) {
+      // Table not present on a not-yet-migrated org DB — return an empty rulebook.
+      if (e && e.code === 'ER_NO_SUCH_TABLE') rows = [];
+      else throw e;
+    }
+
+    const parseTags = (t) => {
+      if (t == null) return null;
+      if (typeof t === 'string') { try { return JSON.parse(t); } catch { return null; } }
+      return t;
+    };
+
+    const rules = rows.filter(r => r.kind !== 'faq').map(r => ({
+      id: String(r.id), body: r.body, tags: parseTags(r.tags),
+    }));
+    const faqs = rows.filter(r => r.kind === 'faq').map(r => ({
+      id: String(r.id), question: r.title || null, answer: r.body, tags: parseTags(r.tags),
+    }));
+
+    // Ready-to-append prompt fragment (mirrors the internal bot's renderer).
+    let promptBlock = '';
+    if (rules.length) {
+      promptBlock += `Team rules (always follow these):\n` +
+        rules.map(r => `- ${r.body}`).join('\n');
+    }
+    if (faqs.length) {
+      if (promptBlock) promptBlock += '\n\n';
+      promptBlock += `FAQ — use these answers when the question matches (do NOT invent beyond them):\n` +
+        faqs.map(f => `- Q: ${f.question || '(question)'}\n  A: ${f.answer}`).join('\n');
+    }
+
+    // Version / ETag: row count + latest update time. Stable when nothing changes.
+    let maxTs = 0;
+    for (const r of rows) {
+      const t = r.updated_at instanceof Date ? r.updated_at.getTime() : new Date(r.updated_at).getTime();
+      if (Number.isFinite(t) && t > maxTs) maxTs = t;
+    }
+    const version = `${rows.length}-${maxTs}`;
+    const updatedAt = maxTs ? new Date(maxTs).toISOString() : null;
+
+    // Conditional GET: 304 when the caller already has this version.
+    res.setHeader('ETag', `"${version}"`);
+    const inm = req.headers['if-none-match'];
+    if (inm && inm.replace(/"/g, '') === version) {
+      return res.status(304).end();
+    }
+
+    ok(res, { rules, faqs, prompt_block: promptBlock, version, updated_at: updatedAt });
+  } catch (error) {
+    console.error('Public chat knowledge error:', error);
+    fail(res, 'Failed to fetch chat knowledge');
+  }
+});
+
+// POST /api/public/chat/log
+// Write external-channel conversation turns into Tenafy's shared transcript store
+// (chat_session + chat_message), so WhatsApp/TaneChat history lives alongside the
+// internal bot's. This is the "shared diary" — call it AFTER you've replied to the
+// user (fire-and-forget); it must never block a reply.
+//
+// Body: {
+//   channel?: "whatsapp",                 // default "whatsapp"
+//   channel_user_id: "85291234567",       // REQUIRED — stable id per WhatsApp user/thread
+//   messages: [ { role, content, tokens_in?, tokens_out? }, ... ],  // REQUIRED, in order
+//   viewer?: { name?, email?, phone?, language? }                   // optional enrichment
+// }
+// role ∈ {user, assistant, system, tool}. Send each turn ONCE (this appends).
+const LOG_ROLES = ['user', 'assistant', 'system', 'tool'];
+router.post('/chat/log', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const channel = (b.channel && String(b.channel).trim()) || 'whatsapp';
+    const channelUserId = b.channel_user_id != null ? String(b.channel_user_id).trim() : '';
+    if (!channelUserId) return fail(res, 'channel_user_id is required', 400);
+    if (!Array.isArray(b.messages) || b.messages.length === 0) {
+      return fail(res, 'messages must be a non-empty array', 400);
+    }
+
+    // Find or create the session (no system-prompt seed — the external bot owns its prompt).
+    const [existing] = await req.pool.execute(
+      'SELECT id FROM chat_session WHERE channel = ? AND channel_user_id = ? LIMIT 1',
+      [channel, channelUserId]
+    );
+    let sessionId;
+    if (existing.length) {
+      sessionId = String(existing[0].id);
+    } else {
+      sessionId = newId();
+      await req.pool.execute(
+        `INSERT INTO chat_session (id, channel, channel_user_id, status, created_at, updated_at)
+         VALUES (?, ?, ?, 0, NOW(), NOW())`,
+        [sessionId, channel, channelUserId]
+      );
+    }
+
+    // Insert each message turn.
+    let inserted = 0;
+    for (const m of b.messages) {
+      const role = LOG_ROLES.includes(m.role) ? m.role : null;
+      if (!role) continue;
+      const content = m.content != null ? String(m.content) : null;
+      if (content == null && role !== 'tool') continue; // user/assistant/system need content
+      await req.pool.execute(
+        `INSERT INTO chat_message (id, session_id, role, content, tool_name, tokens_in, tokens_out)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newId(), sessionId, role, content,
+          m.tool_name != null ? String(m.tool_name) : null,
+          parseInt(m.tokens_in) || 0,
+          parseInt(m.tokens_out) || 0,
+        ]
+      );
+      inserted++;
+    }
+
+    // Bump counters + optionally enrich viewer details.
+    await req.pool.execute(
+      `UPDATE chat_session SET message_count = message_count + ?, last_message_at = NOW() WHERE id = ?`,
+      [inserted, sessionId]
+    );
+    const v = b.viewer || {};
+    if (v.name || v.email || v.phone || v.language) {
+      await req.pool.execute(
+        `UPDATE chat_session SET
+           viewer_name  = COALESCE(?, viewer_name),
+           viewer_email = COALESCE(?, viewer_email),
+           viewer_phone = COALESCE(?, viewer_phone),
+           language     = COALESCE(?, language)
+         WHERE id = ?`,
+        [v.name || null, v.email || null, v.phone || null, v.language || null, sessionId]
+      );
+    }
+
+    ok(res, { session_id: sessionId, channel, inserted });
+  } catch (error) {
+    console.error('Public chat log error:', error);
+    fail(res, 'Failed to log conversation');
+  }
 });
 
 // ────────────────────────────────────────────────────────────────

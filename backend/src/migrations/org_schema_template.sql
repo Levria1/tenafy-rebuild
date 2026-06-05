@@ -1029,6 +1029,24 @@ CREATE TABLE `chat_message` (
   KEY `idx_cm_session` (`session_id`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+DROP TABLE IF EXISTS `chat_knowledge`;
+CREATE TABLE `chat_knowledge` (
+  `id` bigint NOT NULL,
+  `kind` varchar(16) NOT NULL DEFAULT 'rule',
+  `title` varchar(255) DEFAULT NULL,
+  `body` text NOT NULL,
+  `tags` json DEFAULT NULL,
+  `visibility` varchar(16) NOT NULL DEFAULT 'internal',
+  `status` tinyint NOT NULL DEFAULT '1',
+  `sort_order` int NOT NULL DEFAULT '0',
+  `source` varchar(32) NOT NULL DEFAULT 'manual',
+  `source_ref` bigint DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_status_visibility` (`status`,`visibility`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 DROP TABLE IF EXISTS `bot_settings`;
 CREATE TABLE `bot_settings` (
   `id` bigint NOT NULL DEFAULT '1',

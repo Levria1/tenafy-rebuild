@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Card, Typography, Switch, Input, InputNumber, Button, Space, Form, Row, Col, message, Divider, Alert, Spin,
+  Table, Tag, Modal, Segmented, Popconfirm, Tooltip, Empty,
 } from 'antd';
-import { SaveOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  SaveOutlined, ReloadOutlined, PlusOutlined, EditOutlined, DeleteOutlined, WhatsAppOutlined,
+} from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
 import { chatApi } from '../../../lib/api';
 
@@ -129,6 +132,13 @@ export default function ChatSettingsPage() {
         </Card>
 
         <Card size="small" title="Custom instructions" style={{ marginBottom: 16 }}>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="Prefer the Rulebook below"
+            description="For new rules, use the Rulebook section at the bottom — entries there can be shared with TaneChat (the WhatsApp-facing bot) and managed individually. This free-text box still works and is appended for the internal bot, but it's internal-only."
+          />
           <Paragraph type="secondary">
             Extra rules APPENDED to the built-in system prompt. This is where you add business-
             specific behavior without rewriting the whole prompt. The bot reads these rules at the
@@ -212,6 +222,241 @@ export default function ChatSettingsPage() {
           <Button onClick={reload} disabled={saving}>Cancel</Button>
         </Space>
       </Form>
+
+      <Divider />
+      <RulebookSection locked={locked} />
     </MainLayout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rulebook — manages chat_knowledge entries (the shared knowledge base).
+// Each entry auto-saves on add/edit/delete (independent of the Save settings
+// button above). The "Share with WhatsApp" toggle = public vs internal.
+// ---------------------------------------------------------------------------
+function RulebookSection({ locked }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [form] = Form.useForm();
+
+  const load = useCallback(() => {
+    setLoading(true);
+    chatApi.listKnowledge()
+      .then((r) => setItems(r.data.data || []))
+      .catch(() => message.error('Failed to load rulebook'))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const openAdd = () => {
+    setEditing(null);
+    form.resetFields();
+    form.setFieldsValue({ kind: 'rule', is_public: false, title: '', body: '' });
+    setModalOpen(true);
+  };
+  const openEdit = (item) => {
+    setEditing(item);
+    form.setFieldsValue({
+      kind: item.kind, title: item.title || '', body: item.body, is_public: item.visibility === 'public',
+    });
+    setModalOpen(true);
+  };
+
+  const handleSubmit = async () => {
+    let values;
+    try { values = await form.validateFields(); } catch { return; }
+    setSaving(true);
+    try {
+      const payload = {
+        kind: values.kind,
+        title: values.kind === 'faq' ? (values.title || null) : null,
+        body: values.body,
+        visibility: values.is_public ? 'public' : 'internal',
+      };
+      if (editing) await chatApi.updateKnowledge(editing.id, payload);
+      else await chatApi.createKnowledge(payload);
+      message.success(editing ? 'Rule updated' : 'Rule added');
+      setModalOpen(false);
+      load();
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to save rule');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (item) => {
+    try {
+      await chatApi.deleteKnowledge(item.id);
+      message.success('Rule deleted');
+      load();
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to delete rule');
+    }
+  };
+
+  const toggleShare = async (item, checked) => {
+    // Optimistic update
+    setItems((prev) => prev.map((x) => x.id === item.id
+      ? { ...x, visibility: checked ? 'public' : 'internal' } : x));
+    try {
+      await chatApi.updateKnowledge(item.id, { visibility: checked ? 'public' : 'internal' });
+    } catch (e) {
+      message.error('Failed to update sharing');
+      load();
+    }
+  };
+
+  const columns = [
+    {
+      title: 'Type',
+      dataIndex: 'kind',
+      width: 80,
+      render: (k) => k === 'faq'
+        ? <Tag color="purple">FAQ</Tag>
+        : <Tag color="blue">Rule</Tag>,
+    },
+    {
+      title: 'Content',
+      dataIndex: 'body',
+      render: (body, item) => (
+        <div>
+          {item.kind === 'faq' && item.title && (
+            <div style={{ fontWeight: 600, marginBottom: 2 }}>Q: {item.title}</div>
+          )}
+          <div style={{ color: item.kind === 'faq' ? '#555' : 'inherit' }}>
+            {item.kind === 'faq' ? `A: ${body}` : body}
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: (
+        <Tooltip title="When on, the rule is also shared with TaneChat (the external WhatsApp-facing bot). When off, only the internal Tenafy bot sees it.">
+          <span><WhatsAppOutlined /> Share with TaneChat</span>
+        </Tooltip>
+      ),
+      dataIndex: 'visibility',
+      width: 170,
+      align: 'center',
+      render: (visibility, item) => (
+        <Switch
+          checked={visibility === 'public'}
+          disabled={locked}
+          checkedChildren="Public"
+          unCheckedChildren="Internal"
+          onChange={(checked) => toggleShare(item, checked)}
+        />
+      ),
+    },
+    {
+      title: '',
+      key: 'actions',
+      width: 90,
+      render: (_, item) => (
+        <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(item)} disabled={locked} />
+          <Popconfirm
+            title="Delete this rule?"
+            okText="Delete"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => handleDelete(item)}
+            disabled={locked}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />} disabled={locked} />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <Card
+      size="small"
+      title="Rulebook (shared knowledge)"
+      extra={
+        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd} disabled={locked}>
+          Add rule
+        </Button>
+      }
+    >
+      <Paragraph type="secondary">
+        The shared knowledge base both bots draw from. <strong>Rules</strong> shape how the bot
+        behaves; <strong>FAQs</strong> are answers to questions the live data can't provide.
+        Toggle <strong>Share with TaneChat</strong> to also expose a rule to the external
+        prospect-facing bot (off = internal Tenafy bot only). Changes apply to new conversations.
+      </Paragraph>
+      <Table
+        rowKey="id"
+        size="small"
+        loading={loading}
+        dataSource={items}
+        columns={columns}
+        pagination={false}
+        locale={{ emptyText: <Empty description="No rules yet — click “Add rule” to start your rulebook." /> }}
+      />
+
+      <Modal
+        title={editing ? 'Edit rule' : 'Add rule'}
+        open={modalOpen}
+        onOk={handleSubmit}
+        onCancel={() => setModalOpen(false)}
+        confirmLoading={saving}
+        okText={editing ? 'Save' : 'Add'}
+        destroyOnClose
+      >
+        <Form form={form} layout="vertical">
+          <Form.Item name="kind" label="Type">
+            <Segmented
+              options={[
+                { label: 'Rule (behavior)', value: 'rule' },
+                { label: 'FAQ (Q & A)', value: 'faq' },
+              ]}
+            />
+          </Form.Item>
+
+          <Form.Item noStyle shouldUpdate={(p, c) => p.kind !== c.kind}>
+            {({ getFieldValue }) => getFieldValue('kind') === 'faq' ? (
+              <>
+                <Form.Item
+                  name="title"
+                  label="Question"
+                  rules={[{ required: true, message: 'Enter the question' }]}
+                >
+                  <Input placeholder="e.g. Do you allow pets?" />
+                </Form.Item>
+                <Form.Item
+                  name="body"
+                  label="Answer"
+                  rules={[{ required: true, message: 'Enter the answer' }]}
+                >
+                  <Input.TextArea rows={4} placeholder="e.g. Most of our buildings are pet-friendly; the team will confirm per unit." />
+                </Form.Item>
+              </>
+            ) : (
+              <Form.Item
+                name="body"
+                label="Rule"
+                rules={[{ required: true, message: 'Enter the rule' }]}
+              >
+                <Input.TextArea rows={4} placeholder="e.g. Parking is included in the rent — mention it when asked." />
+              </Form.Item>
+            )}
+          </Form.Item>
+
+          <Form.Item
+            name="is_public"
+            label="Share with TaneChat (prospect-facing bot)"
+            valuePropName="checked"
+            extra="Off = only the internal Tenafy bot uses this rule. On = TaneChat (the external WhatsApp-facing bot) uses it too. Keep anything containing tenant or internal info OFF."
+          >
+            <Switch checkedChildren="Public" unCheckedChildren="Internal" />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </Card>
   );
 }
