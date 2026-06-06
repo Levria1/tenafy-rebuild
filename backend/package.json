@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "migrate": "node migrate.js"
+    "migrate": "node migrate.js",
+    "migrate:orgs": "node migrate-orgs.js"
   },
   "dependencies": {
     "axios": "^1.15.2",
