@@ -225,6 +225,13 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   // Booking & Commission
   settingsChildren.push({ key: '/settings?tab=bookingPlatforms', label: <Link href="/settings?tab=bookingPlatforms">Booking & Commission</Link> });
 
+  // Lease Templates — own route (not part of the settings Tabs system).
+  // Gated by the same permission as email templates for now; can be split later.
+  if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) {
+    settingsChildren.push({ key: '/settings/lease-templates', label: <Link href="/settings/lease-templates">Lease Templates</Link> });
+    settingsChildren.push({ key: '/settings/landlord-signatures', label: <Link href="/settings/landlord-signatures">Landlord Signatures</Link> });
+  }
+
   // API Keys — super admin only
   if (isSuperAdmin) {
     settingsChildren.push({ key: '/settings?tab=apiKeys', label: <Link href="/settings?tab=apiKeys">API Keys</Link> });

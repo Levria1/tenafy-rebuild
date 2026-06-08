@@ -138,7 +138,11 @@ export default function LeasingPage() {
 
   const applyFilters = () => {
     const f = {};
-    if (filterStatus !== null) f.status = filterStatus;
+    // "Pending" is the lease_state filter; numeric values are the date-based
+    // lease_status (0/1/2). Split them so the backend's two filters can be
+    // applied correctly.
+    if (filterStatus === 'pending') f.leaseState = 'pending';
+    else if (filterStatus !== null) f.status = filterStatus;
     if (filterType !== null) f.type = filterType;
     if (filterTenantStatus !== null) f.tenantStatus = filterTenantStatus;
     if (filterProperty !== null) f.propertyId = filterProperty;
@@ -163,7 +167,10 @@ export default function LeasingPage() {
 
   const filterContent = (
     <div style={{ width: 280, maxHeight: 500, overflowY: 'auto' }}>
-      {/* Lease Status */}
+      {/* Lease Status — Pending is the new lease_state filter (sentinel value
+          'pending'); the other options use the date-based lease_status. The
+          list page resolves this in onSearch by sending either `status` or
+          `leaseState` to the backend. */}
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Lease Status</div>
         <Radio.Group value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
@@ -172,6 +179,7 @@ export default function LeasingPage() {
             <Radio value={1}>Active</Radio>
             <Radio value={2}>Upcoming</Radio>
             <Radio value={0}>Inactive</Radio>
+            <Radio value="pending">Pending</Radio>
           </Space>
         </Radio.Group>
       </div>
@@ -269,7 +277,12 @@ export default function LeasingPage() {
     </div>
   );
 
-  const getStatusTag = (s) => {
+  // Renders the lease status tag. lease_state='pending' overrides the
+  // date-based lease_status because a pending draft is the more important fact
+  // for staff to see — they need to confirm or delete it before the date
+  // status matters.
+  const getStatusTag = (s, leaseState) => {
+    if (leaseState === 'pending') return <Tag color="gold">PENDING</Tag>;
     if (s === 2) return <Tag color="blue">Upcoming</Tag>;
     if (s === 1) return <Tag color="green">Active</Tag>;
     return <Tag>Inactive</Tag>;
@@ -292,7 +305,7 @@ export default function LeasingPage() {
         {/* Top row: lease number + status */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <Text strong style={{ fontSize: 14, color: '#1890ff' }}>{record.lease_no || '-'}</Text>
-          {getStatusTag(record.lease_status)}
+          {getStatusTag(record.lease_status, record.lease_state)}
         </div>
 
         {/* Tenant name */}
@@ -359,11 +372,14 @@ export default function LeasingPage() {
     {
       title: 'Status', dataIndex: 'lease_status', key: 'status', width: 100,
       sorter: true,
-      render: (s) => s === 2
-        ? <span style={{ color: '#1677ff' }}>upcoming</span>
-        : s === 1
-          ? <span style={{ color: '#389e0d' }}>active</span>
-          : <span style={{ color: '#999' }}>inactive</span>,
+      render: (s, row) => {
+        // Pending lease_state overrides date-based status — staff need to act
+        // on it before dates matter.
+        if (row.lease_state === 'pending') return <span style={{ color: '#d48806', fontWeight: 600 }}>PENDING</span>;
+        if (s === 2) return <span style={{ color: '#1677ff' }}>upcoming</span>;
+        if (s === 1) return <span style={{ color: '#389e0d' }}>active</span>;
+        return <span style={{ color: '#999' }}>inactive</span>;
+      },
     },
     {
       title: 'Price', dataIndex: 'price', key: 'price', width: 120,

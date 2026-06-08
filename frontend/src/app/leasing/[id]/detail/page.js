@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider } from 'antd';
+import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
@@ -146,8 +146,26 @@ export default function LeasingDetailPage() {
   };
 
   const leaseStatus = lease?.lease_status ?? (lease?.status === 1 ? 1 : 0);
-  const statusLabel = leaseStatus === 2 ? 'Upcoming' : leaseStatus === 1 ? 'Active' : 'Inactive';
-  const statusColor = leaseStatus === 2 ? 'blue' : leaseStatus === 1 ? 'green' : 'red';
+  const isPending = lease?.lease_state === 'pending';
+  const statusLabel = isPending ? 'PENDING' : leaseStatus === 2 ? 'Upcoming' : leaseStatus === 1 ? 'Active' : 'Inactive';
+  const statusColor = isPending ? 'gold' : leaseStatus === 2 ? 'blue' : leaseStatus === 1 ? 'green' : 'red';
+
+  // Confirm a pending lease: flips lease_state to 'active', fires deferred
+  // rent + deposit invoices. Re-runs the overlap check first, so a friendly
+  // error appears if a competing lease got confirmed in the meantime.
+  const onConfirmLease = async () => {
+    try {
+      const r = await leasing.confirm(lease.id);
+      if (r.data?.code === 200) {
+        message.success('Lease confirmed — invoices will be generated.');
+        loadLease();
+      } else {
+        message.error(r.data?.message || 'Failed to confirm lease');
+      }
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Failed to confirm lease');
+    }
+  };
 
   // Settlement tab content
   const renderSettlement = () => {
@@ -603,10 +621,72 @@ export default function LeasingDetailPage() {
         <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 8 : 0 }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/leasing')}>Back to Leases</Button>
           <Space wrap>
-            <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.leaseUrl(leaseId), '_blank')}>View PDF</Button>
+            <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.leaseUrl(leaseId), '_blank')}>View Basic PDF</Button>
+            <Button
+              icon={<FilePdfOutlined />}
+              onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}
+              type={isPending ? 'primary' : 'default'}
+            >
+              {lease?.signed_file_id ? 'View Signed Lease' : 'Generate Lease for E-Signature'}
+            </Button>
             {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/leasing/${leaseId}/edit`)}>Edit Lease</Button>}
           </Space>
         </div>
+        {/* E-Signature status card — visible only when there's any signing
+            activity. Status badge + link to view signed PDF (if completed) or
+            the active signing request. */}
+        {(lease?.signature_status && lease.signature_status !== 'none') && (
+          <Card size="small" style={{ borderColor: lease.signature_status === 'signed' ? '#52c41a' : '#1677ff' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                <strong>E-Signature:</strong>{' '}
+                {lease.signature_status === 'pending' && <Tag color="blue">Pending — waiting for signers</Tag>}
+                {lease.signature_status === 'signed' && <Tag color="green">Signed{lease.signed_at ? ` on ${dayjs(lease.signed_at).format('YYYY-MM-DD')}` : ''}</Tag>}
+                {lease.signature_status === 'declined' && <Tag color="red">Declined</Tag>}
+              </div>
+              <Space>
+                {lease.signed_file_id && (
+                  <Button onClick={() => window.open(`/api/file/preview/${lease.signed_file_id}`, '_blank')}>
+                    View Signed Lease
+                  </Button>
+                )}
+                <Button onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}>
+                  {lease.signature_status === 'pending' ? 'Manage Request' : 'Send Again'}
+                </Button>
+              </Space>
+            </div>
+          </Card>
+        )}
+
+        {/* Pending banner — prominently flags drafts that haven't been
+            confirmed. Clicking "Confirm Lease" flips state to active and
+            fires the deferred rent + deposit invoices. */}
+        {isPending && (
+          <Card
+            size="small"
+            style={{ background: '#fffbe6', borderColor: '#faad14' }}
+            bodyStyle={{ padding: '12px 16px' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                <Tag color="gold" style={{ fontWeight: 600, marginRight: 8 }}>PENDING</Tag>
+                <span style={{ color: '#874d00' }}>
+                  This lease is a draft. Invoices haven't been generated yet. Click <strong>Confirm Lease</strong> once the deposit is received and the agreement is signed.
+                </span>
+              </div>
+              <Popconfirm
+                title="Confirm this lease?"
+                description="This will generate rent + deposit invoices and mark the lease active. Cannot be undone (you'd need to delete invoices manually)."
+                okText="Confirm Lease"
+                okType="primary"
+                onConfirm={onConfirmLease}
+              >
+                <Button type="primary">Confirm Lease</Button>
+              </Popconfirm>
+            </div>
+          </Card>
+        )}
+
         <Card title={`Lease ${leaseTitle}`} loading={loading}>
           {lease && (
             <Tabs

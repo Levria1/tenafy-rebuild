@@ -171,7 +171,7 @@ function TenantDetailPage() {
   // Fetch the prorated publish-preview whenever the active lease's
   // next_invoice_date changes — so the button can show the actual amount.
   useEffect(() => {
-    const active = leases.find(l => l.status === 1);
+    const active = leases.find(l => l.lease_status === 1);
     if (!active || !active.next_invoice_date) { setPublishPreview(null); return; }
     let cancelled = false;
     invoice.publishPreview({
@@ -346,8 +346,8 @@ function TenantDetailPage() {
       return <Empty description="No leases found" />;
     }
 
-    // Find the active lease (last one with status=1)
-    const activeLease = leases.find(l => l.status === 1);
+    // Find the active lease (date-active — stored `status` column is unreliable post bd351ce)
+    const activeLease = leases.find(l => l.lease_status === 1);
 
     return (
       <div>
@@ -1110,7 +1110,7 @@ function TenantDetailPage() {
                 <div
                   onClick={() => {
                     const name = `${tenantData?.first_name || ''} ${tenantData?.last_name || ''}`.trim();
-                    const activeLease = leases.find(l => l.status === 1);
+                    const activeLease = leases.find(l => l.lease_status === 1);
                     const params = new URLSearchParams({
                       tenantId,
                       tenantName: name,

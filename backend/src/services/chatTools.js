@@ -588,12 +588,108 @@ const request_viewing = {
 // Registry + accessors
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Tool: search_inquiries
+//
+// Lets staff ask the bot questions like:
+//   "Who showed interest in unit B302?"
+//   "Anyone still open with budget around 25k?"
+//   "Show me inquiries from this month that mentioned parking"
+//
+// Searches across the inquiry table including the notes field (which holds
+// the WhatsApp diff log — "Budget updated to $10,000", "Wants 2BR", etc.),
+// optionally filtered by unit/property and inquiry status.
+// ---------------------------------------------------------------------------
+const search_inquiries = {
+  cap: 'can_search_inquiries',
+  definition: {
+    type: 'function',
+    function: {
+      name: 'search_inquiries',
+      description:
+        "Search rental inquiries (prospect leads). Use when staff asks about who's interested in " +
+        'a unit/property, prospects matching a budget/preference, or any lead-tracking question. ' +
+        'Returns inquiry rows with first/last name, phone, email, budget, desired start date, ' +
+        'status (0=Open, 1=Converted, 2=Closed), source, and the FULL notes field which contains ' +
+        "the chat's auto-extracted updates (e.g. 'Budget updated to $10,000', 'Wants 2BR'). When " +
+        'the user asks about a specific unit, pass `unit_id` or `property_id`. When the user asks ' +
+        "about a topic mentioned in conversations (parking, neighbourhood, pets), pass the keyword " +
+        'as `keyword` — it will search inside notes too.',
+      parameters: {
+        type: 'object',
+        properties: {
+          keyword:      { type: 'string',  description: 'Free-text search across name, email, phone, AND notes. Use the topic word the user asked about.' },
+          unit_id:      { type: 'string',  description: 'Restrict to inquiries linked to this unit id.' },
+          property_id:  { type: 'string',  description: 'Restrict to inquiries linked to this property id.' },
+          status:       { type: 'integer', description: 'Filter by inquiry status: 0=Open, 1=Converted, 2=Closed. Default: any.' },
+          source:       { type: 'string',  description: "Filter by where the inquiry came from. e.g. 'whatsapp', 'manual'." },
+          limit:        { type: 'integer', description: 'Max rows to return. Default 20, max 50.' },
+        },
+      },
+    },
+  },
+  async execute(ctx, args) {
+    const orgId = ctx.orgId;
+    const limit = clampLimit(args.limit, 20, 50);
+
+    let where = 'i.org_id = ? AND i.deleted_at IS NULL';
+    const params = [orgId];
+
+    if (args.keyword) {
+      const s = '%' + String(args.keyword).trim() + '%';
+      where += ` AND (i.first_name LIKE ? OR i.last_name LIKE ?
+                     OR i.email LIKE ? OR i.phone LIKE ?
+                     OR i.notes LIKE ?)`;
+      params.push(s, s, s, s, s);
+    }
+    if (args.unit_id)     { where += ' AND i.unit_id = ?';     params.push(str(args.unit_id)); }
+    if (args.property_id) { where += ' AND i.property_id = ?'; params.push(str(args.property_id)); }
+    if (Number.isInteger(args.status)) { where += ' AND i.status = ?'; params.push(args.status); }
+    if (args.source)      { where += ' AND i.source = ?';      params.push(String(args.source)); }
+
+    const [rows] = await ctx.pool.execute(
+      `SELECT i.id, i.first_name, i.last_name, i.email, i.phone, i.budget,
+              DATE_FORMAT(i.inquiry_date, '%Y-%m-%d') AS inquiry_date,
+              DATE_FORMAT(i.desired_start_date, '%Y-%m-%d') AS desired_start_date,
+              i.status, i.source, i.notes,
+              p.display_name AS property_name, un.name AS unit_name
+         FROM inquiry i
+         LEFT JOIN property p ON i.property_id = p.id
+         LEFT JOIN unit un    ON i.unit_id = un.id
+        WHERE ${where}
+        ORDER BY i.inquiry_date DESC
+        LIMIT ${limit}`,
+      params
+    );
+
+    const STATUS = { 0: 'Open', 1: 'Converted', 2: 'Closed' };
+    return {
+      count: rows.length,
+      inquiries: rows.map(r => ({
+        id: String(r.id),
+        name: [r.first_name, r.last_name].filter(Boolean).join(' ') || '(no name)',
+        phone: r.phone || null,
+        email: r.email || null,
+        budget: r.budget != null ? Number(r.budget) : null,
+        inquiry_date: r.inquiry_date,
+        desired_start_date: r.desired_start_date,
+        status: STATUS[r.status] || String(r.status),
+        source: r.source,
+        property_name: r.property_name || null,
+        unit_name: r.unit_name || null,
+        notes: r.notes || '',
+      })),
+    };
+  },
+};
+
 const ALL_TOOLS = [
   search_available_units,
   get_unit_details,
   list_properties,
   capture_lead,
   request_viewing,
+  search_inquiries,
 ];
 
 const ALL_BY_NAME = Object.fromEntries(

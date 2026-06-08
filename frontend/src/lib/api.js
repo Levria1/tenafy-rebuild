@@ -138,6 +138,9 @@ export const leasing = {
   create: (data) => api.post('/api/leasing', data),
   update: (id, data) => api.put(`/api/leasing/${id}`, data),
   delete: (id) => api.delete(`/api/leasing/${id}`),
+  // Flip lease_state from 'pending' to 'active'. Server re-runs the overlap
+  // check and generates deferred rent + deposit invoices.
+  confirm: (id) => api.post(`/api/leasing/${id}/confirm`),
   // Scheduled rate changes (lease_revision rows)
   listRevisions: (id) => api.get(`/api/leasing/${id}/revisions`),
   createRevision: (id, data) => api.post(`/api/leasing/${id}/revisions`, data),
@@ -311,6 +314,50 @@ export const inquiry = {
   update: (id, data) => api.put(`/api/inquiry/${id}`, data),
   delete: (id) => api.delete(`/api/inquiry/${id}`),
   linkContact: (id, tenantId) => api.post(`/api/inquiry/${id}/link-contact`, { tenant_id: String(tenantId) }),
+  // Smart-extract: POST multipart with `text` and/or `image`. Returns
+  // { fields: {...}, screenshot_url, raw_text }. The fields prefill the
+  // form; screenshot_url is stored alongside the inquiry on save.
+  parse: (formData) => api.post('/api/inquiry/parse', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }),
+};
+
+// E-signature — admin + public surfaces. The /sign/[token] public page uses
+// the same axios instance but its endpoints don't require auth.
+export const signature = {
+  // Landlord signatures (Settings)
+  listLandlordSigs: () => api.get('/api/signature/landlord-signatures'),
+  createLandlordSig: (data) => api.post('/api/signature/landlord-signatures', data),
+  updateLandlordSig: (id, data) => api.put(`/api/signature/landlord-signatures/${id}`, data),
+  deleteLandlordSig: (id) => api.delete(`/api/signature/landlord-signatures/${id}`),
+  // Requests (admin)
+  createRequest: (data) => api.post('/api/signature/request', data),
+  getRequest: (id) => api.get(`/api/signature/request/${id}`),
+  cancelRequest: (id) => api.post(`/api/signature/request/${id}/cancel`),
+  resendRequest: (id) => api.post(`/api/signature/request/${id}/resend`),
+  listForLease: (leaseId) => api.get(`/api/signature/lease/${leaseId}`),
+  // Public (signer)
+  getPublic: (token) => api.get(`/api/signature/public/${token}`),
+  sign: (token, data) => api.post(`/api/signature/public/${token}/sign`, data),
+  decline: (token, data) => api.post(`/api/signature/public/${token}/decline`, data),
+  publicPdfUrl: (token) => `/api/signature/public/${token}/pdf`,
+};
+
+// Lease templates — Quill HTML stored with {{VARIABLES}} substituted server-side
+// at preview/generate time via Puppeteer (services/leasePdfRenderer.js).
+export const leaseTemplate = {
+  list: () => api.get('/api/lease-template/list'),
+  get: (id) => api.get(`/api/lease-template/${id}`),
+  create: (data) => api.post('/api/lease-template', data),
+  update: (id, data) => api.put(`/api/lease-template/${id}`, data),
+  remove: (id) => api.delete(`/api/lease-template/${id}`),
+  duplicate: (id) => api.post(`/api/lease-template/${id}/duplicate`),
+  setDefault: (id) => api.post(`/api/lease-template/${id}/set-default`),
+  variables: () => api.get('/api/lease-template/variables'),
+  // Inline preview from raw editor HTML (BEFORE save) → PDF blob.
+  previewInline: (payload) => api.post('/api/lease-template/preview', payload, { responseType: 'blob' }),
+  // Preview of an already-saved template → PDF blob.
+  previewSaved: (id) => api.post(`/api/lease-template/${id}/preview`, {}, { responseType: 'blob' }),
 };
 
 export const settings = {

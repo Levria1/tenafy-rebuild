@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateApiKey } = require('../middleware/apiKeyAuth');
+const inquiryExtractor = require('../services/inquiryExtractor');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
 // The middleware attaches req.pool (scoped to the caller's org DB) and
@@ -192,12 +193,96 @@ router.post('/chat/log', async (req, res) => {
       );
     }
 
+    // ── Auto-create inquiry on first qualifying turn ────────────────────
+    // Only for WhatsApp channel; only if the session has no inquiry yet; only
+    // if the session is NOT already linked to a tenant; only if there's at
+    // least one user message. The actual LLM call is fire-and-forget so the
+    // log response isn't held up.
+    if (channel === 'whatsapp' && inserted > 0) {
+      setImmediate(() => {
+        autoCreateInquiryForSession(req.pool, req.apiKey.orgId, sessionId)
+          .catch(err => console.error('[chat/log] auto-extract failed:', err.message));
+      });
+    }
+
     ok(res, { session_id: sessionId, channel, inserted });
   } catch (error) {
     console.error('Public chat log error:', error);
     fail(res, 'Failed to log conversation');
   }
 });
+
+// Fire-and-forget inquiry creation for a WhatsApp session.
+// Idempotent — checks chat_session.inquiry_id and short-circuits if set.
+async function autoCreateInquiryForSession(pool, orgId, sessionId) {
+  // Re-fetch state inside the async call — by the time we run, the row may
+  // have changed (e.g. a parallel turn already triggered creation).
+  const [[session]] = await pool.execute(
+    `SELECT id, inquiry_id, contact_id, viewer_phone, viewer_name, viewer_email
+       FROM chat_session WHERE id = ? LIMIT 1`,
+    [sessionId]
+  );
+  if (!session) return;
+  if (session.inquiry_id) return;             // already extracted
+  if (session.contact_id) return;             // linked tenant — not a prospect
+
+  // Pull the conversation so far. Cap at the last 30 messages to bound
+  // token cost; the very long chats are rare and the LLM still gets enough
+  // to decide is_inquiry + extract the basics.
+  const [messages] = await pool.execute(
+    `SELECT role, content, created_at FROM chat_message
+      WHERE session_id = ? ORDER BY created_at ASC LIMIT 30`,
+    [sessionId]
+  );
+  if (!messages.length) return;
+  const userMsgCount = messages.filter(m => m.role === 'user').length;
+  if (userMsgCount < 1) return;
+
+  const result = await inquiryExtractor.extractInitial(messages);
+  if (!result.is_inquiry) {
+    // Mark the attempt so we don't re-run on every subsequent turn for a
+    // session the LLM already said isn't an inquiry. The daily re-extract
+    // job ignores sessions without an inquiry_id anyway.
+    await pool.execute(
+      `UPDATE chat_session SET last_extracted_at = NOW(), extract_count = extract_count + 1 WHERE id = ?`,
+      [sessionId]
+    );
+    return;
+  }
+
+  // Build the inquiry row. Phone falls back to the WhatsApp number from
+  // chat_session.viewer_phone if the LLM didn't pull one from the messages.
+  const f = result.fields || {};
+  const phone = (f.phone && String(f.phone).trim()) || session.viewer_phone || null;
+  const inquiryId = newId();
+
+  await pool.execute(
+    `INSERT INTO inquiry
+       (id, org_id, inquiry_date, first_name, last_name, email, phone,
+        notes, source, status, desired_start_date, budget)
+     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, 'whatsapp', 0, ?, ?)`,
+    [
+      inquiryId, orgId,
+      f.first_name || session.viewer_name || null,
+      f.last_name || null,
+      (f.email && String(f.email).trim().toLowerCase()) || session.viewer_email || null,
+      phone,
+      f.notes || null,
+      f.desired_start_date || null,
+      f.budget != null && f.budget !== '' ? Number(f.budget) : null,
+    ]
+  );
+
+  await pool.execute(
+    `UPDATE chat_session
+        SET inquiry_id = ?, last_extracted_at = NOW(), extract_count = extract_count + 1,
+            lead_captured = 1
+      WHERE id = ?`,
+    [inquiryId, sessionId]
+  );
+
+  console.log(`[chat/log] auto-created inquiry ${inquiryId} for session ${sessionId} (org ${orgId})`);
+}
 
 // ────────────────────────────────────────────────────────────────
 // PROPERTIES & UNITS

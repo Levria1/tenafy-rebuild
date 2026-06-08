@@ -3,6 +3,7 @@ const { sendMail } = require('../config/mailer');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
+const inquiryExtractor = require('./inquiryExtractor');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -87,6 +88,7 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
      JOIN unit u ON l.unit_id = u.id
      JOIN property p ON u.property_id = p.id
      WHERE l.status = 1 AND l.deleted_at IS NULL AND l.share_lease = 1
+       AND l.lease_state = 'active'
        AND l.invoicing IS NOT NULL AND l.invoicing != ''
        AND l.amount IS NOT NULL AND l.amount > 0 AND p.org_id = ?`,
     [orgId]
@@ -234,7 +236,8 @@ async function sendLeaseExpiryForOrg(pool, orgId) {
        t.last_name AS tenant_last_name, p.display_name AS property_name, p.org_id AS org_id,
        u.name AS unit_name, DATEDIFF(l.end_date, CURDATE()) AS days_remaining
      FROM leasing l JOIN unit u ON l.unit_id = u.id JOIN property p ON u.property_id = p.id JOIN tenant t ON l.tenant_id = t.id
-     WHERE l.status = 1 AND l.deleted_at IS NULL AND l.landlord_expired = 1
+     WHERE l.status = 1 AND l.deleted_at IS NULL AND l.lease_state = 'active'
+       AND l.landlord_expired = 1
        AND l.type = 0 AND l.end_date IS NOT NULL AND l.end_date >= CURDATE()
        AND l.end_date <= DATE_ADD(CURDATE(), INTERVAL 90 DAY)
        AND p.org_id = ?`,
@@ -370,7 +373,7 @@ async function sendCheckinEmailsForOrg(pool, orgId) {
      JOIN unit u ON l.unit_id = u.id
      JOIN property p ON u.property_id = p.id
      JOIN tenant t ON l.tenant_id = t.id
-     WHERE l.status = 1 AND l.deleted_at IS NULL
+     WHERE l.status = 1 AND l.deleted_at IS NULL AND l.lease_state = 'active'
        AND l.tenant_checkin = 1
        AND l.start_date >= CURDATE()
        AND t.email IS NOT NULL AND t.email != ''
@@ -422,7 +425,7 @@ async function sendCheckoutEmailsForOrg(pool, orgId) {
      JOIN unit u ON l.unit_id = u.id
      JOIN property p ON u.property_id = p.id
      JOIN tenant t ON l.tenant_id = t.id
-     WHERE l.status = 1 AND l.deleted_at IS NULL
+     WHERE l.status = 1 AND l.deleted_at IS NULL AND l.lease_state = 'active'
        AND l.tenant_checkout = 1
        AND l.end_date IS NOT NULL
        AND t.email IS NOT NULL AND t.email != ''
@@ -492,7 +495,7 @@ async function sendRenewalEmailsForOrg(pool, orgId) {
      JOIN unit u ON l.unit_id = u.id
      JOIN property p ON u.property_id = p.id
      JOIN tenant t ON l.tenant_id = t.id
-     WHERE l.status = 1 AND l.deleted_at IS NULL
+     WHERE l.status = 1 AND l.deleted_at IS NULL AND l.lease_state = 'active'
        AND l.tenant_renewal = 1
        AND l.end_date IS NOT NULL
        AND l.tenant_renewal_days IS NOT NULL AND l.tenant_renewal_days > 0
@@ -711,6 +714,91 @@ async function runForAllOrgs(jobName, jobFn) {
 }
 
 // ---------------------------------------------------------------------------
+// Daily re-extract for WhatsApp inquiries that are still active.
+//
+// "Still active" = inquiry.status = 0 (Open), not converted to a tenant,
+// and no confirmed/completed viewing. New messages since last_extracted_at
+// are diffed against the inquiry; any new or changed facts are appended as
+// dated lines to inquiry.notes (Option A: one line per fact). Structured
+// fields are NEVER overwritten — the notes log is the audit trail.
+// ---------------------------------------------------------------------------
+
+async function reExtractInquiriesForOrg(pool, orgId) {
+  // Pull eligible sessions in one query — open inquiry, no booking, with at
+  // least one new user-message since last_extracted_at.
+  const [rows] = await pool.execute(
+    `SELECT cs.id AS session_id, cs.inquiry_id, cs.last_extracted_at, cs.extract_count
+       FROM chat_session cs
+       JOIN inquiry i ON i.id = cs.inquiry_id AND i.deleted_at IS NULL
+       JOIN chat_message cm ON cm.session_id = cs.id AND cm.role = 'user'
+      WHERE cs.channel = 'whatsapp'
+        AND cs.inquiry_id IS NOT NULL
+        AND i.status = 0
+        AND i.tenant_id IS NULL
+        AND NOT EXISTS (
+              SELECT 1 FROM viewing_booking vb
+               WHERE vb.inquiry_id = i.id AND vb.status IN (1, 3)
+            )
+      GROUP BY cs.id
+      HAVING MAX(cm.created_at) > COALESCE(cs.last_extracted_at, '1970-01-01')
+      LIMIT 200`
+  );
+
+  if (!rows.length) {
+    console.log(`[Scheduler][org:${orgId}] reExtract: nothing to do.`);
+    return { processed: 0, updated: 0, errors: 0 };
+  }
+
+  let processed = 0, updated = 0, errors = 0;
+  for (const r of rows) {
+    try {
+      const [newMsgs] = await pool.execute(
+        `SELECT role, content, created_at FROM chat_message
+          WHERE session_id = ?
+            AND created_at > COALESCE(?, '1970-01-01')
+            AND role IN ('user', 'assistant')
+          ORDER BY created_at ASC
+          LIMIT 50`,
+        [r.session_id, r.last_extracted_at]
+      );
+      if (!newMsgs.length) { processed++; continue; }
+
+      const [[inq]] = await pool.execute(
+        `SELECT first_name, last_name, email, phone, budget,
+                DATE_FORMAT(desired_start_date, '%Y-%m-%d') AS desired_start_date,
+                notes
+           FROM inquiry WHERE id = ? LIMIT 1`,
+        [r.inquiry_id]
+      );
+      if (!inq) { processed++; continue; }
+
+      const { diff } = await inquiryExtractor.extractDiff(newMsgs, inq);
+      if (diff && diff.length) {
+        const newNotes = inquiryExtractor.appendDiffToNotes(inq.notes, diff);
+        await pool.execute(
+          `UPDATE inquiry SET notes = ?, updated_at = NOW() WHERE id = ?`,
+          [newNotes, r.inquiry_id]
+        );
+        updated++;
+      }
+      await pool.execute(
+        `UPDATE chat_session
+            SET last_extracted_at = NOW(), extract_count = extract_count + 1
+          WHERE id = ?`,
+        [r.session_id]
+      );
+      processed++;
+    } catch (err) {
+      errors++;
+      console.error(`[Scheduler][org:${orgId}] reExtract session ${r.session_id} failed:`, err.message);
+    }
+  }
+
+  console.log(`[Scheduler][org:${orgId}] reExtract: ${processed} processed, ${updated} updated, ${errors} errors`);
+  return { processed, updated, errors };
+}
+
+// ---------------------------------------------------------------------------
 // Start scheduler
 // ---------------------------------------------------------------------------
 
@@ -776,6 +864,13 @@ function startScheduler() {
     console.log('[Scheduler] Sending inquiry reminders...');
     runForAllOrgs('inquiryReminders', sendInquiryRemindersForOrg);
   });
+
+  // Daily at 23:00 HK - re-extract WhatsApp inquiries (Option A: diff into notes).
+  // Server runs in UTC on prod; 23:00 HK = 15:00 UTC. Wrap in TZ to be safe.
+  cron.schedule('0 23 * * *', () => {
+    console.log('[Scheduler] Re-extracting WhatsApp inquiries...');
+    runForAllOrgs('inquiryReExtract', reExtractInquiriesForOrg);
+  }, { timezone: 'Asia/Hong_Kong' });
 
   // Run once at startup to fix stale statuses
   runForAllOrgs('startupFix', markOverdueInvoicesForOrg);

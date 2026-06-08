@@ -145,6 +145,18 @@ export default function InquiryDetailPage() {
           </div>
         </Card>
 
+        {data.screenshot_url && (
+          <Card title="Screenshot" size="small" style={{ marginBottom: 16 }}>
+            <a href={data.screenshot_url} target="_blank" rel="noreferrer">
+              <img
+                src={data.screenshot_url}
+                alt="Inquiry screenshot"
+                style={{ maxWidth: '100%', maxHeight: 400, border: '1px solid #f0f0f0', borderRadius: 4 }}
+              />
+            </a>
+          </Card>
+        )}
+
         <Card title="Linked Viewings" size="small">
           {(!data.viewings || data.viewings.length === 0) ? (
             <Empty description="No viewings yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />

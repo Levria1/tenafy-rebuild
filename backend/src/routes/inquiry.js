@@ -9,10 +9,38 @@
 
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
 const { authenticate } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
+const visionClient = require('../services/visionClient');
+const llmClient = require('../services/llmClient');
 
 router.use(authenticate);
+
+// Multer setup for the screenshot upload on /parse. Saves to the same uploads
+// dir as routes/file.js so the file table + /api/file/preview/:id flow works
+// unchanged. 10 MB cap — screenshots from phones are usually under 5 MB.
+const UPLOADS_DIR = path.join(__dirname, '../../uploads');
+const screenshotStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+    cb(null, UPLOADS_DIR);
+  },
+  filename: (req, file, cb) => cb(null, uuidv4() + path.extname(file.originalname)),
+});
+const screenshotUpload = multer({
+  storage: screenshotStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are accepted'), false);
+    }
+    cb(null, true);
+  },
+});
 
 function ok(res, data) { return res.json({ code: 200, data }); }
 function fail(res, message, status = 500) {
@@ -28,7 +56,10 @@ function newId() {
 router.get('/list', async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status, leadSourceId, source } = req.query;
+    const {
+      search, status, leadSourceId, source,
+      unitId, propertyId, searchNotes,
+    } = req.query;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
@@ -37,11 +68,24 @@ router.get('/list', async (req, res) => {
     const params = [orgId];
 
     if (search) {
-      where += ` AND (i.first_name LIKE ? OR i.last_name LIKE ?
-                     OR CONCAT(COALESCE(i.first_name,''),' ',COALESCE(i.last_name,'')) LIKE ?
-                     OR i.email LIKE ? OR i.phone LIKE ?)`;
-      const s = '%' + search + '%';
-      params.push(s, s, s, s, s);
+      // When searchNotes=true is passed, broaden the search across notes as
+      // well — used by the chatbot's search_inquiries tool to surface
+      // prospects whose interest in a unit was captured only in the chat
+      // diff log (e.g. "interested in unit B302").
+      if (String(searchNotes) === 'true') {
+        where += ` AND (i.first_name LIKE ? OR i.last_name LIKE ?
+                       OR CONCAT(COALESCE(i.first_name,''),' ',COALESCE(i.last_name,'')) LIKE ?
+                       OR i.email LIKE ? OR i.phone LIKE ?
+                       OR i.notes LIKE ?)`;
+        const s = '%' + search + '%';
+        params.push(s, s, s, s, s, s);
+      } else {
+        where += ` AND (i.first_name LIKE ? OR i.last_name LIKE ?
+                       OR CONCAT(COALESCE(i.first_name,''),' ',COALESCE(i.last_name,'')) LIKE ?
+                       OR i.email LIKE ? OR i.phone LIKE ?)`;
+        const s = '%' + search + '%';
+        params.push(s, s, s, s, s);
+      }
     }
     if (status !== undefined && status !== '' && status !== null) {
       where += ' AND i.status = ?';
@@ -54,6 +98,14 @@ router.get('/list', async (req, res) => {
     if (source) {
       where += ' AND i.source = ?';
       params.push(source);
+    }
+    if (unitId) {
+      where += ' AND i.unit_id = ?';
+      params.push(unitId);
+    }
+    if (propertyId) {
+      where += ' AND i.property_id = ?';
+      params.push(propertyId);
     }
 
     const [rows] = await req.pool.execute(
@@ -82,6 +134,129 @@ router.get('/list', async (req, res) => {
   } catch (err) {
     console.error('[inquiry] list error:', err);
     fail(res, 'Failed to list inquiries');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /parse — extract structured inquiry fields from free text and/or a
+// screenshot. Pipeline:
+//   1. If a screenshot was uploaded: save to disk + file table (same flow as
+//      /api/file/upload), then run Google Cloud Vision OCR on the bytes.
+//   2. Concatenate pasted text + OCR text.
+//   3. Send to MiniMax (with OpenRouter fallback) and ask it to return a JSON
+//      object with the inquiry form fields. JSON-only system prompt.
+//   4. Return { fields: {...}, screenshot_url, raw_text } to the frontend so
+//      it can prefill the form and attach the screenshot URL on save.
+//
+// Multipart fields:
+//   - text  (optional, string)
+//   - image (optional, file — png/jpg/webp, max 10 MB)
+//
+// At least one of `text` or `image` must be provided.
+// ---------------------------------------------------------------------------
+router.post('/parse', (req, res, next) => {
+  // Wrap multer so size/MIME errors return a clean 4xx instead of a 500.
+  screenshotUpload.single('image')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ code: 413, message: 'Screenshot too large (max 10 MB).' });
+    }
+    return res.status(400).json({ code: 400, message: err.message || 'Upload failed' });
+  });
+}, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const pastedText = (req.body && req.body.text ? String(req.body.text) : '').trim();
+    const hasImage = !!req.file;
+
+    if (!pastedText && !hasImage) {
+      return fail(res, 'Provide either text or an image (or both).', 400);
+    }
+
+    // --- 1. If image: save to file table and OCR it ------------------------
+    let screenshotUrl = null;
+    let ocrText = '';
+    if (hasImage) {
+      const savedFilename = req.file.filename;
+      const originalName  = req.file.originalname;
+      const ext           = path.extname(originalName);
+      const mimeType      = req.file.mimetype || 'application/octet-stream';
+      const fileSize      = req.file.size;
+      const fileId        = newId();
+
+      await req.pool.execute(
+        'INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())',
+        [fileId, savedFilename, originalName, ext.replace('.', ''), mimeType.toUpperCase(), fileSize, 'local', orgId]
+      );
+      screenshotUrl = '/api/file/preview/' + fileId;
+
+      try {
+        const bytes = fs.readFileSync(req.file.path);
+        ocrText = await visionClient.extractText(bytes);
+      } catch (visionErr) {
+        console.error('[inquiry/parse] Vision OCR failed:', visionErr.message);
+        // Don't fail the whole request — return what we have. If there's no
+        // pasted text either, the LLM step will yield empty fields, and we
+        // still want the user to get the saved screenshot URL.
+      }
+    }
+
+    // --- 2. Build the combined source text ----------------------------------
+    const combined = [pastedText, ocrText].filter(Boolean).join('\n\n--- OCR FROM SCREENSHOT ---\n');
+    if (!combined.trim()) {
+      return ok(res, { fields: {}, screenshot_url: screenshotUrl, raw_text: '' });
+    }
+
+    // --- 3. Ask the LLM to extract structured fields ------------------------
+    // Schema is fixed to what /inquiries/create renders. The LLM is told to
+    // return STRICT JSON only — no prose, no markdown fences — so we can
+    // JSON.parse the content directly.
+    const systemPrompt = [
+      'You extract rental-inquiry information from messy chat/screenshot text into JSON.',
+      'The text may be in English, Cantonese, Mandarin, or any mix of those.',
+      'Return ONLY a JSON object with these keys (omit a key if you cannot find it):',
+      '  first_name        (string)',
+      '  last_name         (string)',
+      '  email             (string, lowercase, validated-looking)',
+      '  phone             (string, digits only; strip +852, spaces, dashes)',
+      '  budget            (number, HKD per month; infer from "20k", "$25,000/mo", "two five")',
+      '  desired_start_date (string, YYYY-MM-DD)',
+      '  notes             (string, a short 1-3 sentence summary in English of what the prospect wants)',
+      'Do NOT include any other keys. Do NOT include explanatory prose. Output a single JSON object only.',
+    ].join('\n');
+
+    let fields = {};
+    try {
+      const llmResp = await llmClient.chat(
+        [
+          { role: 'system', content: systemPrompt },
+          { role: 'user',   content: combined.slice(0, 8000) }, // generous cap to keep token cost predictable
+        ],
+        null,
+        { temperature: 0.1 }
+      );
+      const raw = (llmResp.message && llmResp.message.content) || '';
+      // Strip ```json ... ``` fences if the model added them despite instructions.
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      try {
+        fields = JSON.parse(cleaned);
+      } catch (parseErr) {
+        console.warn('[inquiry/parse] LLM did not return valid JSON; raw:', raw.slice(0, 300));
+      }
+    } catch (llmErr) {
+      console.error('[inquiry/parse] LLM call failed:', llmErr.message);
+      // Surface partial success — screenshot is still saved, raw OCR is in
+      // raw_text, the user can just fill the form by hand.
+    }
+
+    ok(res, {
+      fields: fields || {},
+      screenshot_url: screenshotUrl,
+      raw_text: combined,
+    });
+  } catch (err) {
+    console.error('[inquiry] parse error:', err);
+    fail(res, 'Failed to parse inquiry');
   }
 });
 
@@ -139,7 +314,7 @@ router.post('/', async (req, res) => {
     const {
       inquiry_date, lead_source_id, first_name, last_name,
       email, phone, notes, unit_id, property_id, source,
-      desired_start_date, budget, reminder_date,
+      desired_start_date, budget, reminder_date, screenshot_url,
     } = req.body || {};
 
     if (!first_name && !last_name && !email && !phone) {
@@ -152,8 +327,8 @@ router.post('/', async (req, res) => {
          (id, org_id, inquiry_date, lead_source_id,
           first_name, last_name, email, phone, notes,
           unit_id, property_id, created_by_user_id, source, status,
-          desired_start_date, budget, reminder_date)
-       VALUES (?, ?, COALESCE(?, NOW()), ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, 0,  ?, ?, ?)`,
+          desired_start_date, budget, reminder_date, screenshot_url)
+       VALUES (?, ?, COALESCE(?, NOW()), ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, 0,  ?, ?, ?, ?)`,
       [
         id, orgId, inquiry_date || null, lead_source_id || null,
         first_name || null, last_name || null,
@@ -164,6 +339,7 @@ router.post('/', async (req, res) => {
         desired_start_date || null,
         budget !== undefined && budget !== '' && budget !== null ? Number(budget) : null,
         reminder_date || null,
+        screenshot_url || null,
       ]
     );
 
@@ -184,7 +360,7 @@ router.put('/:id', async (req, res) => {
     const fields = [
       'inquiry_date', 'lead_source_id', 'first_name', 'last_name',
       'email', 'phone', 'notes', 'unit_id', 'property_id', 'status',
-      'desired_start_date', 'budget', 'reminder_date',
+      'desired_start_date', 'budget', 'reminder_date', 'screenshot_url',
     ];
     const sets = [];
     const params = [];

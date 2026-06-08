@@ -1794,6 +1794,18 @@ function BookingPlatformSettings({ isMobile }) {
     catch (err) { message.error(err.response?.data?.message || 'Failed to delete platform'); }
   };
 
+  // Toggle requires_signature without going through the edit-name flow.
+  // Used by the Switch in the new column — saves immediately on change.
+  const toggleRequiresSig = async (id, checked) => {
+    try {
+      await bookingPlatform.update(id, { requires_signature: checked ? 1 : 0 });
+      // Optimistically update the local row so the switch feels instant.
+      setItems(prev => prev.map(x => String(x.id) === String(id) ? { ...x, requires_signature: checked ? 1 : 0 } : x));
+    } catch (err) {
+      message.error('Failed to update');
+    }
+  };
+
   const columns = [
     {
       title: 'Platform Name', dataIndex: 'name', key: 'name',
@@ -1803,6 +1815,18 @@ function BookingPlatformSettings({ isMobile }) {
         }
         return val;
       },
+    },
+    {
+      title: 'Requires E-Signature',
+      key: 'requires_signature',
+      width: 180,
+      render: (_, r) => (
+        <Switch
+          size="small"
+          checked={r.requires_signature == null ? true : !!Number(r.requires_signature)}
+          onChange={(checked) => toggleRequiresSig(r.id, checked)}
+        />
+      ),
     },
     {
       title: 'Actions', key: 'actions', width: 200,
@@ -1856,6 +1880,7 @@ function BookingPlatformSettings({ isMobile }) {
       <h3 style={{ marginBottom: 4 }}>Booking Platforms</h3>
       <p style={{ color: '#666', marginBottom: 16, fontSize: 13 }}>
         Manage booking platforms (e.g. Airbnb, Booking.com, Direct) to track where tenants come from.
+        Toggle <strong>Requires E-Signature</strong> off for short-term platforms like Airbnb — leases booked through those won't auto-trigger the e-sign flow.
       </p>
       <div style={{ marginBottom: 16 }}>
         <Form layout={isMobile ? 'vertical' : 'inline'} onFinish={handleAdd}>

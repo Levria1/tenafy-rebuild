@@ -50,6 +50,8 @@ app.use('/api/public', require('./routes/public'));
 app.use('/api/viewing-public', require('./routes/viewingPublic'));
 app.use('/api/viewing', require('./routes/viewing'));
 app.use('/api/inquiry', require('./routes/inquiry'));
+app.use('/api/lease-template', require('./routes/leaseTemplate'));
+app.use('/api/signature', require('./routes/signature'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/cleaning', require('./routes/cleaning'));
 app.use('/api/utility', require('./routes/utility'));

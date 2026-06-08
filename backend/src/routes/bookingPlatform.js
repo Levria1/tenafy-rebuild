@@ -20,13 +20,14 @@ router.get('/', authenticate, async (req, res) => {
 // POST / — create
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, requires_signature } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ code: 400, message: 'Name is required' });
     const orgId = req.user.orgId;
     const id = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+    const sig = requires_signature == null ? 1 : (requires_signature ? 1 : 0);
     await req.pool.execute(
-      'INSERT INTO booking_platform (id, org_id, name, enabled) VALUES (?, ?, ?, 1)',
-      [id, orgId, name.trim()]
+      'INSERT INTO booking_platform (id, org_id, name, enabled, requires_signature) VALUES (?, ?, ?, 1, ?)',
+      [id, orgId, name.trim(), sig]
     );
     res.json({ code: 200, message: 'Booking platform created', data: { id } });
   } catch (err) {
@@ -35,15 +36,26 @@ router.post('/', authenticate, async (req, res) => {
   }
 });
 
-// PUT /:id — update
+// PUT /:id — update name and/or requires_signature
 router.put('/:id', authenticate, async (req, res) => {
   try {
-    const { name } = req.body;
-    if (!name || !name.trim()) return res.status(400).json({ code: 400, message: 'Name is required' });
+    const { name, requires_signature } = req.body;
     const orgId = req.user.orgId;
+    // Dynamic SET — allow either field to be omitted.
+    const sets = [];
+    const params = [];
+    if (name !== undefined) {
+      if (!name || !name.trim()) return res.status(400).json({ code: 400, message: 'Name is required' });
+      sets.push('name = ?'); params.push(name.trim());
+    }
+    if (requires_signature !== undefined) {
+      sets.push('requires_signature = ?'); params.push(requires_signature ? 1 : 0);
+    }
+    if (!sets.length) return res.status(400).json({ code: 400, message: 'No fields to update' });
+    params.push(req.params.id, orgId);
     await req.pool.execute(
-      'UPDATE booking_platform SET name = ? WHERE id = ? AND org_id = ?',
-      [name.trim(), req.params.id, orgId]
+      `UPDATE booking_platform SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`,
+      params
     );
     res.json({ code: 200, message: 'Booking platform updated' });
   } catch (err) {

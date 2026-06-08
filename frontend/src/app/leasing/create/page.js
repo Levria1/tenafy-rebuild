@@ -48,6 +48,24 @@ export default function LeaseCreatePage() {
   // File upload
   const [fileList, setFileList] = useState([]);
 
+  // Watch the booking platform — when staff change it, auto-tick or untick the
+  // "Send for e-signature" + "Save as Pending" checkboxes based on the
+  // platform's `requires_signature` flag. Airbnb / short-term platforms should
+  // be configured with requires_signature=0 in Settings → Booking Platforms.
+  const watchedPlatformId = Form.useWatch('booking_platform_id', form);
+  useEffect(() => {
+    if (!watchedPlatformId) return;
+    const p = platforms.find(x => String(x.id) === String(watchedPlatformId));
+    if (!p) return;
+    // requires_signature defaults to 1 (true) on the column — if the row is
+    // missing the column entirely (legacy data), treat as truthy.
+    const needsSig = p.requires_signature == null ? true : !!Number(p.requires_signature);
+    form.setFieldsValue({
+      send_for_esignature: needsSig,
+      save_as_pending: needsSig,
+    });
+  }, [watchedPlatformId, platforms]);
+
   // Selected tenant info (for pre-filling email fields)
   const [selectedTenant, setSelectedTenant] = useState(null);
 
@@ -309,16 +327,27 @@ export default function LeaseCreatePage() {
       mark_past_paid: values.mark_past_paid || false,
       booking_platform_id: values.booking_platform_id || null,
       sales_agent_id: values.sales_agent_id || null,
+      lease_state: values.save_as_pending ? 'pending' : 'active',
     };
   };
 
   const submitLease = async (payload) => {
     try {
       setLoading(true);
+      const values = form.getFieldsValue();
       const response = await leasing.create(payload);
       if (response.data.code === 200) {
+        const newLeaseId = response.data.data?.id;
         message.success('Lease created successfully');
-        router.push('/leasing');
+        // If staff ticked "Send for e-signature" AND we have the new lease id,
+        // jump straight to the review-and-send page. Phase 2 builds that page;
+        // for now the route returns a 404 placeholder — but the redirect is
+        // wired so the moment Phase 2 ships, the flow is complete.
+        if (values.send_for_esignature && newLeaseId) {
+          router.push(`/leasing/${newLeaseId}/review-and-send`);
+        } else {
+          router.push('/leasing');
+        }
       } else {
         message.error(response.data.message || 'Failed to create lease');
       }
@@ -680,6 +709,32 @@ export default function LeaseCreatePage() {
   // ─── Step 3: Email & Settings ───────────────────────────────
   const renderStep3 = () => (
     <>
+      {/* E-Signature card — auto-toggled by booking platform's
+          requires_signature flag (see useEffect on watchedPlatformId).
+          send_for_esignature controls post-save redirect to /review-and-send.
+          save_as_pending sets lease_state='pending' (no invoices fire until
+          staff click "Confirm Lease" on the detail page). */}
+      <Card
+        size="small"
+        title="E-Signature"
+        style={{ marginBottom: 16, background: '#fafbff', borderColor: '#d6e4ff' }}
+      >
+        <Form.Item name="send_for_esignature" valuePropName="checked" style={{ marginBottom: 8 }}>
+          <Checkbox>Send for e-signature after save</Checkbox>
+        </Form.Item>
+        <Form.Item name="save_as_pending" valuePropName="checked" style={{ marginBottom: 0 }}>
+          <Checkbox>
+            Save as Pending
+            <span style={{ color: '#888', fontSize: 12, marginLeft: 8 }}>
+              — invoices are not generated until lease status is confirmed
+            </span>
+          </Checkbox>
+        </Form.Item>
+        <div style={{ fontSize: 11, color: '#888', marginTop: 8 }}>
+          Both checkboxes are auto-set based on the Booking Platform you picked. Override either as needed.
+        </div>
+      </Card>
+
       <Card size="small" title="Email Notifications" style={{ marginBottom: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px' }}>
           <Form.Item name="tenant_posted" valuePropName="checked" style={{ marginBottom: 0 }}>

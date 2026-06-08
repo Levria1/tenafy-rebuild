@@ -42,7 +42,7 @@ END`;
 router.post('/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status, startDate, endDate, type, tenantStatus, propertyId, unitId, bookingPlatformId, sortField, sortOrder } = req.body || {};
+    const { search, status, startDate, endDate, type, tenantStatus, propertyId, unitId, bookingPlatformId, leaseState, sortField, sortOrder } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
@@ -79,6 +79,13 @@ router.post('/list', authenticate, async (req, res) => {
     if (bookingPlatformId) {
       whereClause += ' AND l.booking_platform_id = ?';
       params.push(bookingPlatformId);
+    }
+    // Filter by lease_state when explicitly requested. Frontend sends
+    // leaseState='pending' for the new "Pending" filter option; omitted →
+    // show all states (default UI behavior).
+    if (leaseState === 'pending' || leaseState === 'active') {
+      whereClause += ' AND l.lease_state = ?';
+      params.push(leaseState);
     }
     if (startDate) {
       whereClause += ' AND l.start_date >= ?';
@@ -197,7 +204,7 @@ router.get('/calendar', authenticate, async (req, res) => {
     // Get all leases that overlap with the date range for these units
     const placeholders = unitIds.map(() => '?').join(',');
     const [leases] = await req.pool.execute(
-      `SELECT l.id, l.unit_id, l.tenant_id, l.start_date, l.end_date, l.status, l.type, l.amount, l.price, l.contract_type,
+      `SELECT l.id, l.unit_id, l.tenant_id, l.start_date, l.end_date, l.status, l.type, l.amount, l.price, l.contract_type, l.lease_state,
               t.first_name, t.last_name, t.company_name, t.type AS tenant_type, t.phone, t.email
        FROM leasing l
        JOIN tenant t ON l.tenant_id = t.id
@@ -229,6 +236,7 @@ router.get('/calendar', authenticate, async (req, res) => {
         type: lease.type,
         amount: lease.amount || lease.price,
         contract_type: lease.contract_type ?? null,
+        lease_state: lease.lease_state || 'active',
       });
     }
 
@@ -575,15 +583,21 @@ router.post('/', authenticate, async (req, res) => {
       email_template_id, access_setting, share_lease, all_past,
       mark_past_paid,
       // booking & commission
-      booking_platform_id, sales_agent_id
+      booking_platform_id, sales_agent_id,
+      // lease state — 'pending' draft (no unit block, no invoices) or 'active' (default)
+      lease_state,
     } = req.body;
     const orgId = req.user.orgId;
+    const leaseState = lease_state === 'pending' ? 'pending' : 'active';
 
-    // Server-side overlap check — block creation if dates conflict with an existing active lease on the same unit
+    // Server-side overlap check — block new lease if dates conflict with ANY
+    // existing lease on the unit (pending OR active). Per the user's design:
+    // pending leases DO reserve the unit so a second prospect can't be booked
+    // in parallel; to free the unit you delete the pending lease.
     if (unit_id && start_date) {
       const overlapEnd = end_date || '2099-12-31';
       const [conflicts] = await req.pool.execute(
-        `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
+        `SELECT l.id, l.lease_no, l.start_date, l.end_date, l.lease_state, t.first_name, t.last_name
          FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
          WHERE l.unit_id = ? AND l.deleted_at IS NULL
            AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`,
@@ -592,9 +606,10 @@ router.post('/', authenticate, async (req, res) => {
       if (conflicts.length > 0) {
         const c = conflicts[0];
         const tenantName = [c.first_name, c.last_name].filter(Boolean).join(' ');
+        const statePrefix = c.lease_state === 'pending' ? 'pending ' : '';
         return res.status(400).json({
           code: 400,
-          message: `Cannot create lease — overlaps with ${c.lease_no || '#' + c.id} (${tenantName}): ${c.start_date} to ${c.end_date || 'ongoing'}`
+          message: `Cannot create lease — overlaps with ${statePrefix}${c.lease_no || '#' + c.id} (${tenantName}): ${c.start_date} to ${c.end_date || 'ongoing'}`
         });
       }
     }
@@ -640,8 +655,8 @@ router.post('/', authenticate, async (req, res) => {
         tenant_posted, landlord_posted, landlord_due, tenant_due,
         landlord_overdue, tenant_overdue, landlord_expired, landlord_expired_days,
         tenant_checkin, tenant_checkout, tenant_renewal, tenant_renewal_days,
-        tenant_deposit_posted, payment_receipt, email_template_id, booking_platform_id, sales_agent_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        tenant_deposit_posted, payment_receipt, email_template_id, booking_platform_id, sales_agent_id, lease_state, created_at
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         leaseId.toString(), unit_id, tenant_id, start_date, end_date || null,
         price || 0, type || 0, invoicing || null,
@@ -658,11 +673,13 @@ router.post('/', authenticate, async (req, res) => {
         tenant_checkin ? 1 : 0, tenant_checkout ? 1 : 0,
         tenant_renewal ? 1 : 0, tenant_renewal_days || 0,
         tenant_deposit_posted ? 1 : 0, payment_receipt ? 1 : 0, email_template_id || null,
-        booking_platform_id || null, sales_agent_id || null
+        booking_platform_id || null, sales_agent_id || null, leaseState
       ]
     );
 
-    // Mark unit as occupied
+    // Mark unit as occupied — for BOTH pending and active leases. Pending
+    // reserves the unit so parallel prospects can't be drafted; the unit is
+    // freed only when the pending lease is deleted (or it ends).
     await req.pool.execute('UPDATE unit SET status = 1 WHERE id = ?', [unit_id]);
 
     // Invoice generation logic:
@@ -670,8 +687,13 @@ router.post('/', authenticate, async (req, res) => {
     // - If recurring (share_lease=1, invoicing set): generate all past invoices + next upcoming
     // - If NOT recurring: only ONE invoice ever
     // - mark_past_paid controls status of past invoices (1=paid vs 0=open)
+    //
+    // Pending leases skip the entire invoice block — no rent invoices and no
+    // deposit invoice. Both get created the first time staff click "Confirm
+    // Lease" on the detail page (POST /:id/confirm flips lease_state to
+    // 'active' and runs the same logic deferred from now).
     const invoiceAmount = amount || price;
-    if (invoiceAmount && parseFloat(invoiceAmount) > 0) {
+    if (leaseState === 'active' && invoiceAmount && parseFloat(invoiceAmount) > 0) {
       const today = new Date().toISOString().split('T')[0];
       const todayMs = new Date(today).getTime();
 
@@ -765,8 +787,10 @@ router.post('/', authenticate, async (req, res) => {
       }
     }
 
-    // Create security deposit invoice if deposit amount > 0
-    if (deposit && parseFloat(deposit) > 0) {
+    // Create security deposit invoice if deposit amount > 0 — also gated on
+    // active state (pending leases don't generate the deposit invoice; it
+    // fires on first confirm).
+    if (leaseState === 'active' && deposit && parseFloat(deposit) > 0) {
       // Generate collision-safe deposit invoice code
       const depInvoiceCode = await generateInvoiceCode(req.pool, orgId);
 
@@ -984,6 +1008,12 @@ router.put('/:id', authenticate, async (req, res) => {
     if (access_setting !== undefined) { fields.push('access_setting = ?'); params.push(access_setting || null); }
     if (share_lease !== undefined) { fields.push('share_lease = ?'); params.push(share_lease ? 1 : 0); }
     if (all_past !== undefined) { fields.push('all_past = ?'); params.push(all_past ? 1 : 0); }
+    // Allow direct edit of lease_state via PUT for back-fill / corrections —
+    // BUT do NOT fire deferred invoices here. Use POST /:id/confirm for the
+    // pending → active flip with invoice generation.
+    if (req.body.lease_state !== undefined && (req.body.lease_state === 'pending' || req.body.lease_state === 'active')) {
+      fields.push('lease_state = ?'); params.push(req.body.lease_state);
+    }
     fields.push('updated_at = NOW()');
     params.push(id);
 
@@ -1016,6 +1046,161 @@ router.put('/:id', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Update lease error:', error);
     res.status(500).json({ code: 500, message: 'Failed to update lease' });
+  }
+});
+
+// POST /api/leasing/:id/confirm — flip pending → active and fire invoices
+//
+// Pending leases are drafts that don't generate invoices. When staff confirm
+// (typically after deposit received / signature done), this endpoint:
+//   1. Re-runs the overlap check against any new active leases that may have
+//      been created in the meantime (rare but possible).
+//   2. Flips lease_state to 'active'.
+//   3. Generates the rent invoices (catching up missed periods) + deposit
+//      invoice exactly as POST / would have done if state had been 'active'
+//      from the start.
+router.post('/:id/confirm', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+
+    // Load the lease + check it's actually pending
+    const [[lease]] = await req.pool.execute(
+      `SELECT l.* FROM leasing l
+        WHERE l.id = ? AND l.deleted_at IS NULL LIMIT 1`,
+      [id]
+    );
+    if (!lease) return res.status(404).json({ code: 404, message: 'Lease not found' });
+    if (lease.lease_state !== 'pending') {
+      return res.status(400).json({ code: 400, message: 'Lease is not pending — already active or terminated.' });
+    }
+
+    // Verify this lease's unit belongs to the caller's org
+    const [[unitRow]] = await req.pool.execute(
+      'SELECT property_id FROM unit WHERE id = ?', [lease.unit_id]
+    );
+    if (!unitRow) return res.status(404).json({ code: 404, message: 'Lease unit not found' });
+    const [[propRow]] = await req.pool.execute(
+      'SELECT org_id FROM property WHERE id = ?', [unitRow.property_id]
+    );
+    if (!propRow || String(propRow.org_id) !== String(orgId)) {
+      return res.status(403).json({ code: 403, message: 'Not authorised' });
+    }
+
+    // Re-check for overlapping ACTIVE leases — a second prospect may have been
+    // confirmed for the same unit/dates while this one sat pending.
+    if (lease.unit_id && lease.start_date) {
+      const overlapEnd = lease.end_date || '2099-12-31';
+      const [conflicts] = await req.pool.execute(
+        `SELECT l.id, l.lease_no, l.start_date, l.end_date, t.first_name, t.last_name
+           FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
+          WHERE l.unit_id = ? AND l.id != ? AND l.deleted_at IS NULL
+            AND l.lease_state = 'active'
+            AND l.start_date < ? AND (l.end_date > ? OR l.end_date IS NULL)`,
+        [lease.unit_id, id, overlapEnd, lease.start_date]
+      );
+      if (conflicts.length > 0) {
+        const c = conflicts[0];
+        const tenantName = [c.first_name, c.last_name].filter(Boolean).join(' ');
+        return res.status(400).json({
+          code: 400,
+          message: `Cannot confirm — conflicts with active lease ${c.lease_no || '#' + c.id} (${tenantName}). Cancel that one first.`,
+        });
+      }
+    }
+
+    // Flip the state
+    await req.pool.execute(
+      `UPDATE leasing SET lease_state = 'active', updated_at = NOW() WHERE id = ?`,
+      [id]
+    );
+
+    // Ensure unit shows occupied (was already set at create time, but defensive).
+    await req.pool.execute('UPDATE unit SET status = 1 WHERE id = ?', [lease.unit_id]);
+
+    // Generate rent + deposit invoices that were deferred. We mark all past
+    // periods as Open (status=0) since "mark_past_paid" isn't available
+    // through this endpoint — staff can mark them paid manually if needed.
+    const invoiceAmount = lease.amount || lease.price;
+    if (invoiceAmount && parseFloat(invoiceAmount) > 0) {
+      const today = new Date().toISOString().split('T')[0];
+      const todayMs = new Date(today).getTime();
+
+      const [[rentCat]] = await req.pool.execute(
+        "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 AND name LIKE '%Rental Income%' ORDER BY id LIMIT 1",
+        [orgId]
+      );
+      const rentCategoryId = rentCat ? rentCat.id : null;
+
+      const createOneInvoice = async (dueDate, status, amount) => {
+        const invoiceCode = await generateInvoiceCode(req.pool, orgId);
+        const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+        await req.pool.execute(
+          `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
+            invoice_code, amount, due_on, status, category, currency_id, type,
+            booking_platform_id, sales_agent_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NOW())`,
+          [invoiceId, orgId, lease.tenant_id, lease.unit_id, id, unitRow.property_id,
+           invoiceCode, amount, dueDate, status, rentCategoryId, lease.currency_id,
+           lease.booking_platform_id || null, lease.sales_agent_id || null]
+        );
+        return { invoiceId, invoiceCode };
+      };
+
+      const isRecurring = lease.share_lease && lease.invoicing;
+      if (isRecurring) {
+        const firstDate = lease.first_invoice_date || lease.start_date;
+        const MAX_INVOICES = 500;
+        let cursor = new Date(firstDate);
+        let count = 0;
+        while (count < MAX_INVOICES) {
+          if (lease.end_date && cursor > new Date(lease.end_date)) break;
+          const dateStr = cursor.toISOString().split('T')[0];
+          const isPast = cursor.getTime() <= todayMs;
+          const nextCursor = advanceInvoiceDate(cursor, lease.invoicing, lease.due_date);
+          const periodEnd = new Date(nextCursor);
+          periodEnd.setDate(periodEnd.getDate() - 1);
+          const thisAmount = computeRentInvoiceAmount({
+            rent: invoiceAmount, invoicing: lease.invoicing,
+            periodStart: cursor, periodEnd, leaseEnd: lease.end_date,
+          });
+          if (thisAmount === null) break;
+          await createOneInvoice(dateStr, 0, thisAmount);
+          if (!isPast) break;
+          cursor = nextCursor;
+          count++;
+        }
+      } else {
+        const invoiceDate = lease.first_invoice_date || lease.start_date || today;
+        await createOneInvoice(invoiceDate, 0, invoiceAmount);
+      }
+    }
+
+    // Deposit invoice
+    if (lease.deposit && parseFloat(lease.deposit) > 0) {
+      const depCode = await generateInvoiceCode(req.pool, orgId);
+      const [[depCat]] = await req.pool.execute(
+        "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 AND name LIKE '%Deposit%' AND name NOT LIKE '%Expense%' AND name NOT LIKE '%Don%' ORDER BY id LIMIT 1",
+        [orgId]
+      );
+      const depCategoryId = depCat ? depCat.id : null;
+      const depInvoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+      const today = new Date().toISOString().split('T')[0];
+      await req.pool.execute(
+        `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
+          invoice_code, amount, due_on, status, category, currency_id, type,
+          booking_platform_id, sales_agent_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, NOW())`,
+        [depInvoiceId, orgId, lease.tenant_id, lease.unit_id, id, unitRow.property_id,
+         depCode, lease.deposit, today, depCategoryId, lease.currency_id,
+         lease.booking_platform_id || null, lease.sales_agent_id || null]
+      );
+    }
+
+    res.json({ code: 200, message: 'Lease confirmed', data: { id } });
+  } catch (err) {
+    console.error('Confirm lease error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to confirm lease' });
   }
 });
 
