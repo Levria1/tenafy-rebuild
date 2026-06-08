@@ -7,6 +7,7 @@ import {
 } from 'antd';
 import {
   SaveOutlined, ReloadOutlined, PlusOutlined, EditOutlined, DeleteOutlined, WhatsAppOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
 import { chatApi } from '../../../lib/api';
@@ -36,8 +37,6 @@ export default function ChatSettingsPage() {
         form.setFieldsValue({
           enabled: Boolean(s.enabled),
           ...Object.fromEntries(CAPABILITY_LABELS.map(c => [c.key, Boolean(s.capabilities?.[c.key])])),
-          custom_instructions: s.custom_instructions || '',
-          system_prompt: s.system_prompt || '',
           max_bookings_per_session: s.max_bookings_per_session,
           max_messages_per_session: s.max_messages_per_session,
           max_messages_per_day: s.max_messages_per_day,
@@ -58,8 +57,11 @@ export default function ChatSettingsPage() {
       await chatApi.updateSettings({
         enabled: Boolean(values.enabled),
         capabilities,
-        custom_instructions: values.custom_instructions || null,
-        system_prompt: values.system_prompt || null,
+        // Legacy fields — actively cleared on every save now that the
+        // Rulebook + FAQ cards below are the source of truth. Sending null
+        // wipes any stale text so the bot doesn't silently append it.
+        custom_instructions: null,
+        system_prompt: null,
         max_bookings_per_session: values.max_bookings_per_session,
         max_messages_per_session: values.max_messages_per_session,
         max_messages_per_day: values.max_messages_per_day,
@@ -131,57 +133,6 @@ export default function ChatSettingsPage() {
           </Row>
         </Card>
 
-        <Card size="small" title="Custom instructions" style={{ marginBottom: 16 }}>
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message="Prefer the Rulebook below"
-            description="For new rules, use the Rulebook section at the bottom — entries there can be shared with TaneChat (the WhatsApp-facing bot) and managed individually. This free-text box still works and is appended for the internal bot, but it's internal-only."
-          />
-          <Paragraph type="secondary">
-            Extra rules APPENDED to the built-in system prompt. This is where you add business-
-            specific behavior without rewriting the whole prompt. The bot reads these rules at the
-            start of every conversation. Changes apply to new sessions; existing transcripts keep
-            their original instructions.
-          </Paragraph>
-          <Paragraph type="secondary" style={{ fontSize: 12 }}>
-            <strong>Examples of good rules:</strong>
-            <ul style={{ marginTop: 4, marginBottom: 0 }}>
-              <li>Always search at the unit level — recommend specific apartments, not buildings.</li>
-              <li>Mention our pet policy (no pets above 15kg) if the user asks about animals.</li>
-              <li>After business hours (6pm–8am), tell prospects we'll confirm in the morning.</li>
-              <li>When unsure about availability, always offer to capture a lead instead of guessing.</li>
-            </ul>
-          </Paragraph>
-          <Form.Item name="custom_instructions">
-            <Input.TextArea
-              rows={8}
-              placeholder="- Always search at the unit level, not property level.&#10;- If the prospect asks about parking, tell them parking is included in the rent.&#10;- Never promise a specific employee will handle the viewing — just say 'our team'."
-            />
-          </Form.Item>
-        </Card>
-
-        <Card
-          size="small"
-          title="Full system prompt override (advanced)"
-          style={{ marginBottom: 16 }}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>Rarely needed</Text>}
-        >
-          <Paragraph type="secondary">
-            If set, this REPLACES the built-in system prompt entirely (including the Mon–Sat 11–7
-            rule, confirmation guardrails, and language auto-detect). Custom instructions above
-            are ignored when this is used. Leave blank to use the built-in default + your custom
-            instructions.
-          </Paragraph>
-          <Form.Item name="system_prompt">
-            <Input.TextArea
-              rows={6}
-              placeholder="(leave blank — use Custom instructions above instead)"
-            />
-          </Form.Item>
-        </Card>
-
         <Card size="small" title="Guardrails" style={{ marginBottom: 16 }}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
@@ -224,43 +175,102 @@ export default function ChatSettingsPage() {
       </Form>
 
       <Divider />
-      <RulebookSection locked={locked} />
+      <RulesSection locked={locked} />
+      <div style={{ height: 16 }} />
+      <FAQsSection locked={locked} />
     </MainLayout>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Rulebook — manages chat_knowledge entries (the shared knowledge base).
-// Each entry auto-saves on add/edit/delete (independent of the Save settings
-// button above). The "Share with WhatsApp" toggle = public vs internal.
+// Shared hook — both Rules and FAQs sections use the same chat_knowledge
+// table; we just filter by `kind`. Each card calls load() independently
+// (single source of data in the backend, single fetch per card).
 // ---------------------------------------------------------------------------
-function RulebookSection({ locked }) {
+function useKnowledge(filterKind) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const load = useCallback(() => {
+    setLoading(true);
+    chatApi.listKnowledge()
+      .then((r) => setItems((r.data.data || []).filter(x => x.kind === filterKind)))
+      .catch(() => message.error('Failed to load'))
+      .finally(() => setLoading(false));
+  }, [filterKind]);
+  useEffect(() => { load(); }, [load]);
+  return { items, setItems, loading, load };
+}
+
+// Parse free-text pasted FAQs into [{ question, answer }] pairs.
+// Accepted formats (most common first):
+//   "Q: ...\nA: ..."                  with blank line between pairs
+//   "Question: ...\nAnswer: ..."      same idea, longer prefix
+//   "Q1. ...\n   A. ..."              numbered with optional prefix punctuation
+//   alternating-line style: question on one line, answer on next, blank line
+// Returns: [{ question, answer }, ...]. Empty entries are skipped.
+function parseFaqText(text) {
+  if (!text || !text.trim()) return [];
+  // Split into blocks separated by blank lines (one or more empty lines).
+  const blocks = String(text).split(/\n\s*\n+/).map(b => b.trim()).filter(Boolean);
+  const out = [];
+  for (const block of blocks) {
+    // Try Q:/A: style first — matches "Q:" or "Question:" or "Q1.", etc.
+    const qaMatch = block.match(
+      /^(?:Q(?:uestion)?\s*\d*[:.)\-]\s*)([\s\S]*?)(?:\n|\r\n?)\s*(?:A(?:nswer)?\s*\d*[:.)\-]\s*)([\s\S]+)$/i
+    );
+    if (qaMatch) {
+      const q = qaMatch[1].trim();
+      const a = qaMatch[2].trim();
+      if (q && a) { out.push({ question: q, answer: a }); continue; }
+    }
+    // Fall back to "first line is question, rest is answer".
+    const lines = block.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length >= 2) {
+      const q = lines[0].replace(/^\d+[.)]\s*/, '').replace(/^Q[:.]\s*/i, '');
+      const a = lines.slice(1).join(' ').replace(/^A[:.]\s*/i, '');
+      if (q && a) out.push({ question: q, answer: a });
+    }
+  }
+  return out;
+}
+
+function RulesSection({ locked }) {
+  return <KnowledgeCard kind="rule" locked={locked} />;
+}
+
+function FAQsSection({ locked }) {
+  return <KnowledgeCard kind="faq" locked={locked} />;
+}
+
+// ---------------------------------------------------------------------------
+// Shared card UI — renders either Rules or FAQs depending on `kind`.
+// FAQs get an extra "Bulk Import" button + modal with the parser above.
+// ---------------------------------------------------------------------------
+function KnowledgeCard({ kind, locked }) {
+  const isFaq = kind === 'faq';
+  const { items, setItems, loading, load } = useKnowledge(kind);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
 
-  const load = useCallback(() => {
-    setLoading(true);
-    chatApi.listKnowledge()
-      .then((r) => setItems(r.data.data || []))
-      .catch(() => message.error('Failed to load rulebook'))
-      .finally(() => setLoading(false));
-  }, []);
-  useEffect(() => { load(); }, [load]);
+  // Bulk-import (FAQ only) state
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [bulkPublic, setBulkPublic] = useState(false);
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const bulkParsed = isFaq ? parseFaqText(bulkText) : [];
 
   const openAdd = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ kind: 'rule', is_public: false, title: '', body: '' });
+    form.setFieldsValue({ is_public: false, title: '', body: '' });
     setModalOpen(true);
   };
   const openEdit = (item) => {
     setEditing(item);
     form.setFieldsValue({
-      kind: item.kind, title: item.title || '', body: item.body, is_public: item.visibility === 'public',
+      title: item.title || '', body: item.body, is_public: item.visibility === 'public',
     });
     setModalOpen(true);
   };
@@ -271,18 +281,18 @@ function RulebookSection({ locked }) {
     setSaving(true);
     try {
       const payload = {
-        kind: values.kind,
-        title: values.kind === 'faq' ? (values.title || null) : null,
+        kind,
+        title: isFaq ? (values.title || null) : null,
         body: values.body,
         visibility: values.is_public ? 'public' : 'internal',
       };
       if (editing) await chatApi.updateKnowledge(editing.id, payload);
       else await chatApi.createKnowledge(payload);
-      message.success(editing ? 'Rule updated' : 'Rule added');
+      message.success(editing ? 'Saved' : 'Added');
       setModalOpen(false);
       load();
     } catch (e) {
-      message.error(e?.response?.data?.message || 'Failed to save rule');
+      message.error(e?.response?.data?.message || 'Failed to save');
     } finally {
       setSaving(false);
     }
@@ -291,15 +301,14 @@ function RulebookSection({ locked }) {
   const handleDelete = async (item) => {
     try {
       await chatApi.deleteKnowledge(item.id);
-      message.success('Rule deleted');
+      message.success('Deleted');
       load();
     } catch (e) {
-      message.error(e?.response?.data?.message || 'Failed to delete rule');
+      message.error(e?.response?.data?.message || 'Failed to delete');
     }
   };
 
   const toggleShare = async (item, checked) => {
-    // Optimistic update
     setItems((prev) => prev.map((x) => x.id === item.id
       ? { ...x, visibility: checked ? 'public' : 'internal' } : x));
     try {
@@ -310,32 +319,55 @@ function RulebookSection({ locked }) {
     }
   };
 
+  const onBulkImport = async () => {
+    if (!bulkParsed.length) {
+      message.warning('Nothing to import — check the format below.');
+      return;
+    }
+    setBulkSaving(true);
+    try {
+      const entries = bulkParsed.map(p => ({
+        kind: 'faq',
+        title: p.question,
+        body: p.answer,
+        visibility: bulkPublic ? 'public' : 'internal',
+      }));
+      const r = await chatApi.bulkKnowledge(entries);
+      const data = r.data?.data || {};
+      const failed = (data.failures || []).length;
+      if (failed) {
+        message.warning(`Imported ${data.inserted} FAQs, ${failed} failed.`);
+      } else {
+        message.success(`Imported ${data.inserted} FAQ${data.inserted === 1 ? '' : 's'}.`);
+      }
+      setBulkOpen(false);
+      setBulkText('');
+      load();
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Bulk import failed');
+    } finally {
+      setBulkSaving(false);
+    }
+  };
+
   const columns = [
-    {
-      title: 'Type',
-      dataIndex: 'kind',
-      width: 80,
-      render: (k) => k === 'faq'
-        ? <Tag color="purple">FAQ</Tag>
-        : <Tag color="blue">Rule</Tag>,
-    },
     {
       title: 'Content',
       dataIndex: 'body',
       render: (body, item) => (
         <div>
-          {item.kind === 'faq' && item.title && (
+          {isFaq && item.title && (
             <div style={{ fontWeight: 600, marginBottom: 2 }}>Q: {item.title}</div>
           )}
-          <div style={{ color: item.kind === 'faq' ? '#555' : 'inherit' }}>
-            {item.kind === 'faq' ? `A: ${body}` : body}
+          <div style={{ color: isFaq ? '#555' : 'inherit' }}>
+            {isFaq ? `A: ${body}` : body}
           </div>
         </div>
       ),
     },
     {
       title: (
-        <Tooltip title="When on, the rule is also shared with TaneChat (the external WhatsApp-facing bot). When off, only the internal Tenafy bot sees it.">
+        <Tooltip title="When on, the entry is also shared with TaneChat (external WhatsApp-facing bot). When off, only the internal Tenafy bot sees it.">
           <span><WhatsAppOutlined /> Share with TaneChat</span>
         </Tooltip>
       ),
@@ -360,7 +392,7 @@ function RulebookSection({ locked }) {
         <Space>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(item)} disabled={locked} />
           <Popconfirm
-            title="Delete this rule?"
+            title={`Delete this ${isFaq ? 'FAQ' : 'rule'}?`}
             okText="Delete"
             okButtonProps={{ danger: true }}
             onConfirm={() => handleDelete(item)}
@@ -376,18 +408,25 @@ function RulebookSection({ locked }) {
   return (
     <Card
       size="small"
-      title="Rulebook (shared knowledge)"
+      title={isFaq ? 'FAQs' : 'Rules'}
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd} disabled={locked}>
-          Add rule
-        </Button>
+        <Space>
+          {isFaq && (
+            <Button icon={<UploadOutlined />} onClick={() => setBulkOpen(true)} disabled={locked}>
+              Bulk Import
+            </Button>
+          )}
+          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd} disabled={locked}>
+            {isFaq ? 'Add FAQ' : 'Add rule'}
+          </Button>
+        </Space>
       }
     >
       <Paragraph type="secondary">
-        The shared knowledge base both bots draw from. <strong>Rules</strong> shape how the bot
-        behaves; <strong>FAQs</strong> are answers to questions the live data can't provide.
-        Toggle <strong>Share with TaneChat</strong> to also expose a rule to the external
-        prospect-facing bot (off = internal Tenafy bot only). Changes apply to new conversations.
+        {isFaq
+          ? <span>Question-and-answer entries the bot pulls from when prospects ask things the live data can't answer. Examples: <em>"Do you allow pets?"</em>, <em>"What time can I view?"</em>.</span>
+          : <span>Behavior rules that shape how the bot responds. Examples: <em>"Always search at the unit level."</em>, <em>"Mention parking is included when asked about parking."</em></span>}
+        {' '}Toggle <strong>Share with TaneChat</strong> to also expose the entry to the external prospect-facing bot.
       </Paragraph>
       <Table
         rowKey="id"
@@ -396,11 +435,12 @@ function RulebookSection({ locked }) {
         dataSource={items}
         columns={columns}
         pagination={false}
-        locale={{ emptyText: <Empty description="No rules yet — click “Add rule” to start your rulebook." /> }}
+        locale={{ emptyText: <Empty description={isFaq ? 'No FAQs yet — click "Add FAQ" or "Bulk Import" to start.' : 'No rules yet — click "Add rule" to start.'} /> }}
       />
 
+      {/* Add / Edit modal */}
       <Modal
-        title={editing ? 'Edit rule' : 'Add rule'}
+        title={editing ? (isFaq ? 'Edit FAQ' : 'Edit rule') : (isFaq ? 'Add FAQ' : 'Add rule')}
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
@@ -409,54 +449,109 @@ function RulebookSection({ locked }) {
         destroyOnClose
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="kind" label="Type">
-            <Segmented
-              options={[
-                { label: 'Rule (behavior)', value: 'rule' },
-                { label: 'FAQ (Q & A)', value: 'faq' },
-              ]}
+          {isFaq && (
+            <Form.Item
+              name="title"
+              label="Question"
+              rules={[{ required: true, message: 'Enter the question' }]}
+            >
+              <Input placeholder="e.g. Do you allow pets?" />
+            </Form.Item>
+          )}
+          <Form.Item
+            name="body"
+            label={isFaq ? 'Answer' : 'Rule'}
+            rules={[{ required: true, message: isFaq ? 'Enter the answer' : 'Enter the rule' }]}
+          >
+            <Input.TextArea
+              rows={4}
+              placeholder={isFaq
+                ? 'e.g. Most of our buildings are pet-friendly; the team will confirm per unit.'
+                : 'e.g. Parking is included in the rent — mention it when asked.'}
             />
           </Form.Item>
-
-          <Form.Item noStyle shouldUpdate={(p, c) => p.kind !== c.kind}>
-            {({ getFieldValue }) => getFieldValue('kind') === 'faq' ? (
-              <>
-                <Form.Item
-                  name="title"
-                  label="Question"
-                  rules={[{ required: true, message: 'Enter the question' }]}
-                >
-                  <Input placeholder="e.g. Do you allow pets?" />
-                </Form.Item>
-                <Form.Item
-                  name="body"
-                  label="Answer"
-                  rules={[{ required: true, message: 'Enter the answer' }]}
-                >
-                  <Input.TextArea rows={4} placeholder="e.g. Most of our buildings are pet-friendly; the team will confirm per unit." />
-                </Form.Item>
-              </>
-            ) : (
-              <Form.Item
-                name="body"
-                label="Rule"
-                rules={[{ required: true, message: 'Enter the rule' }]}
-              >
-                <Input.TextArea rows={4} placeholder="e.g. Parking is included in the rent — mention it when asked." />
-              </Form.Item>
-            )}
-          </Form.Item>
-
           <Form.Item
             name="is_public"
             label="Share with TaneChat (prospect-facing bot)"
             valuePropName="checked"
-            extra="Off = only the internal Tenafy bot uses this rule. On = TaneChat (the external WhatsApp-facing bot) uses it too. Keep anything containing tenant or internal info OFF."
+            extra="Off = only the internal Tenafy bot uses this. On = TaneChat too. Keep anything internal-only OFF."
           >
             <Switch checkedChildren="Public" unCheckedChildren="Internal" />
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* Bulk import modal — FAQs only */}
+      {isFaq && (
+        <Modal
+          title="Bulk Import FAQs"
+          open={bulkOpen}
+          onOk={onBulkImport}
+          onCancel={() => setBulkOpen(false)}
+          confirmLoading={bulkSaving}
+          okText={`Import ${bulkParsed.length} FAQ${bulkParsed.length === 1 ? '' : 's'}`}
+          okButtonProps={{ disabled: !bulkParsed.length }}
+          width={760}
+          destroyOnClose
+        >
+          <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            Paste any Q&amp;A list below. The parser handles a few common formats — see examples
+            below. The preview updates as you type.
+          </Paragraph>
+          <details style={{ marginBottom: 8 }}>
+            <summary style={{ cursor: 'pointer', color: '#1677ff' }}>Accepted formats</summary>
+            <div style={{ marginTop: 6, padding: 12, background: '#fafafa', borderRadius: 4, fontSize: 12, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#555' }}>
+{`Format 1 — Q: / A: with blank lines
+
+Q: What time can I view?
+A: Mon–Sat 11am–7pm.
+
+Q: Do you allow pets?
+A: Pets under 15kg only.
+
+Format 2 — alternating lines
+
+What time can I view?
+Mon–Sat 11am–7pm.
+
+Do you allow pets?
+Pets under 15kg only.`}
+            </div>
+          </details>
+          <Input.TextArea
+            rows={10}
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            placeholder="Paste your FAQ list here..."
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+            <span style={{ fontSize: 13 }}>
+              Detected: <strong>{bulkParsed.length}</strong> Q&amp;A pair{bulkParsed.length === 1 ? '' : 's'}
+            </span>
+            <Space>
+              <span style={{ fontSize: 12, color: '#666' }}>Share all with TaneChat:</span>
+              <Switch
+                checked={bulkPublic}
+                onChange={setBulkPublic}
+                checkedChildren="Public"
+                unCheckedChildren="Internal"
+                size="small"
+              />
+            </Space>
+          </div>
+          {bulkParsed.length > 0 && (
+            <div style={{ marginTop: 12, maxHeight: 200, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 4, padding: 8 }}>
+              {bulkParsed.map((p, i) => (
+                <div key={i} style={{ marginBottom: 8, paddingBottom: 8, borderBottom: i < bulkParsed.length - 1 ? '1px solid #f5f5f5' : 'none' }}>
+                  <div style={{ fontWeight: 600, fontSize: 12 }}>Q: {p.question}</div>
+                  <div style={{ color: '#555', fontSize: 12 }}>A: {p.answer}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
     </Card>
   );
 }
+

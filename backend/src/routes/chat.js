@@ -613,6 +613,48 @@ router.post('/knowledge', async (req, res) => {
   }
 });
 
+// POST /knowledge/bulk — bulk-insert knowledge entries from a parsed list.
+// Body: { entries: [{ kind, title?, body, visibility? }, ...] }
+// Used by the FAQ bulk-paste UI. Each row is inserted independently; partial
+// failure is reported in the response so the user can fix and retry.
+router.post('/knowledge/bulk', async (req, res) => {
+  try {
+    if (!(await assertKnowledgeWritable(req))) {
+      return fail(res, 'Settings are locked by the platform operator.', 403);
+    }
+    const entries = Array.isArray(req.body && req.body.entries) ? req.body.entries : [];
+    if (!entries.length) return fail(res, 'No entries provided', 400);
+
+    let inserted = 0;
+    const failures = [];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i] || {};
+      const body = String(e.body || '').trim();
+      if (!body) { failures.push({ index: i, reason: 'Empty body' }); continue; }
+      const kind = KNOWLEDGE_KINDS.includes(e.kind) ? e.kind : 'rule';
+      const visibility = KNOWLEDGE_VISIBILITIES.includes(e.visibility) ? e.visibility : 'internal';
+      const title = e.title != null ? String(e.title).trim() || null : null;
+      // FAQs require a title (the question); guard rather than silently storing
+      // a titleless FAQ that would look odd in the table.
+      if (kind === 'faq' && !title) { failures.push({ index: i, reason: 'FAQ needs a question (title)' }); continue; }
+      try {
+        await req.pool.execute(
+          `INSERT INTO chat_knowledge (id, kind, title, body, visibility, status, sort_order, source)
+           VALUES (?, ?, ?, ?, ?, 1, 0, 'bulk')`,
+          [newId(), kind, title, body, visibility]
+        );
+        inserted++;
+      } catch (err) {
+        failures.push({ index: i, reason: err.message });
+      }
+    }
+    ok(res, { inserted, failures });
+  } catch (err) {
+    console.error('[chat] bulk knowledge error:', err);
+    fail(res, 'Failed to bulk import');
+  }
+});
+
 router.put('/knowledge/:id', async (req, res) => {
   try {
     if (!(await assertKnowledgeWritable(req))) {

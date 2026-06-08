@@ -543,6 +543,7 @@ export const chatApi = {
   // Rulebook (shared knowledge)
   listKnowledge:   () => api.get('/api/chat/knowledge'),
   createKnowledge: (data) => api.post('/api/chat/knowledge', data),
+  bulkKnowledge:   (entries) => api.post('/api/chat/knowledge/bulk', { entries }),
   updateKnowledge: (id, data) => api.put(`/api/chat/knowledge/${id}`, data),
   deleteKnowledge: (id) => api.delete(`/api/chat/knowledge/${id}`),
 };
