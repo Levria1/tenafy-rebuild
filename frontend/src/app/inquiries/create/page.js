@@ -29,6 +29,23 @@ export default function InquiryCreatePage() {
     }).catch(() => {});
   }, []);
 
+  const onPasteCapture = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        if (!blob) continue;
+        const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        const file = new File([blob], `pasted-${Date.now()}.${ext}`, { type: blob.type });
+        setExtractFile(file);
+        message.success('Screenshot pasted');
+        e.preventDefault();
+        return;
+      }
+    }
+  };
+
   const onExtract = async () => {
     const hasText = extractText.trim().length > 0;
     const hasImage = !!extractFile;
@@ -109,6 +126,7 @@ export default function InquiryCreatePage() {
         <Card
           size="small"
           style={{ marginBottom: 16, background: '#fafbff', borderColor: '#d6e4ff' }}
+          onPasteCapture={onPasteCapture}
           title={
             <span style={{ fontSize: 13, fontWeight: 600, color: '#1677ff' }}>
               <ThunderboltOutlined /> Smart Extract
@@ -118,7 +136,7 @@ export default function InquiryCreatePage() {
           <div style={{ marginBottom: 8 }}>
             <Input.TextArea
               rows={3}
-              placeholder="Paste a WhatsApp/Telegram/email message here (any language) — name, phone, budget, move-in date, etc."
+              placeholder="Paste a WhatsApp/Telegram/email message here (any language), or paste a screenshot (Ctrl+V)."
               value={extractText}
               onChange={(e) => setExtractText(e.target.value)}
             />

@@ -357,6 +357,10 @@ router.get('/units/search', async (req, res) => {
     const bathrooms = req.query.bathrooms !== undefined ? Number(req.query.bathrooms) : null;
     const minPrice = req.query.min_price !== undefined ? Number(req.query.min_price) : null;
     const maxPrice = req.query.max_price !== undefined ? Number(req.query.max_price) : null;
+    // Prospect's stated budget. Purely enrichment — does NOT filter (use max_price
+    // if you also want hard filtering). Drives over_budget_by / over_budget_pct
+    // per unit so chatbot rules can make budget judgements without doing math.
+    const budget = req.query.budget !== undefined ? Number(req.query.budget) : null;
     const propertyId = req.query.property_id || null;
     const cityNames = (req.query.city || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     const districtNames = (req.query.district || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -486,6 +490,16 @@ router.get('/units/search', async (req, res) => {
     }
 
     const today = new Date(moveIn);
+    // Real-world today (NOT move_in_date) — used for days_until_available so
+    // the LLM can answer "this unit opens up X days from now" rules cleanly.
+    const realToday = new Date(new Date().toISOString().split('T')[0]);
+    // Lease duration (in days) for the prospect's requested window.
+    // Pre-computed here so the LLM never has to do date math itself —
+    // rules in the chatbot rulebook can compare it directly.
+    // null when move_out_date is not provided.
+    const leaseDurationDays = moveOut
+      ? Math.max(0, Math.round((new Date(moveOut) - new Date(moveIn)) / 86400000))
+      : null;
     const enriched = filtered.map(r => {
       // current_move_out = last_lease_end_date if that lease has ended (<= move_in_date)
       let currentMoveOut = null;
@@ -535,6 +549,23 @@ router.get('/units/search', async (req, res) => {
         available_from: availableFrom,
         current_move_out: currentMoveOut,
         vacancy_gap_days: vacancyGapDays,
+        lease_duration_days: leaseDurationDays,
+        // Days from real-world today until this unit becomes free.
+        // Negative = already vacant; positive = wait this many days.
+        days_until_available: Math.round(
+          (new Date(availableFrom) - realToday) / 86400000
+        ),
+        // Budget comparables — null when no budget was passed in.
+        // over_budget_by: HKD amount over budget (negative = under budget)
+        // over_budget_pct: % over budget rounded to 1 decimal
+        over_budget_by: (budget != null && !Number.isNaN(budget) &&
+          (r.last_lease_price != null || r.rent_price_min != null))
+          ? Number(r.last_lease_price ?? r.rent_price_min) - budget
+          : null,
+        over_budget_pct: (budget != null && !Number.isNaN(budget) && budget > 0 &&
+          (r.last_lease_price != null || r.rent_price_min != null))
+          ? Math.round(((Number(r.last_lease_price ?? r.rent_price_min) - budget) / budget) * 1000) / 10
+          : null,
         listing_url: r.listing_url || null,
         description: r.amenity_detail || null,
       };
@@ -557,7 +588,14 @@ router.get('/units/search', async (req, res) => {
     }
 
     const limited = enriched.slice(0, limit);
-    ok(res, limited, { total_matches: enriched.length, move_in_date: moveIn, sort_by: sortBy });
+    ok(res, limited, {
+      total_matches: enriched.length,
+      move_in_date: moveIn,
+      move_out_date: moveOut,
+      lease_duration_days: leaseDurationDays,
+      budget: budget,
+      sort_by: sortBy,
+    });
   } catch (error) {
     console.error('Public units search error:', error);
     fail(res, 'Failed to search units');
