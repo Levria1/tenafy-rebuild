@@ -4,6 +4,78 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: E-Signature System + WhatsApp Auto-Inquiry + Chatbot Settings Refactor (2026-06-09)
+
+### Phase 1 — Lease Template System
+- **Migration** ([backend/migrations-org/003_lease_templates_and_state.sql](backend/migrations-org/003_lease_templates_and_state.sql)) — new `lease_template` + `lease_template_revision` tables; new columns on `leasing` (`template_id`, `template_version_used`, `lease_state`, `signature_status`, `signed_file_id`, `signed_at`); new column on `booking_platform` (`requires_signature`). All idempotent.
+- **Engine** ([backend/src/services/leasePdfRenderer.js](backend/src/services/leasePdfRenderer.js)) — HTML→PDF via Puppeteer with warm-browser singleton, A4 default, separate header/footer rendering. Three entry points: `renderFromTemplate` (real lease), `renderTemplatePreview` (sample data), `renderInlinePreview` (unsaved editor HTML).
+- **Variables** ([backend/src/services/leaseTemplateVariables.js](backend/src/services/leaseTemplateVariables.js)) — central registry of ~30 `{{VARIABLES}}` (TENANT_NAME, RENT_AMOUNT, DEPOSIT, etc.) with `resolve(ctx)` functions + `sample` values for preview. `substitute(html, ctx)` does literal `{{KEY}}` replacement. `publicList()` strips functions for the frontend "Insert Variable" dropdown.
+- **Routes** ([backend/src/routes/leaseTemplate.js](backend/src/routes/leaseTemplate.js)) — CRUD + `/variables` + `/preview` (inline) + `/:id/preview` (saved) + `/:id/duplicate` + `/:id/set-default`. Mounted at `/api/lease-template`.
+- **Frontend** — list page ([frontend/src/app/settings/lease-templates/page.js](frontend/src/app/settings/lease-templates/page.js)), shared editor ([frontend/src/components/LeaseTemplateEditor.jsx](frontend/src/components/LeaseTemplateEditor.jsx)) with Quill toolbar, "Insert Variable" dropdown grouped by Tenant/Landlord/Property/Lease/Misc, live PDF preview pane. Create + edit pages are thin wrappers.
+
+### Phase 2 — E-Signature System
+- **Migration** ([backend/migrations-org/004_signatures.sql](backend/migrations-org/004_signatures.sql)) — `signature_request`, `signature_party`, `signature_event`, `landlord_signature` tables + `property.default_landlord_signature_id` column.
+- **Stamping** ([backend/src/services/signatureStamper.js](backend/src/services/signatureStamper.js)) — pdf-lib adds Signatures page (tenant PNGs + auto-stamped landlord) + Certificate of Completion (signer names, emails, IPs, UAs, timestamps, SHA-256 of original PDF).
+- **Routes** ([backend/src/routes/signature.js](backend/src/routes/signature.js)) — admin CRUD + `/landlord-signatures/*` + public token endpoints `/public/:token` (load + view event), `/public/:token/pdf` (stream), `/public/:token/sign`, `/public/:token/decline`. Public routes resolve token by scanning all active orgs in master DB (`resolveTokenContext`).
+- **Public signer page** ([frontend/src/app/sign/[token]/page.js](frontend/src/app/sign/[token]/page.js)) — standalone (no MainLayout). Three signature methods in Tabs: **Draw** (`signature_pad`), **Type** (cursive fonts: Caveat, Dancing Script, Great Vibes rendered to canvas), **Upload** (PNG/JPG, max 2MB). All three output base64 PNG data URL.
+- **Review-and-send page** ([frontend/src/app/leasing/[id]/review-and-send/page.js](frontend/src/app/leasing/[id]/review-and-send/page.js)) — two-column layout: template picker + signer list + landlord-sig picker + message + expiry-days form on left; live PDF preview iframe on right. "Send for E-Signature" creates request + emails signers; "Skip — go to lease" navigates to detail without creating one.
+- **Landlord Signatures Settings** ([frontend/src/app/settings/landlord-signatures/page.js](frontend/src/app/settings/landlord-signatures/page.js)) — list page with Draw + Upload tabs for creating signatures, set-default, soft delete.
+- **E-Signature card on lease detail** ([frontend/src/app/leasing/[id]/detail/page.js](frontend/src/app/leasing/[id]/detail/page.js)) — visible when `signature_status != 'none'`. Shows status badge + "View Signed Lease" button (when `signed_file_id` set) + "Manage Request" / "Send Again" button.
+- **Email send** — fire-and-forget per party in `signature.js` createRequest; signed PDF re-emailed as attachment to all parties + creator in `finalizeRequest`.
+
+### Phase 1C — Lease State Machine
+- **`lease_state` column** on `leasing` — ENUM('pending','active'), default 'active'. Pending leases reserve the unit (overlap check applies, `unit.status=1` set) but skip all invoicing + notifications.
+- **Scheduler gating** ([backend/src/services/scheduler.js](backend/src/services/scheduler.js)) — 5 queries updated to add `AND l.lease_state = 'active'`: recurring invoices, lease expiry, check-in, check-out, renewal.
+- **`POST /api/leasing/:id/confirm`** ([backend/src/routes/leasing.js](backend/src/routes/leasing.js)) — flips pending → active, re-runs overlap check, fires deferred rent + deposit invoices.
+- **Wizard step 3 E-Signature card** ([frontend/src/app/leasing/create/page.js](frontend/src/app/leasing/create/page.js)) — 2 new checkboxes ("Send for e-signature" + "Save as Pending") that auto-tick from booking platform's `requires_signature`. Post-save redirect: e-sign ticked → `/leasing/:id/review-and-send`; else `/leasing`.
+- **PENDING badge + filter** on lease list ([frontend/src/app/leasing/page.js](frontend/src/app/leasing/page.js)) — gold tag, overrides date-based status. 5th filter radio "Pending" routes to backend `leaseState='pending'` param.
+- **Calendar yellow + `*PENDING*` prefix** ([frontend/src/app/leasing/calendar/page.js](frontend/src/app/leasing/calendar/page.js)) — pending cells render yellow (`#faad14`); `getCellLabel` + expanded view prepend `*PENDING* ` to tenant name. Also changed `Gap Between Leases` from yellow to orange (`#fa8c16`) since yellow is now reserved for Pending.
+- **`requires_signature` toggle** in Booking Platforms Settings ([frontend/src/app/settings/page.js](frontend/src/app/settings/page.js)) — Switch column; saves immediately. Backend ([backend/src/routes/bookingPlatform.js](backend/src/routes/bookingPlatform.js)) accepts the field on POST + PUT.
+
+### Inquiry Smart Extract (paste / screenshot OCR)
+- **Vision client** ([backend/src/services/visionClient.js](backend/src/services/visionClient.js)) — Google Cloud Vision API call, `DOCUMENT_TEXT_DETECTION` feature, language hints `en/zh-Hant/zh-Hans`. New env var `GOOGLE_VISION_API_KEY` (separate from existing `GOOGLE_SERVICE_ACCOUNT_KEY` which is a different auth path).
+- **Parse endpoint** ([backend/src/routes/inquiry.js](backend/src/routes/inquiry.js)) `POST /api/inquiry/parse` — multipart (text + optional image), routes screenshot through Vision OCR → combined text → MiniMax (`llmClient`) → JSON field extraction → saves screenshot to file table → returns `{ fields, screenshot_url, raw_text }`.
+- **Migration** ([backend/migrations-org/001_inquiry_screenshot.sql](backend/migrations-org/001_inquiry_screenshot.sql)) — adds `inquiry.screenshot_url`.
+- **Frontend** ([frontend/src/app/inquiries/create/page.js](frontend/src/app/inquiries/create/page.js)) — Smart Extract card at top with textarea + image upload + Extract button. On success, prefills form via `form.setFieldsValue` + holds `screenshot_url` for inclusion in the inquiry create payload.
+- **Inquiry detail page** ([frontend/src/app/inquiries/[id]/page.js](frontend/src/app/inquiries/[id]/page.js)) — new Screenshot card when `screenshot_url` set.
+
+### WhatsApp Auto-Inquiry from TaneChat
+- **Migration** ([backend/migrations-org/002_chat_session_inquiry_link.sql](backend/migrations-org/002_chat_session_inquiry_link.sql)) — new columns on `chat_session`: `inquiry_id`, `last_extracted_at`, `extract_count`. Safe against orgs without `chat_session` table (early bailout via `@table_exists` check) — fixed an initial deploy failure on a legacy test org.
+- **Extractor service** ([backend/src/services/inquiryExtractor.js](backend/src/services/inquiryExtractor.js)) — `extractInitial(transcript)` (classifies is_inquiry + extracts fields), `extractDiff(newMessages, existingInquiry)` (returns only new/changed facts), `appendDiffToNotes(notes, diff)` (Option A: one dated line per fact under `── Updates from chat ──` heading).
+- **Auto-create hook** ([backend/src/routes/public.js](backend/src/routes/public.js)) — `POST /api/public/chat/log` now fires `setImmediate(autoCreateInquiryForSession)` for new WhatsApp turns with no existing inquiry_id and no linked tenant.
+- **Daily re-extract cron** ([backend/src/services/scheduler.js](backend/src/services/scheduler.js)) — 23:00 Asia/Hong_Kong, runs `reExtractInquiriesForOrg` over sessions where inquiry.status=0 + no confirmed/completed viewing + new user messages since `last_extracted_at`. Appends to `inquiry.notes`; never touches structured fields.
+
+### Chatbot search_inquiries Tool
+- **New tool** ([backend/src/services/chatTools.js](backend/src/services/chatTools.js)) — `search_inquiries` with params `keyword`/`unit_id`/`property_id`/`status`/`source`/`limit`. Searches across name, email, phone, AND **notes** (so chat-diff log is visible). Capability: `can_search_inquiries`. Internal staff bot only — not added to TaneChat or any public surface (PII boundary).
+- **Extended `/api/inquiry/list`** with `unitId`, `propertyId`, `searchNotes=true` for the same use case.
+
+### Chatbot Settings Refactor
+- **Removed** legacy "Custom instructions" free-text card + "Full system prompt override" card from [frontend/src/app/chatbot/settings/page.js](frontend/src/app/chatbot/settings/page.js). Save now actively clears `custom_instructions` and `system_prompt` DB columns to `null` so the bot stops appending stale text.
+- **Split Rulebook into two cards**: `Rules` (kind='rule') + `FAQs` (kind='faq'). Both use a shared `useKnowledge(kind)` hook + `KnowledgeCard` component.
+- **FAQ Bulk Import** modal — paste textarea with live-preview parser. Supports `Q:/A:` format with blank lines OR alternating-line style. Backend ([backend/src/routes/chat.js](backend/src/routes/chat.js)) new `POST /api/chat/knowledge/bulk` endpoint returns `{inserted, failures}` for partial-failure visibility.
+
+### Bug Fixes
+- **Publish Invoice button missing on tenant detail** ([frontend/src/app/contacts/tenant/[id]/detail/page.js](frontend/src/app/contacts/tenant/[id]/detail/page.js)) — 3 spots used `leases.find(l => l.status === 1)` (stored column, unreliable per `bd351ce`). Fixed to `l.lease_status === 1` (date-derived). Without the fix, `activeLease` was undefined → the entire Active Lease Details card collapsed, taking the Publish button with it.
+
+### Ops / Deploy Notes
+- **NodeSource Node 22 upgrade on droplet** — Puppeteer 25 requires Node ≥22.12. Path: `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -; sudo apt install -y nodejs; pm2 kill; cd ~/tenafy-v2/backend; npm rebuild; pm2 resurrect`.
+- **Chromium system libs on droplet (Ubuntu 24.04 noble)** — `apt install -y libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64`. Note the `t64` suffix on several packages (time64 transition) — `libasound2` is now a virtual package; install `libasound2t64`.
+- **dotenv gotcha discovered** — droplet's `.env` had `OPENROUTER_API_KEY:` and `OPENROUTER_MODEL:` (colon-space) instead of `=`. dotenv silently ignores those, so the LLM fallback never actually worked. Fix: change `: ` to `=`.
+
+### Dependencies added
+- Backend: `puppeteer@^25`, `pdf-lib@^1.17`
+- Frontend: `signature_pad@^5`
+
+### Open follow-ups
+- Review-and-send PDF preview shows sample data (not real lease). Real data is used at send time, but a dedicated "render real lease + template" preview endpoint would close the gap.
+- Public signer token resolution scans all orgs (fine to ~50 orgs; past that → master DB `token → org_id` index).
+- No "Copy link" button on review-and-send — email is the only delivery channel.
+- No auto-expiry / reminder cron for signature requests (14-day expiry checked at access time only).
+- Signature-request emails are inline HTML strings in `signature.js`; could be promoted to `email_template` rows.
+- "View Chat" drawer on inquiry detail for WhatsApp-sourced inquiries — discussed, not built.
+
+---
+
 ## Session: Inquiries Module + Public Viewing Cutover (2026-05-04)
 
 ### New Inquiry table — leads separated from contacts
