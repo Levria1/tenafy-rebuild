@@ -96,6 +96,9 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   const accountingChildren = [];
   if (hasPermission('LANDLORD/ACCOUNTING_LIST')) accountingChildren.push({ key: '/accounting/accounts', label: <Link href="/accounting">Accounts</Link> });
   if (hasPermission('LANDLORD/INVOICE_LIST')) accountingChildren.push({ key: '/accounting/invoices', label: <Link href="/invoices">Invoices</Link> });
+  // Reconcile — Xero sync queue. Gated by accounting permission for now;
+  // promote to a dedicated permission if needed once usage stabilises.
+  if (hasPermission('LANDLORD/ACCOUNTING_LIST')) accountingChildren.push({ key: '/accounting/reconcile', label: <Link href="/accounting/reconcile">Reconcile (Xero)</Link> });
   if (accountingChildren.length > 0) {
     items.push({
       key: '/accounting',
@@ -230,6 +233,13 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) {
     settingsChildren.push({ key: '/settings/lease-templates', label: <Link href="/settings/lease-templates">Lease Templates</Link> });
     settingsChildren.push({ key: '/settings/landlord-signatures', label: <Link href="/settings/landlord-signatures">Landlord Signatures</Link> });
+  }
+
+  // Integrations (Xero, etc.) — own route, gated by the same permission as
+  // email templates for now. Promote to its own permission when there's
+  // more than one integration and they need separate gates.
+  if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) {
+    settingsChildren.push({ key: '/settings/integrations', label: <Link href="/settings/integrations">Integrations</Link> });
   }
 
   // API Keys — super admin only

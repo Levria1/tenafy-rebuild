@@ -56,6 +56,33 @@ export const user = {
   getUser: (id) => api.get(`/api/user/${id}`),
 };
 
+// Several components historically imported the user API as `userApi`. Both
+// names point to the same object — kept aliased so existing callers don't
+// break. Use either; new code can use `user`.
+export const userApi = user;
+
+// Xero integration. `connect` is NOT an axios call — it's a full-page redirect
+// (the browser must follow Xero's OAuth flow), so we expose a URL builder
+// instead. Other endpoints are normal API calls.
+export const xero = {
+  connectUrl: () => '/api/integrations/xero/connect',
+  status: () => api.get('/api/integrations/xero/status'),
+  disconnect: () => api.post('/api/integrations/xero/disconnect'),
+  // Account mapping — Xero bank accounts ↔ Tenafy account_setting rows.
+  getAccounts: () => api.get('/api/integrations/xero/accounts'),
+  saveAccountMap: (mappings) => api.post('/api/integrations/xero/accounts/map', { mappings }),
+  // Sync + review queue.
+  sync: (body) => api.post('/api/integrations/xero/sync', body || {}),
+  getPending: (params) => api.get('/api/integrations/xero/pending', { params }),
+  approvePending: (id, overrides) => api.post(`/api/integrations/xero/pending/${id}/approve`, overrides || {}),
+  skipPending: (id) => api.post(`/api/integrations/xero/pending/${id}/skip`),
+  // Categorization rules.
+  getRules: () => api.get('/api/integrations/xero/rules'),
+  createRule: (data) => api.post('/api/integrations/xero/rules', data),
+  updateRule: (id, data) => api.put(`/api/integrations/xero/rules/${id}`, data),
+  deleteRule: (id) => api.delete(`/api/integrations/xero/rules/${id}`),
+};
+
 export const property = {
   list: (data, params) => api.post('/api/property/list', data, { params }),
   summary: () => api.get('/api/property/summary'),

@@ -1,0 +1,385 @@
+'use client';
+
+// /accounting/reconcile — Xero reconciliation review queue.
+//
+// User flow:
+//   1. Click "Sync Now" → backend pulls Xero transactions, stages proposals.
+//   2. Each row shows: date / amount / description / proposed action + confidence.
+//   3. User reviews, optionally tweaks (category / account / linked invoice),
+//      then clicks Approve to commit, or Skip to discard.
+//
+// This is intentionally a fairly utilitarian page — it's optimised for
+// throughput (you may have 50+ rows to clear after the first sync) rather
+// than visual polish. Bulk actions can be layered on later.
+
+import { useEffect, useState, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  Card, Table, Button, Tag, message, Select, Space, Typography, Tooltip,
+  Modal, DatePicker, Alert, Popconfirm, Empty,
+} from 'antd';
+import {
+  SyncOutlined, CheckOutlined, CloseOutlined, LinkOutlined,
+  WarningOutlined, QuestionCircleOutlined, SettingOutlined,
+} from '@ant-design/icons';
+import dayjs from 'dayjs';
+import MainLayout from '../../../components/Layout';
+import { xero, accountingApi } from '../../../lib/api';
+
+const { Title, Paragraph, Text } = Typography;
+
+// Match-kind metadata — color + label + short description for the UI badge.
+const KIND_META = {
+  dedup_existing:   { color: 'cyan',    label: 'Link to existing', tip: 'Tenafy already has a matching entry on this date and amount. Approving will link them (no duplicate).' },
+  invoice_payment:  { color: 'green',   label: 'Pay invoice',      tip: 'Matched an open invoice by amount + payer name. Approving creates a payment against that invoice.' },
+  new_entry:        { color: 'blue',    label: 'New entry',        tip: 'No match found. Approving creates a fresh accounting entry in the mapped account.' },
+  ambiguous:        { color: 'orange',  label: 'Ambiguous',        tip: 'Multiple Tenafy entries match the date and amount. Pick the right one before approving.' },
+  unmapped_account: { color: 'red',     label: 'Unmapped',         tip: 'The Xero bank account isn\'t mapped to a Tenafy account yet. Set a target account on this row, or finish the mapping page first.' },
+};
+
+const CONFIDENCE_COLOR = { high: 'green', medium: 'gold', low: 'red' };
+
+export default function ReconcilePage() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [pending, setPending] = useState([]);
+  const [accounts, setAccounts] = useState([]);     // Tenafy account_setting list
+  const [categories, setCategories] = useState([]); // Tenafy category_setting list
+  const [overrides, setOverrides] = useState({});   // pending row id → { account_id, category_id }
+  const [syncRange, setSyncRange] = useState(null);
+
+  const loadPending = async () => {
+    setLoading(true);
+    try {
+      const r = await xero.getPending();
+      if (r.data?.code === 200) setPending(r.data.data.pending || []);
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Failed to load pending');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadDropdowns = async () => {
+    // Reuse the existing accounting settings endpoints — same data the
+    // accounting page's dropdowns use.
+    try {
+      const [accountsRes, categoriesRes] = await Promise.all([
+        accountingApi.getAccounts().catch(() => null),
+        accountingApi.getCategories().catch(() => null),
+      ]);
+      if (accountsRes?.data?.code === 200) {
+        const data = accountsRes.data.data;
+        setAccounts(Array.isArray(data) ? data : (data?.content || []));
+      }
+      if (categoriesRes?.data?.code === 200) {
+        const data = categoriesRes.data.data;
+        setCategories(Array.isArray(data) ? data : (data?.content || []));
+      }
+    } catch (e) {
+      // Non-fatal — page still works without these; user can still approve
+      // dedup_existing rows that don't need a category override.
+    }
+  };
+
+  useEffect(() => { loadPending(); loadDropdowns(); }, []);
+
+  const onSync = async () => {
+    setSyncing(true);
+    try {
+      const body = {};
+      if (syncRange?.[0]) body.since_date = syncRange[0].format('YYYY-MM-DD');
+      if (syncRange?.[1]) body.until_date = syncRange[1].format('YYYY-MM-DD');
+      const r = await xero.sync(body);
+      if (r.data?.code === 200) {
+        const s = r.data.data;
+        message.success(
+          `Pulled ${s.pulled}, staged ${s.staged}, skipped ${s.skipped_already_imported} already-imported${s.errors ? `, ${s.errors} errors` : ''}.`
+        );
+        await loadPending();
+      } else {
+        message.error(r.data?.message || 'Sync failed');
+      }
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const updateOverride = (id, field, value) => {
+    setOverrides(prev => ({
+      ...prev,
+      [id]: { ...(prev[id] || {}), [field]: value },
+    }));
+  };
+
+  const onApprove = async (row) => {
+    try {
+      const body = overrides[row.id] || {};
+      const r = await xero.approvePending(row.id, body);
+      if (r.data?.code === 200) {
+        message.success('Committed.');
+        setPending(p => p.filter(x => x.id !== row.id));
+      } else {
+        message.error(r.data?.message || 'Approve failed');
+      }
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Approve failed');
+    }
+  };
+
+  const onSkip = async (row) => {
+    try {
+      const r = await xero.skipPending(row.id);
+      if (r.data?.code === 200) {
+        setPending(p => p.filter(x => x.id !== row.id));
+      } else {
+        message.error(r.data?.message || 'Skip failed');
+      }
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Skip failed');
+    }
+  };
+
+  // Group pending rows by Xero bank account for sectioned rendering.
+  const grouped = useMemo(() => {
+    const buckets = {};
+    for (const row of pending) {
+      const key = row.xero_account_id || '__unknown__';
+      if (!buckets[key]) buckets[key] = { name: row.xero_account_name || '(unmapped account)', rows: [] };
+      buckets[key].rows.push(row);
+    }
+    return buckets;
+  }, [pending]);
+
+  const renderProposal = (row) => {
+    const kind = KIND_META[row.match_kind] || { color: 'default', label: row.match_kind };
+    const ov = overrides[row.id] || {};
+    const accountId  = ov.account_id  || row.proposed_account_id;
+    const categoryId = ov.category_id || row.proposed_category_id;
+
+    // Per match_kind, render slightly different action chrome.
+    if (row.match_kind === 'dedup_existing') {
+      return (
+        <div>
+          <div style={{ fontSize: 12, color: '#666' }}>
+            Will link to existing accounting entry. No duplicate created.
+          </div>
+        </div>
+      );
+    }
+    if (row.match_kind === 'invoice_payment') {
+      return (
+        <div>
+          <div style={{ fontSize: 12 }}>
+            <Text strong>Invoice {row.proposed_invoice_code}</Text>
+            {row.proposed_tenant_name ? <> · {row.proposed_tenant_name}</> : null}
+          </div>
+          <div style={{ marginTop: 4 }}>
+            <Select
+              size="small"
+              showSearch
+              placeholder="Category"
+              style={{ width: 200 }}
+              value={categoryId || undefined}
+              onChange={v => updateOverride(row.id, 'category_id', v)}
+              options={categories.map(c => ({ label: c.name, value: String(c.id) }))}
+              filterOption={(input, option) =>
+                (option?.label || '').toLowerCase().includes(input.toLowerCase())
+              }
+            />
+          </div>
+        </div>
+      );
+    }
+    if (row.match_kind === 'ambiguous') {
+      return (
+        <div style={{ color: '#fa8c16' }}>
+          <WarningOutlined /> {row.ambiguous_candidates?.length || 0} matching Tenafy
+          entries — pick one to link (UI coming next phase).
+        </div>
+      );
+    }
+    // new_entry or unmapped_account — needs account + category override
+    return (
+      <div>
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Select
+            size="small"
+            showSearch
+            placeholder="Account (required)"
+            style={{ width: 220 }}
+            value={accountId || undefined}
+            onChange={v => updateOverride(row.id, 'account_id', v)}
+            options={accounts.map(a => ({ label: a.name, value: String(a.id) }))}
+            filterOption={(input, option) =>
+              (option?.label || '').toLowerCase().includes(input.toLowerCase())
+            }
+            status={!accountId ? 'warning' : undefined}
+          />
+          <Select
+            size="small"
+            showSearch
+            placeholder="Category"
+            style={{ width: 220 }}
+            value={categoryId || undefined}
+            onChange={v => updateOverride(row.id, 'category_id', v)}
+            options={categories.map(c => ({ label: c.name, value: String(c.id) }))}
+            filterOption={(input, option) =>
+              (option?.label || '').toLowerCase().includes(input.toLowerCase())
+            }
+          />
+        </Space>
+      </div>
+    );
+  };
+
+  const columns = [
+    {
+      title: 'Date', dataIndex: 'transaction_date', width: 110,
+      render: v => v ? dayjs(v).format('YYYY-MM-DD') : '-',
+    },
+    {
+      title: 'Amount', dataIndex: 'amount', width: 120, align: 'right',
+      render: v => {
+        const n = Number(v);
+        const display = `HK$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        return n < 0 ? <span style={{ color: '#ff4d4f' }}>-{display}</span> : <span style={{ color: '#52c41a' }}>{display}</span>;
+      },
+    },
+    {
+      title: 'Description', key: 'desc',
+      render: (_, row) => (
+        <div>
+          <div>{row.contact_name || row.reference || '(no contact)'}</div>
+          {row.description && row.description !== row.reference && (
+            <div style={{ fontSize: 11, color: '#999' }}>{row.description}</div>
+          )}
+        </div>
+      ),
+    },
+    {
+      title: 'Proposed Action', key: 'action_proposed', width: 160,
+      render: (_, row) => {
+        const kind = KIND_META[row.match_kind] || { color: 'default', label: row.match_kind, tip: '' };
+        return (
+          <Tooltip title={kind.tip}>
+            <Tag color={kind.color}>{kind.label}</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: 'Details / Override', key: 'details',
+      render: (_, row) => renderProposal(row),
+    },
+    {
+      title: 'Confidence', dataIndex: 'confidence', width: 100,
+      render: v => <Tag color={CONFIDENCE_COLOR[v] || 'default'}>{v}</Tag>,
+    },
+    {
+      title: 'Action', key: 'act', width: 150, fixed: 'right',
+      render: (_, row) => (
+        <Space size={4}>
+          <Button
+            type="primary"
+            size="small"
+            icon={<CheckOutlined />}
+            onClick={() => onApprove(row)}
+            disabled={row.match_kind === 'ambiguous'}
+          >
+            Approve
+          </Button>
+          <Popconfirm
+            title="Skip this transaction?"
+            description="It will be marked skipped and won't reappear in this queue. You can re-stage by clearing it from the staging table."
+            onConfirm={() => onSkip(row)}
+          >
+            <Button size="small" icon={<CloseOutlined />}>Skip</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <MainLayout>
+      <div style={{ padding: '0 0 24px 0' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 12 }}>
+          <Title level={3} style={{ margin: 0 }}>Xero Reconciliation</Title>
+          <Space wrap>
+            <Button
+              icon={<SettingOutlined />}
+              onClick={() => router.push('/settings/integrations/xero/accounts')}
+            >
+              Account mapping
+            </Button>
+            <DatePicker.RangePicker
+              placeholder={['Sync from', 'Sync to']}
+              value={syncRange}
+              onChange={setSyncRange}
+              format="YYYY-MM-DD"
+              allowEmpty={[true, true]}
+              style={{ width: 280 }}
+            />
+            <Button
+              type="primary"
+              icon={<SyncOutlined spin={syncing} />}
+              loading={syncing}
+              onClick={onSync}
+            >
+              Sync Now
+            </Button>
+          </Space>
+        </div>
+
+        <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+          Pull bank transactions from Xero and review the proposals below.
+          Nothing commits to Tenafy until you click <strong>Approve</strong>. The default
+          sync range is the last 30 days; pick a specific range above to control it.
+        </Paragraph>
+
+        {loading ? (
+          <Card><Text type="secondary">Loading…</Text></Card>
+        ) : pending.length === 0 ? (
+          <Empty
+            description={
+              <div>
+                <div style={{ marginBottom: 4 }}>No pending transactions to review.</div>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  Click "Sync Now" to pull the latest from Xero.
+                </Text>
+              </div>
+            }
+          />
+        ) : (
+          Object.entries(grouped).map(([xeroAccountId, group]) => (
+            <Card
+              key={xeroAccountId}
+              size="small"
+              style={{ marginBottom: 16 }}
+              title={
+                <span>
+                  <LinkOutlined style={{ marginRight: 6 }} />
+                  {group.name}
+                  <Tag style={{ marginLeft: 8 }}>{group.rows.length} pending</Tag>
+                </span>
+              }
+            >
+              <Table
+                rowKey="id"
+                columns={columns}
+                dataSource={group.rows}
+                pagination={false}
+                size="small"
+                scroll={{ x: 1100 }}
+              />
+            </Card>
+          ))
+        )}
+      </div>
+    </MainLayout>
+  );
+}

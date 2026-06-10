@@ -231,6 +231,24 @@ export default function LeasingDetailPage() {
           );
         }
       },
+      {
+        // Pay button — opens the same payment-create page the tenant detail
+        // page uses. Only shown for unpaid invoices (status !== 1). Status 1
+        // is Paid; we display "-" instead of a redundant Pay action.
+        title: 'Action', key: 'action', width: 80, align: 'center', fixed: 'right',
+        render: (_, row) => {
+          if (Number(row.status) === 1) return <span style={{ color: '#ccc' }}>-</span>;
+          return (
+            <Button
+              type="link"
+              size="small"
+              onClick={() => router.push(`/accounting/invoices/payment/create?invoiceId=${row.id}`)}
+            >
+              Pay
+            </Button>
+          );
+        }
+      },
     ];
 
     const labelStyle = { fontWeight: 'bold', width: isMobile ? 140 : 220, padding: '6px 12px', fontSize: isMobile ? 12 : undefined };
