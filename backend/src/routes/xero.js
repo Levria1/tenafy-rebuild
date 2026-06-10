@@ -226,15 +226,17 @@ router.get('/accounts', authenticate, async (req, res) => {
     }
 
     // Tenafy accounts for the dropdown.
+    // NOTE: account_setting has no `type` column — just id/name/org_id/enabled.
+    // The dropdown only needs id+name to render. `enabled` is BIT(1) so we
+    // compare against b'1' to be safe across drivers.
     const [tenafyAccounts] = await req.pool.execute(
-      `SELECT id, name, type FROM account_setting
-        WHERE org_id = ? AND enabled = 1 ORDER BY name`,
+      `SELECT id, name FROM account_setting
+        WHERE org_id = ? AND enabled = b'1' ORDER BY name`,
       [orgId]
     );
     const tenafy_accounts = tenafyAccounts.map(a => ({
       id: String(a.id),
       name: a.name,
-      type: a.type,
     }));
 
     return ok(res, { xero_accounts, mappings, tenafy_accounts });
