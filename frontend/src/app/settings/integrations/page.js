@@ -6,7 +6,7 @@
 // later (Stripe, etc.) — each one is a self-contained card with its own
 // status / connect / disconnect actions.
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, Button, Tag, message, Popconfirm, Spin, Typography } from 'antd';
 import {
@@ -19,7 +19,19 @@ import { xero } from '../../../lib/api';
 
 const { Title, Paragraph, Text } = Typography;
 
-export default function IntegrationsPage() {
+// Next.js 14 requires useSearchParams() to be inside a Suspense boundary,
+// otherwise static prerendering (`next build`) fails with a "Read more:
+// https://nextjs.org/docs/messages/prerender-error". Same pattern the
+// tenant create page uses.
+export default function IntegrationsPageWrapper() {
+  return (
+    <Suspense fallback={<div />}>
+      <IntegrationsPage />
+    </Suspense>
+  );
+}
+
+function IntegrationsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [xeroStatus, setXeroStatus] = useState(null);
