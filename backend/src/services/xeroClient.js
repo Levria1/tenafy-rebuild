@@ -30,10 +30,10 @@ const XERO_API_BASE         = 'https://api.xero.com/api.xro/2.0';
 const REFRESH_LEEWAY_SECONDS = 60; // refresh when <60s remaining on access_token
 
 const SCOPES = [
-  'offline_access',                      // required for refresh_token
-  'accounting.transactions.read',        // bank transactions
-  'accounting.contacts.read',            // payer name → tenant matching
-  'accounting.settings.read',            // chart of accounts (bank accounts list)
+  'offline_access',                          // required for refresh_token
+  'accounting.banktransactions.read',        // bank transactions
+  'accounting.contacts.read',                // payer name → tenant matching
+  'accounting.settings.read',                // chart of accounts (bank accounts list)
 ];
 
 // ───────────────────────────────────────────────────────────────────────────
