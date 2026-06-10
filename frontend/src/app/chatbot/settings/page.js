@@ -20,6 +20,12 @@ const CAPABILITY_LABELS = [
   { key: 'can_answer_pricing', label: 'Answer pricing questions', description: 'Bot can quote rent, deposits, utility costs' },
   { key: 'can_book_viewings', label: 'Book viewings', description: 'Bot can create viewing bookings (with explicit user confirmation)' },
   { key: 'can_capture_leads', label: 'Capture leads', description: 'Bot can save contact info as a prospect in the contacts list' },
+  // Internal-staff-only tools. Off these for any bot exposed to prospects (e.g. TaneChat).
+  { key: 'can_search_inquiries', label: 'Search inquiries (PII)', description: 'Bot can look up prospects by name, phone, budget, or topic mentioned in chat history' },
+  { key: 'can_search_leases',    label: 'Search leases (PII)',    description: 'Bot can find current/past/expiring leases by tenant, unit, or property' },
+  { key: 'can_search_invoices',  label: 'Search invoices (PII)',  description: 'Bot can answer "who\'s behind on rent?" and pull outstanding/overdue balances' },
+  { key: 'can_search_services',  label: 'Search service requests', description: 'Bot can find open maintenance jobs, AC issues, vendor assignments' },
+  { key: 'can_search_documents', label: 'Search lease documents', description: 'Bot can find unsigned leases, lease templates, signature status' },
 ];
 
 export default function ChatSettingsPage() {

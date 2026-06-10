@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Table, Input, Button, Space, Select, Tag, Card, Empty, message,
-  Popconfirm, Typography, Tooltip, Switch,
+  Popconfirm, Typography, Tooltip, Switch, DatePicker,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, UserAddOutlined, CalendarOutlined,
@@ -33,6 +33,9 @@ export default function InquiriesPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [leadSourceFilter, setLeadSourceFilter] = useState('');
+  // Desired-move-in date range filter — null when not active.
+  // [dayjs|null, dayjs|null] from the RangePicker.
+  const [desiredRange, setDesiredRange] = useState(null);
   const [leadSources, setLeadSources] = useState([]);
   const [viewingModal, setViewingModal] = useState({ open: false, inquiry: null });
   const [showDelete, setShowDelete] = useState(false);
@@ -50,6 +53,8 @@ export default function InquiriesPage() {
       if (search) params.search = search;
       if (statusFilter !== '') params.status = statusFilter;
       if (leadSourceFilter) params.leadSourceId = leadSourceFilter;
+      if (desiredRange?.[0]) params.desiredStartFrom = desiredRange[0].format('YYYY-MM-DD');
+      if (desiredRange?.[1]) params.desiredStartTo   = desiredRange[1].format('YYYY-MM-DD');
       const r = await inquiry.list(params);
       if (r.data?.code === 200) {
         setData(r.data.data.content || []);
@@ -60,7 +65,7 @@ export default function InquiriesPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, search, statusFilter, leadSourceFilter]);
+  }, [page, pageSize, search, statusFilter, leadSourceFilter, desiredRange]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -261,6 +266,18 @@ export default function InquiriesPage() {
             value={leadSourceFilter || undefined}
             onChange={(v) => { setPage(1); setLeadSourceFilter(v || ''); }}
             options={leadSources.map(s => ({ label: s.name, value: String(s.id) }))}
+          />
+          {/* Desired-move-in date range. Filters inquiries by the prospect's
+              stated desired_start_date — useful for triaging prospects who
+              want to move in a particular month. Either end can be left blank
+              for an open-ended range. */}
+          <DatePicker.RangePicker
+            placeholder={['Move-in from', 'Move-in to']}
+            value={desiredRange}
+            onChange={(v) => { setPage(1); setDesiredRange(v); }}
+            format="YYYY-MM-DD"
+            allowEmpty={[true, true]}
+            style={{ width: 280 }}
           />
           <span style={{ marginLeft: 8, fontSize: 12, color: '#666' }}>
             <Switch size="small" checked={showDelete} onChange={setShowDelete} style={{ marginRight: 6 }} />

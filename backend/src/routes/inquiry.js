@@ -59,6 +59,7 @@ router.get('/list', async (req, res) => {
     const {
       search, status, leadSourceId, source,
       unitId, propertyId, searchNotes,
+      desiredStartFrom, desiredStartTo,
     } = req.query;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
@@ -106,6 +107,17 @@ router.get('/list', async (req, res) => {
     if (propertyId) {
       where += ' AND i.property_id = ?';
       params.push(propertyId);
+    }
+    // Desired-move-in date range. Use this to triage prospects by when they
+    // want to move in (e.g. "who's looking to move in July?"). Inclusive on
+    // both ends; either bound can be omitted.
+    if (desiredStartFrom) {
+      where += ' AND i.desired_start_date >= ?';
+      params.push(desiredStartFrom);
+    }
+    if (desiredStartTo) {
+      where += ' AND i.desired_start_date <= ?';
+      params.push(desiredStartTo);
     }
 
     const [rows] = await req.pool.execute(

@@ -683,6 +683,473 @@ const search_inquiries = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Tool: search_leases
+// Find leases (current, upcoming, or past) by tenant name, unit, property, or
+// status. The status here is DATE-DERIVED, not the unreliable `leasing.status`
+// column — see bd351ce. Internal staff bot only (tenant PII).
+// ---------------------------------------------------------------------------
+const search_leases = {
+  cap: 'can_search_leases',
+  definition: {
+    type: 'function',
+    function: {
+      name: 'search_leases',
+      description:
+        'Search current/past/upcoming leases. Use when staff asks who is renting a unit, ' +
+        "when a lease expires, who's on a month-to-month, leases for a specific tenant or " +
+        'property, or anything lease-related. Returns lease_no, tenant name, unit, ' +
+        'property, dates, rent, deposit, contract type, and computed lease_status ' +
+        '(active / upcoming / past). The contract_type field is the lease intent ' +
+        '(1=MR may-renew, 2=MTM month-to-month, 3=NR not-renewing, 4=UC unconfirmed). ' +
+        'Pair with `expiring_within_days` to triage renewals.',
+      parameters: {
+        type: 'object',
+        properties: {
+          keyword:              { type: 'string',  description: 'Free-text across tenant first/last/company name, lease_no, and lease note.' },
+          unit_id:              { type: 'string',  description: 'Restrict to leases on this unit id.' },
+          property_id:          { type: 'string',  description: 'Restrict to leases on units within this property id.' },
+          tenant_id:            { type: 'string',  description: 'Restrict to leases for this tenant id.' },
+          status:               { type: 'string',  description: "Date-derived: 'active' (today is inside the lease span), 'upcoming' (start is future), 'past' (end is past). Default: any." },
+          lease_type:           { type: 'integer', description: '0=fixed, 1=month-to-month. Default: any.' },
+          contract_type:        { type: 'integer', description: '1=MR, 2=MTM, 3=NR, 4=UC. Default: any.' },
+          expiring_within_days: { type: 'integer', description: "Only leases whose end_date falls within the next N days from today (for renewal triage)." },
+          limit:                { type: 'integer', description: 'Max rows. Default 20, max 50.' },
+        },
+      },
+    },
+  },
+  async execute(ctx, args) {
+    const orgId = ctx.orgId;
+    const limit = clampLimit(args.limit, 20, 50);
+
+    let where = "l.deleted_at IS NULL AND p.org_id = ?";
+    const params = [orgId];
+
+    if (args.keyword) {
+      const s = '%' + String(args.keyword).trim() + '%';
+      where += ` AND (t.first_name LIKE ? OR t.last_name LIKE ?
+                     OR t.company_name LIKE ? OR l.lease_no LIKE ?
+                     OR l.note LIKE ?)`;
+      params.push(s, s, s, s, s);
+    }
+    if (args.unit_id)     { where += ' AND l.unit_id = ?';     params.push(str(args.unit_id)); }
+    if (args.property_id) { where += ' AND u.property_id = ?'; params.push(str(args.property_id)); }
+    if (args.tenant_id)   { where += ' AND l.tenant_id = ?';   params.push(str(args.tenant_id)); }
+    if (Number.isInteger(args.lease_type))    { where += ' AND l.type = ?';          params.push(args.lease_type); }
+    if (Number.isInteger(args.contract_type)) { where += ' AND l.contract_type = ?'; params.push(args.contract_type); }
+
+    // Date-derived status filter — keeps the LLM honest about what "active" means
+    if (args.status === 'active') {
+      where += ' AND l.start_date <= CURDATE() AND (l.end_date IS NULL OR l.end_date >= CURDATE())';
+    } else if (args.status === 'upcoming') {
+      where += ' AND l.start_date > CURDATE()';
+    } else if (args.status === 'past') {
+      where += ' AND l.end_date IS NOT NULL AND l.end_date < CURDATE()';
+    }
+    if (Number.isInteger(args.expiring_within_days)) {
+      where += ' AND l.end_date IS NOT NULL AND l.end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL ? DAY)';
+      params.push(args.expiring_within_days);
+    }
+
+    const [rows] = await ctx.pool.execute(
+      `SELECT l.id, l.lease_no, l.amount AS rent, l.deposit, l.type, l.contract_type, l.note,
+              l.invoicing,
+              DATE_FORMAT(l.start_date, '%Y-%m-%d') AS start_date,
+              DATE_FORMAT(l.end_date,   '%Y-%m-%d') AS end_date,
+              DATEDIFF(l.end_date, CURDATE()) AS days_until_end,
+              CASE
+                WHEN l.start_date > CURDATE() THEN 'upcoming'
+                WHEN l.end_date IS NOT NULL AND l.end_date < CURDATE() THEN 'past'
+                ELSE 'active'
+              END AS lease_status,
+              t.id AS tenant_id,
+              CASE WHEN t.type = 1 THEN t.company_name
+                   ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
+              END AS tenant_name,
+              t.phone AS tenant_phone, t.email AS tenant_email,
+              u.id AS unit_id, u.name AS unit_name,
+              p.id AS property_id, p.display_name AS property_name
+         FROM leasing l
+         LEFT JOIN tenant   t ON l.tenant_id = t.id
+         LEFT JOIN unit     u ON l.unit_id = u.id
+         LEFT JOIN property p ON u.property_id = p.id
+        WHERE ${where}
+        ORDER BY l.start_date DESC
+        LIMIT ${limit}`,
+      params
+    );
+
+    const TYPE = { 0: 'fixed', 1: 'month-to-month' };
+    const CONTRACT = { 1: 'MR (may renew)', 2: 'MTM (month-to-month)', 3: 'NR (not renewing)', 4: 'UC (unconfirmed)' };
+    return {
+      count: rows.length,
+      leases: rows.map(r => ({
+        id: String(r.id),
+        lease_no: r.lease_no,
+        tenant_id: r.tenant_id ? String(r.tenant_id) : null,
+        tenant_name: r.tenant_name?.trim() || '(no tenant)',
+        tenant_phone: r.tenant_phone,
+        tenant_email: r.tenant_email,
+        property_id: r.property_id ? String(r.property_id) : null,
+        property_name: r.property_name,
+        unit_id: r.unit_id ? String(r.unit_id) : null,
+        unit_name: r.unit_name,
+        start_date: r.start_date,
+        end_date: r.end_date,
+        days_until_end: r.days_until_end,
+        lease_status: r.lease_status,
+        lease_type: TYPE[r.type] || String(r.type),
+        contract_type: CONTRACT[r.contract_type] || (r.contract_type != null ? String(r.contract_type) : null),
+        rent: r.rent != null ? Number(r.rent) : null,
+        deposit: r.deposit != null ? Number(r.deposit) : null,
+        invoicing: r.invoicing,
+        note: r.note,
+      })),
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: search_invoices
+// Outstanding rent, payment history, overdue. Internal staff bot only.
+// ---------------------------------------------------------------------------
+const search_invoices = {
+  cap: 'can_search_invoices',
+  definition: {
+    type: 'function',
+    function: {
+      name: 'search_invoices',
+      description:
+        "Search invoices. Use when staff asks who's behind on rent, what's outstanding, " +
+        'overdue invoices, payment history, or invoices for a specific tenant/unit/property/' +
+        'date range. Returns invoice_code, amount, due_on, status, days_overdue, and ' +
+        'category. Status: 0=Open, 1=Paid, 2=Overdue. Pair `overdue_only=true` for the ' +
+        '"who owes us money" question.',
+      parameters: {
+        type: 'object',
+        properties: {
+          keyword:        { type: 'string',  description: 'Free-text across tenant name, invoice_code, and invoice note.' },
+          tenant_id:      { type: 'string',  description: 'Restrict to one tenant.' },
+          unit_id:        { type: 'string',  description: 'Restrict to one unit.' },
+          property_id:    { type: 'string',  description: 'Restrict to one property.' },
+          leasing_id:     { type: 'string',  description: 'Restrict to one lease.' },
+          status:         { type: 'integer', description: '0=Open, 1=Paid, 2=Overdue. Default: any.' },
+          overdue_only:   { type: 'boolean', description: 'true → only invoices that are open AND past due (regardless of stored status).' },
+          due_from:       { type: 'string',  description: 'Earliest due_on (YYYY-MM-DD inclusive).' },
+          due_to:         { type: 'string',  description: 'Latest due_on (YYYY-MM-DD inclusive).' },
+          min_amount:     { type: 'number',  description: 'Only invoices with amount >= this.' },
+          category_name:  { type: 'string',  description: 'Category name substring (e.g. "Rental", "Deposit", "Stamp").' },
+          limit:          { type: 'integer', description: 'Max rows. Default 20, max 50.' },
+        },
+      },
+    },
+  },
+  async execute(ctx, args) {
+    const orgId = ctx.orgId;
+    const limit = clampLimit(args.limit, 20, 50);
+
+    let where = 'i.org_id = ? AND i.deleted_at IS NULL';
+    const params = [orgId];
+
+    if (args.keyword) {
+      const s = '%' + String(args.keyword).trim() + '%';
+      where += ` AND (t.first_name LIKE ? OR t.last_name LIKE ?
+                     OR t.company_name LIKE ? OR i.invoice_code LIKE ?
+                     OR i.note LIKE ?)`;
+      params.push(s, s, s, s, s);
+    }
+    if (args.tenant_id)   { where += ' AND i.tenant_id = ?';   params.push(str(args.tenant_id)); }
+    if (args.unit_id)     { where += ' AND i.unit_id = ?';     params.push(str(args.unit_id)); }
+    if (args.property_id) { where += ' AND i.property_id = ?'; params.push(str(args.property_id)); }
+    if (args.leasing_id)  { where += ' AND i.leasing_id = ?';  params.push(str(args.leasing_id)); }
+    if (Number.isInteger(args.status)) { where += ' AND i.status = ?'; params.push(args.status); }
+    if (args.overdue_only) {
+      where += ' AND i.status != 1 AND i.due_on < CURDATE()';
+    }
+    if (args.due_from) { where += ' AND i.due_on >= ?'; params.push(args.due_from); }
+    if (args.due_to)   { where += ' AND i.due_on <= ?'; params.push(args.due_to); }
+    if (typeof args.min_amount === 'number') { where += ' AND i.amount >= ?'; params.push(args.min_amount); }
+    if (args.category_name) {
+      where += ' AND c.name LIKE ?';
+      params.push('%' + String(args.category_name).trim() + '%');
+    }
+
+    const [rows] = await ctx.pool.execute(
+      `SELECT i.id, i.invoice_code, i.amount, i.note, i.status, i.type,
+              DATE_FORMAT(i.due_on, '%Y-%m-%d') AS due_on,
+              DATEDIFF(CURDATE(), i.due_on) AS days_overdue,
+              c.name AS category_name,
+              t.id AS tenant_id,
+              CASE WHEN t.type = 1 THEN t.company_name
+                   ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
+              END AS tenant_name,
+              u.id AS unit_id, u.name AS unit_name,
+              p.id AS property_id, p.display_name AS property_name,
+              l.lease_no
+         FROM invoice i
+         LEFT JOIN tenant   t ON i.tenant_id = t.id
+         LEFT JOIN unit     u ON i.unit_id = u.id
+         LEFT JOIN property p ON i.property_id = p.id
+         LEFT JOIN leasing  l ON i.leasing_id = l.id
+         LEFT JOIN category_setting c ON i.category = c.id
+        WHERE ${where}
+        ORDER BY i.due_on DESC
+        LIMIT ${limit}`,
+      params
+    );
+
+    const STATUS = { 0: 'Open', 1: 'Paid', 2: 'Overdue' };
+    const FLOW = { 0: 'Inflow', 1: 'Outflow' };
+    return {
+      count: rows.length,
+      invoices: rows.map(r => ({
+        id: String(r.id),
+        invoice_code: r.invoice_code,
+        amount: r.amount != null ? Number(r.amount) : null,
+        due_on: r.due_on,
+        days_overdue: r.days_overdue > 0 && r.status !== 1 ? r.days_overdue : 0,
+        status: STATUS[r.status] || String(r.status),
+        flow: FLOW[r.type] || String(r.type),
+        category: r.category_name,
+        tenant_id: r.tenant_id ? String(r.tenant_id) : null,
+        tenant_name: r.tenant_name?.trim() || '(no tenant)',
+        property_name: r.property_name,
+        unit_name: r.unit_name,
+        lease_no: r.lease_no,
+        note: r.note,
+      })),
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: search_services
+// Maintenance/service requests. Internal staff bot only.
+// ---------------------------------------------------------------------------
+const search_services = {
+  cap: 'can_search_services',
+  definition: {
+    type: 'function',
+    function: {
+      name: 'search_services',
+      description:
+        'Search maintenance/service requests. Use when staff asks about open jobs, ' +
+        'open repairs, who is fixing what, AC issues, plumbing, things broken at unit X, ' +
+        'or pending vendor work. Returns service code, unit/property, category, note, ' +
+        'status, priority, assignee name, dates. Searches inside `note` and `additional_info` ' +
+        'when `keyword` is passed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          keyword:      { type: 'string',  description: 'Free-text across code, note, and additional_info.' },
+          unit_id:      { type: 'string',  description: 'Restrict to one unit.' },
+          property_id:  { type: 'string',  description: 'Restrict to one property (joined through unit).' },
+          category:     { type: 'string',  description: 'Service category name (substring match), e.g. "AC", "Plumbing".' },
+          status:       { type: 'integer', description: 'Filter by service status code. Omit for any.' },
+          open_only:    { type: 'boolean', description: 'true → exclude completed/closed (status != 2 and != 3).' },
+          priority:     { type: 'string',  description: 'Priority value (e.g. "high", "low", "urgent" — matches stored value).' },
+          since:        { type: 'string',  description: 'Only services created on/after this date (YYYY-MM-DD).' },
+          limit:        { type: 'integer', description: 'Max rows. Default 20, max 50.' },
+        },
+      },
+    },
+  },
+  async execute(ctx, args) {
+    const orgId = ctx.orgId;
+    const limit = clampLimit(args.limit, 20, 50);
+
+    let where = 's.org_id = ? AND s.deleted_at IS NULL';
+    const params = [orgId];
+
+    if (args.keyword) {
+      const s = '%' + String(args.keyword).trim() + '%';
+      where += ` AND (s.code LIKE ? OR s.note LIKE ? OR s.additional_info LIKE ? OR s.sub_category LIKE ?)`;
+      params.push(s, s, s, s);
+    }
+    if (args.unit_id)     { where += ' AND s.unit_id = ?';     params.push(str(args.unit_id)); }
+    if (args.property_id) { where += ' AND u.property_id = ?'; params.push(str(args.property_id)); }
+    if (args.category)    { where += ' AND s.category LIKE ?'; params.push('%' + String(args.category).trim() + '%'); }
+    if (Number.isInteger(args.status)) { where += ' AND s.status = ?'; params.push(args.status); }
+    if (args.open_only)   { where += ' AND s.status NOT IN (2, 3)'; }
+    if (args.priority)    { where += ' AND s.priority = ?'; params.push(String(args.priority)); }
+    if (args.since)       { where += ' AND s.created_at >= ?'; params.push(args.since); }
+
+    const [rows] = await ctx.pool.execute(
+      `SELECT s.id, s.code, s.category, s.sub_category, s.note, s.additional_info,
+              s.status, s.priority,
+              DATE_FORMAT(s.created_at, '%Y-%m-%d') AS created_on,
+              DATE_FORMAT(s.service_date_start, '%Y-%m-%d') AS service_date_start,
+              DATE_FORMAT(s.service_date_end,   '%Y-%m-%d') AS service_date_end,
+              u.id AS unit_id, u.name AS unit_name,
+              p.id AS property_id, p.display_name AS property_name,
+              CONCAT(COALESCE(sv.first_name,''), ' ', COALESCE(sv.last_name,'')) AS assignee_name,
+              sv.phone AS assignee_phone
+         FROM service s
+         LEFT JOIN unit     u  ON s.unit_id = u.id
+         LEFT JOIN property p  ON u.property_id = p.id
+         LEFT JOIN service_vendor sv ON s.assignee = sv.id
+        WHERE ${where}
+        ORDER BY s.created_at DESC
+        LIMIT ${limit}`,
+      params
+    );
+
+    return {
+      count: rows.length,
+      services: rows.map(r => ({
+        id: String(r.id),
+        code: r.code,
+        category: r.category,
+        sub_category: r.sub_category,
+        property_name: r.property_name,
+        unit_name: r.unit_name,
+        status: r.status,
+        priority: r.priority,
+        assignee_name: r.assignee_name?.trim() || null,
+        assignee_phone: r.assignee_phone,
+        created_on: r.created_on,
+        service_date_start: r.service_date_start,
+        service_date_end: r.service_date_end,
+        note: r.note,
+        additional_info: r.additional_info,
+      })),
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: search_documents
+// Lease templates + signature requests + signed leases. Internal staff only.
+// ---------------------------------------------------------------------------
+const search_documents = {
+  cap: 'can_search_documents',
+  definition: {
+    type: 'function',
+    function: {
+      name: 'search_documents',
+      description:
+        'Search lease documents and e-signature requests. Use when staff asks about ' +
+        'unsigned leases, what templates exist, who has signed, which leases are ' +
+        "pending tenant signature, or 'is this lease signed yet'. The `kind` param " +
+        'switches between three views: "signature_requests" (per-lease signature state), ' +
+        '"templates" (lease template library), or "all" (default — both).',
+      parameters: {
+        type: 'object',
+        properties: {
+          keyword:           { type: 'string',  description: 'Free-text across tenant name, lease_no, template name.' },
+          kind:              { type: 'string',  description: '"signature_requests" | "templates" | "all". Default "all".' },
+          tenant_id:         { type: 'string',  description: 'Restrict signature_requests to this tenant.' },
+          leasing_id:        { type: 'string',  description: 'Restrict signature_requests to this lease.' },
+          signature_status:  { type: 'string',  description: "Filter signature_requests by lease.signature_status: 'none'|'pending'|'signed'|'declined'." },
+          template_id:       { type: 'string',  description: 'Restrict to one lease template.' },
+          limit:             { type: 'integer', description: 'Max rows per section. Default 20, max 50.' },
+        },
+      },
+    },
+  },
+  async execute(ctx, args) {
+    const orgId = ctx.orgId;
+    const limit = clampLimit(args.limit, 20, 50);
+    const kind = args.kind || 'all';
+
+    const result = {};
+
+    // --- Signature requests / lease signing state ---------------------------
+    if (kind === 'signature_requests' || kind === 'all') {
+      let where = "l.deleted_at IS NULL AND p.org_id = ?";
+      const params = [orgId];
+
+      if (args.keyword) {
+        const s = '%' + String(args.keyword).trim() + '%';
+        where += ` AND (t.first_name LIKE ? OR t.last_name LIKE ?
+                       OR t.company_name LIKE ? OR l.lease_no LIKE ?)`;
+        params.push(s, s, s, s);
+      }
+      if (args.tenant_id)        { where += ' AND l.tenant_id = ?';        params.push(str(args.tenant_id)); }
+      if (args.leasing_id)       { where += ' AND l.id = ?';               params.push(str(args.leasing_id)); }
+      if (args.signature_status) { where += ' AND l.signature_status = ?'; params.push(String(args.signature_status)); }
+
+      try {
+        const [rows] = await ctx.pool.execute(
+          `SELECT l.id, l.lease_no, l.signature_status,
+                  DATE_FORMAT(l.signed_at, '%Y-%m-%d %H:%i') AS signed_at,
+                  l.template_id, l.template_version_used, l.signed_file_id,
+                  CASE WHEN t.type = 1 THEN t.company_name
+                       ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
+                  END AS tenant_name,
+                  u.name AS unit_name, p.display_name AS property_name,
+                  lt.name AS template_name
+             FROM leasing l
+             LEFT JOIN tenant   t  ON l.tenant_id = t.id
+             LEFT JOIN unit     u  ON l.unit_id = u.id
+             LEFT JOIN property p  ON u.property_id = p.id
+             LEFT JOIN lease_template lt ON l.template_id = lt.id
+            WHERE ${where} AND l.signature_status IS NOT NULL
+            ORDER BY l.signed_at DESC, l.id DESC
+            LIMIT ${limit}`,
+          params
+        );
+        result.signature_requests = rows.map(r => ({
+          lease_id: String(r.id),
+          lease_no: r.lease_no,
+          tenant_name: r.tenant_name?.trim() || '(no tenant)',
+          property_name: r.property_name,
+          unit_name: r.unit_name,
+          signature_status: r.signature_status,
+          signed_at: r.signed_at,
+          template_id: r.template_id ? String(r.template_id) : null,
+          template_name: r.template_name,
+          template_version_used: r.template_version_used,
+          signed_file_id: r.signed_file_id ? String(r.signed_file_id) : null,
+        }));
+      } catch (e) {
+        // If the org's DB hasn't run the e-sign migration yet, just return [].
+        result.signature_requests = [];
+        result._signature_requests_error = 'e-signature tables not present on this org';
+      }
+    }
+
+    // --- Lease templates library --------------------------------------------
+    if (kind === 'templates' || kind === 'all') {
+      let where = 'org_id = ?';
+      const params = [orgId];
+      if (args.template_id) { where += ' AND id = ?'; params.push(str(args.template_id)); }
+      if (args.keyword) {
+        const s = '%' + String(args.keyword).trim() + '%';
+        where += ' AND name LIKE ?';
+        params.push(s);
+      }
+
+      try {
+        const [rows] = await ctx.pool.execute(
+          `SELECT id, name, current_version, status,
+                  DATE_FORMAT(created_at, '%Y-%m-%d') AS created_on,
+                  DATE_FORMAT(updated_at, '%Y-%m-%d') AS updated_on
+             FROM lease_template
+            WHERE ${where}
+            ORDER BY updated_at DESC, name
+            LIMIT ${limit}`,
+          params
+        );
+        result.templates = rows.map(r => ({
+          id: String(r.id),
+          name: r.name,
+          current_version: r.current_version,
+          status: r.status,
+          created_on: r.created_on,
+          updated_on: r.updated_on,
+        }));
+      } catch (e) {
+        result.templates = [];
+        result._templates_error = 'lease_template table not present on this org';
+      }
+    }
+
+    return result;
+  },
+};
+
 const ALL_TOOLS = [
   search_available_units,
   get_unit_details,
@@ -690,6 +1157,10 @@ const ALL_TOOLS = [
   capture_lead,
   request_viewing,
   search_inquiries,
+  search_leases,
+  search_invoices,
+  search_services,
+  search_documents,
 ];
 
 const ALL_BY_NAME = Object.fromEntries(
