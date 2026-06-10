@@ -98,29 +98,34 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
   console.log(`[Scheduler][org:${orgId}] Found ${leases.length} recurring lease(s).`);
 
   const result = { created: 0, skipped: 0, errors: 0, errorDetails: [] };
-  const orgRentalCategory = {};
   const orgCurrency = {};
   const today = new Date(toDateString(new Date()));
+
+  // Look up the org's rental category ONCE before the loop. Used for both:
+  //  (a) finding the latest RENT invoice's due_on (so non-rent invoices like
+  //      stamp duty / deposit / credits don't contaminate the next-rent calc), and
+  //  (b) tagging newly-created rent invoices below.
+  // Skip the whole org if there's no rental category — can't create rent invoices
+  // without one and old behavior already errored out per-lease in that case.
+  const [[rentalCat]] = await pool.execute(
+    "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1", [orgId]
+  );
+  const catId = rentalCat ? rentalCat.id : null;
+  if (!catId) {
+    console.warn(`[Scheduler][org:${orgId}] No 'Rental Income' category — skipping all leases.`);
+    return result;
+  }
 
   for (const lease of leases) {
     try {
       const [[latestInvoice]] = await pool.execute(
-        `SELECT due_on FROM invoice WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1`,
-        [lease.id, orgId]
+        `SELECT due_on FROM invoice WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL AND category = ? ORDER BY due_on DESC LIMIT 1`,
+        [lease.id, orgId, catId]
       );
       if (!latestInvoice) { result.skipped++; continue; }
 
       const lastDueDate = new Date(latestInvoice.due_on);
       if (daysDiff(today, lastDueDate) < 1) { result.skipped++; continue; }
-
-      if (!orgRentalCategory[orgId]) {
-        const [[rentalCat]] = await pool.execute(
-          "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1", [orgId]
-        );
-        orgRentalCategory[orgId] = rentalCat ? rentalCat.id : null;
-      }
-      const catId = orgRentalCategory[orgId];
-      if (!catId) { result.errors++; result.errorDetails.push(`${lease.property_name} / ${lease.unit_name}: No 'Rental Income' category`); continue; }
 
       let currId = lease.currency_id;
       if (!currId) {

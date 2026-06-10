@@ -1,0 +1,154 @@
+'use client';
+
+// Smart Extract for tenant create/edit pages.
+// Paste a screenshot of an HKID / passport / driver's license (or paste text)
+// and the backend OCRs + LLM-parses it into structured fields:
+//   first_name, last_name, middle_name, birth_date, id_card, sex
+//
+// IMPORTANT: unlike the inquiry version, this does NOT persist the uploaded
+// image. The screenshot is processed in memory on the server and discarded.
+// Only the extracted text fields end up on the tenant record. This is by
+// design — HKID/passport photos are PII we don't want sitting in the DB.
+//
+// Props:
+//   onExtracted(patch) — called with an object of fields to prefill. Keys
+//     correspond to Ant Form names (first_name, last_name, middle_name,
+//     birth_date as a dayjs, id_card, sex as 1|2).
+//   compact — render a tighter version (defaults to false).
+
+import { useState } from 'react';
+import { Input, Button, Card, Upload, message } from 'antd';
+import { ThunderboltOutlined, PictureOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
+import { tenant } from '../lib/api';
+
+export default function TenantSmartExtract({ onExtracted, compact = false }) {
+  const [text, setText] = useState('');
+  const [file, setFile] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  // Pasting a screenshot anywhere inside the card picks it up from the
+  // clipboard automatically (Ctrl+V). The file input still works for cases
+  // where the user has the image saved on disk.
+  const onPasteCapture = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        if (!blob) continue;
+        const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        const newFile = new File([blob], `pasted-${Date.now()}.${ext}`, { type: blob.type });
+        setFile(newFile);
+        message.success('Screenshot pasted');
+        e.preventDefault();
+        return;
+      }
+    }
+  };
+
+  const onExtract = async () => {
+    const hasText = text.trim().length > 0;
+    const hasImage = !!file;
+    if (!hasText && !hasImage) {
+      message.warning('Paste some text or pick a screenshot first.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const fd = new FormData();
+      if (hasText) fd.append('text', text);
+      if (hasImage) fd.append('image', file);
+      const r = await tenant.parse(fd);
+      if (r.data?.code !== 200) {
+        message.error(r.data?.message || 'Parse failed');
+        return;
+      }
+      const { fields = {} } = r.data.data || {};
+
+      // Map LLM output to Ant Form field names. Dates become dayjs for the
+      // DatePicker; sex normalises to 1=male / 2=female (the DB encoding).
+      const patch = {};
+      if (fields.first_name)  patch.first_name  = String(fields.first_name).trim();
+      if (fields.last_name)   patch.last_name   = String(fields.last_name).trim();
+      if (fields.middle_name) patch.middle_name = String(fields.middle_name).trim();
+      if (fields.id_card)     patch.id_card     = String(fields.id_card).trim();
+      if (fields.birth_date) {
+        const d = dayjs(fields.birth_date);
+        if (d.isValid()) patch.birth_date = d;
+      }
+      if (fields.sex != null) {
+        // Accept either numeric (1/2) or string ("male"/"female"/"M"/"F")
+        const raw = String(fields.sex).trim().toLowerCase();
+        if (raw === '1' || raw.startsWith('m')) patch.sex = 1;
+        else if (raw === '2' || raw.startsWith('f')) patch.sex = 2;
+      }
+
+      const filled = Object.keys(patch).length;
+      if (filled === 0) {
+        message.warning('Could not extract any fields. Try a clearer image or paste text.');
+        return;
+      }
+      onExtracted(patch);
+      message.success(`Extracted ${filled} field${filled === 1 ? '' : 's'}.`);
+
+      // Clear inputs after success so the user isn't tempted to re-extract
+      // stale data on top of the form they just edited.
+      setText('');
+      setFile(null);
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Parse failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card
+      size="small"
+      onPasteCapture={onPasteCapture}
+      style={{
+        marginBottom: compact ? 12 : 16,
+        background: '#fafbff',
+        borderColor: '#d6e4ff',
+      }}
+      title={
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#1677ff' }}>
+          <ThunderboltOutlined /> Smart Extract
+        </span>
+      }
+    >
+      <div style={{ marginBottom: 8 }}>
+        <Input.TextArea
+          rows={compact ? 2 : 3}
+          placeholder="Paste a screenshot of an HKID, passport, or driver's license (Ctrl+V), or type out the details. Works in English / Chinese."
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Upload
+          beforeUpload={(f) => { setFile(f); return false; }}
+          onRemove={() => setFile(null)}
+          fileList={file ? [{ uid: '1', name: file.name, status: 'done' }] : []}
+          maxCount={1}
+          accept="image/*"
+        >
+          <Button icon={<PictureOutlined />}>Screenshot (optional)</Button>
+        </Upload>
+        <Button
+          type="primary"
+          icon={<ThunderboltOutlined />}
+          loading={loading}
+          onClick={onExtract}
+        >
+          Extract
+        </Button>
+      </div>
+      <div style={{ fontSize: 11, color: '#999', marginTop: 8 }}>
+        The screenshot is OCR'd on the server then discarded — only the
+        extracted text fields are saved. Review prefilled fields before saving.
+      </div>
+    </Card>
+  );
+}

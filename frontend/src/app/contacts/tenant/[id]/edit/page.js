@@ -6,6 +6,7 @@ import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload
 import { UploadOutlined, CloudUploadOutlined, UserOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../../components/Layout';
+import TenantSmartExtract from '../../../../../components/TenantSmartExtract';
 import useIsMobile from '../../../../../hooks/useIsMobile';
 import { tenant, settings } from '../../../../../lib/api';
 
@@ -107,6 +108,12 @@ export default function TenantEditPage() {
     <MainLayout>
       <div style={{ padding: '0 0 24px 0' }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 20, color: '#333' }}>Edit Tenant</h2>
+
+        {/* Smart Extract — paste/upload an ID screenshot to overwrite name,
+            DOB, ID number, and sex. Useful for correcting OCR-quality records
+            or filling in fields that were skipped at creation time. Image is
+            OCR'd and discarded server-side (no PII persistence). */}
+        <TenantSmartExtract onExtracted={(patch) => form.setFieldsValue(patch)} />
 
         <Form form={form} onFinish={onFinish} layout="vertical">
           <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 24 }}>

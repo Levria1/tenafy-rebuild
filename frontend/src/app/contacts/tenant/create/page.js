@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Form, Input, Button, Select, message, DatePicker, Radio, Switch, Upload, Checkbox, Alert } from 'antd';
 import { UploadOutlined, CloudUploadOutlined, UserOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
+import TenantSmartExtract from '../../../../components/TenantSmartExtract';
 import useIsMobile from '../../../../hooks/useIsMobile';
 import { tenant, settings, inquiry } from '../../../../lib/api';
 
@@ -130,6 +131,11 @@ function TenantCreatePage() {
             description="Fill in any required fields and click save. The inquiry will be linked to this contact and marked as converted. If you cancel, no contact is created and the inquiry stays open."
           />
         )}
+
+        {/* Smart Extract — paste/upload an HKID, passport, or driver's license
+            screenshot to auto-fill name + DOB + ID number + sex. The image is
+            OCR'd on the server then discarded (no PII persistence). */}
+        <TenantSmartExtract onExtracted={(patch) => form.setFieldsValue(patch)} />
 
         <Form form={form} onFinish={onFinish} layout="vertical" initialValues={{ sex: 1, status: 1 }}>
           <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 24 }}>

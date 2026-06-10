@@ -129,6 +129,12 @@ export const tenant = {
   getAccountingList: (id, data, params) => api.post(`/api/tenant/${id}/accounting/list`, data, { params }),
   getAccountingSum: (id, data) => api.post(`/api/tenant/${id}/accounting/sum`, data),
   getOutstanding: () => api.get('/api/tenant/outstanding'),
+  // Smart Extract — multipart POST with optional `text` and optional `image`.
+  // Server runs OCR + LLM and returns { fields, raw_text }. The image is
+  // processed in memory and discarded; nothing persists server-side.
+  parse: (formData) => api.post('/api/tenant/parse', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }),
 };
 
 export const leasing = {

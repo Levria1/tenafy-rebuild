@@ -1,7 +1,30 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
 const { authenticate } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
+const visionClient = require('../services/visionClient');
+const llmClient = require('../services/llmClient');
+
+// In-memory multer for the Smart Extract /parse endpoint. Files NEVER touch
+// disk — we OCR the buffer and discard. This is deliberately stricter than
+// inquiry/parse (which persists the screenshot to the file table) because
+// HKID/passport photos are sensitive PII we don't want sitting in the DB.
+const parseUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are accepted'), false);
+    }
+    cb(null, true);
+  },
+});
+
+function _parseOk(res, data)       { return res.json({ code: 200, data }); }
+function _parseFail(res, msg, s=500) { return res.status(s).json({ code: s, message: msg }); }
 
 
 // POST /api/tenant/contacts - List tenants with paging
@@ -141,6 +164,104 @@ router.get('/outstanding', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Get outstanding tenants error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get outstanding tenants' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/tenant/parse — Smart Extract for tenant create/edit pages.
+//
+// Body (multipart/form-data): optional `text`, optional `image` (image/*, ≤10MB).
+// At least one of the two must be provided.
+//
+// Image is processed IN MEMORY via Google Cloud Vision OCR, then the buffer is
+// dropped. We never write the image to disk and never insert a `file` row —
+// this is deliberately different from /api/inquiry/parse because tenant IDs
+// (HKID, passport) are PII we don't want sitting in the DB indefinitely.
+//
+// Returns: { fields: { first_name, last_name, middle_name, birth_date,
+//                      id_card, sex }, raw_text }
+// Any field the LLM can't find is omitted.
+// ---------------------------------------------------------------------------
+router.post('/parse', authenticate, (req, res, next) => {
+  parseUpload.single('image')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ code: 413, message: 'Screenshot too large (max 10 MB).' });
+    }
+    return res.status(400).json({ code: 400, message: err.message || 'Upload failed' });
+  });
+}, async (req, res) => {
+  try {
+    const pastedText = (req.body && req.body.text ? String(req.body.text) : '').trim();
+    const hasImage = !!req.file;
+    if (!pastedText && !hasImage) {
+      return _parseFail(res, 'Provide either text or an image (or both).', 400);
+    }
+
+    // OCR the image (in-memory) if present. Failure is non-fatal — we still
+    // fall back to whatever text the user pasted.
+    let ocrText = '';
+    if (hasImage) {
+      try {
+        ocrText = await visionClient.extractText(req.file.buffer);
+      } catch (visionErr) {
+        console.error('[tenant/parse] Vision OCR failed:', visionErr.message);
+      }
+    }
+
+    const combined = [pastedText, ocrText].filter(Boolean).join('\n\n--- OCR FROM SCREENSHOT ---\n');
+    if (!combined.trim()) {
+      return _parseOk(res, { fields: {}, raw_text: '' });
+    }
+
+    // LLM prompt — tightly scoped. Schema must match what the tenant Add/Edit
+    // form renders. Date format is forced to YYYY-MM-DD so the frontend can
+    // feed it straight into dayjs(). HKID format preservation (brackets) is
+    // explicitly called out — Hong Kong IDs look like "A123456(7)" and the
+    // check digit matters for verification flows downstream.
+    const systemPrompt = [
+      'You extract personal identification info from messy OCR/screenshot text into JSON.',
+      'The text may be from a Hong Kong ID card (HKID), a passport, a driver\'s license, or a typed message.',
+      'It may be in English, Traditional Chinese, Simplified Chinese, or a mix.',
+      'Return ONLY a JSON object with these keys (omit a key if you cannot find it):',
+      '  first_name   (string, latin alphabet, title-case)',
+      '  last_name    (string, latin alphabet, title-case)',
+      '  middle_name  (string, latin alphabet, title-case — only if clearly distinct from first/last)',
+      '  birth_date   (string, YYYY-MM-DD — convert DD/MM/YYYY, MM/DD/YYYY, "1990年5月3日", etc.)',
+      '  id_card      (string — preserve original formatting EXACTLY)',
+      '    - For HKID: keep letters uppercase, keep the bracketed check digit, e.g. "A123456(7)"',
+      '    - For passport: keep letters uppercase, keep any spaces',
+      '    - For other IDs: preserve as printed',
+      '  sex          (string: "M" or "F" — infer from gender field, name pattern, or honorific)',
+      'Do NOT include any other keys. Do NOT include explanatory prose. Output a single JSON object only.',
+    ].join('\n');
+
+    let fields = {};
+    try {
+      const llmResp = await llmClient.chat(
+        [
+          { role: 'system', content: systemPrompt },
+          { role: 'user',   content: combined.slice(0, 8000) },
+        ],
+        null,
+        { temperature: 0.1 }
+      );
+      const raw = (llmResp.message && llmResp.message.content) || '';
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      try {
+        fields = JSON.parse(cleaned);
+      } catch (parseErr) {
+        console.warn('[tenant/parse] LLM did not return valid JSON; raw:', raw.slice(0, 300));
+      }
+    } catch (llmErr) {
+      console.error('[tenant/parse] LLM call failed:', llmErr.message);
+      // Partial success — raw_text is still useful for hand-filling.
+    }
+
+    _parseOk(res, { fields: fields || {}, raw_text: combined });
+  } catch (err) {
+    console.error('[tenant] parse error:', err);
+    _parseFail(res, 'Failed to parse tenant ID');
   }
 });
 
@@ -393,6 +514,21 @@ router.get('/:id/leases', authenticate, async (req, res) => {
 
     // For each lease, compute date-based status and calculate next_invoice_date
     const today = new Date().toISOString().split('T')[0];
+
+    // Look up the org's "Rental Income" category once so we can filter the
+    // "latest invoice" lookup below. WHY: invoices on a lease can be many things
+    // — rent, stamp duty, deposit, credits, refunds. The next-rent calculation
+    // needs to anchor on the latest RENT invoice's due_on. If a non-rent
+    // invoice (e.g. stamp duty due on the lease end date) is treated as the
+    // latest, the calc returns null and the Publish button disappears.
+    // Falls back to no filter when the category can't be resolved, preserving
+    // old behavior so the page never breaks.
+    const [[rentalCatRow]] = await req.pool.execute(
+      "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1",
+      [req.user.orgId]
+    );
+    const rentalCatId = rentalCatRow ? rentalCatRow.id : null;
+
     for (const lease of leases) {
       // Compute lease status purely from dates (same logic as leasing.js)
       const start = lease.start_date ? (typeof lease.start_date === 'string' ? lease.start_date.slice(0, 10) : new Date(lease.start_date).toISOString().split('T')[0]) : null;
@@ -402,10 +538,15 @@ router.get('/:id/leases', authenticate, async (req, res) => {
       else lease.lease_status = 1; // active
 
       if (lease.lease_status === 1 && lease.invoicing) {
-        const [[lastInv]] = await req.pool.execute(
-          'SELECT due_on FROM invoice WHERE leasing_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
-          [lease.id]
-        );
+        const [[lastInv]] = rentalCatId
+          ? await req.pool.execute(
+              'SELECT due_on FROM invoice WHERE leasing_id = ? AND deleted_at IS NULL AND category = ? ORDER BY due_on DESC LIMIT 1',
+              [lease.id, rentalCatId]
+            )
+          : await req.pool.execute(
+              'SELECT due_on FROM invoice WHERE leasing_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
+              [lease.id]
+            );
         lease.next_invoice_date = calcNextInvoiceDate(lastInv?.due_on, lease);
       } else {
         lease.next_invoice_date = null;
