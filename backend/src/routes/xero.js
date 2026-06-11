@@ -270,7 +270,9 @@ function parseBankSummary(report) {
         if (!cells.length) continue;
         let acctId = null;
         for (const attr of (cells[0].Attributes || [])) {
-          if (attr.Id === 'account') { acctId = String(attr.Value); break; }
+          // BankSummary puts the account UUID in the first cell under Id
+          // "accountID" (later cells use "account"). Accept either.
+          if (attr.Id === 'accountID' || attr.Id === 'account') { acctId = String(attr.Value); break; }
         }
         if (!acctId) continue;
         const last = cells[cells.length - 1];
