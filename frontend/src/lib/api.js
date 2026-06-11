@@ -71,6 +71,8 @@ export const xero = {
   // Account mapping — Xero bank accounts ↔ Tenafy account_setting rows.
   getAccounts: () => api.get('/api/integrations/xero/accounts'),
   saveAccountMap: (mappings) => api.post('/api/integrations/xero/accounts/map', { mappings }),
+  // Balance comparison: Tenafy account balance vs Xero closing balance.
+  getBalances: () => api.get('/api/integrations/xero/balances'),
   // Sync + review queue.
   sync: (body) => api.post('/api/integrations/xero/sync', body || {}),
   getPending: (params) => api.get('/api/integrations/xero/pending', { params }),

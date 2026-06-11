@@ -16,7 +16,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Card, Table, Button, Tag, message, Select, Space, Typography, Tooltip,
-  Modal, DatePicker, Alert, Popconfirm, Empty,
+  Modal, DatePicker, Alert, Popconfirm, Empty, Collapse,
 } from 'antd';
 import {
   SyncOutlined, CheckOutlined, CloseOutlined, LinkOutlined,
@@ -50,6 +50,36 @@ export default function ReconcilePage() {
   const [syncRange, setSyncRange] = useState(null);
   const [selected, setSelected] = useState({});   // xeroAccountId → array of row ids
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Balance comparison panel (Tenafy vs Xero closing balance).
+  const [balances, setBalances] = useState(null);   // null = not loaded yet
+  const [balancesLoading, setBalancesLoading] = useState(false);
+  const [balancesError, setBalancesError] = useState(null);
+
+  const loadBalances = async () => {
+    setBalancesLoading(true);
+    setBalancesError(null);
+    try {
+      const r = await xero.getBalances();
+      if (r.data?.code === 200) {
+        setBalances(r.data.data.balances || []);
+        setBalancesError(r.data.data.report_error || null);
+      } else {
+        setBalancesError(r.data?.message || 'Failed to load balances');
+      }
+    } catch (e) {
+      setBalancesError(e.response?.data?.message || 'Failed to load balances');
+    } finally {
+      setBalancesLoading(false);
+    }
+  };
+
+  // Lazy-load when the panel is first expanded.
+  const onBalancePanelChange = (keys) => {
+    const open = Array.isArray(keys) ? keys.includes('balances') : keys === 'balances';
+    if (open && balances === null && !balancesLoading) loadBalances();
+  };
+
+  const fmtMoney = (n) => `HK$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const loadPending = async () => {
     setLoading(true);
@@ -556,6 +586,76 @@ export default function ReconcilePage() {
           Nothing commits to Tenafy until you click <strong>Approve</strong>. The default
           sync range is the last 5 days; pick a specific range above to control it.
         </Paragraph>
+
+        <Collapse
+          style={{ marginBottom: 16 }}
+          onChange={onBalancePanelChange}
+          items={[{
+            key: 'balances',
+            label: (
+              <span>
+                <strong>Account balance check</strong>
+                <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                  Compare each Tenafy account balance against its mapped Xero account
+                </Text>
+              </span>
+            ),
+            extra: (
+              <Button
+                size="small"
+                icon={<SyncOutlined spin={balancesLoading} />}
+                onClick={(e) => { e.stopPropagation(); loadBalances(); }}
+              >
+                Refresh
+              </Button>
+            ),
+            children: (
+              <>
+                {balancesError && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                    message={balancesError}
+                  />
+                )}
+                <Table
+                  size="small"
+                  loading={balancesLoading}
+                  dataSource={balances || []}
+                  rowKey="xero_account_id"
+                  pagination={false}
+                  locale={{ emptyText: 'No mapped accounts. Map Xero accounts first (Account mapping).' }}
+                  columns={[
+                    { title: 'Tenafy Account', dataIndex: 'tenafy_account_name', render: v => v || '—' },
+                    {
+                      title: 'Tenafy Balance', dataIndex: 'tenafy_balance', align: 'right',
+                      render: v => fmtMoney(v),
+                    },
+                    { title: 'Xero Account', dataIndex: 'xero_account_name', render: v => v || '—' },
+                    {
+                      title: 'Xero Balance', dataIndex: 'xero_balance', align: 'right',
+                      render: v => v == null ? <Text type="secondary">—</Text> : fmtMoney(v),
+                    },
+                    {
+                      title: 'Difference', dataIndex: 'difference', align: 'right',
+                      render: (v) => v == null ? <Text type="secondary">—</Text>
+                        : (Math.abs(v) < 0.01
+                            ? <Text type="secondary">{fmtMoney(0)}</Text>
+                            : <span style={{ color: '#ff4d4f' }}>{fmtMoney(v)}</span>),
+                    },
+                    {
+                      title: 'Status', dataIndex: 'matched', align: 'center', width: 120,
+                      render: (m) => m == null
+                        ? <Tag>Unknown</Tag>
+                        : (m ? <Tag color="green">Matched</Tag> : <Tag color="red">Unmatched</Tag>),
+                    },
+                  ]}
+                />
+              </>
+            ),
+          }]}
+        />
 
         {loading ? (
           <Card><Text type="secondary">Loading…</Text></Card>

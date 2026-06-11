@@ -254,6 +254,116 @@ router.get('/accounts', authenticate, async (req, res) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// Parse a Xero BankSummary report into { [xeroAccountId]: closingBalance }.
+// Layout: Reports[0].Rows → Section rows → account Rows. Each account row's
+// FIRST cell carries the account UUID in Attributes[{Id:'account'}], and the
+// LAST cell is the closing balance.
+// ───────────────────────────────────────────────────────────────────────────
+function parseBankSummary(report) {
+  const out = {};
+  for (const rep of (report?.Reports || [])) {
+    for (const section of (rep.Rows || [])) {
+      if (section.RowType !== 'Section') continue;
+      for (const row of (section.Rows || [])) {
+        if (row.RowType !== 'Row') continue;
+        const cells = row.Cells || [];
+        if (!cells.length) continue;
+        let acctId = null;
+        for (const attr of (cells[0].Attributes || [])) {
+          if (attr.Id === 'account') { acctId = String(attr.Value); break; }
+        }
+        if (!acctId) continue;
+        const last = cells[cells.length - 1];
+        const bal = parseFloat(String(last?.Value ?? '').replace(/,/g, ''));
+        if (!Number.isNaN(bal)) out[acctId] = bal;
+      }
+    }
+  }
+  return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /balances
+// Reconciliation balance check. For each mapped (non-ignored) Xero bank account
+// returns the Tenafy account balance (inflow − outflow over ALL transactions)
+// alongside the Xero account's closing balance from the BankSummary report,
+// plus a `matched` flag. Needs the accounting.reports.banksummary.read scope —
+// if it isn't granted (older connection), xero_balance comes back null with a
+// report_error telling the user to reconnect.
+// ───────────────────────────────────────────────────────────────────────────
+router.get('/balances', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const conn = await xeroClient.getConnection(req.pool, orgId);
+    if (!conn) return fail(res, 'Xero is not connected', 400);
+
+    // Mapped accounts only — skip ignored and not-yet-mapped rows.
+    const [mapRows] = await req.pool.execute(
+      `SELECT m.xero_account_id, m.xero_account_name, m.tenafy_account_setting_id,
+              s.name AS tenafy_account_name
+         FROM xero_account_map m
+         LEFT JOIN account_setting s ON s.id = m.tenafy_account_setting_id
+        WHERE m.org_id = ? AND m.ignored = 0 AND m.tenafy_account_setting_id IS NOT NULL`,
+      [orgId]
+    );
+    if (!mapRows.length) return ok(res, { balances: [], report_error: null });
+
+    // Tenafy balance per mapped account (all transactions, no date filter).
+    const acctIds = mapRows.map(m => String(m.tenafy_account_setting_id));
+    const [balRows] = await req.pool.execute(
+      `SELECT account_setting_id,
+              COALESCE(SUM(CASE WHEN type = 0 THEN amount ELSE 0 END), 0) -
+              COALESCE(SUM(CASE WHEN type = 1 THEN amount ELSE 0 END), 0) AS balance
+         FROM accounting
+        WHERE org_id = ? AND deleted_at IS NULL
+          AND account_setting_id IN (${acctIds.map(() => '?').join(',')})
+        GROUP BY account_setting_id`,
+      [orgId, ...acctIds]
+    );
+    const tenafyBalance = {};
+    for (const r of balRows) tenafyBalance[String(r.account_setting_id)] = Number(r.balance) || 0;
+
+    // Xero closing balances from BankSummary. Closing balance is as-of toDate
+    // regardless of fromDate, so a short range keeps the report light.
+    const now = new Date();
+    const toDate = now.toISOString().split('T')[0];
+    const fromDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+    let xeroBalance = {};
+    let reportError = null;
+    try {
+      const rep = await xeroClient.xeroApiGet(req.pool, orgId, '/Reports/BankSummary', { fromDate, toDate });
+      xeroBalance = parseBankSummary(rep);
+    } catch (err) {
+      const status = err.response?.status;
+      reportError = (status === 403)
+        ? 'Xero reports permission not granted — reconnect Xero (Account mapping → reconnect) to enable the balance comparison.'
+        : (err.response?.data?.Detail || err.message || 'Failed to load Xero balances');
+    }
+
+    const balances = mapRows.map(m => {
+      const tBal = Number(tenafyBalance[String(m.tenafy_account_setting_id)] || 0);
+      const xBal = xeroBalance[String(m.xero_account_id)];
+      const hasXero = xBal !== undefined;
+      return {
+        xero_account_id: String(m.xero_account_id),
+        xero_account_name: m.xero_account_name || null,
+        tenafy_account_id: String(m.tenafy_account_setting_id),
+        tenafy_account_name: m.tenafy_account_name || null,
+        tenafy_balance: Number(tBal.toFixed(2)),
+        xero_balance: hasXero ? Number(Number(xBal).toFixed(2)) : null,
+        difference: hasXero ? Number((tBal - Number(xBal)).toFixed(2)) : null,
+        matched: hasXero ? (Math.abs(tBal - Number(xBal)) < 0.01) : null,
+      };
+    });
+
+    return ok(res, { balances, report_error: reportError });
+  } catch (err) {
+    console.error('[xero/balances] error:', err);
+    return fail(res, 'Failed to load balances');
+  }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // POST /accounts/map
 // Body: { mappings: [{ xero_account_id, xero_account_code, xero_account_name,
 //                      xero_account_type, tenafy_account_setting_id }, ...] }
@@ -537,9 +647,20 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
       [pendingId, orgId]
     );
     if (!p) {
+      // Not pending — but if it was already approved (e.g. a duplicate/stale
+      // Approve click, or a re-submitted bulk request), treat it as an
+      // idempotent success instead of a hard failure so it doesn't surface as a
+      // confusing "skipped" row. Only a genuinely unknown id is an error.
+      const [[done]] = await conn.execute(
+        "SELECT status, resulting_accounting_id FROM xero_pending_reconciliation WHERE id = ? AND org_id = ?",
+        [pendingId, orgId]
+      );
       await conn.rollback();
-      const e = new Error('Pending row not found or already processed');
-      e.httpStatus = 404;
+      if (done && done.status === 'approved') {
+        return done.resulting_accounting_id ? String(done.resulting_accounting_id) : null;
+      }
+      const e = new Error(done ? `Row already ${done.status}` : 'Pending row not found');
+      e.httpStatus = done ? 409 : 404;
       throw e;
     }
 

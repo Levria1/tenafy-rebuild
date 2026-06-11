@@ -34,6 +34,7 @@ const SCOPES = [
   'accounting.banktransactions.read',        // bank transactions
   'accounting.contacts.read',                // payer name → tenant matching
   'accounting.settings.read',                // chart of accounts (bank accounts list)
+  'accounting.reports.banksummary.read',     // BankSummary report → per-account closing balance
 ];
 
 // ───────────────────────────────────────────────────────────────────────────
