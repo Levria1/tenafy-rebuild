@@ -29,12 +29,43 @@ const XERO_CONNECTIONS_URL  = 'https://api.xero.com/connections';
 const XERO_API_BASE         = 'https://api.xero.com/api.xro/2.0';
 const REFRESH_LEEWAY_SECONDS = 60; // refresh when <60s remaining on access_token
 
+// Tenafy only READS from Xero — it never writes back. So we request every
+// read-only scope the app supports up front, but NONE of the read+write
+// variants (the bare `accounting.settings`, `accounting.payments`, etc.).
+// Requesting all read scopes now means future read-only features need NO
+// reconnect/re-consent — granted scopes are frozen into the token at connect
+// time, so anything not listed here is unavailable until the next reconnect.
 const SCOPES = [
-  'offline_access',                          // required for refresh_token
-  'accounting.banktransactions.read',        // bank transactions
-  'accounting.contacts.read',                // payer name → tenant matching
-  'accounting.settings.read',                // chart of accounts (bank accounts list)
-  'accounting.reports.banksummary.read',     // BankSummary report → per-account closing balance
+  'offline_access',                               // required for refresh_token
+  // Accounting — currently used
+  'accounting.banktransactions.read',             // bank transactions (sync)
+  'accounting.contacts.read',                     // payer name → tenant matching
+  'accounting.settings.read',                     // chart of accounts (bank accounts list)
+  'accounting.reports.banksummary.read',          // BankSummary → per-account closing balance
+  // Accounting — reserved for future read-only features
+  'accounting.attachments.read',
+  'accounting.budgets.read',
+  'accounting.payments.read',
+  'accounting.invoices.read',
+  'accounting.manualjournals.read',
+  'accounting.reports.aged.read',
+  'accounting.reports.balancesheet.read',
+  'accounting.reports.budgetsummary.read',
+  'accounting.reports.executivesummary.read',
+  'accounting.reports.profitandloss.read',
+  'accounting.reports.trialbalance.read',
+  'accounting.reports.taxreports.read',
+  'accounting.reports.tenninetynine.read',
+  // Payroll — read only
+  'payroll.employees.read',
+  'payroll.payruns.read',
+  'payroll.payslip.read',
+  'payroll.settings.read',
+  'payroll.timesheets.read',
+  // Other modules — read only
+  'files.read',
+  'assets.read',
+  'projects.read',
 ];
 
 // ───────────────────────────────────────────────────────────────────────────

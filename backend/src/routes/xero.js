@@ -335,9 +335,19 @@ router.get('/balances', authenticate, async (req, res) => {
       xeroBalance = parseBankSummary(rep);
     } catch (err) {
       const status = err.response?.status;
-      reportError = (status === 403)
-        ? 'Xero reports permission not granted — reconnect Xero (Account mapping → reconnect) to enable the balance comparison.'
-        : (err.response?.data?.Detail || err.message || 'Failed to load Xero balances');
+      const detail = err.response?.data?.Detail
+                  || err.response?.data?.Title
+                  || err.response?.data?.Message
+                  || err.message || '';
+      // Xero rejects the report with "AuthorizationUnsuccessful" (401/403) when
+      // the access token predates the reports scope — i.e. the connection was
+      // authorized before we added accounting.reports.banksummary.read. The fix
+      // is a reconnect (re-consent), not anything in Tenafy.
+      const scopeIssue = status === 401 || status === 403
+        || /authoriz|unsuccessful|scope|forbidden/i.test(String(detail));
+      reportError = scopeIssue
+        ? 'Xero hasn’t granted the BankSummary (reports) permission yet. Reconnect Xero to enable balances: Settings → Integrations → Disconnect, then Connect to Xero again, then click Refresh.'
+        : (detail || 'Failed to load Xero balances');
     }
 
     const balances = mapRows.map(m => {
