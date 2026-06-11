@@ -16,7 +16,7 @@ import {
 } from 'antd';
 import {
   ClearOutlined, EditOutlined, CloseCircleOutlined, HighlightOutlined,
-  FontSizeOutlined, UploadOutlined, PictureOutlined,
+  FontSizeOutlined, UploadOutlined, PictureOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import { signature } from '../../../lib/api';
 
@@ -44,6 +44,7 @@ export default function SignPage() {
   const [agreed, setAgreed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [signed, setSigned] = useState(false);
+  const [completed, setCompleted] = useState(false);
   const [declineOpen, setDeclineOpen] = useState(false);
   const [declineReason, setDeclineReason] = useState('');
   const [sigMode, setSigMode] = useState('draw');                    // 'draw' | 'type' | 'upload'
@@ -96,7 +97,8 @@ export default function SignPage() {
         if (r.data?.code === 200) {
           setCtx(r.data.data);
           if (r.data.data?.party?.signer_name) setTypedName(r.data.data.party.signer_name);
-          if (r.data.data?.already_signed) setSigned(true);
+          if (r.data.data?.completed) setCompleted(true);
+          else if (r.data.data?.already_signed) setSigned(true);
         } else {
           setError(r.data?.message || 'Invalid link');
         }
@@ -265,6 +267,39 @@ export default function SignPage() {
       <div style={{ minHeight: '100vh', background: '#f0f2f5', padding: 24 }}>
         <div style={{ maxWidth: 600, margin: '60px auto' }}>
           <Result status="warning" title="Cannot open this signing link" subTitle={error} />
+        </div>
+      </div>
+    );
+  }
+
+  // Fully completed (all parties signed) — offer a download of the signed copy
+  // instead of a dead-end. Works even after the original signing window lapsed.
+  if (completed) {
+    const dl = ctx?.lease;
+    return (
+      <div style={{ minHeight: '100vh', background: '#f0f2f5', padding: 24 }}>
+        <div style={{ maxWidth: 600, margin: '60px auto' }}>
+          <Result
+            status="success"
+            title="This lease is fully signed"
+            subTitle={dl ? `${dl.property_name || ''}${dl.unit_name ? ` — ${dl.unit_name}` : ''}${dl.lease_no ? ` (Lease ${dl.lease_no})` : ''}` : 'All parties have signed.'}
+            extra={
+              ctx?.signed_available ? (
+                <Button
+                  type="primary"
+                  size="large"
+                  icon={<DownloadOutlined />}
+                  href={`/api/signature/public/${token}/pdf`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Download signed lease
+                </Button>
+              ) : (
+                <Typography.Text type="secondary">Your signed copy was emailed to you.</Typography.Text>
+              )
+            }
+          />
         </div>
       </div>
     );

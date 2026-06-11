@@ -518,7 +518,34 @@ router.get('/public/:token', async (req, res) => {
     const { party, pool } = ctx;
 
     if (party.request_status === 6) return fail(res, 'This signing request was cancelled.', 410);
-    if (party.request_status === 3) return fail(res, 'This lease has already been fully signed.', 410);
+
+    // Fully signed → don't dead-end the signer. Return a "completed" payload so
+    // the page can offer a download of their signed copy. This works even after
+    // the original signing window lapsed (the doc is done; re-download is fine).
+    if (party.request_status === 3) {
+      const [[doneLease]] = await pool.execute(
+        `SELECT l.lease_no, l.start_date, l.end_date, l.amount, l.deposit,
+                p.display_name AS property_name, u.name AS unit_name
+           FROM leasing l
+           LEFT JOIN unit u ON l.unit_id = u.id
+           LEFT JOIN property p ON u.property_id = p.id
+          WHERE l.id = ? LIMIT 1`,
+        [party.lease_id]
+      );
+      return ok(res, {
+        completed: true,
+        signed_available: !!party.signed_file_id,
+        pdf_url: `/api/signature/public/${req.params.token}/pdf`,
+        lease: doneLease || null,
+        party: {
+          signer_name: party.signer_name,
+          signer_email: party.signer_email,
+          signed_at: party.signed_at,
+        },
+      });
+    }
+
+    // Expiry only blocks signing that hasn't completed yet.
     if (party.expires_at && new Date(party.expires_at) < new Date()) {
       return fail(res, 'This link has expired.', 410);
     }
