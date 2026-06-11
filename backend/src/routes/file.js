@@ -81,63 +81,113 @@ const MIME_TYPES = {
   '.mkv': 'video/x-matroska', '.webm': 'video/webm', '.wmv': 'video/x-ms-wmv',
 };
 
+const IMAGE_MIMES = new Set([
+  'image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp', 'image/svg+xml',
+]);
+
+// Optional session read — returns { orgId, isMasterAdmin } if a valid token is
+// present, else null. Unlike the authenticate middleware it never rejects, so
+// these routes can stay open to anonymous image requests.
+function readSession(req) {
+  try {
+    const token = req.cookies?.__s_t
+      || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+    if (!token) return null;
+    const decoded = jwt.verify(token, config.jwtSecret);
+    if (!decoded) return null;
+    return { orgId: decoded.orgId ? String(decoded.orgId) : null, isMasterAdmin: !!decoded.isMasterAdmin };
+  } catch { return null; }
+}
+
+function isImageFile(mimeType, name) {
+  if (mimeType && IMAGE_MIMES.has(String(mimeType).toLowerCase())) return true;
+  const ext = path.extname(name || '').toLowerCase();
+  const m = MIME_TYPES[ext];
+  return !!(m && IMAGE_MIMES.has(m));
+}
+
+/**
+ * Resolve a file row for preview/download with ACCESS CONTROL.
+ *
+ * Rules:
+ *   - ID must be numeric (no raw-filename passthrough → no path traversal).
+ *   - Logged-in staff: may fetch any file in THEIR OWN org (master admin: any).
+ *   - Anonymous (no/invalid session): images only — so public listing photos
+ *     keep working, but documents (signed leases, receipts, etc.) are blocked.
+ *
+ * Returns { file } on success or { error: <httpStatus> }.
+ */
+async function resolveAccessibleFile(req) {
+  const { identifier } = req.params;
+  if (!/^\d+$/.test(identifier)) return { error: 404 }; // ID-only
+
+  const session = readSession(req);
+
+  // Pick the pool. Authenticated org user → their own org DB. Otherwise fall
+  // back to the shared resolver (used for anonymous public-photo loads).
+  let pool = null;
+  if (session && session.orgId && !session.isMasterAdmin) {
+    try { pool = await getOrgPool(session.orgId); } catch { pool = null; }
+  }
+  if (!pool) pool = req.pool || await getPoolFromRequest(req);
+  if (!pool) return { error: 404 };
+
+  const [files] = await pool.execute(
+    'SELECT item_name, filename, mime_type, org_id FROM file WHERE id = ? AND deleted_at IS NULL',
+    [identifier]
+  );
+  if (!files.length) return { error: 404 };
+  const file = files[0];
+
+  if (session) {
+    // Authenticated: only your own org's files (master admin bypasses the check).
+    if (!session.isMasterAdmin && session.orgId && String(file.org_id) !== String(session.orgId)) {
+      return { error: 403 };
+    }
+    // Any file type is allowed for the owning org.
+  } else {
+    // Anonymous: images only. Documents require a login.
+    if (!isImageFile(file.mime_type, file.item_name || file.filename)) {
+      return { error: 403 };
+    }
+  }
+
+  return { file };
+}
+
+// Locate the file on disk by its stored item_name (never the raw URL param).
+function findOnDisk(itemName) {
+  if (!itemName) return null;
+  for (const p of [path.join(UPLOADS_DIR, itemName), path.join(LEGACY_STORAGE_DIR, itemName)]) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 // GET /api/file/preview/:identifier - Serve file for preview
 // identifier can be a file ID (bigint) or a filename
 router.get('/preview/:identifier', async (req, res) => {
   try {
-    const { identifier } = req.params;
-    let filename = null;
-    let mimeType = null;
-
-    // Check if identifier is a numeric file ID
-    if (/^\d+$/.test(identifier)) {
-      const pool = req.pool || await getPoolFromRequest(req);
-      if (pool) {
-        const [files] = await pool.execute('SELECT item_name, mime_type, extension FROM file WHERE id = ?', [identifier]);
-        if (files.length > 0) {
-          filename = files[0].item_name;
-          mimeType = files[0].mime_type;
-        }
-      }
+    const result = await resolveAccessibleFile(req);
+    if (result.error) {
+      return res.status(result.error).json({ code: result.error, message: result.error === 403 ? 'Not authorized to view this file' : 'File not found' });
     }
+    const { file } = result;
+    const filePath = findOnDisk(file.item_name);
+    if (!filePath) return res.status(404).json({ code: 404, message: 'File not found' });
 
-    // If not found by ID, treat identifier as a filename
-    if (!filename) {
-      filename = identifier;
-    }
-
-    // Try to find the file in various locations
-    let filePath = null;
-    const possiblePaths = [
-      path.join(UPLOADS_DIR, filename),
-      path.join(LEGACY_STORAGE_DIR, filename),
-    ];
-
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        filePath = p;
-        break;
-      }
-    }
-
-    if (!filePath) {
-      return res.status(404).json({ code: 404, message: 'File not found' });
-    }
-
-    // Determine MIME type
+    let mimeType = file.mime_type;
     if (!mimeType || mimeType === 'null') {
-      const ext = path.extname(filename).toLowerCase();
+      const ext = path.extname(file.item_name || '').toLowerCase();
       mimeType = MIME_TYPES[ext] || 'application/octet-stream';
     }
 
-    // Set headers and stream file
     res.setHeader('Content-Type', mimeType.toLowerCase());
-    res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
+    // Private cache only — never let a shared/CDN cache hold a document.
+    res.setHeader('Cache-Control', 'private, max-age=3600');
     const stat = fs.statSync(filePath);
     res.setHeader('Content-Length', stat.size);
-
-    const readStream = fs.createReadStream(filePath);
-    readStream.pipe(res);
+    fs.createReadStream(filePath).pipe(res);
   } catch (error) {
     console.error('File preview error:', error);
     res.status(500).json({ code: 500, message: 'Failed to preview file' });
@@ -147,44 +197,15 @@ router.get('/preview/:identifier', async (req, res) => {
 // GET /api/file/download/:identifier - Download file
 router.get('/download/:identifier', async (req, res) => {
   try {
-    const { identifier } = req.params;
-    let filename = null;
-    let originalName = null;
-
-    if (/^\d+$/.test(identifier)) {
-      const pool = req.pool || await getPoolFromRequest(req);
-      if (pool) {
-        const [files] = await pool.execute('SELECT item_name, filename AS original_name FROM file WHERE id = ?', [identifier]);
-        if (files.length > 0) {
-          filename = files[0].item_name;
-          originalName = files[0].original_name || filename;
-        }
-      }
+    const result = await resolveAccessibleFile(req);
+    if (result.error) {
+      return res.status(result.error).json({ code: result.error, message: result.error === 403 ? 'Not authorized to download this file' : 'File not found' });
     }
+    const { file } = result;
+    const filePath = findOnDisk(file.item_name);
+    if (!filePath) return res.status(404).json({ code: 404, message: 'File not found' });
 
-    if (!filename) {
-      filename = identifier;
-      originalName = identifier;
-    }
-
-    let filePath = null;
-    const possiblePaths = [
-      path.join(UPLOADS_DIR, filename),
-      path.join(LEGACY_STORAGE_DIR, filename),
-    ];
-
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        filePath = p;
-        break;
-      }
-    }
-
-    if (!filePath) {
-      return res.status(404).json({ code: 404, message: 'File not found' });
-    }
-
-    res.download(filePath, originalName);
+    res.download(filePath, file.filename || file.item_name);
   } catch (error) {
     console.error('File download error:', error);
     res.status(500).json({ code: 500, message: 'Failed to download file' });
