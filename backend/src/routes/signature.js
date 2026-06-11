@@ -523,17 +523,19 @@ router.post('/public/:token/sign', async (req, res) => {
     if (party.status === 2) return fail(res, 'Already signed.', 400);
     if (party.status === 3) return fail(res, 'You declined this request.', 400);
 
-    const { signature_png, typed_name } = req.body || {};
+    const { signature_png, typed_name, initials_png } = req.body || {};
     if (!signature_png) return fail(res, 'Signature is required', 400);
     if (!typed_name || !String(typed_name).trim()) return fail(res, 'Typed full name is required', 400);
 
+    // initials_png is optional — only used when the template needs per-page
+    // initials. Stored as a base64 data URL like signature_png.
     await pool.execute(
       `UPDATE signature_party
           SET status = 2, signed_at = NOW(),
-              signature_png = ?, typed_name = ?,
+              signature_png = ?, initials_png = ?, typed_name = ?,
               signer_ip = ?, signer_ua = ?
         WHERE id = ?`,
-      [signature_png, String(typed_name).trim(),
+      [signature_png, initials_png || null, String(typed_name).trim(),
        req.ip || null, (req.headers['user-agent'] || '').slice(0, 500), party.id]
     );
     await pool.execute(

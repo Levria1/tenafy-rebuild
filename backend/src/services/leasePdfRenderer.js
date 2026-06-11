@@ -101,6 +101,9 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId }) {
 
   // Fetch the full lease context
   const ctx = await loadLeaseContext(pool, orgId, leaseId);
+  // Real render: signature anchors emit invisible markers (not the visible
+  // dashed preview placeholders) so the stamper can locate them after signing.
+  ctx.realRender = true;
 
   // Substitute placeholders
   const body   = substitute(tpl.body_html   || '', ctx);

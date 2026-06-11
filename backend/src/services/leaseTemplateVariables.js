@@ -194,7 +194,44 @@ const VARIABLES = [
   { key: 'TODAY_FORMATTED', group: 'Misc', label: 'Today (8 June 2026)',
     sample: fmtDateLong(new Date()),
     resolve: (ctx) => fmtDateLong(ctx.today) },
+
+  // ── Signature anchors ──────────────────────────────────────────────────
+  // Place these in the template exactly where a signature should land (e.g.
+  // just above the "Tenant Signature" line). On a REAL render they emit an
+  // INVISIBLE white marker in the PDF text layer; the stamper locates it with
+  // pdfAnchorFinder after signing and draws the signature image at that spot —
+  // so the signature follows the text no matter how long the body is.
+  // In a PREVIEW we show a visible dashed placeholder so the author sees where
+  // signatures will land.
+  { key: 'SIGNATURE_TENANT', group: 'Signature', label: 'Tenant signature (place above the signature line)',
+    sample: '[ Tenant signature ]',
+    resolve: (ctx) => sigAnchor(ctx, 'SIGANCHORTENANT1', 'Tenant signature') },
+  { key: 'SIGNATURE_TENANT_2', group: 'Signature', label: '2nd tenant signature',
+    sample: '[ 2nd tenant signature ]',
+    resolve: (ctx) => sigAnchor(ctx, 'SIGANCHORTENANT2', '2nd tenant signature') },
+  { key: 'SIGNATURE_TENANT_3', group: 'Signature', label: '3rd tenant signature',
+    sample: '[ 3rd tenant signature ]',
+    resolve: (ctx) => sigAnchor(ctx, 'SIGANCHORTENANT3', '3rd tenant signature') },
+  { key: 'SIGNATURE_LANDLORD', group: 'Signature', label: 'Landlord signature (auto-stamped)',
+    sample: '[ Landlord signature ]',
+    resolve: (ctx) => sigAnchor(ctx, 'SIGANCHORLANDLORD', 'Landlord signature') },
+  // Convenience alias for simple single-tenant templates.
+  { key: 'SIGNATURE', group: 'Signature', label: 'Tenant signature (alias)',
+    sample: '[ Tenant signature ]',
+    resolve: (ctx) => sigAnchor(ctx, 'SIGANCHORTENANT1', 'Tenant signature') },
 ];
+
+/**
+ * Render a signature anchor. Real render (ctx.realRender) → invisible white
+ * marker the pdfAnchorFinder can locate. Preview → visible dashed placeholder.
+ */
+function sigAnchor(ctx, marker, label) {
+  if (ctx && ctx.realRender) {
+    // White + small but reliably extractable; line-height:0 so it adds no height.
+    return `<span style="color:#ffffff;font-size:8px;line-height:0;">${marker}</span>`;
+  }
+  return `<span style="display:inline-block;min-width:160px;border-bottom:1px dashed #999;color:#999;font-size:11px;text-align:center;">${label}</span>`;
+}
 
 const BY_KEY = Object.fromEntries(VARIABLES.map(v => [v.key, v]));
 
@@ -268,9 +305,19 @@ function publicList() {
   return VARIABLES.map(({ key, label, group, sample }) => ({ key, label, group, sample }));
 }
 
+// Marker tokens emitted by the signature anchors (real render only). The
+// stamper imports these so the two files never drift on the literal strings.
+const SIGNATURE_MARKERS = {
+  TENANT_1: 'SIGANCHORTENANT1',
+  TENANT_2: 'SIGANCHORTENANT2',
+  TENANT_3: 'SIGANCHORTENANT3',
+  LANDLORD: 'SIGANCHORLANDLORD',
+};
+
 module.exports = {
   VARIABLES,
   substitute,
   sampleContext,
   publicList,
+  SIGNATURE_MARKERS,
 };

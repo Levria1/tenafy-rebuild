@@ -39,6 +39,8 @@ export default function SignPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [typedName, setTypedName] = useState('');
+  const [initials, setInitials] = useState('');           // per-page initials text
+  const [initialsEdited, setInitialsEdited] = useState(false);
   const [agreed, setAgreed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [signed, setSigned] = useState(false);
@@ -161,6 +163,34 @@ export default function SignPage() {
     return canvas.toDataURL('image/png');
   };
 
+  // Initials default to the signer's name initials (first letter of each word).
+  const deriveInitials = (name) =>
+    (name || '').trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join('').slice(0, 4);
+  const effectiveInitials = initialsEdited ? initials : deriveInitials(typedName || ctx?.party?.signer_name);
+
+  // Render the initials text in the chosen cursive font → small PNG, same
+  // format as the signature. Used for the per-page initials stamp.
+  const renderInitialsPng = async (text) => {
+    if (!text) return null;
+    if (document.fonts && document.fonts.load) {
+      try { await document.fonts.load(`64px '${typedFont}'`); } catch {}
+    }
+    if (document.fonts && document.fonts.ready) {
+      try { await document.fonts.ready; } catch {}
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = 260;
+    canvas.height = 120;
+    const g = canvas.getContext('2d');
+    g.clearRect(0, 0, canvas.width, canvas.height);
+    g.fillStyle = '#222';
+    g.font = `64px '${typedFont}', cursive`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(text, canvas.width / 2, canvas.height / 2);
+    return canvas.toDataURL('image/png');
+  };
+
   const onSign = async () => {
     if (!typedName.trim()) return message.warning('Please type your full name.');
     if (!agreed) return message.warning('Please tick the confirmation checkbox.');
@@ -179,11 +209,19 @@ export default function SignPage() {
       signature_png = uploadedPng;
     }
 
+    // Render per-page initials (cursive PNG). Non-fatal if it fails — the
+    // backend treats initials_png as optional.
+    let initials_png = null;
+    try {
+      initials_png = await renderInitialsPng(effectiveInitials);
+    } catch { /* ignore — initials are optional */ }
+
     setSubmitting(true);
     try {
       const r = await signature.sign(token, {
         signature_png,
         typed_name: typedName.trim(),
+        initials_png,
       });
       if (r.data?.code === 200) {
         setSigned(true);
@@ -283,6 +321,19 @@ export default function SignPage() {
             size="large"
             style={{ marginBottom: 16 }}
           />
+
+          {/* Initials — stamped on every page. Auto-filled from the name; the
+              signer can adjust. Kept compact so it doesn't dominate the form. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <span style={{ fontSize: 13, color: '#666', whiteSpace: 'nowrap' }}>Your initials:</span>
+            <Input
+              value={effectiveInitials}
+              onChange={e => { setInitialsEdited(true); setInitials(e.target.value.toUpperCase().slice(0, 4)); }}
+              maxLength={4}
+              style={{ width: 90, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 1 }}
+            />
+            <span style={{ fontSize: 12, color: '#999' }}>(initialled on every page)</span>
+          </div>
 
           <Tabs
             activeKey={sigMode}
