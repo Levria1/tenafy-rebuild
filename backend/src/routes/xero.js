@@ -618,20 +618,32 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
       }
     }
 
-    if (p.match_kind === 'dedup_existing' || isAmbiguousLink) {
-      if (!existingAcctId) {
-        await conn.rollback();
-        const e = new Error('No existing accounting row selected for linking');
-        e.httpStatus = 400;
-        throw e;
-      }
+    // Does this row link to an existing entry? dedup_existing and ambiguous
+    // (with a chosen candidate) both link. A dedup_existing row whose link
+    // target wasn't captured at staging time is NOT silently failed: if the
+    // user picked an account we create it as a new entry; otherwise we surface
+    // a clear, actionable error instead of the cryptic original.
+    const wantsLink = p.match_kind === 'dedup_existing' || isAmbiguousLink;
+
+    if (wantsLink && existingAcctId) {
       await conn.execute(
         `UPDATE accounting SET xero_transaction_id = ?, reconciliation_status = 'reconciled'
           WHERE id = ? AND org_id = ?`,
         [p.xero_transaction_id, existingAcctId, orgId]
       );
       resultingId = existingAcctId;
-    } else if (p.match_kind === 'new_entry' || p.match_kind === 'invoice_payment' || p.match_kind === 'unmapped_account' || p.match_kind === 'ambiguous') {
+    } else if (wantsLink && !existingAcctId && !accountId) {
+      await conn.rollback();
+      const e = new Error('This transaction was matched to an existing Tenafy entry, but the link target is missing. Pick a Tenafy account to record it as a new entry instead, or Skip it.');
+      e.httpStatus = 400;
+      throw e;
+    } else if (
+      wantsLink ||                              // link target missing but account chosen → create new
+      p.match_kind === 'new_entry' ||
+      p.match_kind === 'invoice_payment' ||
+      p.match_kind === 'unmapped_account' ||
+      p.match_kind === 'ambiguous'
+    ) {
       if (!accountId) {
         await conn.rollback();
         const e = new Error('A Tenafy account is required to create the entry');

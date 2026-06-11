@@ -9,6 +9,7 @@ import { settings, user, amenity, role, emailTemplate, whatsappTemplate, smtpAcc
 import { useCallback } from 'react';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
+import TypedDeleteModal from '../../components/TypedDeleteModal';
 
 export default function SettingsPageWrapper() {
   return <Suspense fallback={<div />}><SettingsPage /></Suspense>;
@@ -30,6 +31,36 @@ function SettingsPage() {
   const [emailTemplates, setEmailTemplates] = useState([]);
   const [whatsappTemplates, setWhatsappTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Shared rename modal for Categories + Payment Methods (both edit a `name`).
+  const [editingItem, setEditingItem] = useState(null); // { type: 'category'|'payment', id, name } or null
+  const [editItemName, setEditItemName] = useState('');
+  // Shared typed-DELETE confirm for Categories + Payment Methods.
+  const [deleteTarget, setDeleteTarget] = useState(null); // { type, row } or null
+
+  const EDIT_META = {
+    category: { noun: 'Category', update: settings.updateCategory, del: settings.deleteCategory },
+    payment:  { noun: 'Payment Method', update: settings.updatePaymentMethod, del: settings.deletePaymentMethod },
+  };
+
+  const openEditItem = (type, r) => { setEditingItem({ ...r, type }); setEditItemName(r.name || ''); };
+  const saveEditItem = async () => {
+    const name = (editItemName || '').trim();
+    if (!name) { message.warning('Name is required'); return; }
+    try {
+      await EDIT_META[editingItem.type].update(editingItem.id, { name });
+      message.success('Updated');
+      setEditingItem(null);
+      loadData();
+    } catch (error) {
+      message.error('Failed to update');
+    }
+  };
+  const confirmDeleteItem = async () => {
+    await EDIT_META[deleteTarget.type].del(deleteTarget.row.id);
+    message.success('Deleted');
+    setDeleteTarget(null);
+    loadData();
+  };
 
   // Sync tab from URL param
   useEffect(() => {
@@ -77,20 +108,20 @@ function SettingsPage() {
   const categoryColumns = [
     { title: 'Name', dataIndex: 'name', key: 'name' },
     { title: 'Actions', key: 'actions', render: (_, r) => (
-      <Button type="link" danger icon={<DeleteOutlined />} onClick={async () => {
-        try { await settings.deleteCategory(r.id); message.success('Deleted'); loadData(); } 
-        catch (error) { message.error('Failed to delete'); }
-      }}>Delete</Button>
+      <Space>
+        <Button type="link" icon={<EditOutlined />} onClick={() => openEditItem('category', r)}>Edit</Button>
+        <Button type="link" danger icon={<DeleteOutlined />} onClick={() => setDeleteTarget({ type: 'category', row: r })}>Delete</Button>
+      </Space>
     )},
   ];
 
   const paymentColumns = [
     { title: 'Name', dataIndex: 'name', key: 'name' },
     { title: 'Actions', key: 'actions', render: (_, r) => (
-      <Button type="link" danger icon={<DeleteOutlined />} onClick={async () => {
-        try { await settings.deletePaymentMethod(r.id); message.success('Deleted'); loadData(); } 
-        catch (error) { message.error('Failed to delete'); }
-      }}>Delete</Button>
+      <Space>
+        <Button type="link" icon={<EditOutlined />} onClick={() => openEditItem('payment', r)}>Edit</Button>
+        <Button type="link" danger icon={<DeleteOutlined />} onClick={() => setDeleteTarget({ type: 'payment', row: r })}>Delete</Button>
+      </Space>
     )},
   ];
 
@@ -180,10 +211,10 @@ function SettingsPage() {
     <Card size="small" style={{ borderRadius: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontWeight: 500 }}>{r.name}</span>
-        <Button type="link" danger icon={<DeleteOutlined />} onClick={async () => {
-          try { await settings.deleteCategory(r.id); message.success('Deleted'); loadData(); }
-          catch (error) { message.error('Failed to delete'); }
-        }}>Delete</Button>
+        <Space>
+          <Button type="link" icon={<EditOutlined />} onClick={() => openEditItem('category', r)}>Edit</Button>
+          <Button type="link" danger icon={<DeleteOutlined />} onClick={() => setDeleteTarget({ type: 'category', row: r })}>Delete</Button>
+        </Space>
       </div>
     </Card>
   );
@@ -192,10 +223,10 @@ function SettingsPage() {
     <Card size="small" style={{ borderRadius: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontWeight: 500 }}>{r.name}</span>
-        <Button type="link" danger icon={<DeleteOutlined />} onClick={async () => {
-          try { await settings.deletePaymentMethod(r.id); message.success('Deleted'); loadData(); }
-          catch (error) { message.error('Failed to delete'); }
-        }}>Delete</Button>
+        <Space>
+          <Button type="link" icon={<EditOutlined />} onClick={() => openEditItem('payment', r)}>Edit</Button>
+          <Button type="link" danger icon={<DeleteOutlined />} onClick={() => setDeleteTarget({ type: 'payment', row: r })}>Delete</Button>
+        </Space>
       </div>
     </Card>
   );
@@ -484,6 +515,29 @@ function SettingsPage() {
     <MainLayout>
       <h1 style={{ marginBottom: 16 }}>{pageTitle}</h1>
       <Card><Tabs activeKey={activeTab} onChange={(key) => { setActiveTab(key); router.push(`/settings?tab=${key}`); }} items={tabItems} /></Card>
+      <Modal
+        title={editingItem ? `Edit ${EDIT_META[editingItem.type]?.noun || 'Item'}` : 'Edit'}
+        open={!!editingItem}
+        onOk={saveEditItem}
+        onCancel={() => setEditingItem(null)}
+        okText="Save"
+        destroyOnClose
+      >
+        <Input
+          placeholder="Name"
+          value={editItemName}
+          onChange={(e) => setEditItemName(e.target.value)}
+          onPressEnter={saveEditItem}
+          autoFocus
+        />
+      </Modal>
+      <TypedDeleteModal
+        open={!!deleteTarget}
+        itemType={deleteTarget ? (EDIT_META[deleteTarget.type]?.noun || 'item') : 'item'}
+        itemLabel={deleteTarget?.row?.name}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={confirmDeleteItem}
+      />
     </MainLayout>
   );
 }
@@ -595,6 +649,7 @@ function AccountSettings({ isMobile }) {
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null); // account row pending typed-delete, or null
 
   const loadAccounts = async () => {
     setLoading(true);
@@ -643,14 +698,13 @@ function AccountSettings({ isMobile }) {
     setEditName('');
   };
 
-  const handleDelete = async (id) => {
-    try {
-      await settings.deleteAccountSetting(id);
-      message.success('Account deleted');
-      loadAccounts();
-    } catch (err) {
-      message.error(err.response?.data?.message || 'Failed to delete account');
-    }
+  // Throws on failure so TypedDeleteModal keeps the dialog open and surfaces
+  // the error (e.g. account still referenced by transactions).
+  const confirmDeleteAccount = async () => {
+    await settings.deleteAccountSetting(deleteTarget.id);
+    message.success('Account deleted');
+    setDeleteTarget(null);
+    loadAccounts();
   };
 
   const columns = [
@@ -685,9 +739,7 @@ function AccountSettings({ isMobile }) {
         return (
           <Space>
             <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
-            <Popconfirm title="Delete this account?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
-              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
-            </Popconfirm>
+            <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />} onClick={() => setDeleteTarget(r)}>Delete</Button>
           </Space>
         );
       },
@@ -709,9 +761,7 @@ function AccountSettings({ isMobile }) {
           <span style={{ fontWeight: 500 }}>{r.name}</span>
           <Space>
             <Button type="link" style={{ padding: 0 }} icon={<EditOutlined />} onClick={() => handleEdit(r)}>Edit</Button>
-            <Popconfirm title="Delete this account?" onConfirm={() => handleDelete(r.id)} okText="Yes" cancelText="No">
-              <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />}>Delete</Button>
-            </Popconfirm>
+            <Button type="link" danger style={{ padding: 0 }} icon={<DeleteOutlined />} onClick={() => setDeleteTarget(r)}>Delete</Button>
           </Space>
         </div>
       )}
@@ -739,6 +789,13 @@ function AccountSettings({ isMobile }) {
       ) : (
         <Table columns={columns} dataSource={accounts} rowKey="id" loading={loading} pagination={false} size="middle" />
       )}
+      <TypedDeleteModal
+        open={!!deleteTarget}
+        itemType="account"
+        itemLabel={deleteTarget?.name}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={confirmDeleteAccount}
+      />
     </Card>
   );
 }

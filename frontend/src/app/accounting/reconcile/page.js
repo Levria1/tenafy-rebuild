@@ -149,9 +149,13 @@ export default function ReconcilePage() {
     };
   };
 
+  // A dedup_existing row whose link target wasn't captured at staging time
+  // can't be linked — treat it like a new entry (needs an account chosen).
+  const isBrokenLink = (row) => row.match_kind === 'dedup_existing' && !row.existing_accounting_id;
+
   // Whether Approve should be enabled for a row given current selections.
   const isApprovable = (row) => {
-    if (row.match_kind === 'dedup_existing') return true;
+    if (row.match_kind === 'dedup_existing') return row.existing_accounting_id ? true : !!effectiveAccount(row);
     if (row.match_kind === 'ambiguous') {
       const link = overrides[row.id]?.link;
       if (link && link !== '__new__') return true;        // linking to a match
@@ -266,11 +270,51 @@ export default function ReconcilePage() {
 
     // Per match_kind, render slightly different action chrome.
     if (row.match_kind === 'dedup_existing') {
+      // Normal case: the link target is known — just link, no input needed.
+      if (!isBrokenLink(row)) {
+        return (
+          <div>
+            <div style={{ fontSize: 12, color: '#666' }}>
+              Will link to existing accounting entry. No duplicate created.
+            </div>
+          </div>
+        );
+      }
+      // Broken link: matched an existing entry but the target wasn't captured.
+      // Fall back to creating a new entry — show the account/category pickers.
       return (
         <div>
-          <div style={{ fontSize: 12, color: '#666' }}>
-            Will link to existing accounting entry. No duplicate created.
+          <div style={{ fontSize: 12, color: '#fa8c16', marginBottom: 4 }}>
+            <WarningOutlined /> Matched an existing entry but the link target is missing.
+            Pick an account to record it as a new entry instead, or Skip it.
           </div>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Select
+              size="small"
+              showSearch
+              placeholder="Account (required)"
+              style={{ width: 220 }}
+              value={accountId || undefined}
+              onChange={v => updateOverride(row.id, 'account_id', v)}
+              options={accounts.map(a => ({ label: a.name, value: String(a.id) }))}
+              filterOption={(input, option) =>
+                (option?.label || '').toLowerCase().includes(input.toLowerCase())
+              }
+              status={!accountId ? 'warning' : undefined}
+            />
+            <Select
+              size="small"
+              showSearch
+              placeholder="Category"
+              style={{ width: 220 }}
+              value={categoryId || undefined}
+              onChange={v => updateOverride(row.id, 'category_id', v)}
+              options={categories.map(c => ({ label: c.name, value: String(c.id) }))}
+              filterOption={(input, option) =>
+                (option?.label || '').toLowerCase().includes(input.toLowerCase())
+              }
+            />
+          </Space>
         </div>
       );
     }

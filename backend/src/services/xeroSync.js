@@ -176,8 +176,46 @@ async function findInvoiceMatch(pool, orgId, { amount, description, contactName,
  * LLM fallback is gated to amounts above $X to keep cost predictable. Caller
  * can pass enableLlm=false to skip entirely.
  */
+// Normalize a chart-of-accounts / category name for fuzzy comparison: lower
+// case, strip punctuation, collapse whitespace, and drop a single trailing
+// accounting qualifier so Xero's "Petty Cash Expense" matches Tenafy's
+// "Petty Cash", "Rental Income" matches "Rental", etc.
+function normalizeCategoryName(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\s+(expenses?|incomes?|revenues?|accounts?|costs?|fees?|charges?)$/, '')
+    .trim();
+}
+
 async function categorize(pool, orgId, { description, amount, xeroCategoryName = null, enableLlm = false }) {
-  // Rules first (priority asc, lower runs earlier — so 1 beats 100).
+  // 1. Xero account name → Tenafy category. The Xero line account IS the
+  //    category in Xero's chart of accounts, so it's the most authoritative
+  //    signal — try it before description rules and the LLM. Exact match first,
+  //    then a normalized match that tolerates trailing accounting qualifiers
+  //    ("Petty Cash Expense" → "Petty Cash"). No amount gate, so small
+  //    transactions still auto-categorize.
+  if (xeroCategoryName) {
+    const [cats] = await pool.execute(
+      'SELECT id, name FROM category_setting WHERE org_id = ? AND enabled = 1',
+      [orgId]
+    );
+    const want = String(xeroCategoryName).trim().toLowerCase();
+    let hit = cats.find(c => String(c.name).trim().toLowerCase() === want);
+    if (!hit) {
+      const wantNorm = normalizeCategoryName(xeroCategoryName);
+      if (wantNorm) hit = cats.find(c => normalizeCategoryName(c.name) === wantNorm);
+    }
+    if (hit) {
+      return { category_id: String(hit.id), rule_id: null, source: 'xero_account_name' };
+    }
+  }
+
+  // 2. User rules (priority asc, lower runs earlier — so 1 beats 100). These
+  //    are the fallback / override layer for when the Xero account can't be
+  //    matched to a Tenafy category by name.
   const [rules] = await pool.execute(
     `SELECT id, description_pattern, category_id FROM xero_category_rule
       WHERE org_id = ? AND enabled = 1
@@ -197,21 +235,7 @@ async function categorize(pool, orgId, { description, amount, xeroCategoryName =
       return { category_id: String(r.category_id), rule_id: String(r.id), source: 'rule' };
     }
   }
-  // Xero account name → Tenafy category (exact, case-insensitive). The Xero
-  // line account IS the category in Xero's chart of accounts; if Tenafy has a
-  // category of the same name, use it directly. Runs regardless of amount, so
-  // small transactions (below the LLM gate) still auto-categorize.
-  if (xeroCategoryName) {
-    const [catHits] = await pool.execute(
-      `SELECT id FROM category_setting
-        WHERE org_id = ? AND enabled = 1 AND LOWER(name) = LOWER(?) LIMIT 1`,
-      [orgId, String(xeroCategoryName).trim()]
-    );
-    if (catHits.length) {
-      return { category_id: String(catHits[0].id), rule_id: null, source: 'xero_account_name' };
-    }
-  }
-  // LLM fallback — only when explicitly enabled and amount is non-trivial.
+  // 3. LLM fallback — only when explicitly enabled and amount is non-trivial.
   // Gate by amount to keep cost predictable: trivial amounts (e.g. <$100 HKD)
   // can stay uncategorized and the user picks during review.
   if (enableLlm && Math.abs(amount) >= 100) {
