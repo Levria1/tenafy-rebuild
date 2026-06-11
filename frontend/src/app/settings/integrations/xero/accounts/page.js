@@ -122,32 +122,34 @@ export default function XeroAccountMappingPage() {
       key: 'tenafy',
       width: 360,
       render: (_, row) => (
-        <Select
-          showSearch
-          allowClear
-          placeholder="Pick a Tenafy account"
-          style={{ width: '100%' }}
-          value={mappings[row.id] || undefined}
-          onChange={(v) => onChangeMapping(row.id, v)}
-          options={[
-            {
-              label: '🚫 Ignore (don\'t sync this account)',
-              value: IGNORE,
-            },
-            ...tenafyAccounts.map(a => ({
-              label: a.name,
-              value: a.id,
-            })),
-          ]}
-          filterOption={(input, option) =>
-            (option?.label || '').toLowerCase().includes(input.toLowerCase())
-          }
-        />
-        {mappings[row.id] === IGNORE && (
-          <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
-            Transactions from this account are skipped at sync — they won't appear in the review queue.
-          </div>
-        )}
+        <>
+          <Select
+            showSearch
+            allowClear
+            placeholder="Pick a Tenafy account"
+            style={{ width: '100%' }}
+            value={mappings[row.id] || undefined}
+            onChange={(v) => onChangeMapping(row.id, v)}
+            options={[
+              {
+                label: '🚫 Ignore (don\'t sync this account)',
+                value: IGNORE,
+              },
+              ...tenafyAccounts.map(a => ({
+                label: a.name,
+                value: a.id,
+              })),
+            ]}
+            filterOption={(input, option) =>
+              (option?.label || '').toLowerCase().includes(input.toLowerCase())
+            }
+          />
+          {mappings[row.id] === IGNORE && (
+            <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+              Transactions from this account are skipped at sync — they won't appear in the review queue.
+            </div>
+          )}
+        </>
       ),
     },
   ];
