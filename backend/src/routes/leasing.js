@@ -570,7 +570,7 @@ router.post('/', authenticate, async (req, res) => {
     const {
       unit_id, tenant_id, start_date, end_date, type,
       price, deposit, due_date, invoicing, amount, first_invoice_date,
-      contract_type, unit_information, note, credits, utility_credit,
+      contract_type, notice_period_days, unit_information, note, credits, utility_credit,
       check_in_meter, check_out_meter,
       contact_phone, lease_no,
       additionalTenantIds,
@@ -648,7 +648,7 @@ router.post('/', authenticate, async (req, res) => {
     await req.pool.execute(
       `INSERT INTO leasing (
         id, unit_id, tenant_id, start_date, end_date, status, price, type, invoicing,
-        amount, due_date, deposit, currency_id, contract_type, unit_information, note, credits, utility_credit,
+        amount, due_date, deposit, currency_id, contract_type, notice_period_days, unit_information, note, credits, utility_credit,
         check_in_meter, check_out_meter, check_in_meter_updated_at, check_out_meter_updated_at,
         contact_phone, lease_no, first_invoice_date,
         access_setting, share_lease, all_past,
@@ -656,12 +656,14 @@ router.post('/', authenticate, async (req, res) => {
         landlord_overdue, tenant_overdue, landlord_expired, landlord_expired_days,
         tenant_checkin, tenant_checkout, tenant_renewal, tenant_renewal_days,
         tenant_deposit_posted, payment_receipt, email_template_id, booking_platform_id, sales_agent_id, lease_state, created_at
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         leaseId.toString(), unit_id, tenant_id, start_date, end_date || null,
         price || 0, type || 0, invoicing || null,
         amount || price || 0, due_date || null, deposit || 0, currencyId,
-        contract_type || 0, unit_information || null, note || null, credits || null, utility_credit ?? null,
+        contract_type || 0,
+        (notice_period_days != null && notice_period_days !== '') ? Number(notice_period_days) : null,
+        unit_information || null, note || null, credits || null, utility_credit ?? null,
         resolvedCheckInMeter ?? null, check_out_meter ?? null,
         resolvedCheckInMeter != null ? new Date() : null, check_out_meter != null ? new Date() : null,
         contact_phone || null, leaseNo, first_invoice_date || null,
@@ -913,7 +915,7 @@ router.put('/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const {
       unit_id, tenant_id, start_date, end_date, type, price, deposit,
-      due_date, invoicing, amount, contract_type, unit_information,
+      due_date, invoicing, amount, contract_type, notice_period_days, unit_information,
       note, credits, utility_credit, check_in_meter, check_out_meter,
       contact_phone, first_invoice_date, status,
       additionalTenantIds,
@@ -978,6 +980,10 @@ router.put('/:id', authenticate, async (req, res) => {
     if (due_date !== undefined) { fields.push('due_date = ?'); params.push(due_date); }
     if (invoicing !== undefined) { fields.push('invoicing = ?'); params.push(invoicing); }
     if (contract_type !== undefined) { fields.push('contract_type = ?'); params.push(contract_type); }
+    if (notice_period_days !== undefined) {
+      fields.push('notice_period_days = ?');
+      params.push((notice_period_days != null && notice_period_days !== '') ? Number(notice_period_days) : null);
+    }
     if (unit_information !== undefined) { fields.push('unit_information = ?'); params.push(unit_information || null); }
     if (note !== undefined) { fields.push('note = ?'); params.push(note || null); }
     if (credits !== undefined) { fields.push('credits = ?'); params.push(credits || null); }

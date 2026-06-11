@@ -38,13 +38,6 @@
 const xeroClient = require('./xeroClient');
 const llmClient = require('./llmClient');
 
-// How many days the bank/Xero date may differ from the Tenafy entry date and
-// still count as the same transaction. Bank posting dates often lag the date a
-// payment was recorded in Tenafy by a day or two, so an exact-date match misses
-// real duplicates. ±5 days is wide enough to catch those without colliding with
-// genuinely separate same-amount transactions (those get flagged ambiguous).
-const DEDUP_DATE_WINDOW_DAYS = 5;
-
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
@@ -82,33 +75,35 @@ async function findAlreadyImported(pool, orgId, xeroTxId) {
 }
 
 /**
- * Dedup matcher: find Tenafy accounting entries with the same date+amount+account.
+ * Dedup matcher: find Tenafy accounting entries that EXACTLY match the Xero
+ * transaction — same payment date AND same amount. Nothing else counts.
+ *
+ * Strict by design: a Tenafy entry is only considered "the same transaction"
+ * when its date and amount line up exactly with Xero. A near-date or near-amount
+ * row is treated as a different transaction (→ new_entry), not a fuzzy match.
+ * This keeps the review queue unambiguous: an entry either is the same record
+ * or it isn't.
  *
  * Why account-scoped: without it, a $13k rent payment on the same day in two
  * different banks would falsely collide. The mapped Tenafy account is the
- * tightest natural key besides xero_transaction_id itself.
+ * tightest natural key besides xero_transaction_id itself. When the Xero bank
+ * account isn't mapped yet (tenafyAccountId null) we search across all accounts
+ * so an already-recorded entry is still detected instead of proposed as new.
  *
  * Returns an array of {id, amount, type, payment_date, tenant_id, ...} —
- * caller decides whether to link (1 match) or flag ambiguous (≥2).
+ * caller decides whether to link (1 match) or flag ambiguous (≥2, i.e. two
+ * genuinely identical date+amount rows, which is rare and worth a human pick).
  */
 async function findDedupCandidates(pool, orgId, { date, amount, tenafyAccountId }) {
-  // Match within a date window (not exact day) so bank-date vs entry-date drift
-  // still links. When tenafyAccountId is given we scope to that account (the
-  // tightest key); when it's null (the Xero bank account isn't mapped yet) we
-  // search across ALL accounts so already-existing entries are still detected
-  // instead of being proposed as brand-new "Unmapped" rows.
   const params = [orgId];
   let accountClause = '';
   if (tenafyAccountId) {
     accountClause = 'AND account_setting_id = ?';
     params.push(tenafyAccountId);
   }
-  // Date window
-  params.push(date, DEDUP_DATE_WINDOW_DAYS, date, DEDUP_DATE_WINDOW_DAYS);
-  // Amount (abs)
-  params.push(Math.abs(amount));
-  // ORDER BY closeness to the target date
+  // Exact day (DATE() strips any time component) + exact amount.
   params.push(date);
+  params.push(Math.abs(amount));
 
   const [rows] = await pool.execute(
     `SELECT id, amount, type, payment_date, tenant_id, lease_id, category, account_setting_id
@@ -116,10 +111,10 @@ async function findDedupCandidates(pool, orgId, { date, amount, tenafyAccountId 
       WHERE org_id = ?
         AND deleted_at IS NULL
         ${accountClause}
-        AND payment_date BETWEEN DATE_SUB(?, INTERVAL ? DAY) AND DATE_ADD(?, INTERVAL ? DAY)
+        AND DATE(payment_date) = ?
         AND amount = ?
         AND (xero_transaction_id IS NULL OR xero_transaction_id = '')
-      ORDER BY ABS(DATEDIFF(payment_date, ?)) ASC`,
+      ORDER BY id ASC`,
     params
   );
   return rows.map(r => ({ ...r, id: String(r.id) }));
@@ -280,22 +275,26 @@ async function syncForOrg(pool, orgId, opts = {}) {
     pulled: 0,
     staged: 0,
     skipped_already_imported: 0,
+    skipped_ignored: 0,
     errors: 0,
     error_details: [],
   };
 
-  // Load the org's account map once — we use it to scope dedup queries.
+  // Load the org's account map once — we use it to scope dedup queries and to
+  // know which Xero accounts are flagged "ignore" (skip entirely at pull time).
   const [mapRows] = await pool.execute(
-    `SELECT xero_account_id, tenafy_account_setting_id
+    `SELECT xero_account_id, tenafy_account_setting_id, ignored
        FROM xero_account_map
       WHERE org_id = ?`,
     [orgId]
   );
   const accountMap = {};
+  const ignoredSet = new Set();
   for (const r of mapRows) {
     accountMap[r.xero_account_id] = r.tenafy_account_setting_id
       ? String(r.tenafy_account_setting_id)
       : null;
+    if (r.ignored) ignoredSet.add(r.xero_account_id);
   }
 
   // Xero's BankTransactions endpoint paginates at 100/page. Loop until empty.
@@ -326,6 +325,12 @@ async function syncForOrg(pool, orgId, opts = {}) {
 
     for (const tx of txns) {
       summary.pulled++;
+      // Ignored account → drop the transaction before it ever reaches the
+      // review queue. No staging, no "Unmapped" clutter.
+      if (ignoredSet.has(tx.BankAccount?.AccountID)) {
+        summary.skipped_ignored++;
+        continue;
+      }
       try {
         await stageTransaction(pool, orgId, tx, accountMap);
         summary.staged++;

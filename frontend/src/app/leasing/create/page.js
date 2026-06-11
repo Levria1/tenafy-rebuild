@@ -300,6 +300,8 @@ export default function LeaseCreatePage() {
       first_invoice_date: makeRecurring ? (values.first_invoice_date?.format('YYYY-MM-DD') || null) : null,
       share_lease: makeRecurring ? 1 : 0,
       contract_type: values.contract_type ?? 0,
+      notice_period_days: (values.notice_period_days != null && values.notice_period_days !== '')
+        ? Number(values.notice_period_days) : null,
       unit_information: values.unit_information || null,
       note: values.note || null,
       credits: values.credits || null,
@@ -440,7 +442,7 @@ export default function LeaseCreatePage() {
             </Form.Item>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 16 }}>
           <div style={{ width: 160 }}>
             <FLabel>LEASE TYPE</FLabel>
             <Form.Item name="type" noStyle initialValue={0}>
@@ -449,6 +451,20 @@ export default function LeaseCreatePage() {
                 <Select.Option value={1}>Month-to-Month</Select.Option>
               </Select>
             </Form.Item>
+          </div>
+          <div style={{ width: 200 }}>
+            <FLabel>NOTICE PERIOD (DAYS)</FLabel>
+            <Form.Item name="notice_period_days" noStyle>
+              <InputNumber
+                style={{ width: 200 }}
+                min={0}
+                precision={0}
+                placeholder="e.g. 60"
+              />
+            </Form.Item>
+            <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+              Notice the tenant must give to renew.
+            </div>
           </div>
         </div>
 

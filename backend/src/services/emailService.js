@@ -95,6 +95,7 @@ const TEMPLATE_VARIABLES = [
   { key: '%Building / Unit Address - Property%', description: 'Property full address' },
   { key: '%Lease start date - Lease%', description: 'Lease start date' },
   { key: '%Lease end date - Lease%', description: 'Lease end date' },
+  { key: '%Notice Period - Lease%', description: 'Renewal notice period in days the tenant must give' },
   { key: '%Unit Access Information - Property%', description: 'Unit access information' },
   { key: '%Wifi Details - Property%', description: 'WiFi details' },
   { key: '%Payment Info - Property%', description: 'Payment instructions' },
@@ -254,7 +255,7 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
   const [rows] = await pool.execute(
     `SELECT
        l.id AS lease_id, l.start_date, l.end_date, l.unit_information,
-       l.credits, l.deposit, l.amount AS lease_amount,
+       l.credits, l.deposit, l.amount AS lease_amount, l.notice_period_days,
        t.first_name, t.middle_name, t.last_name, t.company_name,
        t.type AS tenant_type, t.phone AS tenant_phone,
        u.name AS unit_name, u.access_information, u.wifi_information,
@@ -397,6 +398,7 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
     '%Building / Unit Address - Property%': fullAddress,
     '%Lease start date - Lease%': formatLeaseDate(r.start_date),
     '%Lease end date - Lease%': formatLeaseDate(r.end_date),
+    '%Notice Period - Lease%': r.notice_period_days != null ? String(r.notice_period_days) : '',
     '%Unit Access Information - Property%': r.access_information || '',
     '%Wifi Details - Property%': r.wifi_information || '',
     '%Payment Info - Property%': paymentInfo,
@@ -427,6 +429,7 @@ function getSampleVariables() {
     '%Building / Unit Address - Property%': '123 Main St, Los Angeles, CA',
     '%Lease start date - Lease%': '01/01/2026',
     '%Lease end date - Lease%': '12/31/2026',
+    '%Notice Period - Lease%': '60',
     '%Unit Access Information - Property%': 'Front gate code: 1234',
     '%Wifi Details - Property%': 'Network: SunsetWifi, Password: guest123',
     '%Payment Info - Property%': 'Bank transfer to Account #XXXX',

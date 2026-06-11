@@ -97,7 +97,7 @@ export default function ReconcilePage() {
       if (r.data?.code === 200) {
         const s = r.data.data;
         message.success(
-          `Pulled ${s.pulled}, staged ${s.staged}, skipped ${s.skipped_already_imported} already-imported${s.errors ? `, ${s.errors} errors` : ''}.`
+          `Pulled ${s.pulled}, staged ${s.staged}, skipped ${s.skipped_already_imported} already-imported${s.skipped_ignored ? `, ${s.skipped_ignored} from ignored accounts` : ''}${s.errors ? `, ${s.errors} errors` : ''}.`
         );
         await loadPending();
       } else {
@@ -117,9 +117,46 @@ export default function ReconcilePage() {
     }));
   };
 
+  // The account that will be used if the row is committed as a new entry —
+  // the user's override, else the proposed/mapped account from the backend.
+  const effectiveAccount = (row) => (overrides[row.id]?.account_id) || row.proposed_account_id || null;
+
+  // Build the approve payload the backend expects, per match_kind. Ambiguous
+  // rows resolve EITHER to a link (accounting_id) or a new entry (account_id).
+  const buildBody = (row) => {
+    const ov = overrides[row.id] || {};
+    if (row.match_kind === 'ambiguous') {
+      if (ov.link && ov.link !== '__new__') return { accounting_id: ov.link };
+      // "Create as new entry instead"
+      return {
+        account_id: effectiveAccount(row) || undefined,
+        category_id: (ov.category_id || row.proposed_category_id) || undefined,
+      };
+    }
+    return {
+      account_id: effectiveAccount(row) || undefined,
+      category_id: (ov.category_id || row.proposed_category_id) || undefined,
+      invoice_id: (ov.invoice_id || row.proposed_invoice_id) || undefined,
+      accounting_id: ov.accounting_id || undefined,
+    };
+  };
+
+  // Whether Approve should be enabled for a row given current selections.
+  const isApprovable = (row) => {
+    if (row.match_kind === 'dedup_existing') return true;
+    if (row.match_kind === 'ambiguous') {
+      const link = overrides[row.id]?.link;
+      if (link && link !== '__new__') return true;        // linking to a match
+      if (link === '__new__') return !!effectiveAccount(row); // new entry needs an account
+      return false;                                        // no choice made yet
+    }
+    // new_entry / unmapped_account / invoice_payment all create an entry → need an account
+    return !!effectiveAccount(row);
+  };
+
   const onApprove = async (row) => {
     try {
-      const body = overrides[row.id] || {};
+      const body = buildBody(row);
       const r = await xero.approvePending(row.id, body);
       if (r.data?.code === 200) {
         message.success('Committed.');
@@ -153,7 +190,7 @@ export default function ReconcilePage() {
     if (!ids.length) return;
     const items = rows
       .filter(r => ids.includes(r.id))
-      .map(r => ({ id: r.id, ...(overrides[r.id] || {}) }));
+      .map(r => ({ id: r.id, ...buildBody(r) }));
     setBulkBusy(true);
     try {
       const r = await xero.bulkApprovePending(items);
@@ -250,10 +287,57 @@ export default function ReconcilePage() {
       );
     }
     if (row.match_kind === 'ambiguous') {
+      const link = ov.link;
+      const isNew = link === '__new__';
       return (
-        <div style={{ color: '#fa8c16' }}>
-          <WarningOutlined /> {row.ambiguous_candidates?.length || 0} matching Tenafy
-          entries — pick one to link (UI coming next phase).
+        <div>
+          <div style={{ fontSize: 12, color: '#fa8c16', marginBottom: 4 }}>
+            <WarningOutlined /> {row.ambiguous_candidates?.length || 0} Tenafy entries match
+            this date &amp; amount — link one, or create new.
+          </div>
+          <Select
+            size="small"
+            style={{ width: 340 }}
+            placeholder="Link to a matching entry…"
+            value={link || undefined}
+            onChange={v => updateOverride(row.id, 'link', v)}
+            options={[
+              ...(row.ambiguous_candidates || []).map(c => ({
+                label: `🔗 ${c.label}`,
+                value: c.accounting_id,
+              })),
+              { label: '➕ Create as a new entry instead', value: '__new__' },
+            ]}
+          />
+          {isNew && (
+            <Space direction="vertical" size={4} style={{ width: '100%', marginTop: 4 }}>
+              <Select
+                size="small"
+                showSearch
+                placeholder="Account (required)"
+                style={{ width: 220 }}
+                value={accountId || undefined}
+                onChange={v => updateOverride(row.id, 'account_id', v)}
+                options={accounts.map(a => ({ label: a.name, value: String(a.id) }))}
+                filterOption={(input, option) =>
+                  (option?.label || '').toLowerCase().includes(input.toLowerCase())
+                }
+                status={!accountId ? 'warning' : undefined}
+              />
+              <Select
+                size="small"
+                showSearch
+                placeholder="Category"
+                style={{ width: 220 }}
+                value={categoryId || undefined}
+                onChange={v => updateOverride(row.id, 'category_id', v)}
+                options={categories.map(c => ({ label: c.name, value: String(c.id) }))}
+                filterOption={(input, option) =>
+                  (option?.label || '').toLowerCase().includes(input.toLowerCase())
+                }
+              />
+            </Space>
+          )}
         </div>
       );
     }
@@ -343,7 +427,7 @@ export default function ReconcilePage() {
             size="small"
             icon={<CheckOutlined />}
             onClick={() => onApprove(row)}
-            disabled={row.match_kind === 'ambiguous'}
+            disabled={!isApprovable(row)}
           >
             Approve
           </Button>

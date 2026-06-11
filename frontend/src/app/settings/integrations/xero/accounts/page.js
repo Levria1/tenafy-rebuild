@@ -23,6 +23,10 @@ import { xero } from '../../../../../lib/api';
 
 const { Title, Paragraph, Text } = Typography;
 
+// Sentinel mapping value for "skip this Xero account entirely". Kept in sync
+// with the backend constant in routes/xero.js.
+const IGNORE = '__IGNORE__';
+
 export default function XeroAccountMappingPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -68,7 +72,9 @@ export default function XeroAccountMappingPage() {
         xero_account_code: a.code,
         xero_account_name: a.name,
         xero_account_type: a.type,
-        tenafy_account_setting_id: mappings[a.id] || null,
+        // '__IGNORE__' sentinel → backend stores ignored=1 (no Tenafy target).
+        ignored: mappings[a.id] === IGNORE,
+        tenafy_account_setting_id: mappings[a.id] === IGNORE ? null : (mappings[a.id] || null),
       }));
       const r = await xero.saveAccountMap(payload);
       if (r.data?.code === 200) {
@@ -84,10 +90,11 @@ export default function XeroAccountMappingPage() {
     }
   };
 
-  // Count how many are mapped vs unmapped so the user can see progress at a
-  // glance — useful when you have 6+ accounts and want to know what's left.
-  const mappedCount = xeroAccounts.filter(a => mappings[a.id]).length;
-  const unmappedCount = xeroAccounts.length - mappedCount;
+  // Count how many are mapped / ignored / unmapped so the user can see progress
+  // at a glance — useful when you have 6+ accounts and want to know what's left.
+  const ignoredCount = xeroAccounts.filter(a => mappings[a.id] === IGNORE).length;
+  const mappedCount = xeroAccounts.filter(a => mappings[a.id] && mappings[a.id] !== IGNORE).length;
+  const unmappedCount = xeroAccounts.length - mappedCount - ignoredCount;
 
   const columns = [
     {
@@ -122,14 +129,25 @@ export default function XeroAccountMappingPage() {
           style={{ width: '100%' }}
           value={mappings[row.id] || undefined}
           onChange={(v) => onChangeMapping(row.id, v)}
-          options={tenafyAccounts.map(a => ({
-            label: a.name,
-            value: a.id,
-          }))}
+          options={[
+            {
+              label: '🚫 Ignore (don\'t sync this account)',
+              value: IGNORE,
+            },
+            ...tenafyAccounts.map(a => ({
+              label: a.name,
+              value: a.id,
+            })),
+          ]}
           filterOption={(input, option) =>
             (option?.label || '').toLowerCase().includes(input.toLowerCase())
           }
         />
+        {mappings[row.id] === IGNORE && (
+          <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+            Transactions from this account are skipped at sync — they won't appear in the review queue.
+          </div>
+        )}
       ),
     },
   ];
@@ -182,6 +200,12 @@ export default function XeroAccountMappingPage() {
                     {unmappedCount}
                   </Text>
                   <Text type="secondary"> unmapped</Text>
+                </span>
+                <span>
+                  <Text strong style={{ color: ignoredCount > 0 ? '#8c8c8c' : '#999' }}>
+                    {ignoredCount}
+                  </Text>
+                  <Text type="secondary"> ignored</Text>
                 </span>
               </Space>
             </Card>

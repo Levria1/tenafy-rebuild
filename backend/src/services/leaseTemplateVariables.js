@@ -164,6 +164,9 @@ const VARIABLES = [
   { key: 'RENT_DUE_DAY', group: 'Lease', label: 'Rent due day of month',
     sample: '1',
     resolve: (ctx) => ctx.lease?.due_date != null ? String(ctx.lease.due_date) : '' },
+  { key: 'NOTICE_PERIOD', group: 'Lease', label: 'Renewal notice period (days)',
+    sample: '60',
+    resolve: (ctx) => ctx.lease?.notice_period_days != null ? String(ctx.lease.notice_period_days) : '' },
   { key: 'INVOICING_FREQUENCY', group: 'Lease', label: 'Invoicing schedule (monthly/weekly/…)',
     sample: 'Monthly',
     resolve: (ctx) => {

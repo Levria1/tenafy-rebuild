@@ -199,6 +199,7 @@ export default function LeasingEditPage() {
           end_date: d.end_date ? dayjs(d.end_date) : undefined,
           type: d.type != null ? Number(d.type) : 0,
           contract_type: d.contract_type ? Number(d.contract_type) : undefined,
+          notice_period_days: d.notice_period_days != null ? Number(d.notice_period_days) : undefined,
           price: d.price || d.amount || '',
           deposit: d.deposit || '',
           due_date: d.due_date ? Number(d.due_date) : undefined,
@@ -276,6 +277,8 @@ export default function LeasingEditPage() {
         invoicing: makeRecurring ? (values.invoicing || null) : null,
         first_invoice_date: makeRecurring ? (values.first_invoice_date?.format('YYYY-MM-DD') || null) : null,
         contract_type: values.contract_type ?? 0,
+        notice_period_days: (values.notice_period_days != null && values.notice_period_days !== '')
+          ? Number(values.notice_period_days) : null,
         unit_information: values.unit_information || null,
         note: values.note || null,
         credits: values.credits || null,
@@ -436,6 +439,17 @@ export default function LeasingEditPage() {
               <Form.Item name="end_date" noStyle>
                 <DatePicker style={{ width: '100%' }} />
               </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16} style={{ marginTop: 16 }}>
+            <Col span={6}>
+              <FLabel>Notice Period (Days)</FLabel>
+              <Form.Item name="notice_period_days" noStyle>
+                <InputNumber style={{ width: '100%' }} min={0} precision={0} placeholder="e.g. 60" />
+              </Form.Item>
+              <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+                Notice the tenant must give to renew.
+              </div>
             </Col>
           </Row>
         </div>

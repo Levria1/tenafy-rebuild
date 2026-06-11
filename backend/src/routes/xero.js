@@ -211,18 +211,20 @@ router.get('/accounts', authenticate, async (req, res) => {
       bankAccountNumber: a.BankAccountNumber || null,
     }));
 
-    // Existing mappings.
+    // Existing mappings. An ignored account is surfaced as the sentinel
+    // '__IGNORE__' so the frontend can render it as the "Ignore (don't sync)"
+    // choice in the same dropdown used for real account mappings.
     const [mapRows] = await req.pool.execute(
-      `SELECT xero_account_id, tenafy_account_setting_id
+      `SELECT xero_account_id, tenafy_account_setting_id, ignored
          FROM xero_account_map
         WHERE org_id = ?`,
       [orgId]
     );
     const mappings = {};
     for (const r of mapRows) {
-      mappings[r.xero_account_id] = r.tenafy_account_setting_id
-        ? String(r.tenafy_account_setting_id)
-        : null;
+      mappings[r.xero_account_id] = r.ignored
+        ? '__IGNORE__'
+        : (r.tenafy_account_setting_id ? String(r.tenafy_account_setting_id) : null);
     }
 
     // Tenafy accounts for the dropdown.
@@ -273,6 +275,15 @@ router.post('/accounts/map', authenticate, async (req, res) => {
     let saved = 0;
     for (const m of mappings) {
       if (!m.xero_account_id) continue;
+      // An account flagged for ignore comes in either as the '__IGNORE__'
+      // sentinel in tenafy_account_setting_id or an explicit ignored:true.
+      // Ignored rows never carry a Tenafy account target.
+      const isIgnored = m.ignored === true
+        || m.ignored === 1
+        || m.tenafy_account_setting_id === '__IGNORE__';
+      const tenafyId = (!isIgnored && m.tenafy_account_setting_id && m.tenafy_account_setting_id !== '__IGNORE__')
+        ? String(m.tenafy_account_setting_id)
+        : null;
       // Allow unmapped rows (tenafy_account_setting_id may be null) so the
       // user can persist their "I want to map these but haven't picked yet"
       // state — useful for incremental setup.
@@ -280,15 +291,16 @@ router.post('/accounts/map', authenticate, async (req, res) => {
       await conn.execute(
         `INSERT INTO xero_account_map
             (id, org_id, xero_account_id, xero_account_code, xero_account_name,
-             xero_account_type, tenafy_account_setting_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+             xero_account_type, tenafy_account_setting_id, ignored, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
         [
           id, orgId,
           String(m.xero_account_id),
           m.xero_account_code || null,
           m.xero_account_name || null,
           m.xero_account_type || null,
-          m.tenafy_account_setting_id ? String(m.tenafy_account_setting_id) : null,
+          tenafyId,
+          isIgnored ? 1 : 0,
         ]
       );
       saved++;
@@ -387,6 +399,8 @@ router.get('/pending', authenticate, async (req, res) => {
       `SELECT p.*,
               m.xero_account_name,
               m.xero_account_code,
+              m.tenafy_account_setting_id AS mapped_account_id,
+              mast.name AS mapped_account_name,
               ast.name AS proposed_account_name,
               cat.name AS proposed_category_name,
               inv.invoice_code AS proposed_invoice_code,
@@ -397,6 +411,7 @@ router.get('/pending', authenticate, async (req, res) => {
          FROM xero_pending_reconciliation p
          LEFT JOIN xero_account_map m
                 ON m.org_id = p.org_id AND m.xero_account_id = p.xero_account_id
+         LEFT JOIN account_setting mast ON mast.id = m.tenafy_account_setting_id
          LEFT JOIN account_setting ast ON ast.id = p.proposed_account_id
          LEFT JOIN category_setting cat ON cat.id = p.proposed_category_id
          LEFT JOIN invoice inv ON inv.id = p.proposed_invoice_id
@@ -406,18 +421,89 @@ router.get('/pending', authenticate, async (req, res) => {
       params
     );
 
+    // Enrich ambiguous candidates with readable labels so the review queue can
+    // show WHICH entries matched (tenant / category / note), letting the user
+    // pick one to link. The stored candidates only carry ids.
+    const parseCandidates = (val) => {
+      try {
+        const raw = typeof val === 'string' ? JSON.parse(val) : (val || []);
+        return Array.isArray(raw) ? raw : [];
+      } catch { return []; }
+    };
+    const candidateIds = new Set();
+    for (const r of rows) {
+      if (r.match_kind === 'ambiguous') {
+        for (const c of parseCandidates(r.ambiguous_candidates)) {
+          if (c.accounting_id) candidateIds.add(String(c.accounting_id));
+        }
+      }
+    }
+    const candidateLabels = {};
+    if (candidateIds.size) {
+      const ids = [...candidateIds];
+      const placeholders = ids.map(() => '?').join(',');
+      const [acctRows] = await req.pool.execute(
+        `SELECT a.id, a.note, a.payment_date, a.amount,
+                c.name AS category_name,
+                CASE WHEN t.type = 1 THEN t.company_name
+                     ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
+                END AS tenant_name
+           FROM accounting a
+           LEFT JOIN category_setting c ON c.id = a.category
+           LEFT JOIN tenant t          ON t.id = a.tenant_id
+          WHERE a.id IN (${placeholders})`,
+        ids
+      );
+      for (const a of acctRows) {
+        const tenant = (a.tenant_name || '').trim();
+        const parts = [
+          tenant || 'No tenant',
+          a.category_name || 'No category',
+        ];
+        if (a.note) parts.push(String(a.note).slice(0, 40));
+        candidateLabels[String(a.id)] = parts.join(' · ');
+      }
+    }
+
     return ok(res, {
-      pending: rows.map(r => ({
-        ...r,
-        id: String(r.id),
-        amount: r.amount != null ? Number(r.amount) : null,
-        proposed_account_id: r.proposed_account_id ? String(r.proposed_account_id) : null,
-        proposed_category_id: r.proposed_category_id ? String(r.proposed_category_id) : null,
-        proposed_invoice_id: r.proposed_invoice_id ? String(r.proposed_invoice_id) : null,
-        proposed_tenant_id: r.proposed_tenant_id ? String(r.proposed_tenant_id) : null,
-        existing_accounting_id: r.existing_accounting_id ? String(r.existing_accounting_id) : null,
-        raw_payload: undefined, // don't ship the whole Xero blob to the browser
-      })),
+      pending: rows.map(r => {
+        // A row staged as 'unmapped_account' BEFORE the user mapped its Xero
+        // account still carries the old classification + a null proposed
+        // account. The account map is now joined in, so resolve the mapping
+        // live: surface the mapped Tenafy account and reclassify the row as a
+        // normal new_entry so it stops showing as "Unmapped" in the queue.
+        const mappedAcctId = r.mapped_account_id ? String(r.mapped_account_id) : null;
+        const storedAcctId = r.proposed_account_id ? String(r.proposed_account_id) : null;
+        const effectiveAcctId = storedAcctId || mappedAcctId;
+        const effectiveAcctName = r.proposed_account_name || r.mapped_account_name || null;
+        const matchKind = (r.match_kind === 'unmapped_account' && mappedAcctId)
+          ? 'new_entry'
+          : r.match_kind;
+        const enrichedCandidates = r.match_kind === 'ambiguous'
+          ? parseCandidates(r.ambiguous_candidates).map(c => ({
+              accounting_id: c.accounting_id ? String(c.accounting_id) : null,
+              tenant_id: c.tenant_id ? String(c.tenant_id) : null,
+              lease_id: c.lease_id ? String(c.lease_id) : null,
+              label: candidateLabels[String(c.accounting_id)] || `Entry ${c.accounting_id}`,
+            }))
+          : undefined;
+        return {
+          ...r,
+          id: String(r.id),
+          amount: r.amount != null ? Number(r.amount) : null,
+          match_kind: matchKind,
+          ambiguous_candidates: enrichedCandidates,
+          proposed_account_id: effectiveAcctId,
+          proposed_account_name: effectiveAcctName,
+          proposed_category_id: r.proposed_category_id ? String(r.proposed_category_id) : null,
+          proposed_invoice_id: r.proposed_invoice_id ? String(r.proposed_invoice_id) : null,
+          proposed_tenant_id: r.proposed_tenant_id ? String(r.proposed_tenant_id) : null,
+          existing_accounting_id: r.existing_accounting_id ? String(r.existing_accounting_id) : null,
+          raw_payload: undefined, // don't ship the whole Xero blob to the browser
+          mapped_account_id: undefined,
+          mapped_account_name: undefined,
+        };
+      }),
     });
   } catch (err) {
     console.error('[xero/pending] error:', err);
@@ -456,8 +542,23 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
       throw e;
     }
 
-    const accountId  = overrides.account_id  || (p.proposed_account_id  ? String(p.proposed_account_id)  : null);
+    let accountId    = overrides.account_id  || (p.proposed_account_id  ? String(p.proposed_account_id)  : null);
     const categoryId = overrides.category_id || (p.proposed_category_id ? String(p.proposed_category_id) : null);
+
+    // If the row has no account yet (e.g. staged as 'unmapped_account' before
+    // the Xero account was mapped), fall back to the current account mapping.
+    // This lets a user map the account, then approve the queued rows directly
+    // without re-syncing or manually picking the account on every row.
+    if (!accountId) {
+      const [[mapRow]] = await conn.execute(
+        `SELECT tenafy_account_setting_id FROM xero_account_map
+          WHERE org_id = ? AND xero_account_id = ? LIMIT 1`,
+        [orgId, p.xero_account_id]
+      );
+      if (mapRow && mapRow.tenafy_account_setting_id) {
+        accountId = String(mapRow.tenafy_account_setting_id);
+      }
+    }
     const invoiceId  = overrides.invoice_id  || (p.proposed_invoice_id  ? String(p.proposed_invoice_id)  : null);
     const tenantId   = overrides.tenant_id   || (p.proposed_tenant_id   ? String(p.proposed_tenant_id)   : null);
     const existingAcctId = overrides.accounting_id || (p.existing_accounting_id ? String(p.existing_accounting_id) : null);
@@ -468,7 +569,32 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
 
     let resultingId = null;
 
-    if (p.match_kind === 'dedup_existing' || p.match_kind === 'ambiguous') {
+    // An ambiguous row can be resolved two ways: LINK to one of the candidate
+    // entries the user picked, or CREATE A NEW entry (when none of them is
+    // actually the same transaction). We route to the link path only when an
+    // accounting_id was chosen; otherwise it falls through to the new-entry
+    // path below (which requires an account).
+    const isAmbiguousLink = p.match_kind === 'ambiguous' && existingAcctId;
+
+    if (isAmbiguousLink) {
+      // Guard: the chosen entry must be one of the staged candidates — don't
+      // let an arbitrary accounting id be linked.
+      let candidateIds = [];
+      try {
+        const raw = typeof p.ambiguous_candidates === 'string'
+          ? JSON.parse(p.ambiguous_candidates)
+          : (p.ambiguous_candidates || []);
+        candidateIds = (raw || []).map(c => String(c.accounting_id));
+      } catch { candidateIds = []; }
+      if (candidateIds.length && !candidateIds.includes(String(existingAcctId))) {
+        await conn.rollback();
+        const e = new Error('Chosen entry is not one of the matching candidates');
+        e.httpStatus = 400;
+        throw e;
+      }
+    }
+
+    if (p.match_kind === 'dedup_existing' || isAmbiguousLink) {
       if (!existingAcctId) {
         await conn.rollback();
         const e = new Error('No existing accounting row selected for linking');
@@ -481,7 +607,7 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
         [p.xero_transaction_id, existingAcctId, orgId]
       );
       resultingId = existingAcctId;
-    } else if (p.match_kind === 'new_entry' || p.match_kind === 'invoice_payment' || p.match_kind === 'unmapped_account') {
+    } else if (p.match_kind === 'new_entry' || p.match_kind === 'invoice_payment' || p.match_kind === 'unmapped_account' || p.match_kind === 'ambiguous') {
       if (!accountId) {
         await conn.rollback();
         const e = new Error('A Tenafy account is required to create the entry');
