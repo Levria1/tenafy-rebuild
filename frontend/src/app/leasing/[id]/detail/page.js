@@ -8,7 +8,7 @@ import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../components/mobile/MobileCardList';
-import { leasing, pdf, utility } from '../../../../lib/api';
+import { leasing, pdf, utility, signature } from '../../../../lib/api';
 
 const LEASE_TYPE_MAP = { 0: 'Fixed', 1: 'Month-to-Month' };
 const CONTRACT_TYPE_MAP = { 1: 'MR (May Renew)', 2: 'MTM (Month To Month)', 3: 'NR (Not Renewing)', 4: 'UC (Unconfirmed)' };
@@ -32,6 +32,7 @@ export default function LeasingDetailPage() {
   const [settlementNotes, setSettlementNotes] = useState('');
   const [notesSaving, setNotesSaving] = useState(false);
   const [revisions, setRevisions] = useState([]);
+  const [resendingSig, setResendingSig] = useState(false);
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
@@ -63,6 +64,34 @@ export default function LeasingDetailPage() {
     } catch (err) {
       // Likely the lease_revision table doesn't exist yet — silently ignore so
       // the page still renders pre-migration.
+    }
+  };
+
+  // Resend the lease for signing — finds the most recent (pending) signature
+  // request for this lease and re-emails it, REVIVING the link with a fresh
+  // 14-day window even if the original one expired.
+  const handleResendSignature = async () => {
+    setResendingSig(true);
+    try {
+      const listRes = await signature.listForLease(leaseId);
+      const requests = listRes.data?.data || [];
+      // Most recent first; pick the active (sent/viewed) one.
+      const active = requests.find(r => Number(r.status) === 1 || Number(r.status) === 2);
+      if (!active) {
+        message.info('No active signing request to resend. Use "Send Again" to create a new one.');
+        return;
+      }
+      const res = await signature.resendRequest(active.id);
+      if (res.data?.code === 200) {
+        const exp = res.data.data?.expires_at ? dayjs(res.data.data.expires_at).format('YYYY-MM-DD') : null;
+        message.success(`Resent to signer(s).${exp ? ` Link now valid until ${exp}.` : ''}`);
+      } else {
+        message.error(res.data?.message || 'Failed to resend');
+      }
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to resend');
+    } finally {
+      setResendingSig(false);
     }
   };
 
@@ -666,6 +695,11 @@ export default function LeasingDetailPage() {
                 {lease.signed_file_id && (
                   <Button onClick={() => window.open(`/api/file/preview/${lease.signed_file_id}`, '_blank')}>
                     View Signed Lease
+                  </Button>
+                )}
+                {lease.signature_status === 'pending' && (
+                  <Button loading={resendingSig} onClick={handleResendSignature}>
+                    Resend to Signer
                   </Button>
                 )}
                 <Button onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}>

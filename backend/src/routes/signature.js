@@ -441,6 +441,17 @@ router.post('/request/:id/resend', authenticate, async (req, res) => {
     if (!r) return fail(res, 'Not found', 404);
     if (r.status !== 1 && r.status !== 2) return fail(res, 'Can only resend a sent/viewed request', 400);
 
+    // Extend (or reset) the expiry so a resend REVIVES the link — even if the
+    // original 14-day window already lapsed. Without this, resending an expired
+    // request just re-emails a dead link. Default a fresh 14 days; the caller
+    // may pass expires_in_days to control it.
+    const extendDays = Number(req.body?.expires_in_days) > 0 ? Number(req.body.expires_in_days) : 14;
+    const newExpiry = new Date(Date.now() + extendDays * 86400000);
+    await req.pool.execute(
+      `UPDATE signature_request SET expires_at = ?, status = 1, updated_at = NOW() WHERE id = ?`,
+      [newExpiry, req.params.id]
+    );
+
     const [parties] = await req.pool.execute(
       `SELECT party_token, signer_name, signer_email FROM signature_party
         WHERE request_id = ? AND status IN (0, 1) AND signer_email IS NOT NULL`,
@@ -453,14 +464,14 @@ router.post('/request/:id/resend', authenticate, async (req, res) => {
         party: p,
         link,
         message: r.message,
-        expiryDays: null,
+        expiryDays: extendDays,
       }).catch(err => console.error('[signature] resend dispatch failed:', err.message));
     }
     await req.pool.execute(
-      `INSERT INTO signature_event (id, request_id, event_type) VALUES (?, ?, 'resent')`,
-      [newId(), req.params.id]
+      `INSERT INTO signature_event (id, request_id, event_type, metadata) VALUES (?, ?, 'resent', ?)`,
+      [newId(), req.params.id, JSON.stringify({ new_expires_at: newExpiry, parties: parties.length })]
     );
-    ok(res, { resent: parties.length });
+    ok(res, { resent: parties.length, expires_at: newExpiry });
   } catch (err) {
     console.error('[signature] resend error:', err);
     fail(res, 'Failed to resend');
