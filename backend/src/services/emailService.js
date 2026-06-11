@@ -56,6 +56,10 @@ const TEMPLATE_TYPES = [
   { value: 'Deposit-Tenant', label: 'Deposit (Tenant)' },
   { value: 'Receipt-Tenant', label: 'Payment Receipt (Tenant)' },
   { value: 'Inventory-Tenant', label: 'Inventory (Tenant)' },
+  // Lease e-signature templates (sent from routes/signature.js; if no template
+  // exists the route falls back to a built-in plain email so signing still works)
+  { value: 'Lease-Signature-Request', label: 'Lease Signature Request (Signer)' },
+  { value: 'Lease-Signed', label: 'Lease Signed — Copy (All Parties)' },
   // Public viewing-booking templates (ad-hoc HTML fallback lives in routes/viewingPublic.js)
   { value: 'Viewing-Receipt', label: 'Viewing Request Received (Viewer)' },
   { value: 'Viewing-Employee-Request', label: 'Viewing Request (Employee)' },
@@ -134,6 +138,12 @@ const TEMPLATE_VARIABLES = [
   { key: '%Inquiry Property%', description: 'Property of interest' },
   { key: '%Inquiry Unit%', description: 'Unit of interest' },
   { key: '%Inquiry Link%', description: 'Link to the inquiry detail page' },
+  // --- Lease e-signature variables (Lease-Signature-Request / Lease-Signed) ---
+  { key: '%Signer Name%', description: 'Name of the person being asked to sign (may differ from lease tenant)' },
+  { key: '%Signing Link%', description: 'Personal link for this signer to review & sign the lease' },
+  { key: '%Sign Expiry%', description: 'How long the signing link stays valid (e.g. "14 days")' },
+  { key: '%Signature Message%', description: 'Optional note the staff member added when sending' },
+  { key: '%Signed Document Link%', description: 'Link to view the fully-signed lease online (Lease-Signed)' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -432,6 +442,12 @@ function getSampleVariables() {
     '%Tenant Number%': '(555) 123-4567',
     '%Category%': 'Rental Income',
     '%Invoice Number%': 'TRIV0000000001',
+    // Lease e-signature samples (for preview)
+    '%Signer Name%': 'John Smith',
+    '%Signing Link%': 'https://platform.tenafy.com/sign/sample-token',
+    '%Sign Expiry%': '14 days',
+    '%Signature Message%': '',
+    '%Signed Document Link%': 'https://platform.tenafy.com/sign/sample-token',
   };
 }
 

@@ -23,6 +23,7 @@ const { logActivity } = require('../utils/activityLog');
 const renderer = require('../services/leasePdfRenderer');
 const stamper = require('../services/signatureStamper');
 const { sendMail } = require('../config/mailer');
+const { sendTemplateEmail, loadTemplate } = require('../services/emailService');
 const config = require('../config');
 
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
@@ -36,6 +37,87 @@ function newId() {
 }
 function newToken() {
   return crypto.randomBytes(32).toString('hex');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Signature emails — use the editable email template if the org created one
+// (types: Lease-Signature-Request / Lease-Signed), otherwise fall back to the
+// built-in plain HTML so signing keeps working before any template is set up.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Invite (or resend) — sent per signer with their personal link.
+async function sendSignatureInvite(pool, orgId, { leaseId, party, link, message, expiryDays }) {
+  if (!party.signer_email) return;
+  const expiryLabel = `${expiryDays || 14} days`;
+  const extraVariables = {
+    '%Signer Name%': party.signer_name || 'Signer',
+    '%Signing Link%': link,
+    '%Sign Expiry%': expiryLabel,
+    '%Signature Message%': message || '',
+  };
+
+  let tpl = null;
+  try { tpl = await loadTemplate(pool, orgId, 'Lease-Signature-Request'); } catch { /* ignore */ }
+  if (tpl) {
+    try {
+      const sent = await sendTemplateEmail(pool, orgId, {
+        templateType: 'Lease-Signature-Request',
+        leaseId: leaseId || null,
+        toOverride: party.signer_email,
+        extraVariables,
+      });
+      if (sent) return;
+    } catch (e) {
+      console.error('[signature] template invite failed, using fallback:', e.message);
+    }
+  }
+
+  // Built-in fallback
+  sendMail({
+    to: party.signer_email,
+    subject: 'Lease signature requested — please sign',
+    html: `
+      <p>Hi ${party.signer_name || 'there'},</p>
+      <p>You have a lease awaiting your signature.</p>
+      ${message ? `<p>${String(message).replace(/</g, '&lt;')}</p>` : ''}
+      <p><a href="${link}" style="display:inline-block;padding:10px 18px;background:#1677ff;color:#fff;text-decoration:none;border-radius:4px">Review &amp; Sign</a></p>
+      <p style="color:#666;font-size:12px">Or copy this link into your browser:<br>${link}</p>
+      <p style="color:#999;font-size:11px">Link expires in ${expiryLabel}.</p>
+    `,
+  }).catch(err => console.error('[signature] invite email send failed:', err.message));
+}
+
+// Completion — signed PDF to all parties + the creator.
+async function sendSignedCopy(pool, orgId, { leaseId, recipients, link, finalPdf }) {
+  if (!recipients || !recipients.length) return;
+  const attachments = [{ filename: 'signed-lease.pdf', content: finalPdf, contentType: 'application/pdf' }];
+  const extraVariables = { '%Signed Document Link%': link };
+
+  let tpl = null;
+  try { tpl = await loadTemplate(pool, orgId, 'Lease-Signed'); } catch { /* ignore */ }
+  if (tpl) {
+    try {
+      const sent = await sendTemplateEmail(pool, orgId, {
+        templateType: 'Lease-Signed',
+        leaseId: leaseId || null,
+        toOverride: recipients.join(','),
+        extraVariables,
+        attachments,
+      });
+      if (sent) return;
+    } catch (e) {
+      console.error('[signature] template completion failed, using fallback:', e.message);
+    }
+  }
+
+  sendMail({
+    to: recipients.join(','),
+    subject: 'Lease signed — copy attached',
+    html: `<p>The lease has been signed by all parties.</p>
+           <p>The fully-signed PDF (with all signatures and the certificate of completion) is attached.</p>
+           <p><a href="${link}">View online</a></p>`,
+    attachments,
+  }).catch(err => console.error('[signature] completion email failed:', err.message));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,22 +326,19 @@ router.post('/request', authenticate, async (req, res) => {
        JSON.stringify({ parties: inserted.length, expires_at: expiresAt })]
     );
 
-    // Fire email to each party (fire-and-forget)
+    // Fire email to each party (fire-and-forget). Uses the editable
+    // Lease-Signature-Request template if the org created one; otherwise the
+    // built-in fallback inside sendSignatureInvite.
     for (const p of inserted) {
       if (!p.signer_email) continue;
       const link = `${config.frontendUrl}/sign/${p.party_token}`;
-      sendMail({
-        to: p.signer_email,
-        subject: `Lease signature requested — please sign`,
-        html: `
-          <p>Hi ${p.signer_name},</p>
-          <p>You have a lease awaiting your signature.</p>
-          ${message ? `<p>${String(message).replace(/</g, '&lt;')}</p>` : ''}
-          <p><a href="${link}" style="display:inline-block;padding:10px 18px;background:#1677ff;color:#fff;text-decoration:none;border-radius:4px">Review &amp; Sign</a></p>
-          <p style="color:#666;font-size:12px">Or copy this link into your browser:<br>${link}</p>
-          <p style="color:#999;font-size:11px">Link expires in 14 days.</p>
-        `,
-      }).catch(err => console.error('[signature] email send failed:', err.message));
+      sendSignatureInvite(req.pool, orgId, {
+        leaseId: lease_id,
+        party: p,
+        link,
+        message,
+        expiryDays: expires_in_days,
+      }).catch(err => console.error('[signature] invite dispatch failed:', err.message));
     }
 
     logActivity(req, { action: 'CREATE', entityType: 'SIGNATURE_REQUEST', entityId: requestId }).catch(() => {});
@@ -369,13 +448,13 @@ router.post('/request/:id/resend', authenticate, async (req, res) => {
     );
     for (const p of parties) {
       const link = `${config.frontendUrl}/sign/${p.party_token}`;
-      sendMail({
-        to: p.signer_email,
-        subject: `Reminder: lease signature required`,
-        html: `<p>Hi ${p.signer_name},</p>
-               <p>This is a reminder to sign the lease sent to you earlier.</p>
-               <p><a href="${link}">Review &amp; Sign</a></p>`,
-      }).catch(err => console.error('[signature] resend email failed:', err.message));
+      sendSignatureInvite(req.pool, orgId, {
+        leaseId: r.lease_id,
+        party: p,
+        link,
+        message: r.message,
+        expiryDays: null,
+      }).catch(err => console.error('[signature] resend dispatch failed:', err.message));
     }
     await req.pool.execute(
       `INSERT INTO signature_event (id, request_id, event_type) VALUES (?, ?, 'resent')`,
@@ -675,18 +754,14 @@ async function finalizeRequest(pool, orgId, requestId) {
 
   if (recipients.length) {
     const link = `${config.frontendUrl}/sign/${parties[0].party_token}`;
-    sendMail({
-      to: recipients.join(','),
-      subject: 'Lease signed — copy attached',
-      html: `<p>The lease has been signed by all parties.</p>
-             <p>The fully-signed PDF (with all signatures and the certificate of completion) is attached.</p>
-             <p><a href="${link}">View online</a></p>`,
-      attachments: [{
-        filename: `signed-lease.pdf`,
-        content: finalPdf,
-        contentType: 'application/pdf',
-      }],
-    }).catch(err => console.error('[signature] completion email failed:', err.message));
+    // Uses the editable Lease-Signed template if the org created one; otherwise
+    // the built-in fallback inside sendSignedCopy.
+    await sendSignedCopy(pool, orgId, {
+      leaseId: r.lease_id,
+      recipients,
+      link,
+      finalPdf,
+    }).catch(err => console.error('[signature] completion dispatch failed:', err.message));
   }
 }
 
