@@ -567,6 +567,24 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
     const isOutflow = Number(p.amount) < 0 ? 1 : 0;
     const note = (p.description || '').slice(0, 500);
 
+    // Resolve the org's current currency — accounting.currency_id has no default,
+    // so a new entry must supply it (same lookup as the manual accounting create).
+    let currencyId = null;
+    let currencyType = null;
+    {
+      const [[curr]] = await conn.execute(
+        'SELECT id, detail FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1',
+        [orgId]
+      );
+      if (curr) {
+        currencyId = curr.id;
+        try {
+          const detail = typeof curr.detail === 'string' ? JSON.parse(curr.detail) : curr.detail;
+          currencyType = detail?.code || null;
+        } catch (e) { /* ignore */ }
+      }
+    }
+
     let resultingId = null;
 
     // An ambiguous row can be resolved two ways: LINK to one of the candidate
@@ -618,10 +636,12 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
       await conn.execute(
         `INSERT INTO accounting
             (id, org_id, tenant_id, lease_id, category, account_setting_id,
+             currency_id, currency_type,
              amount, note, type, payment_date, invoice_code,
              xero_transaction_id, reconciliation_status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
         [newAcctId, orgId, tenantId || null, null, categoryId || null, accountId,
+         currencyId, currencyType,
          amount, note, isOutflow, p.transaction_date, null, p.xero_transaction_id]
       );
       const lineId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();

@@ -388,7 +388,14 @@ async function stageTransaction(pool, orgId, tx, accountMap) {
   // We treat RECEIVE as inflow (Tenafy type=0), SPEND as outflow (type=1).
   const date = parseXeroDate(tx.Date);
   const dateStr = fmtDate(date);
-  const amount = Number(tx.Total) || 0;
+  // Xero's BankTransaction.Total is ALWAYS positive; direction is carried by
+  // tx.Type (SPEND* = money out, RECEIVE* = money in), NOT by the sign. Apply
+  // the sign here so the stored amount is negative for outflows — the approve
+  // path (isOutflow), the Inflow/Outflow display, and categorize() all key off
+  // this sign. Matchers (dedup/invoice) Math.abs() it, so they're unaffected.
+  const total = Math.abs(Number(tx.Total) || 0);
+  const isSpend = typeof tx.Type === 'string' && tx.Type.toUpperCase().startsWith('SPEND');
+  const amount = isSpend ? -total : total;
   const xeroAccountId = tx.BankAccount?.AccountID;
   const contactName = tx.Contact?.Name || null;
   // Concatenate line item descriptions to feed matching/categorization.
@@ -433,7 +440,7 @@ async function stageTransaction(pool, orgId, tx, accountMap) {
     confidence = 'low';
   } else {
     // 3. Invoice match (only for inflows — outflows don't pay invoices).
-    const isInflow = (tx.Type === 'RECEIVE' || amount > 0);
+    const isInflow = !isSpend;
     if (isInflow) {
       const invMatch = await findInvoiceMatch(pool, orgId, {
         amount, description, contactName, date: dateStr,
