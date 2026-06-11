@@ -70,7 +70,11 @@ export default function CreateEmailTemplatePage() {
   useEffect(() => {
     emailTemplate.getTypes().then(r => {
       if (r.data.code === 200 && Array.isArray(r.data.data)) {
-        setTypes(r.data.data.map(t => ({ label: t.label || t.name || t, value: t.value || t.code || t })));
+        setTypes(
+          r.data.data
+            .map(t => ({ label: t.label || t.name || t, value: t.value || t.code || t }))
+            .sort((a, b) => String(a.label).localeCompare(String(b.label)))
+        );
       }
     }).catch(() => {});
     emailTemplate.getVariables().then(r => {

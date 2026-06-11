@@ -97,7 +97,11 @@ export default function EditEmailTemplatePage() {
         });
       }
       if (typesRes.data.code === 200 && Array.isArray(typesRes.data.data)) {
-        setTypes(typesRes.data.data.map(t => ({ label: t.label || t.name || t, value: t.value || t.code || t })));
+        setTypes(
+          typesRes.data.data
+            .map(t => ({ label: t.label || t.name || t, value: t.value || t.code || t }))
+            .sort((a, b) => String(a.label).localeCompare(String(b.label)))
+        );
       }
       if (varsRes.data.code === 200 && Array.isArray(varsRes.data.data)) {
         setVariables(varsRes.data.data);
