@@ -101,32 +101,31 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
       .finally(() => setLoading(false));
   }, [mode, templateId]);
 
-  // Build a {{KEY}} insert dropdown grouped by variable.group.
-  const variableDropdown = (() => {
+  // Grouped, SEARCHABLE options for the "Insert variable" select. A plain
+  // dropdown menu of ~40 variables is taller than the viewport and the top
+  // groups (Tenant, Landlord, Property, top of Lease incl. RENT_AMOUNT) get
+  // clipped off-screen. A searchable select lets you type e.g. "rent" to find
+  // {{RENT_AMOUNT}} regardless of scroll position. `searchText` keeps both the
+  // human label and the {{KEY}} matchable.
+  const variableOptions = (() => {
     const byGroup = variables.reduce((acc, v) => {
       (acc[v.group] = acc[v.group] || []).push(v);
       return acc;
     }, {});
-    const items = Object.entries(byGroup).map(([group, vs]) => ({
-      key: `g-${group}`,
-      type: 'group',
+    return Object.entries(byGroup).map(([group, vs]) => ({
       label: group,
-      children: vs.map(v => ({
-        key: v.key,
+      title: group,
+      options: vs.map(v => ({
+        value: v.key,
+        searchText: `${v.label} ${v.key}`.toLowerCase(),
         label: (
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
             <span>{v.label}</span>
             <code style={{ color: '#1677ff', fontSize: 11 }}>{`{{${v.key}}}`}</code>
           </div>
         ),
-        onClick: () => insertVariable(v.key),
       })),
     }));
-    // Cap the height + scroll internally. Without this the full ~40-variable
-    // list is taller than the viewport; when the dropdown opens upward the top
-    // groups (Tenant, Landlord, Property) get pushed off-screen and become
-    // unreachable. A bounded, scrollable menu keeps every group accessible.
-    return { items, style: { maxHeight: 360, overflowY: 'auto' } };
   })();
 
   function insertVariable(key) {
@@ -252,9 +251,20 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
                 <Form.Item label={
                   <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
                     <span>Body</span>
-                    <Dropdown menu={variableDropdown} trigger={['click']}>
-                      <Button size="small" icon={<ThunderboltOutlined />}>Insert Variable</Button>
-                    </Dropdown>
+                    <Select
+                      size="small"
+                      showSearch
+                      value={undefined}
+                      placeholder="Insert variable — type to search (e.g. rent)"
+                      suffixIcon={<ThunderboltOutlined />}
+                      style={{ width: 320 }}
+                      listHeight={360}
+                      options={variableOptions}
+                      onChange={(key) => { if (key) insertVariable(key); }}
+                      filterOption={(input, option) =>
+                        (option?.searchText || '').includes(input.toLowerCase())
+                      }
+                    />
                   </div>
                 }>
                   <ReactQuill
