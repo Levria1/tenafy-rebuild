@@ -177,6 +177,8 @@ export const leasing = {
   // Flip lease_state from 'pending' to 'active'. Server re-runs the overlap
   // check and generates deferred rent + deposit invoices.
   confirm: (id) => api.post(`/api/leasing/${id}/confirm`),
+  // Manually send the check-in email now (bypasses toggle + date window).
+  sendCheckin: (id) => api.post(`/api/leasing/${id}/send-checkin`),
   // Scheduled rate changes (lease_revision rows)
   listRevisions: (id) => api.get(`/api/leasing/${id}/revisions`),
   createRevision: (id, data) => api.post(`/api/leasing/${id}/revisions`, data),

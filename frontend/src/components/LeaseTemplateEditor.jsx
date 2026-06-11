@@ -26,7 +26,7 @@ import {
 import {
   SaveOutlined, EyeOutlined, ThunderboltOutlined, ArrowLeftOutlined,
 } from '@ant-design/icons';
-import { leaseTemplate } from '../lib/api';
+import { leaseTemplate, property } from '../lib/api';
 
 const ReactQuill = dynamic(() => import('react-quill-new'), { ssr: false });
 import 'react-quill-new/dist/quill.snow.css';
@@ -60,12 +60,20 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
   const [headerHtml, setHeaderHtml] = useState('');
   const [footerHtml, setFooterHtml] = useState('');
   const [variables, setVariables] = useState([]);
+  const [properties, setProperties] = useState([]);
   const quillRef = useRef(null);
 
   // Load variable registry for the "Insert Variable" dropdown.
   useEffect(() => {
     leaseTemplate.variables()
       .then(r => { if (r.data?.code === 200) setVariables(r.data.data || []); })
+      .catch(() => {});
+    // Properties for the "default for these properties" multi-select.
+    property.getAll()
+      .then(r => {
+        const list = r.data?.data?.content || r.data?.data || [];
+        setProperties(Array.isArray(list) ? list : []);
+      })
       .catch(() => {});
   }, []);
 
@@ -82,6 +90,7 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
             description: t.description || '',
             page_size: t.page_size || 'A4',
             is_default: !!t.is_default,
+            property_ids: (t.property_ids || []).map(String),
           });
           setBodyHtml(t.body_html || '');
           setHeaderHtml(t.header_html || '');
@@ -113,7 +122,11 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
         onClick: () => insertVariable(v.key),
       })),
     }));
-    return { items };
+    // Cap the height + scroll internally. Without this the full ~40-variable
+    // list is taller than the viewport; when the dropdown opens upward the top
+    // groups (Tenant, Landlord, Property) get pushed off-screen and become
+    // unreachable. A bounded, scrollable menu keeps every group accessible.
+    return { items, style: { maxHeight: 360, overflowY: 'auto' } };
   })();
 
   function insertVariable(key) {
@@ -160,6 +173,7 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
         description: values.description || '',
         page_size: values.page_size || 'A4',
         is_default: !!values.is_default,
+        property_ids: values.property_ids || [],
         body_html: bodyHtml,
         header_html: headerHtml || '',
         footer_html: footerHtml || '',
@@ -212,8 +226,27 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
                 <Form.Item label="Description" name="description">
                   <Input.TextArea rows={2} placeholder="Internal description — what's this template for?" />
                 </Form.Item>
-                <Form.Item label="Set as default" name="is_default" valuePropName="checked">
+                <Form.Item label="Set as default" name="is_default" valuePropName="checked"
+                  tooltip="The org-wide fallback template used when a property has no specific default.">
                   <Switch />
+                </Form.Item>
+
+                <Form.Item
+                  label="Available for these properties"
+                  name="property_ids"
+                  tooltip="Restrict this template to specific properties. When a property is listed on one or more templates, its e-signature dropdown shows ONLY those templates. A property listed on no template stays unrestricted (every template is selectable)."
+                >
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="Leave empty to allow this template on every property"
+                    options={properties.map(p => ({
+                      value: String(p.id),
+                      label: p.display_name || p.name || `Property ${p.id}`,
+                    }))}
+                  />
                 </Form.Item>
 
                 <Form.Item label={

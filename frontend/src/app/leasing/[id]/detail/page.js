@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm } from 'antd';
-import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined } from '@ant-design/icons';
+import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined, MailOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
@@ -33,6 +33,7 @@ export default function LeasingDetailPage() {
   const [notesSaving, setNotesSaving] = useState(false);
   const [revisions, setRevisions] = useState([]);
   const [resendingSig, setResendingSig] = useState(false);
+  const [sendingCheckin, setSendingCheckin] = useState(false);
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
@@ -92,6 +93,25 @@ export default function LeasingDetailPage() {
       message.error(err.response?.data?.message || 'Failed to resend');
     } finally {
       setResendingSig(false);
+    }
+  };
+
+  // Manually send the check-in email to the tenant now. Bypasses the
+  // tenant_checkin toggle + the scheduler's date window — the click is the
+  // intent. Can be re-sent.
+  const handleSendCheckin = async () => {
+    setSendingCheckin(true);
+    try {
+      const res = await leasing.sendCheckin(leaseId);
+      if (res.data?.code === 200) {
+        message.success(`Check-in email sent to ${res.data.data?.sent_to || 'tenant'}.`);
+      } else {
+        message.error(res.data?.message || 'Failed to send check-in email');
+      }
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to send check-in email');
+    } finally {
+      setSendingCheckin(false);
     }
   };
 
@@ -676,6 +696,14 @@ export default function LeasingDetailPage() {
             >
               {lease?.signed_file_id ? 'View Signed Lease' : 'Generate Lease for E-Signature'}
             </Button>
+            <Popconfirm
+              title="Send check-in email now?"
+              description={`This emails the check-in details to ${lease?.tenant_first_name || 'the tenant'} immediately, regardless of the scheduled timing.`}
+              okText="Send"
+              onConfirm={handleSendCheckin}
+            >
+              <Button icon={<MailOutlined />} loading={sendingCheckin}>Send Check-in Email</Button>
+            </Popconfirm>
             {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/leasing/${leaseId}/edit`)}>Edit Lease</Button>}
           </Space>
         </div>

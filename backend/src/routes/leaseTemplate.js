@@ -36,6 +36,40 @@ function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
 
+// Set the exact list of properties this template is allowed on (the per-
+// property allowlist, stored in property_lease_template). When a property has
+// at least one allowed template, the e-sign dropdown is restricted to those;
+// a property with none is unrestricted. Passing undefined leaves the
+// assignments untouched; an empty array removes this template from all
+// properties' allowlists.
+async function applyPropertyAllowlist(pool, orgId, templateId, propertyIds) {
+  if (!Array.isArray(propertyIds)) return; // undefined = "don't touch"
+  const ids = [...new Set(propertyIds.map(String).filter(Boolean))];
+
+  // Rebuild this template's allowlist from scratch (small dataset).
+  await pool.execute(
+    `DELETE FROM property_lease_template WHERE org_id = ? AND template_id = ?`,
+    [orgId, templateId]
+  );
+  for (const pid of ids) {
+    await pool.execute(
+      `INSERT INTO property_lease_template (org_id, property_id, template_id)
+       VALUES (?, ?, ?)`,
+      [orgId, pid, templateId]
+    );
+  }
+}
+
+// Property ids this template is allowed on.
+async function getAllowedProperties(pool, orgId, templateId) {
+  const [rows] = await pool.execute(
+    `SELECT property_id FROM property_lease_template
+      WHERE org_id = ? AND template_id = ?`,
+    [orgId, templateId]
+  );
+  return rows.map(r => String(r.property_id));
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // GET /list — active templates for the org
 // ─────────────────────────────────────────────────────────────────────────
@@ -95,6 +129,7 @@ router.get('/:id', async (req, res) => {
       [req.params.id, orgId]
     );
     if (!row) return fail(res, 'Template not found', 404);
+    row.property_ids = await getAllowedProperties(req.pool, orgId, req.params.id);
     ok(res, row);
   } catch (err) {
     console.error('[lease-template] get error:', err);
@@ -111,6 +146,7 @@ router.post('/', async (req, res) => {
     const userId = req.user.id;
     const {
       name, description, body_html, header_html, footer_html, page_size, is_default,
+      property_ids,
     } = req.body || {};
     if (!name || !String(name).trim()) return fail(res, 'name is required', 400);
 
@@ -144,6 +180,9 @@ router.post('/', async (req, res) => {
       [newId(), id, body_html || null, header_html || null, footer_html || null, userId || null]
     );
 
+    // Set which properties this template is allowed on.
+    await applyPropertyAllowlist(req.pool, orgId, id, property_ids);
+
     logActivity(req, { action: 'CREATE', entityType: 'LEASE_TEMPLATE', entityId: id }).catch(() => {});
     ok(res, { id });
   } catch (err) {
@@ -162,6 +201,7 @@ router.put('/:id', async (req, res) => {
     const id = req.params.id;
     const {
       name, description, body_html, header_html, footer_html, page_size, is_default,
+      property_ids,
     } = req.body || {};
 
     // Load current state (need to snapshot it before overwriting).
@@ -205,6 +245,9 @@ router.put('/:id', async (req, res) => {
         [orgId, id]
       );
     }
+
+    // Re-apply this template's property allowlist.
+    await applyPropertyAllowlist(req.pool, orgId, id, property_ids);
 
     logActivity(req, { action: 'UPDATE', entityType: 'LEASE_TEMPLATE', entityId: id }).catch(() => {});
     ok(res, { updated: true });
@@ -307,6 +350,11 @@ router.delete('/:id', async (req, res) => {
       [id, orgId]
     );
     if (!r.affectedRows) return fail(res, 'Template not found', 404);
+    // Drop this template from every property's allowlist.
+    await req.pool.execute(
+      `DELETE FROM property_lease_template WHERE org_id = ? AND template_id = ?`,
+      [orgId, id]
+    );
     logActivity(req, { action: 'DELETE', entityType: 'LEASE_TEMPLATE', entityId: id }).catch(() => {});
     ok(res, { deleted: true });
   } catch (err) {

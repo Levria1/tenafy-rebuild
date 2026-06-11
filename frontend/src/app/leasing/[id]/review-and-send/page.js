@@ -61,9 +61,17 @@ export default function ReviewAndSendPage() {
         ]);
         const l = lr.data?.data || {};
         setLease(l);
-        const tpls = tr.data?.data || [];
+        const allTpls = tr.data?.data || [];
+        // Restrict to the property's allowlist. If the property has an allowlist
+        // (one or more entries), staff can ONLY pick those templates. An empty
+        // allowlist means the property is unrestricted (show every template).
+        const allowed = (l.allowed_template_ids || []).map(String);
+        const tpls = allowed.length
+          ? allTpls.filter(t => allowed.includes(String(t.id)))
+          : allTpls;
         setTemplates(tpls);
-        // Pick the default template
+        // Pre-select the org default if it's in the allowed set, else the first
+        // allowed template. Staff can still change it within the allowed set.
         const defaultTpl = tpls.find(t => t.is_default) || tpls[0];
         if (defaultTpl) setSelectedTemplateId(String(defaultTpl.id));
         const sigs = sr.data?.data || [];

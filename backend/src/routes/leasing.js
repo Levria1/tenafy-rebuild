@@ -13,6 +13,7 @@ const {
   sendDepositToTenant,
   sendCheckinToTenant,
   sendCheckoutToTenant,
+  sendTemplateEmail,
   loadTemplate,
 } = require('../services/emailService');
 
@@ -278,6 +279,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const [leases] = await req.pool.execute(
       `SELECT l.*, u.name as unit_name, p.display_name as property_name,
+              p.id as property_id,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               t.email as tenant_email, t.phone as tenant_phone,
               bp.name as booking_platform_name, sa.name as sales_agent_name
@@ -307,10 +309,83 @@ router.get('/:id', authenticate, async (req, res) => {
     lease.additional_tenants = additionalTenants;
     lease.lease_status = computeLeaseStatus(lease);
 
+    // Per-property lease-template allowlist (drives the e-sign template
+    // dropdown). Empty = property is unrestricted (any template allowed).
+    try {
+      const [allowed] = await req.pool.execute(
+        `SELECT template_id FROM property_lease_template
+          WHERE org_id = ? AND property_id = ?`,
+        [orgId, lease.property_id]
+      );
+      lease.allowed_template_ids = allowed.map(r => String(r.template_id));
+    } catch (e) {
+      // Table may not exist yet on un-migrated org DBs — fail open (no restriction).
+      lease.allowed_template_ids = [];
+    }
+
     res.json({ code: 200, data: lease });
   } catch (error) {
     console.error('Get lease error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get lease' });
+  }
+});
+
+// POST /api/leasing/:id/send-checkin - Manually send the check-in email NOW.
+// Unlike the scheduler, this is an explicit user action: it bypasses the
+// `tenant_checkin` toggle and the date window (a manual click IS the intent).
+// It can be re-sent (no already-sent guard) and works regardless of how many
+// days before start it is. Pending leases are allowed — the staff member is
+// deliberately sending it.
+router.post('/:id/send-checkin', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+
+    // Confirm the lease belongs to this org and grab the tenant email.
+    const [[lease]] = await req.pool.execute(
+      `SELECT l.id, t.email AS tenant_email,
+              CASE WHEN t.type = 1 THEN t.company_name
+                   ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) END AS tenant_name
+         FROM leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+         JOIN tenant t ON l.tenant_id = t.id
+        WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL`,
+      [id, orgId]
+    );
+    if (!lease) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+    if (!lease.tenant_email) {
+      return res.status(400).json({ code: 400, message: 'This tenant has no email address on file.' });
+    }
+
+    // Make sure a Check-In (Tenant) template exists before attempting to send.
+    const template = await loadTemplate(req.pool, orgId, 'Checkin-Tenant');
+    if (!template) {
+      return res.status(400).json({
+        code: 400,
+        message: 'No Check-In (Tenant) email template is configured. Create one in Settings → Email Templates.',
+      });
+    }
+
+    // Send directly (bypasses the tenant_checkin toggle / date window).
+    const result = await sendTemplateEmail(req.pool, orgId, {
+      templateType: 'Checkin-Tenant',
+      leaseId: id,
+    });
+    if (!result) {
+      return res.status(500).json({ code: 500, message: 'Failed to send check-in email.' });
+    }
+
+    return res.json({
+      code: 200,
+      message: 'OK',
+      data: { sent_to: lease.tenant_email, preview_url: result.previewUrl || null },
+    });
+  } catch (error) {
+    console.error('Manual check-in email error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to send check-in email' });
   }
 });
 
