@@ -121,6 +121,12 @@ export default function ReconcilePage() {
   // the user's override, else the proposed/mapped account from the backend.
   const effectiveAccount = (row) => (overrides[row.id]?.account_id) || row.proposed_account_id || null;
 
+  // Inflow/outflow direction. User override wins; otherwise derive from the
+  // stored amount sign (negative = outflow). Rows pulled before the sign fix
+  // are stored positive, so they default to inflow until the user flips them.
+  const effectiveDirection = (row) =>
+    overrides[row.id]?.direction || (Number(row.amount) < 0 ? 'outflow' : 'inflow');
+
   // Build the approve payload the backend expects, per match_kind. Ambiguous
   // rows resolve EITHER to a link (accounting_id) or a new entry (account_id).
   const buildBody = (row) => {
@@ -131,6 +137,7 @@ export default function ReconcilePage() {
       return {
         account_id: effectiveAccount(row) || undefined,
         category_id: (ov.category_id || row.proposed_category_id) || undefined,
+        direction: effectiveDirection(row),
       };
     }
     return {
@@ -138,6 +145,7 @@ export default function ReconcilePage() {
       category_id: (ov.category_id || row.proposed_category_id) || undefined,
       invoice_id: (ov.invoice_id || row.proposed_invoice_id) || undefined,
       accounting_id: ov.accounting_id || undefined,
+      direction: effectiveDirection(row),
     };
   };
 
@@ -195,12 +203,16 @@ export default function ReconcilePage() {
     try {
       const r = await xero.bulkApprovePending(items);
       if (r.data?.code === 200) {
-        const { approved_count, failed_count, approved } = r.data.data;
+        const { approved_count, failed_count, approved, failed } = r.data.data;
         const approvedIds = new Set((approved || []).map(a => a.id));
         setPending(p => p.filter(x => !approvedIds.has(x.id)));
         setSelected(s => ({ ...s, [xeroAccountId]: [] }));
         if (failed_count > 0) {
-          message.warning(`${approved_count} committed, ${failed_count} skipped (need an account or a link choice).`);
+          // Surface the actual backend reason(s) rather than a hardcoded guess.
+          // Dedupe — bulk failures usually share one root cause.
+          const reasons = [...new Set((failed || []).map(f => f.reason).filter(Boolean))];
+          const detail = reasons.length ? `: ${reasons.join('; ')}` : '';
+          message.warning(`${approved_count} committed, ${failed_count} failed${detail}`);
         } else {
           message.success(`${approved_count} committed.`);
         }
@@ -381,11 +393,32 @@ export default function ReconcilePage() {
       render: v => v ? dayjs(v).format('YYYY-MM-DD') : '-',
     },
     {
+      title: 'Direction', key: 'direction', width: 120,
+      render: (_, row) => {
+        const dir = effectiveDirection(row);
+        return (
+          <Select
+            size="small"
+            style={{ width: 110 }}
+            value={dir}
+            onChange={v => updateOverride(row.id, 'direction', v)}
+            options={[
+              { value: 'inflow',  label: <span style={{ color: '#52c41a' }}>Inflow</span> },
+              { value: 'outflow', label: <span style={{ color: '#ff4d4f' }}>Outflow</span> },
+            ]}
+          />
+        );
+      },
+    },
+    {
       title: 'Amount', dataIndex: 'amount', width: 120, align: 'right',
-      render: v => {
-        const n = Number(v);
-        const display = `HK$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        return n < 0 ? <span style={{ color: '#ff4d4f' }}>-{display}</span> : <span style={{ color: '#52c41a' }}>{display}</span>;
+      render: (v, row) => {
+        const n = Math.abs(Number(v));
+        const isOut = effectiveDirection(row) === 'outflow';
+        const display = `HK$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        return isOut
+          ? <span style={{ color: '#ff4d4f' }}>-{display}</span>
+          : <span style={{ color: '#52c41a' }}>{display}</span>;
       },
     },
     {

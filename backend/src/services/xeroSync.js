@@ -176,7 +176,7 @@ async function findInvoiceMatch(pool, orgId, { amount, description, contactName,
  * LLM fallback is gated to amounts above $X to keep cost predictable. Caller
  * can pass enableLlm=false to skip entirely.
  */
-async function categorize(pool, orgId, { description, amount, enableLlm = false }) {
+async function categorize(pool, orgId, { description, amount, xeroCategoryName = null, enableLlm = false }) {
   // Rules first (priority asc, lower runs earlier — so 1 beats 100).
   const [rules] = await pool.execute(
     `SELECT id, description_pattern, category_id FROM xero_category_rule
@@ -195,6 +195,20 @@ async function categorize(pool, orgId, { description, amount, enableLlm = false 
         [r.id]
       ).catch(() => {});
       return { category_id: String(r.category_id), rule_id: String(r.id), source: 'rule' };
+    }
+  }
+  // Xero account name → Tenafy category (exact, case-insensitive). The Xero
+  // line account IS the category in Xero's chart of accounts; if Tenafy has a
+  // category of the same name, use it directly. Runs regardless of amount, so
+  // small transactions (below the LLM gate) still auto-categorize.
+  if (xeroCategoryName) {
+    const [catHits] = await pool.execute(
+      `SELECT id FROM category_setting
+        WHERE org_id = ? AND enabled = 1 AND LOWER(name) = LOWER(?) LIMIT 1`,
+      [orgId, String(xeroCategoryName).trim()]
+    );
+    if (catHits.length) {
+      return { category_id: String(catHits[0].id), rule_id: null, source: 'xero_account_name' };
     }
   }
   // LLM fallback — only when explicitly enabled and amount is non-trivial.
@@ -297,6 +311,20 @@ async function syncForOrg(pool, orgId, opts = {}) {
     if (r.ignored) ignoredSet.add(r.xero_account_id);
   }
 
+  // Build a Xero chart-of-accounts code→name map once per sync. Each
+  // transaction line carries an AccountCode (Xero's "category"); we resolve it
+  // to the account name so categorize() can match it against a Tenafy category
+  // of the same name. Non-fatal if it fails — we fall back to rule/LLM matching.
+  const xeroAccountNames = {};
+  try {
+    const acctResp = await xeroClient.xeroApiGet(pool, orgId, '/Accounts');
+    for (const a of (acctResp.Accounts || [])) {
+      if (a.Code) xeroAccountNames[String(a.Code)] = a.Name;
+    }
+  } catch (err) {
+    console.warn('[xeroSync] could not load chart of accounts for category matching:', err.message);
+  }
+
   // Xero's BankTransactions endpoint paginates at 100/page. Loop until empty.
   // The Where clause filters by date range; Xero expects a specific DateTime
   // literal syntax — DateTime(yyyy,mm,dd).
@@ -332,7 +360,7 @@ async function syncForOrg(pool, orgId, opts = {}) {
         continue;
       }
       try {
-        await stageTransaction(pool, orgId, tx, accountMap);
+        await stageTransaction(pool, orgId, tx, accountMap, xeroAccountNames);
         summary.staged++;
       } catch (err) {
         if (err && err.skipReason === 'already_imported') {
@@ -372,7 +400,7 @@ async function syncForOrg(pool, orgId, opts = {}) {
  * Stage a single Xero transaction. Internal — called per row inside syncForOrg.
  * Throws { skipReason } for non-error skip cases so the caller can categorize.
  */
-async function stageTransaction(pool, orgId, tx, accountMap) {
+async function stageTransaction(pool, orgId, tx, accountMap, xeroAccountNames = {}) {
   const xeroTxId = tx.BankTransactionID;
   if (!xeroTxId) throw new Error('Missing BankTransactionID on Xero transaction');
 
@@ -407,6 +435,12 @@ async function stageTransaction(pool, orgId, tx, accountMap) {
   const description = [reference, lineDescriptions].filter(Boolean).join(' — ');
   const currencyCode = tx.CurrencyCode || null;
   const tenafyAccountId = accountMap[xeroAccountId] || null;
+
+  // Xero's line account is its "category". Take the first line with an account
+  // code and resolve it to its account name so categorize() can match it to a
+  // Tenafy category of the same name.
+  const lineAccountCode = (tx.LineItems || []).map(li => li.AccountCode).find(Boolean) || null;
+  const xeroCategoryName = lineAccountCode ? (xeroAccountNames[String(lineAccountCode)] || null) : null;
 
   // 2. Dedup matcher (account-scoped).
   let matchKind, proposedInvoiceId = null, proposedTenantId = null, existingAccountingId = null;
@@ -465,7 +499,7 @@ async function stageTransaction(pool, orgId, tx, accountMap) {
   if (matchKind === 'new_entry' || matchKind === 'invoice_payment') {
     // enableLlm=true — rules run first; LLM is only consulted if no rule
     // matched AND the amount is above the threshold inside categorize().
-    const cat = await categorize(pool, orgId, { description, amount, enableLlm: true });
+    const cat = await categorize(pool, orgId, { description, amount, xeroCategoryName, enableLlm: true });
     categoryId = cat.category_id;
     ruleId = cat.rule_id;
   }

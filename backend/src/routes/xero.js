@@ -26,6 +26,7 @@ const crypto = require('crypto');
 const { authenticate } = require('../middleware/auth');
 const xeroClient = require('../services/xeroClient');
 const xeroSync = require('../services/xeroSync');
+const { generateSequenceCode } = require('../utils/sequenceCode');
 
 // Short-lived CSRF state cookie. Encoded as {orgId}.{random}.{hmac} so the
 // callback (which runs in the SAME browser tab as /connect) can recover the
@@ -564,7 +565,12 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
     const existingAcctId = overrides.accounting_id || (p.existing_accounting_id ? String(p.existing_accounting_id) : null);
 
     const amount = Math.abs(Number(p.amount) || 0);
-    const isOutflow = Number(p.amount) < 0 ? 1 : 0;
+    // Direction defaults to the staged amount sign, but the user can override it
+    // per row from the Inflow/Outflow dropdown in the review queue (important for
+    // rows pulled before the sign fix, which are stored positive).
+    let isOutflow = Number(p.amount) < 0 ? 1 : 0;
+    if (overrides.direction === 'outflow') isOutflow = 1;
+    else if (overrides.direction === 'inflow') isOutflow = 0;
     const note = (p.description || '').slice(0, 500);
 
     // Resolve the org's current currency — accounting.currency_id has no default,
@@ -633,16 +639,20 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
         throw e;
       }
       const newAcctId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+      // accounting.transaction_code is NOT NULL with no default — generate one
+      // from the org's sequence (same as the manual accounting create). Run it
+      // on `conn` so the FOR UPDATE lock lives inside this approve transaction.
+      const transactionCode = await generateSequenceCode(conn, orgId, 'transaction_code');
       await conn.execute(
         `INSERT INTO accounting
             (id, org_id, tenant_id, lease_id, category, account_setting_id,
              currency_id, currency_type,
              amount, note, type, payment_date, invoice_code,
-             xero_transaction_id, reconciliation_status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
+             transaction_code, xero_transaction_id, reconciliation_status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
         [newAcctId, orgId, tenantId || null, null, categoryId || null, accountId,
          currencyId, currencyType,
-         amount, note, isOutflow, p.transaction_date, null, p.xero_transaction_id]
+         amount, note, isOutflow, p.transaction_date, null, transactionCode, p.xero_transaction_id]
       );
       const lineId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
       await conn.execute(
