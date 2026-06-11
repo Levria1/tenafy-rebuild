@@ -38,6 +38,13 @@
 const xeroClient = require('./xeroClient');
 const llmClient = require('./llmClient');
 
+// How many days the bank/Xero date may differ from the Tenafy entry date and
+// still count as the same transaction. Bank posting dates often lag the date a
+// payment was recorded in Tenafy by a day or two, so an exact-date match misses
+// real duplicates. ±5 days is wide enough to catch those without colliding with
+// genuinely separate same-amount transactions (those get flagged ambiguous).
+const DEDUP_DATE_WINDOW_DAYS = 5;
+
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
@@ -85,17 +92,35 @@ async function findAlreadyImported(pool, orgId, xeroTxId) {
  * caller decides whether to link (1 match) or flag ambiguous (≥2).
  */
 async function findDedupCandidates(pool, orgId, { date, amount, tenafyAccountId }) {
-  if (!tenafyAccountId) return [];
+  // Match within a date window (not exact day) so bank-date vs entry-date drift
+  // still links. When tenafyAccountId is given we scope to that account (the
+  // tightest key); when it's null (the Xero bank account isn't mapped yet) we
+  // search across ALL accounts so already-existing entries are still detected
+  // instead of being proposed as brand-new "Unmapped" rows.
+  const params = [orgId];
+  let accountClause = '';
+  if (tenafyAccountId) {
+    accountClause = 'AND account_setting_id = ?';
+    params.push(tenafyAccountId);
+  }
+  // Date window
+  params.push(date, DEDUP_DATE_WINDOW_DAYS, date, DEDUP_DATE_WINDOW_DAYS);
+  // Amount (abs)
+  params.push(Math.abs(amount));
+  // ORDER BY closeness to the target date
+  params.push(date);
+
   const [rows] = await pool.execute(
-    `SELECT id, amount, type, payment_date, tenant_id, lease_id, category
+    `SELECT id, amount, type, payment_date, tenant_id, lease_id, category, account_setting_id
        FROM accounting
       WHERE org_id = ?
         AND deleted_at IS NULL
-        AND account_setting_id = ?
-        AND payment_date = ?
+        ${accountClause}
+        AND payment_date BETWEEN DATE_SUB(?, INTERVAL ? DAY) AND DATE_ADD(?, INTERVAL ? DAY)
         AND amount = ?
-        AND (xero_transaction_id IS NULL OR xero_transaction_id = '')`,
-    [orgId, tenafyAccountId, date, Math.abs(amount)]
+        AND (xero_transaction_id IS NULL OR xero_transaction_id = '')
+      ORDER BY ABS(DATEDIFF(payment_date, ?)) ASC`,
+    params
   );
   return rows.map(r => ({ ...r, id: String(r.id) }));
 }
@@ -245,8 +270,10 @@ async function categorize(pool, orgId, { description, amount, enableLlm = false 
  * that happens later via the review queue's Approve action.
  */
 async function syncForOrg(pool, orgId, opts = {}) {
+  // Default look-back window when the caller doesn't pass an explicit range.
+  const DEFAULT_SYNC_DAYS = 5;
   const sinceDate = opts.sinceDate
-    || new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+    || new Date(Date.now() - DEFAULT_SYNC_DAYS * 86400000).toISOString().split('T')[0];
   const untilDate = opts.untilDate || new Date().toISOString().split('T')[0];
 
   const summary = {
@@ -373,46 +400,50 @@ async function stageTransaction(pool, orgId, tx, accountMap) {
   let matchKind, proposedInvoiceId = null, proposedTenantId = null, existingAccountingId = null;
   let ambiguousCandidates = null, confidence = 'medium';
 
-  if (!tenafyAccountId) {
-    // Account unmapped — can't run dedup or auto-categorize meaningfully.
+  // Dedup runs in BOTH cases — when the account is mapped (scoped to that
+  // account) and when it's unmapped (cross-account). This is the fix for
+  // "existing entries showing as Unmapped": even before the Xero account is
+  // mapped, an already-recorded Tenafy entry with the same amount + nearby
+  // date is detected and proposed for linking, not as a brand-new row.
+  const dedup = await findDedupCandidates(pool, orgId, {
+    date: dateStr, amount, tenafyAccountId,
+  });
+
+  if (dedup.length === 1) {
+    matchKind = 'dedup_existing';
+    existingAccountingId = dedup[0].id;
+    confidence = 'high';
+  } else if (dedup.length >= 2) {
+    matchKind = 'ambiguous';
+    ambiguousCandidates = dedup.map(d => ({
+      accounting_id: d.id,
+      tenant_id: d.tenant_id ? String(d.tenant_id) : null,
+      lease_id: d.lease_id ? String(d.lease_id) : null,
+    }));
+    confidence = 'low';
+  } else if (!tenafyAccountId) {
+    // No existing entry AND the account isn't mapped — genuinely new, but we
+    // can't auto-create it until the user maps the Xero account to a Tenafy one.
     matchKind = 'unmapped_account';
     confidence = 'low';
   } else {
-    const dedup = await findDedupCandidates(pool, orgId, {
-      date: dateStr, amount, tenafyAccountId,
-    });
-
-    if (dedup.length === 1) {
-      matchKind = 'dedup_existing';
-      existingAccountingId = dedup[0].id;
-      confidence = 'high';
-    } else if (dedup.length >= 2) {
-      matchKind = 'ambiguous';
-      ambiguousCandidates = dedup.map(d => ({
-        accounting_id: d.id,
-        tenant_id: d.tenant_id ? String(d.tenant_id) : null,
-        lease_id: d.lease_id ? String(d.lease_id) : null,
-      }));
-      confidence = 'low';
-    } else {
-      // 3. Invoice match (only for inflows — outflows don't pay invoices).
-      const isInflow = (tx.Type === 'RECEIVE' || amount > 0);
-      if (isInflow) {
-        const invMatch = await findInvoiceMatch(pool, orgId, {
-          amount, description, contactName, date: dateStr,
-        });
-        if (invMatch) {
-          matchKind = 'invoice_payment';
-          proposedInvoiceId = invMatch.invoice_id;
-          proposedTenantId = invMatch.tenant_id;
-          confidence = 'high';
-        }
+    // 3. Invoice match (only for inflows — outflows don't pay invoices).
+    const isInflow = (tx.Type === 'RECEIVE' || amount > 0);
+    if (isInflow) {
+      const invMatch = await findInvoiceMatch(pool, orgId, {
+        amount, description, contactName, date: dateStr,
+      });
+      if (invMatch) {
+        matchKind = 'invoice_payment';
+        proposedInvoiceId = invMatch.invoice_id;
+        proposedTenantId = invMatch.tenant_id;
+        confidence = 'high';
       }
-      // 4. Fallback: new entry.
-      if (!matchKind) {
-        matchKind = 'new_entry';
-        confidence = tenafyAccountId ? 'medium' : 'low';
-      }
+    }
+    // 4. Fallback: new entry.
+    if (!matchKind) {
+      matchKind = 'new_entry';
+      confidence = 'medium';
     }
   }
 

@@ -76,6 +76,9 @@ export const xero = {
   getPending: (params) => api.get('/api/integrations/xero/pending', { params }),
   approvePending: (id, overrides) => api.post(`/api/integrations/xero/pending/${id}/approve`, overrides || {}),
   skipPending: (id) => api.post(`/api/integrations/xero/pending/${id}/skip`),
+  // Bulk actions. bulkApprove items: [{ id, account_id?, category_id?, ... }]
+  bulkApprovePending: (items) => api.post('/api/integrations/xero/pending/bulk-approve', { items }),
+  bulkSkipPending: (ids) => api.post('/api/integrations/xero/pending/bulk-skip', { ids }),
   // Categorization rules.
   getRules: () => api.get('/api/integrations/xero/rules'),
   createRule: (data) => api.post('/api/integrations/xero/rules', data),

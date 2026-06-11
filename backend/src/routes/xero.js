@@ -325,7 +325,7 @@ router.post('/disconnect', authenticate, async (req, res) => {
 // ───────────────────────────────────────────────────────────────────────────
 // POST /sync
 // Manual sync trigger. Pulls Xero bank transactions for the given date range
-// (default: last 30 days) and stages them in xero_pending_reconciliation.
+// (default: last 5 days) and stages them in xero_pending_reconciliation.
 // NOTHING auto-commits to `accounting`.
 //
 // Body (all optional):
@@ -437,13 +437,11 @@ router.get('/pending', authenticate, async (req, res) => {
 // ambiguous       → require body.accounting_id to be one of ambiguous_candidates; same as dedup_existing
 // unmapped_account → require body.account_id (and treat as new_entry going forward)
 // ───────────────────────────────────────────────────────────────────────────
-router.post('/pending/:id/approve', authenticate, async (req, res) => {
-  const orgId = req.user.orgId;
-  const userId = req.user.id;
-  const pendingId = req.params.id;
-  const overrides = req.body || {};
-
-  const conn = await req.pool.getConnection();
+// Commit a single staged row to `accounting`. Returns the resulting accounting
+// id. Throws an Error (with .httpStatus) on validation problems so callers can
+// surface a clean message. Used by both the single and bulk approve routes.
+async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) {
+  const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
@@ -453,17 +451,17 @@ router.post('/pending/:id/approve', authenticate, async (req, res) => {
     );
     if (!p) {
       await conn.rollback();
-      return fail(res, 'Pending row not found or already processed', 404);
+      const e = new Error('Pending row not found or already processed');
+      e.httpStatus = 404;
+      throw e;
     }
 
-    // Resolve final IDs (overrides win over proposals).
     const accountId  = overrides.account_id  || (p.proposed_account_id  ? String(p.proposed_account_id)  : null);
     const categoryId = overrides.category_id || (p.proposed_category_id ? String(p.proposed_category_id) : null);
     const invoiceId  = overrides.invoice_id  || (p.proposed_invoice_id  ? String(p.proposed_invoice_id)  : null);
     const tenantId   = overrides.tenant_id   || (p.proposed_tenant_id   ? String(p.proposed_tenant_id)   : null);
     const existingAcctId = overrides.accounting_id || (p.existing_accounting_id ? String(p.existing_accounting_id) : null);
 
-    // Common fields for INSERTs.
     const amount = Math.abs(Number(p.amount) || 0);
     const isOutflow = Number(p.amount) < 0 ? 1 : 0;
     const note = (p.description || '').slice(0, 500);
@@ -471,14 +469,14 @@ router.post('/pending/:id/approve', authenticate, async (req, res) => {
     let resultingId = null;
 
     if (p.match_kind === 'dedup_existing' || p.match_kind === 'ambiguous') {
-      // Just link — stamp xero_transaction_id on the chosen existing row.
       if (!existingAcctId) {
         await conn.rollback();
-        return fail(res, 'No existing accounting row selected for linking', 400);
+        const e = new Error('No existing accounting row selected for linking');
+        e.httpStatus = 400;
+        throw e;
       }
       await conn.execute(
-        `UPDATE accounting
-            SET xero_transaction_id = ?, reconciliation_status = 'reconciled'
+        `UPDATE accounting SET xero_transaction_id = ?, reconciliation_status = 'reconciled'
           WHERE id = ? AND org_id = ?`,
         [p.xero_transaction_id, existingAcctId, orgId]
       );
@@ -486,75 +484,116 @@ router.post('/pending/:id/approve', authenticate, async (req, res) => {
     } else if (p.match_kind === 'new_entry' || p.match_kind === 'invoice_payment' || p.match_kind === 'unmapped_account') {
       if (!accountId) {
         await conn.rollback();
-        return fail(res, 'A Tenafy account is required to create the entry', 400);
+        const e = new Error('A Tenafy account is required to create the entry');
+        e.httpStatus = 400;
+        throw e;
       }
       const newAcctId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
       await conn.execute(
         `INSERT INTO accounting
-            (id, org_id, tenant_id, lease_id,
-             category, account_setting_id,
+            (id, org_id, tenant_id, lease_id, category, account_setting_id,
              amount, note, type, payment_date, invoice_code,
              xero_transaction_id, reconciliation_status, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
-        [
-          newAcctId, orgId, tenantId || null, null,
-          categoryId || null, accountId,
-          amount, note, isOutflow, p.transaction_date,
-          null,
-          p.xero_transaction_id,
-        ]
+        [newAcctId, orgId, tenantId || null, null, categoryId || null, accountId,
+         amount, note, isOutflow, p.transaction_date, null, p.xero_transaction_id]
       );
-      // accounting_line for the amount.
       const lineId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
       await conn.execute(
-        `INSERT INTO accounting_line
-            (id, accounting_id, amount, category, created_at)
-         VALUES (?, ?, ?, ?, NOW())`,
+        `INSERT INTO accounting_line (id, accounting_id, amount, category, created_at) VALUES (?, ?, ?, ?, NOW())`,
         [lineId, newAcctId, amount, categoryId || null]
       );
       resultingId = newAcctId;
 
-      // If invoice_payment, also link this accounting row to the invoice via
-      // the accounting_line so the invoice's outstanding gets credited.
       if (p.match_kind === 'invoice_payment' && invoiceId) {
-        // Get the invoice's code so the payment shows on its row.
-        const [[invRow]] = await conn.execute(
-          'SELECT invoice_code FROM invoice WHERE id = ?',
-          [invoiceId]
-        );
+        const [[invRow]] = await conn.execute('SELECT invoice_code FROM invoice WHERE id = ?', [invoiceId]);
         if (invRow && invRow.invoice_code) {
-          await conn.execute(
-            'UPDATE accounting SET invoice_code = ? WHERE id = ?',
-            [invRow.invoice_code, newAcctId]
-          );
-          await conn.execute(
-            'UPDATE accounting_line SET invoice_code = ? WHERE accounting_id = ?',
-            [invRow.invoice_code, newAcctId]
-          );
+          await conn.execute('UPDATE accounting SET invoice_code = ? WHERE id = ?', [invRow.invoice_code, newAcctId]);
+          await conn.execute('UPDATE accounting_line SET invoice_code = ? WHERE accounting_id = ?', [invRow.invoice_code, newAcctId]);
         }
       }
     } else {
       await conn.rollback();
-      return fail(res, `Unknown match_kind: ${p.match_kind}`, 400);
+      const e = new Error(`Unknown match_kind: ${p.match_kind}`);
+      e.httpStatus = 400;
+      throw e;
     }
 
-    // Mark the staging row done.
     await conn.execute(
       `UPDATE xero_pending_reconciliation
-          SET status = 'approved', reviewed_by_user_id = ?, reviewed_at = NOW(),
-              resulting_accounting_id = ?
+          SET status = 'approved', reviewed_by_user_id = ?, reviewed_at = NOW(), resulting_accounting_id = ?
         WHERE id = ?`,
       [userId, resultingId, pendingId]
     );
-
     await conn.commit();
-    return ok(res, { resulting_accounting_id: resultingId });
+    return resultingId;
   } catch (err) {
-    await conn.rollback();
-    console.error('[xero/pending/approve] error:', err);
-    return fail(res, err.message || 'Failed to approve');
+    try { await conn.rollback(); } catch { /* already rolled back */ }
+    throw err;
   } finally {
     conn.release();
+  }
+}
+
+router.post('/pending/:id/approve', authenticate, async (req, res) => {
+  try {
+    const resultingId = await commitPendingRow(req.pool, req.user.orgId, req.user.id, req.params.id, req.body || {});
+    return ok(res, { resulting_accounting_id: resultingId });
+  } catch (err) {
+    console.error('[xero/pending/approve] error:', err);
+    return fail(res, err.message || 'Failed to approve', err.httpStatus || 500);
+  }
+});
+
+// Bulk approve — body { items: [{ id, account_id?, category_id?, invoice_id?,
+// tenant_id?, accounting_id? }] } OR { ids: [...] } using proposed values.
+// Each row commits in its own transaction; failures don't block the rest.
+router.post('/pending/bulk-approve', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const userId = req.user.id;
+    const body = req.body || {};
+    const items = Array.isArray(body.items) ? body.items
+      : Array.isArray(body.ids) ? body.ids.map(id => ({ id }))
+      : [];
+    if (!items.length) return fail(res, 'No rows selected', 400);
+
+    const approved = [];
+    const failed = [];
+    for (const it of items) {
+      const { id, ...overrides } = it;
+      try {
+        const resultingId = await commitPendingRow(req.pool, orgId, userId, String(id), overrides);
+        approved.push({ id: String(id), resulting_accounting_id: resultingId });
+      } catch (err) {
+        failed.push({ id: String(id), reason: err.message || 'Failed' });
+      }
+    }
+    return ok(res, { approved, failed, approved_count: approved.length, failed_count: failed.length });
+  } catch (err) {
+    console.error('[xero/pending/bulk-approve] error:', err);
+    return fail(res, err.message || 'Bulk approve failed', 500);
+  }
+});
+
+// Bulk skip — body { ids: [...] }. Marks each pending row skipped.
+router.post('/pending/bulk-skip', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const userId = req.user.id;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+    if (!ids.length) return fail(res, 'No rows selected', 400);
+    const placeholders = ids.map(() => '?').join(',');
+    const [r] = await req.pool.execute(
+      `UPDATE xero_pending_reconciliation
+          SET status = 'skipped', reviewed_by_user_id = ?, reviewed_at = NOW()
+        WHERE org_id = ? AND status = 'pending' AND id IN (${placeholders})`,
+      [userId, orgId, ...ids]
+    );
+    return ok(res, { skipped_count: r.affectedRows });
+  } catch (err) {
+    console.error('[xero/pending/bulk-skip] error:', err);
+    return fail(res, 'Bulk skip failed', 500);
   }
 });
 

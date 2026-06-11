@@ -48,6 +48,8 @@ export default function ReconcilePage() {
   const [categories, setCategories] = useState([]); // Tenafy category_setting list
   const [overrides, setOverrides] = useState({});   // pending row id → { account_id, category_id }
   const [syncRange, setSyncRange] = useState(null);
+  const [selected, setSelected] = useState({});   // xeroAccountId → array of row ids
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const loadPending = async () => {
     setLoading(true);
@@ -140,6 +142,59 @@ export default function ReconcilePage() {
       }
     } catch (e) {
       message.error(e.response?.data?.message || 'Skip failed');
+    }
+  };
+
+  // Bulk approve the selected rows in one account. Each row carries its current
+  // override (account/category picked in the UI). Rows still missing a required
+  // account are reported back as failures rather than silently dropped.
+  const onBulkApprove = async (xeroAccountId, rows) => {
+    const ids = selected[xeroAccountId] || [];
+    if (!ids.length) return;
+    const items = rows
+      .filter(r => ids.includes(r.id))
+      .map(r => ({ id: r.id, ...(overrides[r.id] || {}) }));
+    setBulkBusy(true);
+    try {
+      const r = await xero.bulkApprovePending(items);
+      if (r.data?.code === 200) {
+        const { approved_count, failed_count, approved } = r.data.data;
+        const approvedIds = new Set((approved || []).map(a => a.id));
+        setPending(p => p.filter(x => !approvedIds.has(x.id)));
+        setSelected(s => ({ ...s, [xeroAccountId]: [] }));
+        if (failed_count > 0) {
+          message.warning(`${approved_count} committed, ${failed_count} skipped (need an account or a link choice).`);
+        } else {
+          message.success(`${approved_count} committed.`);
+        }
+      } else {
+        message.error(r.data?.message || 'Bulk approve failed');
+      }
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Bulk approve failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const onBulkSkip = async (xeroAccountId) => {
+    const ids = selected[xeroAccountId] || [];
+    if (!ids.length) return;
+    setBulkBusy(true);
+    try {
+      const r = await xero.bulkSkipPending(ids);
+      if (r.data?.code === 200) {
+        const idSet = new Set(ids);
+        setPending(p => p.filter(x => !idSet.has(x.id)));
+        setSelected(s => ({ ...s, [xeroAccountId]: [] }));
+        message.success(`${r.data.data.skipped_count} skipped.`);
+      } else {
+        message.error(r.data?.message || 'Bulk skip failed');
+      }
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Bulk skip failed');
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -338,7 +393,7 @@ export default function ReconcilePage() {
         <Paragraph type="secondary" style={{ marginBottom: 16 }}>
           Pull bank transactions from Xero and review the proposals below.
           Nothing commits to Tenafy until you click <strong>Approve</strong>. The default
-          sync range is the last 30 days; pick a specific range above to control it.
+          sync range is the last 5 days; pick a specific range above to control it.
         </Paragraph>
 
         {loading ? (
@@ -355,7 +410,9 @@ export default function ReconcilePage() {
             }
           />
         ) : (
-          Object.entries(grouped).map(([xeroAccountId, group]) => (
+          Object.entries(grouped).map(([xeroAccountId, group]) => {
+            const sel = selected[xeroAccountId] || [];
+            return (
             <Card
               key={xeroAccountId}
               size="small"
@@ -367,6 +424,39 @@ export default function ReconcilePage() {
                   <Tag style={{ marginLeft: 8 }}>{group.rows.length} pending</Tag>
                 </span>
               }
+              extra={
+                <Space>
+                  <Button
+                    size="small"
+                    onClick={() => setSelected(s => ({
+                      ...s,
+                      [xeroAccountId]: sel.length === group.rows.length ? [] : group.rows.map(r => r.id),
+                    }))}
+                  >
+                    {sel.length === group.rows.length ? 'Clear all' : 'Select all'}
+                  </Button>
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<CheckOutlined />}
+                    disabled={sel.length === 0}
+                    loading={bulkBusy}
+                    onClick={() => onBulkApprove(xeroAccountId, group.rows)}
+                  >
+                    Approve selected ({sel.length})
+                  </Button>
+                  <Popconfirm
+                    title={`Skip ${sel.length} selected transaction(s)?`}
+                    description="They'll be marked skipped and won't reappear in this queue."
+                    onConfirm={() => onBulkSkip(xeroAccountId)}
+                    disabled={sel.length === 0}
+                  >
+                    <Button size="small" icon={<CloseOutlined />} disabled={sel.length === 0} loading={bulkBusy}>
+                      Skip selected ({sel.length})
+                    </Button>
+                  </Popconfirm>
+                </Space>
+              }
             >
               <Table
                 rowKey="id"
@@ -375,9 +465,14 @@ export default function ReconcilePage() {
                 pagination={false}
                 size="small"
                 scroll={{ x: 1100 }}
+                rowSelection={{
+                  selectedRowKeys: sel,
+                  onChange: (keys) => setSelected(s => ({ ...s, [xeroAccountId]: keys })),
+                }}
               />
             </Card>
-          ))
+            );
+          })
         )}
       </div>
     </MainLayout>
