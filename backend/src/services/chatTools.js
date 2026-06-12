@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const { buildViewingIcs } = require('../utils/ics');
 const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
+const { searchUnits } = require('./unitSearch');
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -44,24 +45,28 @@ const search_available_units = {
     function: {
       name: 'search_available_units',
       description:
-        'Search for SPECIFIC UNITS available on a specific date. This is the PRIMARY way to ' +
-        'answer a prospect — always prefer returning individual units over listing properties. ' +
-        "Use this whenever a prospect mentions criteria like bedrooms, budget, location, or a " +
-        "target move-in date. Pass `available_on` for future dates (format YYYY-MM-DD). Omit " +
-        "`available_on` to search today's availability. Returns units whose lease does NOT cover " +
-        'the target date. Each result includes a `listing_url` pointing to the unit page (or the ' +
-        'property page if no unit-level URL is set) — INCLUDE that link in your reply so the ' +
-        'prospect can see photos.',
+        'Search for SPECIFIC UNITS suitable for a prospect — always prefer returning individual units over properties. ' +
+        'Results are ranked by best TIMING fit: units that free up closest to the move-in date (smallest vacancy gap) ' +
+        'come first. Each result carries fit metadata: available_from, days_until_available (<=0 means vacant now), ' +
+        'vacancy_gap_days, and over_budget_pct (when a budget is given). Units slightly over budget are INCLUDED and ' +
+        'flagged so you can offer them with a note. ' +
+        'IMPORTANT: before searching, make sure you have the prospect’s move-in date and budget — if either is missing, ' +
+        'ask for it first (one question at a time). Pass move_in_date as YYYY-MM-DD; omit only if truly unknown. ' +
+        'Each result includes a listing_url — INCLUDE that link so the prospect can see photos.',
       parameters: {
         type: 'object',
         properties: {
-          beds: { type: 'integer', description: 'Minimum number of bedrooms. Pass 0 to search for studios (no separate bedroom).' },
-          max_price: { type: 'number', description: 'Maximum monthly rent the prospect is willing to pay' },
-          min_price: { type: 'number', description: 'Minimum monthly rent (optional, rarely useful)' },
-          city: { type: 'string', description: 'Location name to filter by. Fuzzy-matched against city, district, state, AND street_address. Good for city names ("Hong Kong"), neighborhoods ("Mong Kok", "Causeway Bay"), or street names.' },
-          property_id: { type: 'string', description: 'If the prospect named a specific property, its id' },
-          available_on: { type: 'string', description: 'Target availability date in YYYY-MM-DD format. Omit to use today.' },
-          limit: { type: 'integer', description: 'Maximum number of units to return (default 10, max 25)' },
+          beds: { type: 'integer', description: 'Exact number of bedrooms. Pass 0 for a studio (no separate bedroom).' },
+          baths: { type: 'integer', description: 'Exact number of bathrooms (optional).' },
+          budget: { type: 'number', description: "The prospect's target monthly rent. Units up to ~15% over are included and flagged via over_budget_pct. Prefer this over max_price." },
+          max_price: { type: 'number', description: 'Hard maximum monthly rent — use only if the prospect insists on a strict cap. Prefer `budget`.' },
+          min_price: { type: 'number', description: 'Minimum monthly rent (rarely useful).' },
+          city: { type: 'string', description: 'Region: "Hong Kong Island", "Kowloon", "New Territories". Comma-separate for multiple.' },
+          district: { type: 'string', description: 'Neighbourhood: "Causeway Bay", "Tsim Sha Tsui", "Mong Kok". Comma-separate for multiple.' },
+          amenities: { type: 'string', description: 'Comma-separated must-have amenities (e.g. "Gym, Parking"). ALL are required.' },
+          property_id: { type: 'string', description: 'If the prospect named a specific property, its id.' },
+          move_in_date: { type: 'string', description: 'Target move-in date YYYY-MM-DD. Drives the timing-fit ranking. Omit to use today.' },
+          limit: { type: 'integer', description: 'Maximum number of units to return (default 10, max 25).' },
         },
       },
     },
@@ -71,109 +76,88 @@ const search_available_units = {
     const { pool } = ctx;
     const limit = clampLimit(args.limit, 10, 25);
 
-    // Validate and resolve the availability date. Accept YYYY-MM-DD; reject past
-    // dates for future-search (today is always fine).
-    let targetDate = new Date().toISOString().split('T')[0];
-    if (args.available_on) {
-      const m = String(args.available_on).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-      if (!m) {
-        return { error: 'available_on must be formatted as YYYY-MM-DD' };
+    let moveIn = new Date().toISOString().split('T')[0];
+    const dateArg = args.move_in_date || args.available_on; // accept the legacy arg name too
+    if (dateArg) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateArg))) {
+        return { error: 'move_in_date must be formatted as YYYY-MM-DD' };
       }
-      targetDate = args.available_on;
+      moveIn = String(dateArg);
     }
 
-    const where = [
-      'p.org_id = ?', // explicit org filter — tena_prod contains legacy multi-tenant data
-      'p.status = 1',
-      'p.deleted_at IS NULL',
-      'u.active_status = 1',
-      'u.deleted_at IS NULL',
-    ];
-    const params = [ctx.orgId];
-    if (args.property_id) { where.push('p.id = ?'); params.push(args.property_id); }
-    if (args.city) {
-      // Fuzzy match across city/state/district/address so neighborhood names
-      // like "Mong Kok" or street names match even if property.city is "Hong Kong".
-      where.push(`(
-        LOWER(p.city)           LIKE LOWER(?) OR
-        LOWER(p.state)          LIKE LOWER(?) OR
-        LOWER(p.district)       LIKE LOWER(?) OR
-        LOWER(p.street_address) LIKE LOWER(?) OR
-        LOWER(p.display_name)   LIKE LOWER(?)
-      )`);
-      const needle = '%' + String(args.city).trim() + '%';
-      params.push(needle, needle, needle, needle, needle);
-    }
-    if (args.beds != null){ where.push('u.beds >= ?'); params.push(Number(args.beds)); }
-    if (args.max_price != null) {
-      where.push('(u.rent_price_min IS NULL OR u.rent_price_min <= ?)');
-      params.push(Number(args.max_price));
-    }
-    if (args.min_price != null) {
-      where.push('(u.rent_price_max IS NULL OR u.rent_price_max >= ?)');
-      params.push(Number(args.min_price));
-    }
+    const budget = args.budget != null ? Number(args.budget) : null;
+    // Shared engine — same ranking/enrichment the public API (TaneChat) uses.
+    // budget => soft 15% ceiling (over-budget units flagged); max_price => hard cap.
+    const { results, total } = await searchUnits(pool, {
+      orgId: ctx.orgId,
+      moveIn,
+      beds: args.beds != null ? Number(args.beds) : null,
+      bathrooms: args.baths != null ? Number(args.baths) : null,
+      maxPrice: args.max_price != null ? Number(args.max_price) : (budget != null ? budget : null),
+      budgetMarginPct: args.max_price != null ? 0 : 0.15,
+      minPrice: args.min_price != null ? Number(args.min_price) : null,
+      budget,
+      propertyId: args.property_id || null,
+      cityNames: String(args.city || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+      districtNames: String(args.district || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+      amenityNames: String(args.amenities || '').split(',').map(s => s.trim()).filter(Boolean),
+      sortBy: 'vacancy_gap',
+      limit,
+    });
 
-    // A unit is "available on targetDate" when NO lease's date range covers it.
-    // COALESCE prefers unit-level listing_url; falls back to property-level.
-    const [rows] = await pool.execute(
-      `SELECT u.id AS unit_id, u.name AS unit_name, u.type AS unit_type,
-              u.beds, u.baths, u.rent_price_min, u.rent_price_max,
-              COALESCE(u.listing_url, p.listing_url) AS listing_url,
-              p.id AS property_id, p.display_name AS property_name,
-              p.street_address, p.city, p.state, p.district, p.country, p.currency,
-              vl.token AS booking_token,
-              next_end.next_available_on
-       FROM unit u
-       JOIN property p ON u.property_id = p.id
-       LEFT JOIN leasing active_lease
-         ON active_lease.unit_id = u.id AND active_lease.deleted_at IS NULL
-         AND active_lease.start_date <= ? AND (active_lease.end_date >= ? OR active_lease.end_date IS NULL)
-       LEFT JOIN (
-         SELECT l.unit_id, DATE_ADD(MIN(l.end_date), INTERVAL 1 DAY) AS next_available_on
-         FROM leasing l
-         WHERE l.deleted_at IS NULL AND l.end_date IS NOT NULL AND l.end_date >= ?
-         GROUP BY l.unit_id
-       ) next_end ON next_end.unit_id = u.id
-       LEFT JOIN viewing_link vl ON vl.id = (
-         SELECT vl2.id FROM viewing_link vl2
-         WHERE vl2.unit_id = u.id AND vl2.status = 1 AND vl2.employee_id IS NOT NULL
-         ORDER BY vl2.created_at DESC LIMIT 1
-       )
-       WHERE ${where.join(' AND ')} AND active_lease.id IS NULL
-       ORDER BY u.rent_price_min ASC
-       LIMIT ${limit}`,
-      [targetDate, targetDate, targetDate, ...params]
-    );
+    // Booking tokens (can_book) + property-level listing_url fallback for the
+    // returned units. Kept here so the shared engine stays generic.
+    const unitIds = results.map(r => r.unit_id);
+    const tokenByUnit = new Map();
+    const propUrlById = new Map();
+    if (unitIds.length) {
+      const uph = unitIds.map(() => '?').join(',');
+      const [tokRows] = await pool.execute(
+        `SELECT vl.unit_id, vl.token FROM viewing_link vl
+         WHERE vl.unit_id IN (${uph}) AND vl.status = 1 AND vl.employee_id IS NOT NULL`,
+        unitIds
+      );
+      for (const t of tokRows) {
+        if (!tokenByUnit.has(String(t.unit_id))) tokenByUnit.set(String(t.unit_id), t.token);
+      }
+      const propIds = [...new Set(results.map(r => r.property_id))];
+      const pph = propIds.map(() => '?').join(',');
+      const [propRows] = await pool.execute(
+        `SELECT id, listing_url FROM property WHERE id IN (${pph})`,
+        propIds
+      );
+      for (const p of propRows) propUrlById.set(String(p.id), p.listing_url);
+    }
 
     return {
-      count: rows.length,
-      available_on: targetDate,
-      units: rows.map(r => ({
-        unit_id: str(r.unit_id),
+      count: results.length,
+      total_matches: total,
+      move_in_date: moveIn,
+      // Units are pre-sorted by timing fit (best first).
+      units: results.map(r => ({
+        unit_id: r.unit_id,
         unit_name: r.unit_name,
-        unit_type: r.unit_type,
-        beds: r.beds,
-        baths: r.baths,
-        price: {
-          min: r.rent_price_min,
-          max: r.rent_price_max,
-          currency: r.currency || 'USD',
-        },
-        listing_url: r.listing_url || null, // unit-level preferred, else property-level, else null
+        is_studio: r.bedrooms === 0,
+        beds: r.bedrooms,
+        baths: r.bathrooms,
+        size: r.size,
+        size_unit: r.size_unit,
+        monthly_rent: r.monthly_rent,
+        currency: r.currency || 'HKD',
+        over_budget_pct: r.over_budget_pct, // >0 = over the stated budget (flag it); null = no budget given
+        available_from: r.available_from,
+        days_until_available: r.days_until_available, // <=0 vacant now; >0 = wait this many days
+        vacancy_gap_days: r.vacancy_gap_days,
+        amenities: r.amenities,
+        listing_url: r.listing_url || propUrlById.get(r.property_id) || null,
         property: {
-          id: str(r.property_id),
+          id: r.property_id,
           name: r.property_name,
-          address: r.street_address,
+          address: r.full_address || r.street_address,
           city: r.city,
-          state: r.state,
           district: r.district,
-          country: r.country,
         },
-        can_book: Boolean(r.booking_token),
-        next_available_on: r.next_available_on
-          ? new Date(r.next_available_on).toISOString().split('T')[0]
-          : null,
+        can_book: Boolean(tokenByUnit.get(r.unit_id)),
       })),
     };
   },

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticateApiKey } = require('../middleware/apiKeyAuth');
 const inquiryExtractor = require('../services/inquiryExtractor');
+const { searchUnits } = require('../services/unitSearch');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
 // The middleware attaches req.pool (scoped to the caller's org DB) and
@@ -368,231 +369,35 @@ router.get('/units/search', async (req, res) => {
     const sortBy = req.query.sort_by || 'vacancy_gap';
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 100);
 
-    // Base WHERE for active units in active properties
-    let where = 'p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL AND u.active_status = 1';
-    const params = [orgId];
-    if (propertyId) { where += ' AND p.id = ?'; params.push(propertyId); }
-    if (bedrooms !== null && !Number.isNaN(bedrooms)) { where += ' AND u.beds = ?'; params.push(bedrooms); }
-    if (bathrooms !== null && !Number.isNaN(bathrooms)) { where += ' AND u.baths = ?'; params.push(bathrooms); }
-    if (cityNames.length > 0) {
-      where += ` AND LOWER(TRIM(p.city)) IN (${cityNames.map(() => '?').join(',')})`;
-      params.push(...cityNames);
-    }
-    if (districtNames.length > 0) {
-      where += ` AND LOWER(TRIM(p.district)) IN (${districtNames.map(() => '?').join(',')})`;
-      params.push(...districtNames);
-    }
-
-    // Pull candidate units with last-lease data for pricing + availability + gap
-    // - "Available on move_in_date" = no lease covers it that day
-    // - "current_move_out" = end_date of the most recent lease that ended on or before move_in_date
-    //   (if a unit has never been leased OR the last lease was further back, current_move_out is null)
-    const [rows] = await req.pool.execute(
-      `SELECT u.id AS unit_id, u.name AS unit_name, u.beds, u.baths,
-              u.size, u.size_unit, u.deposit_price, u.rent_price_min, u.rent_price_max,
-              u.amenity_detail, u.listing_url, u.photo AS unit_photo_id,
-              p.id AS property_id, p.display_name AS property_name,
-              p.street_address, p.city, p.state, p.district, p.country, p.zip_code, p.currency,
-              last_lease.price AS last_lease_price,
-              last_lease.end_date AS last_lease_end_date,
-              next_lease.start_date AS next_lease_start_date
-       FROM unit u
-       JOIN property p ON u.property_id = p.id
-       LEFT JOIN leasing active_lease
-         ON active_lease.unit_id = u.id AND active_lease.deleted_at IS NULL
-         AND active_lease.start_date <= ? AND (active_lease.end_date >= ? OR active_lease.end_date IS NULL)
-       LEFT JOIN (
-         SELECT l1.unit_id, l1.price, l1.end_date
-         FROM leasing l1
-         INNER JOIN (
-           SELECT unit_id, MAX(start_date) AS max_start FROM leasing
-           WHERE deleted_at IS NULL GROUP BY unit_id
-         ) l2 ON l1.unit_id = l2.unit_id AND l1.start_date = l2.max_start
-         WHERE l1.deleted_at IS NULL
-       ) last_lease ON last_lease.unit_id = u.id
-       LEFT JOIN (
-         SELECT unit_id, MIN(start_date) AS start_date
-         FROM leasing
-         WHERE deleted_at IS NULL AND start_date > ?
-         GROUP BY unit_id
-       ) next_lease ON next_lease.unit_id = u.id
-       WHERE ${where} AND active_lease.id IS NULL`,
-      [moveIn, moveIn, moveIn, ...params]
-    );
-
-    // If move_out_date is set, drop units where a future lease starts before move_out_date
-    let filtered = rows;
-    if (moveOut) {
-      filtered = filtered.filter(r => !r.next_lease_start_date || r.next_lease_start_date > moveOut);
-    }
-
-    // Pricing filter — use last_lease_price if available, else rent_price_min
-    if (minPrice !== null && !Number.isNaN(minPrice)) {
-      filtered = filtered.filter(r => {
-        const p = Number(r.last_lease_price ?? r.rent_price_min ?? 0);
-        return p >= minPrice;
-      });
-    }
-    if (maxPrice !== null && !Number.isNaN(maxPrice)) {
-      filtered = filtered.filter(r => {
-        const p = Number(r.last_lease_price ?? r.rent_price_max ?? r.rent_price_min ?? Infinity);
-        return p <= maxPrice;
-      });
-    }
-
-    // Amenity filter — requires ALL named amenities
-    if (amenityNames.length > 0 && filtered.length > 0) {
-      const unitIds = filtered.map(r => r.unit_id);
-      const placeholders = unitIds.map(() => '?').join(',');
-      const amenityPlaceholders = amenityNames.map(() => '?').join(',');
-      const [amRows] = await req.pool.execute(
-        `SELECT ua.unit_id, a.display_name AS name
-         FROM unit_amenity ua JOIN amenity a ON ua.amenity_id = a.id
-         WHERE ua.unit_id IN (${placeholders}) AND a.display_name IN (${amenityPlaceholders})`,
-        [...unitIds, ...amenityNames]
-      );
-      const have = new Map();
-      for (const r of amRows) {
-        if (!have.has(String(r.unit_id))) have.set(String(r.unit_id), new Set());
-        have.get(String(r.unit_id)).add(r.name);
-      }
-      filtered = filtered.filter(r => {
-        const got = have.get(String(r.unit_id));
-        return got && amenityNames.every(n => got.has(n));
-      });
-    }
-
-    // Annotate availability + gap; collect amenity names + gallery in a second pass
-    const unitIds = filtered.map(r => r.unit_id);
-    let amenitiesByUnit = new Map();
-    let galleryByUnit = new Map();
-    if (unitIds.length > 0) {
-      const ph = unitIds.map(() => '?').join(',');
-      const [amRows] = await req.pool.execute(
-        `SELECT ua.unit_id, a.display_name AS name FROM unit_amenity ua
-         JOIN amenity a ON ua.amenity_id = a.id WHERE ua.unit_id IN (${ph})`,
-        unitIds
-      );
-      for (const r of amRows) {
-        if (!amenitiesByUnit.has(String(r.unit_id))) amenitiesByUnit.set(String(r.unit_id), []);
-        amenitiesByUnit.get(String(r.unit_id)).push(r.name);
-      }
-      const [galRows] = await req.pool.execute(
-        `SELECT object_id, file_id, \`order\` FROM object_gallery
-         WHERE object_id IN (${ph}) ORDER BY \`order\``,
-        unitIds
-      );
-      const base = `${req.protocol}://${req.get('host')}`;
-      for (const r of galRows) {
-        if (!galleryByUnit.has(String(r.object_id))) galleryByUnit.set(String(r.object_id), []);
-        galleryByUnit.get(String(r.object_id)).push(`${base}/api/file/preview/${r.file_id}`);
-      }
-    }
-
-    const today = new Date(moveIn);
-    // Real-world today (NOT move_in_date) — used for days_until_available so
-    // the LLM can answer "this unit opens up X days from now" rules cleanly.
-    const realToday = new Date(new Date().toISOString().split('T')[0]);
-    // Lease duration (in days) for the prospect's requested window.
-    // Pre-computed here so the LLM never has to do date math itself —
-    // rules in the chatbot rulebook can compare it directly.
-    // null when move_out_date is not provided.
-    const leaseDurationDays = moveOut
-      ? Math.max(0, Math.round((new Date(moveOut) - new Date(moveIn)) / 86400000))
-      : null;
-    const enriched = filtered.map(r => {
-      // current_move_out = last_lease_end_date if that lease has ended (<= move_in_date)
-      let currentMoveOut = null;
-      if (r.last_lease_end_date) {
-        const endStr = r.last_lease_end_date instanceof Date
-          ? r.last_lease_end_date.toISOString().split('T')[0]
-          : String(r.last_lease_end_date).split('T')[0];
-        if (endStr <= moveIn) currentMoveOut = endStr;
-      }
-      // available_from = currentMoveOut + 1 day, OR move_in_date if no prior lease
-      let availableFrom = moveIn;
-      let vacancyGapDays = null;
-      if (currentMoveOut) {
-        const out = new Date(currentMoveOut);
-        out.setDate(out.getDate() + 1);
-        availableFrom = out.toISOString().split('T')[0];
-        vacancyGapDays = Math.max(0, Math.round((today - new Date(currentMoveOut)) / 86400000));
-      }
-      const addressParts = [r.street_address, r.district, r.city, r.state, r.zip_code, r.country]
-        .map(s => (s == null ? '' : String(s).trim()))
-        .filter(Boolean);
-      const fullAddress = addressParts.join(', ') || null;
-      return {
-        unit_id: String(r.unit_id),
-        unit_name: r.unit_name,
-        property_id: String(r.property_id),
-        property_name: r.property_name,
-        street_address: r.street_address || null,
-        city: r.city || null,
-        state: r.state || null,
-        district: r.district || null,
-        country: r.country || null,
-        zip_code: r.zip_code || null,
-        full_address: fullAddress,
-        bedrooms: r.beds,
-        bathrooms: r.baths,
-        size: r.size != null ? Number(r.size) : null,
-        size_unit: r.size_unit || null,
-        monthly_rent: r.last_lease_price != null ? Number(r.last_lease_price)
-          : r.rent_price_min != null ? Number(r.rent_price_min) : null,
-        rent_price_min: r.rent_price_min != null ? Number(r.rent_price_min) : null,
-        rent_price_max: r.rent_price_max != null ? Number(r.rent_price_max) : null,
-        deposit: r.deposit_price != null ? Number(r.deposit_price) : null,
-        currency: r.currency || null,
-        amenities: amenitiesByUnit.get(String(r.unit_id)) || [],
-        photos: galleryByUnit.get(String(r.unit_id)) || [],
-        available_from: availableFrom,
-        current_move_out: currentMoveOut,
-        vacancy_gap_days: vacancyGapDays,
-        lease_duration_days: leaseDurationDays,
-        // Days from real-world today until this unit becomes free.
-        // Negative = already vacant; positive = wait this many days.
-        days_until_available: Math.round(
-          (new Date(availableFrom) - realToday) / 86400000
-        ),
-        // Budget comparables — null when no budget was passed in.
-        // over_budget_by: HKD amount over budget (negative = under budget)
-        // over_budget_pct: % over budget rounded to 1 decimal
-        over_budget_by: (budget != null && !Number.isNaN(budget) &&
-          (r.last_lease_price != null || r.rent_price_min != null))
-          ? Number(r.last_lease_price ?? r.rent_price_min) - budget
-          : null,
-        over_budget_pct: (budget != null && !Number.isNaN(budget) && budget > 0 &&
-          (r.last_lease_price != null || r.rent_price_min != null))
-          ? Math.round(((Number(r.last_lease_price ?? r.rent_price_min) - budget) / budget) * 1000) / 10
-          : null,
-        listing_url: r.listing_url || null,
-        description: r.amenity_detail || null,
-      };
+    // Delegate to the shared search engine (also used by the internal chatbot
+    // tool, so both bots rank/filter identically). budgetMarginPct=0 keeps the
+    // public API's strict max_price behavior unchanged.
+    const { results, total } = await searchUnits(req.pool, {
+      orgId,
+      moveIn,
+      moveOut,
+      bedrooms: (bedrooms !== null && !Number.isNaN(bedrooms)) ? bedrooms : null,
+      bathrooms: (bathrooms !== null && !Number.isNaN(bathrooms)) ? bathrooms : null,
+      minPrice: (minPrice !== null && !Number.isNaN(minPrice)) ? minPrice : null,
+      maxPrice: (maxPrice !== null && !Number.isNaN(maxPrice)) ? maxPrice : null,
+      budgetMarginPct: 0,
+      budget: (budget !== null && !Number.isNaN(budget)) ? budget : null,
+      propertyId,
+      cityNames,
+      districtNames,
+      amenityNames,
+      sortBy,
+      limit,
+      baseUrl: `${req.protocol}://${req.get('host')}`,
     });
 
-    // Sort
-    if (sortBy === 'price_asc') {
-      enriched.sort((a, b) => (a.monthly_rent ?? Infinity) - (b.monthly_rent ?? Infinity));
-    } else if (sortBy === 'price_desc') {
-      enriched.sort((a, b) => (b.monthly_rent ?? -Infinity) - (a.monthly_rent ?? -Infinity));
-    } else {
-      // vacancy_gap (default): null gaps (never-leased) go last; smaller gap first
-      enriched.sort((a, b) => {
-        const ag = a.vacancy_gap_days, bg = b.vacancy_gap_days;
-        if (ag == null && bg == null) return 0;
-        if (ag == null) return 1;
-        if (bg == null) return -1;
-        return ag - bg;
-      });
-    }
-
-    const limited = enriched.slice(0, limit);
-    ok(res, limited, {
-      total_matches: enriched.length,
+    ok(res, results, {
+      total_matches: total,
       move_in_date: moveIn,
       move_out_date: moveOut,
-      lease_duration_days: leaseDurationDays,
+      lease_duration_days: moveOut
+        ? Math.max(0, Math.round((new Date(moveOut) - new Date(moveIn)) / 86400000))
+        : null,
       budget: budget,
       sort_by: sortBy,
     });
