@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  Card, Typography, Button, Space, Spin, Tag, Empty, Popconfirm, message, Descriptions,
+  Card, Typography, Button, Space, Spin, Tag, Empty, Popconfirm, message, Descriptions, Input,
 } from 'antd';
 import {
-  ArrowLeftOutlined, ReloadOutlined, StopOutlined, PlayCircleOutlined, RobotOutlined, UserOutlined, ToolOutlined,
+  ArrowLeftOutlined, ReloadOutlined, StopOutlined, PlayCircleOutlined, RobotOutlined, UserOutlined, ToolOutlined, SendOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
@@ -39,6 +39,8 @@ export default function SessionDetailPage() {
   const router = useRouter();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
 
   const reload = useCallback(() => {
     if (!id) return;
@@ -59,6 +61,27 @@ export default function SessionDetailPage() {
       reload();
     } catch (e) {
       message.error(e?.response?.data?.message || 'Failed to toggle');
+    }
+  };
+
+  // Continue this conversation — sends another turn into the SAME session and
+  // refreshes the transcript with the assistant's reply.
+  const sendReply = async () => {
+    const text = input.trim();
+    if (!text || sending) return;
+    setSending(true);
+    try {
+      const r = await chatApi.sendMessage({ message: text, session_id: id });
+      if (r.data?.code === 200) {
+        setInput('');
+        reload();
+      } else {
+        message.error(r.data?.message || 'Failed to send');
+      }
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to send');
+    } finally {
+      setSending(false);
     }
   };
 
@@ -154,6 +177,28 @@ export default function SessionDetailPage() {
               </div>
             ))}
           </div>
+        )}
+      </Card>
+
+      <Card size="small" style={{ marginTop: 16 }}>
+        {session.bot_disabled ? (
+          <Text type="secondary">
+            The bot is taken over for this session — re-enable it above to continue the conversation here.
+          </Text>
+        ) : (
+          <Space.Compact style={{ width: '100%' }}>
+            <Input.TextArea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
+              placeholder="Continue this conversation… (Enter to send, Shift+Enter for new line)"
+              autoSize={{ minRows: 1, maxRows: 4 }}
+              disabled={sending}
+            />
+            <Button type="primary" icon={<SendOutlined />} onClick={sendReply} loading={sending} disabled={!input.trim()}>
+              Send
+            </Button>
+          </Space.Compact>
         )}
       </Card>
     </MainLayout>

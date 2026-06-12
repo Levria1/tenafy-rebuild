@@ -98,9 +98,9 @@ export default function TestChatPage() {
     <MainLayout>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <Title level={4} style={{ margin: 0 }}>Test Chat</Title>
+          <Title level={4} style={{ margin: 0 }}>Assistant</Title>
           <Text type="secondary">
-            Interact with your chatbot as if you were a prospective tenant. Great for sanity-checking behavior, tool use, and replies.
+            Chat with the assistant to answer prospect enquiries. Conversations are saved — reopen and continue any of them from Sessions.
           </Text>
         </div>
         <Space wrap>
@@ -123,8 +123,8 @@ export default function TestChatPage() {
       <Alert
         type="info"
         showIcon
-        message="This is a staff test. Messages here are stored in the real chat_session / chat_message tables."
-        description="Any bookings the bot creates will be REAL (source='bot'). Use fake names/emails or cancel afterwards."
+        message="This is a live conversation — replies and any bookings the bot makes are real (source='bot')."
+        description="Each conversation is saved and can be reopened and continued from the Sessions page."
         style={{ marginBottom: 16 }}
       />
 

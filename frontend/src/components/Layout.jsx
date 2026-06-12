@@ -121,7 +121,7 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   const chatChildren = [];
   if (hasPermission('LANDLORD/CHAT_SESSION_LIST')) {
     chatChildren.push({ key: '/chatbot/sessions', label: <Link href="/chatbot/sessions">Sessions</Link> });
-    chatChildren.push({ key: '/chatbot/test', label: <Link href="/chatbot/test">Test Chat</Link> });
+    chatChildren.push({ key: '/chatbot/test', label: <Link href="/chatbot/test">Assistant</Link> });
   }
   if (hasPermission('LANDLORD/CHAT_SETTINGS_VIEW')) {
     chatChildren.push({ key: '/chatbot/settings', label: <Link href="/chatbot/settings">Settings</Link> });

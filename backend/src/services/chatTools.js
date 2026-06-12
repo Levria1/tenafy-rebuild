@@ -65,6 +65,7 @@ const search_available_units = {
           district: { type: 'string', description: 'Neighbourhood: "Causeway Bay", "Tsim Sha Tsui", "Mong Kok". Comma-separate for multiple.' },
           amenities: { type: 'string', description: 'Comma-separated must-have amenities (e.g. "Gym, Parking"). ALL are required.' },
           property_id: { type: 'string', description: 'If the prospect named a specific property, its id.' },
+          area_flexible: { type: 'boolean', description: 'Set true ONLY if the prospect explicitly says they are open / flexible on location — this satisfies the area requirement.' },
           move_in_date: { type: 'string', description: 'Target move-in date YYYY-MM-DD. Drives the timing-fit ranking. Omit to use today.' },
           limit: { type: 'integer', description: 'Maximum number of units to return (default 10, max 25).' },
         },
@@ -86,6 +87,34 @@ const search_available_units = {
     }
 
     const budget = args.budget != null ? Number(args.budget) : null;
+
+    // ── "Qualify before showing" gate (Option B: gate the DATA, not just the
+    //    prompt) ────────────────────────────────────────────────────────────
+    // Return NO units until we know the prospect's move-in date, area, and
+    // budget. A named property (property_id) short-circuits — its area & rent
+    // are inferable, so only the move-in date is required. Because the tool
+    // hands back zero units when unqualified, the model physically cannot dump
+    // listings before qualifying.
+    const hasDate = !!dateArg;
+    const hasBudget = budget != null || args.max_price != null;
+    const hasArea = !!(args.property_id || args.city || args.district || args.area_flexible);
+    if (args.property_id) {
+      if (!hasDate) {
+        return {
+          needs_qualification: true, missing: ['move_in_date'], units: [],
+          instruction: 'The prospect named a specific property/unit. Confirm its area and approximate rent back to them, then ask ONLY for their move-in date before showing availability or alternatives. Do not present units yet.',
+        };
+      }
+    } else if (!(hasDate && hasBudget && hasArea)) {
+      const missing = [];
+      if (!hasDate) missing.push('move_in_date');
+      if (!hasArea) missing.push('area');
+      if (!hasBudget) missing.push('budget');
+      return {
+        needs_qualification: true, missing, units: [],
+        instruction: `Before showing ANY units, ask the prospect for the missing detail(s): ${missing.join(', ')}. Ask ONE short question per message. Do not present or invent units until you have move-in date, area, and budget (or the prospect explicitly says they are flexible on area). If they named a unit, resolve it first with resolve_unit and confirm the inferred area + rent.`,
+      };
+    }
     // Shared engine — same ranking/enrichment the public API (TaneChat) uses.
     // budget => soft 15% ceiling (over-budget units flagged); max_price => hard cap.
     const { results, total } = await searchUnits(pool, {
@@ -232,6 +261,94 @@ const get_unit_details = {
       },
       amenities: amens.map(a => a.name),
       can_book: Boolean(u.booking_token),
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: resolve_unit  (named-unit short-circuit for "qualify before showing")
+// ---------------------------------------------------------------------------
+
+const resolve_unit = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'resolve_unit',
+      description:
+        'Resolve a prospect\'s free-text reference to a specific unit when they NAME one — by property name, ' +
+        'street address, district/area, or unit identifier (e.g. "Bonham Strand West Studio D", "7D at Pearl City", ' +
+        '"the Mong Kok studio"). Tolerates partial wording and typos. Returns the matched unit with its area ' +
+        '(district/city) and approximate rent so you can INFER area + budget and then only need to ask the move-in ' +
+        'date. Returns candidates or no_match when the reference is weak/ambiguous — do NOT guess; ask the prospect ' +
+        'to clarify. Call this FIRST whenever the prospect names a unit/property, before search_available_units.',
+      parameters: {
+        type: 'object',
+        properties: {
+          reference: { type: 'string', description: 'The prospect\'s words referring to the unit/property (the unit reference, not their whole sentence).' },
+        },
+        required: ['reference'],
+      },
+    },
+  },
+  cap: 'can_search',
+  async execute(ctx, args) {
+    const { pool } = ctx;
+    const ref = String(args.reference || '').toLowerCase().trim();
+    if (ref.length < 2) return { error: 'reference is required' };
+    const tokens = [...new Set(ref.split(/[^a-z0-9]+/).filter(t => t.length >= 2))].slice(0, 10);
+    if (!tokens.length) return { no_match: true, reason: 'reference too vague' };
+
+    const [rows] = await pool.execute(
+      `SELECT u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths,
+              u.rent_price_min, u.rent_price_max,
+              p.id AS property_id, p.display_name AS property_name,
+              p.street_address, p.city, p.district, p.currency
+       FROM unit u JOIN property p ON u.property_id = p.id
+       WHERE p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL
+         AND u.active_status = 1 AND u.deleted_at IS NULL`,
+      [ctx.orgId]
+    );
+
+    const scored = rows.map(r => {
+      const words = [r.property_name, r.street_address, r.district, r.city, r.unit_name, r.unit_type]
+        .map(s => String(s || '').toLowerCase());
+      const hay = words.join(' ');
+      const hayWords = hay.split(/[^a-z0-9]+/).filter(Boolean);
+      let score = 0;
+      for (const t of tokens) {
+        if (hay.includes(t)) score += 2;                                   // exact token present
+        else if (hayWords.some(w => w.length >= 4 && (w.includes(t) || t.includes(w)))) score += 1; // fuzzy/partial
+      }
+      return { r, score };
+    }).filter(s => s.score > 0).sort((a, b) => b.score - a.score);
+
+    if (!scored.length) return { no_match: true };
+
+    const fmt = (s) => ({
+      unit_id: str(s.r.unit_id),
+      unit_name: s.r.unit_name,
+      property_name: s.r.property_name,
+      area: s.r.district || s.r.city || null,
+      district: s.r.district,
+      city: s.r.city,
+      address: s.r.street_address,
+      approx_rent: s.r.rent_price_min != null ? Number(s.r.rent_price_min)
+        : (s.r.rent_price_max != null ? Number(s.r.rent_price_max) : null),
+      currency: s.r.currency || 'HKD',
+      beds: s.r.beds,
+      is_studio: s.r.beds === 0,
+    });
+
+    const top = scored[0];
+    const second = scored[1];
+    // Confident single match: a clear leader, well ahead of any runner-up.
+    if (top.score >= 4 && (!second || top.score - second.score >= 2)) {
+      return { matched: fmt(top), confidence: 'high' };
+    }
+    // Otherwise hand back candidates — never guess on weak/ambiguous signal.
+    return {
+      candidates: scored.slice(0, 3).map(fmt),
+      note: 'Ambiguous reference — ask the prospect to confirm which one. Do NOT assume.',
     };
   },
 };
@@ -1136,6 +1253,7 @@ const search_documents = {
 
 const ALL_TOOLS = [
   search_available_units,
+  resolve_unit,
   get_unit_details,
   list_properties,
   capture_lead,

@@ -100,7 +100,10 @@ function defaultSystemPrompt(orgDisplayName) {
     // ── Finding units (agentic — you call the tools yourself) ─────────────
     `Finding units:`,
     `- Use the provided tools to answer factual questions about units, properties, and availability. Do NOT invent details. (Unlike a backend that pre-fetches data, YOU decide when to call a tool.)`,
-    `- QUALIFY BEFORE SEARCHING. The things that decide a good match are: move-in date, budget, bedrooms, and preferred area (plus any must-have amenities). If the user hasn't given the move-in date or budget, ask for the missing one(s) FIRST — one short question at a time — before calling search_available_units. A quick "When are you looking to move in, and what's your monthly budget?" beats guessing. Don't interrogate: if they've given enough to search usefully (e.g. area + beds + date), search and refine from there.`,
+    `- QUALIFY BEFORE SHOWING. Before presenting ANY unit — whether a search result, the unit they asked about, or an alternative — you need three things: (1) move-in date, (2) target area/district, (3) monthly budget. If any are missing, ask for the missing one(s) FIRST, one short question per message. This holds even when the prospect named a specific unit.`,
+    `- The search tool enforces this: if you call search_available_units without enough qualifiers it returns \`needs_qualification\` and NO units. When that happens, ask the question it names — never present or invent units it didn't return.`,
+    `- NAMED-UNIT SHORT-CIRCUIT: when the prospect names or asks about a specific unit/property (by unit, property name, street, or area — e.g. "Bonham Strand West Studio D"), call \`resolve_unit\` FIRST. From the match, infer area = its district and budget ≈ its rent, so the only thing you still need to ask is the move-in date. Confirm the inferred area + rent in the same message, e.g.: "Great choice — <unit> in <area>, around HK$<rent>/month. So you're after <area> around HK$<rent>? And when are you hoping to move in?" If resolve_unit returns candidates/no_match, ask them to clarify — don't guess.`,
+    `- Once qualified, search/show normally. If the named unit is unavailable, alternatives use the qualified inputs: same area, within ~20% of budget, ranked by availability closest to the move-in date.`,
     `- ALWAYS pass the move-in date as \`move_in_date\` (YYYY-MM-DD) and the budget as \`budget\` when you have them. Convert vague dates to a real date (e.g. "first week of July" → the 7th, "mid-July" → the 14th, "July" → end of July). Results are ranked by timing fit (units that free up closest to their move-in date), so omitting the date gives worse suggestions.`,
     `- Pass location as \`city\` (region: Hong Kong Island / Kowloon / New Territories) and/or \`district\` (neighbourhood: Causeway Bay, Tsim Sha Tsui, Mong Kok). Pass must-haves as \`amenities\`.`,
     `- A \`beds\` value of 0 means a STUDIO (no separate bedroom). Always call it "studio", never "0-bedroom". Studio search = beds=0; "1 bedroom" = beds=1.`,
@@ -195,20 +198,21 @@ async function saveMessage(pool, sessionId, fields) {
   return id;
 }
 
-async function findOrCreateSession(pool, { channel, channelUserId, seedSystemPrompt }) {
-  const [existing] = await pool.execute(
-    'SELECT * FROM chat_session WHERE channel = ? AND channel_user_id = ? LIMIT 1',
-    [channel, channelUserId]
-  );
-  if (existing.length) return existing[0];
+// Load an existing session by its real id (so a conversation can be continued
+// or resumed). Returns null if not found. The pool is already org-scoped.
+async function getSessionById(pool, id) {
+  const [[row]] = await pool.execute('SELECT * FROM chat_session WHERE id = ? LIMIT 1', [String(id)]);
+  return row || null;
+}
 
+// Start a fresh session and seed its system prompt as the first message.
+async function createSession(pool, { channel, channelUserId, seedSystemPrompt }) {
   const id = newId();
   await pool.execute(
     `INSERT INTO chat_session (id, channel, channel_user_id, status, created_at, updated_at)
      VALUES (?, ?, ?, 0, NOW(), NOW())`,
     [id, channel, channelUserId]
   );
-  // Seed the system prompt as the first message
   if (seedSystemPrompt) {
     await saveMessage(pool, id, { role: 'system', content: seedSystemPrompt });
   }
@@ -258,7 +262,6 @@ router.post('/message', async (req, res) => {
   if (!message || typeof message !== 'string') return fail(res, 'message is required', 400);
 
   const channel = channelIn === 'web' ? 'web' : 'staff-test';
-  const channelUserId = session_id || `staff-${req.user.id}-${Date.now()}`;
 
   try {
     const settings = await loadBotSettings(req.pool);
@@ -285,11 +288,22 @@ router.post('/message', async (req, res) => {
       // plus staff-only rules.
       systemPrompt += renderKnowledge(await loadKnowledge(req.pool, { includeInternal: true }));
     }
-    const sessionRow = await findOrCreateSession(req.pool, {
-      channel,
-      channelUserId,
-      seedSystemPrompt: systemPrompt,
-    });
+    // Resolve the session. A `session_id` means "continue THIS conversation" —
+    // looked up by its real id, so multi-turn memory works and any past session
+    // can be resumed (e.g. reopened from the Sessions page). No session_id
+    // starts a fresh conversation. (The seeded system prompt is only used when
+    // creating; a continued session keeps its original seeded prompt + history.)
+    let sessionRow;
+    if (session_id) {
+      sessionRow = await getSessionById(req.pool, session_id);
+      if (!sessionRow) return fail(res, 'Conversation not found', 404);
+    } else {
+      sessionRow = await createSession(req.pool, {
+        channel,
+        channelUserId: `staff-${req.user.id}-${Date.now()}`,
+        seedSystemPrompt: systemPrompt,
+      });
+    }
 
     // Per-session guard rails
     if (bitToBool(sessionRow.bot_disabled)) {

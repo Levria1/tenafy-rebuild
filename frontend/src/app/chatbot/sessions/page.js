@@ -124,7 +124,7 @@ export default function ChatSessionsPage() {
         </div>
         <Space>
           <Link href="/chatbot/test">
-            <Button icon={<MessageOutlined />}>Test Chat</Button>
+            <Button icon={<MessageOutlined />}>New chat</Button>
           </Link>
           <Button icon={<ReloadOutlined />} onClick={reload} loading={loading}>Refresh</Button>
         </Space>
@@ -156,7 +156,7 @@ export default function ChatSessionsPage() {
         {filtered.length === 0 && !loading ? (
           <Empty description={
             <Text type="secondary">
-              No chat sessions yet. Try the <Link href="/chatbot/test">Test Chat</Link> page to have one.
+              No chat sessions yet. Start one from the <Link href="/chatbot/test">Assistant</Link> page.
             </Text>
           } />
         ) : isMobile ? (
