@@ -129,11 +129,16 @@ router.get('/chat/knowledge', async (req, res) => {
 // }
 // role ∈ {user, assistant, system, tool}. Send each turn ONCE (this appends).
 const LOG_ROLES = ['user', 'assistant', 'system', 'tool'];
+// Inbound prospect channels whose conversations should auto-create an inquiry.
+const INQUIRY_CHANNELS = new Set(['whatsapp', 'email']);
 router.post('/chat/log', async (req, res) => {
   try {
     const b = req.body || {};
     const channel = (b.channel && String(b.channel).trim()) || 'whatsapp';
-    const channelUserId = b.channel_user_id != null ? String(b.channel_user_id).trim() : '';
+    let channelUserId = b.channel_user_id != null ? String(b.channel_user_id).trim() : '';
+    // Email is keyed by the address — normalise case so "A@x.com" and "a@x.com"
+    // map to the same conversation/session.
+    if (channel === 'email') channelUserId = channelUserId.toLowerCase();
     if (!channelUserId) return fail(res, 'channel_user_id is required', 400);
     if (!Array.isArray(b.messages) || b.messages.length === 0) {
       return fail(res, 'messages must be a non-empty array', 400);
@@ -195,11 +200,11 @@ router.post('/chat/log', async (req, res) => {
     }
 
     // ── Auto-create inquiry on first qualifying turn ────────────────────
-    // Only for WhatsApp channel; only if the session has no inquiry yet; only
-    // if the session is NOT already linked to a tenant; only if there's at
-    // least one user message. The actual LLM call is fire-and-forget so the
-    // log response isn't held up.
-    if (channel === 'whatsapp' && inserted > 0) {
+    // For inbound prospect channels (WhatsApp + email); only if the session has
+    // no inquiry yet; only if the session is NOT already linked to a tenant;
+    // only if there's at least one user message. The actual LLM call is
+    // fire-and-forget so the log response isn't held up.
+    if (INQUIRY_CHANNELS.has(channel) && inserted > 0) {
       setImmediate(() => {
         autoCreateInquiryForSession(req.pool, req.apiKey.orgId, sessionId)
           .catch(err => console.error('[chat/log] auto-extract failed:', err.message));
@@ -213,13 +218,13 @@ router.post('/chat/log', async (req, res) => {
   }
 });
 
-// Fire-and-forget inquiry creation for a WhatsApp session.
-// Idempotent — checks chat_session.inquiry_id and short-circuits if set.
+// Fire-and-forget inquiry creation for an inbound prospect session (WhatsApp or
+// email). Idempotent — checks chat_session.inquiry_id and short-circuits if set.
 async function autoCreateInquiryForSession(pool, orgId, sessionId) {
   // Re-fetch state inside the async call — by the time we run, the row may
   // have changed (e.g. a parallel turn already triggered creation).
   const [[session]] = await pool.execute(
-    `SELECT id, inquiry_id, contact_id, viewer_phone, viewer_name, viewer_email
+    `SELECT id, channel, channel_user_id, inquiry_id, contact_id, viewer_phone, viewer_name, viewer_email
        FROM chat_session WHERE id = ? LIMIT 1`,
     [sessionId]
   );
@@ -251,24 +256,33 @@ async function autoCreateInquiryForSession(pool, orgId, sessionId) {
     return;
   }
 
-  // Build the inquiry row. Phone falls back to the WhatsApp number from
-  // chat_session.viewer_phone if the LLM didn't pull one from the messages.
+  // Build the inquiry row, channel-aware:
+  //  - source = the channel ('whatsapp' | 'email') so the inquiry is marked right.
+  //  - email channel is keyed by the address, so use channel_user_id as the
+  //    email fallback; phone only applies to phone-based channels (WhatsApp).
   const f = result.fields || {};
-  const phone = (f.phone && String(f.phone).trim()) || session.viewer_phone || null;
+  const channel = session.channel || 'whatsapp';
+  const isEmail = channel === 'email';
+  const source = isEmail ? 'email' : (channel === 'whatsapp' ? 'whatsapp' : channel);
+  const email = (f.email && String(f.email).trim().toLowerCase())
+    || (session.viewer_email && String(session.viewer_email).trim().toLowerCase())
+    || (isEmail && session.channel_user_id ? String(session.channel_user_id).trim().toLowerCase() : null);
+  const phone = (f.phone && String(f.phone).trim()) || (isEmail ? null : session.viewer_phone) || null;
   const inquiryId = newId();
 
   await pool.execute(
     `INSERT INTO inquiry
        (id, org_id, inquiry_date, first_name, last_name, email, phone,
         notes, source, status, desired_start_date, budget)
-     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, 'whatsapp', 0, ?, ?)`,
+     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
     [
       inquiryId, orgId,
       f.first_name || session.viewer_name || null,
       f.last_name || null,
-      (f.email && String(f.email).trim().toLowerCase()) || session.viewer_email || null,
+      email,
       phone,
       f.notes || null,
+      source,
       f.desired_start_date || null,
       f.budget != null && f.budget !== '' ? Number(f.budget) : null,
     ]

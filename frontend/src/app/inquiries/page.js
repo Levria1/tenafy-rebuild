@@ -105,10 +105,22 @@ export default function InquiriesPage() {
       render: (v) => v ? dayjs(v).format('YYYY-MM-DD') : '—',
     },
     {
-      title: 'Lead Source',
+      title: 'Source',
       dataIndex: 'lead_source_name',
-      width: 140,
-      render: (v) => v || <Text type="secondary">—</Text>,
+      width: 130,
+      render: (v, r) => {
+        // Prefer a configured lead source (manual entries); otherwise show the
+        // inbound channel for auto-captured inquiries.
+        if (v) return v;
+        const src = (r.source || '').toLowerCase();
+        const META = {
+          whatsapp: { color: 'green', label: 'WhatsApp' },
+          email:    { color: 'blue',  label: 'Email' },
+          web:      { color: 'cyan',  label: 'Web' },
+        };
+        const m = META[src];
+        return m ? <Tag color={m.color}>{m.label}</Tag> : <Text type="secondary">—</Text>;
+      },
     },
     { title: 'First Name', dataIndex: 'first_name', width: 130 },
     { title: 'Last Name', dataIndex: 'last_name', width: 130 },
@@ -207,7 +219,9 @@ export default function InquiriesPage() {
         {r.phone && <div>{r.phone}</div>}
       </div>
       <div style={{ fontSize: 11, color: '#999', marginBottom: 8 }}>
-        {r.lead_source_name && <span>{r.lead_source_name} · </span>}
+        {r.lead_source_name
+          ? <span>{r.lead_source_name} · </span>
+          : (r.source && r.source !== 'manual' && <span>{r.source} · </span>)}
         {dayjs(r.inquiry_date).format('YYYY-MM-DD')}
       </div>
       <Space size={4} wrap>
