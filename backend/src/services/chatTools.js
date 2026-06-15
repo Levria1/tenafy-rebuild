@@ -56,7 +56,7 @@ const search_available_units = {
       parameters: {
         type: 'object',
         properties: {
-          beds: { type: 'integer', description: 'Exact number of bedrooms. Pass 0 for a studio (no separate bedroom).' },
+          beds: { type: 'integer', description: 'Exact number of BEDROOMS (not occupancy). Pass 0 for a studio. "For 2 people / 2 guests / a couple" is OCCUPANCY — do NOT set beds for that; only set beds when the prospect explicitly asks for N bedrooms / NBR / N rooms.' },
           baths: { type: 'integer', description: 'Exact number of bathrooms (optional).' },
           budget: { type: 'number', description: "The prospect's target monthly rent. Units up to ~15% over are included and flagged via over_budget_pct. Prefer this over max_price." },
           max_price: { type: 'number', description: 'Hard maximum monthly rent — use only if the prospect insists on a strict cap. Prefer `budget`.' },
