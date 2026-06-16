@@ -225,6 +225,21 @@ router.delete('/setting/category/delete/:id', authenticate, async (req, res) => 
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
+
+    // In-use guard — don't delete a category referenced by live transactions or invoices.
+    const [[{ acctCount }]] = await req.pool.execute(
+      'SELECT COUNT(*) AS acctCount FROM accounting WHERE category = ? AND org_id = ? AND deleted_at IS NULL',
+      [id, orgId]
+    );
+    const [[{ invCount }]] = await req.pool.execute(
+      'SELECT COUNT(*) AS invCount FROM invoice WHERE category = ? AND org_id = ? AND deleted_at IS NULL',
+      [id, orgId]
+    );
+    const used = Number(acctCount) + Number(invCount);
+    if (used > 0) {
+      return res.status(400).json({ code: 400, message: `Cannot delete this category — it is used by ${used} transaction(s)/invoice(s). Reassign or remove them first.` });
+    }
+
     await req.pool.execute(
       'UPDATE category_setting SET enabled = 0 WHERE id = ? AND org_id = ?',
       [id, orgId]
@@ -290,6 +305,16 @@ router.delete('/setting/payment/delete/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
+
+    // In-use guard — don't delete a payment method referenced by live transactions.
+    const [[{ count }]] = await req.pool.execute(
+      'SELECT COUNT(*) AS count FROM accounting WHERE payment_setting_id = ? AND org_id = ? AND deleted_at IS NULL',
+      [id, orgId]
+    );
+    if (Number(count) > 0) {
+      return res.status(400).json({ code: 400, message: `Cannot delete this payment method — it is used by ${count} transaction(s). Reassign or remove them first.` });
+    }
+
     await req.pool.execute(
       'UPDATE payment_method_setting SET enabled = 0 WHERE id = ? AND org_id = ?',
       [id, orgId]

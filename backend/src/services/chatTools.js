@@ -66,6 +66,7 @@ const search_available_units = {
           amenities: { type: 'string', description: 'Comma-separated must-have amenities (e.g. "Gym, Parking"). ALL are required.' },
           property_id: { type: 'string', description: 'If the prospect named a specific property, its id.' },
           area_flexible: { type: 'boolean', description: 'Set true ONLY if the prospect explicitly says they are open / flexible on location — this satisfies the area requirement.' },
+          budget_flexible: { type: 'boolean', description: 'Set true ONLY if the prospect explicitly says they have no fixed budget / are flexible on price (or asked you to "just show what you have") — this satisfies the budget requirement.' },
           move_in_date: { type: 'string', description: 'Target move-in date YYYY-MM-DD. Drives the timing-fit ranking. Omit to use today.' },
           limit: { type: 'integer', description: 'Maximum number of units to return (default 10, max 25).' },
         },
@@ -96,7 +97,7 @@ const search_available_units = {
     // hands back zero units when unqualified, the model physically cannot dump
     // listings before qualifying.
     const hasDate = !!dateArg;
-    const hasBudget = budget != null || args.max_price != null;
+    const hasBudget = budget != null || args.max_price != null || !!args.budget_flexible;
     const hasArea = !!(args.property_id || args.city || args.district || args.area_flexible);
     if (args.property_id) {
       if (!hasDate) {
@@ -120,7 +121,7 @@ const search_available_units = {
     const { results, total } = await searchUnits(pool, {
       orgId: ctx.orgId,
       moveIn,
-      beds: args.beds != null ? Number(args.beds) : null,
+      bedrooms: args.beds != null ? Number(args.beds) : null,
       bathrooms: args.baths != null ? Number(args.baths) : null,
       maxPrice: args.max_price != null ? Number(args.max_price) : (budget != null ? budget : null),
       budgetMarginPct: args.max_price != null ? 0 : 0.15,
@@ -327,6 +328,7 @@ const resolve_unit = {
     const fmt = (s) => ({
       unit_id: str(s.r.unit_id),
       unit_name: s.r.unit_name,
+      property_id: str(s.r.property_id),
       property_name: s.r.property_name,
       area: s.r.district || s.r.city || null,
       district: s.r.district,

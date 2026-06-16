@@ -144,22 +144,24 @@ router.post('/chat/log', async (req, res) => {
       return fail(res, 'messages must be a non-empty array', 400);
     }
 
-    // Find or create the session (no system-prompt seed — the external bot owns its prompt).
-    const [existing] = await req.pool.execute(
+    // Race-safe find-or-create against the unique (channel, channel_user_id)
+    // key. Email connectors batch turns, so two requests can arrive at once —
+    // INSERT … ON DUPLICATE KEY UPDATE avoids the SELECT-then-INSERT race that
+    // would otherwise throw ER_DUP_ENTRY (500). Then read back the canonical id
+    // (the existing row's, or the one we just inserted). No system-prompt seed —
+    // the external bot owns its prompt.
+    const newSessionId = newId();
+    await req.pool.execute(
+      `INSERT INTO chat_session (id, channel, channel_user_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, 0, NOW(), NOW())
+       ON DUPLICATE KEY UPDATE updated_at = NOW()`,
+      [newSessionId, channel, channelUserId]
+    );
+    const [[sessRow]] = await req.pool.execute(
       'SELECT id FROM chat_session WHERE channel = ? AND channel_user_id = ? LIMIT 1',
       [channel, channelUserId]
     );
-    let sessionId;
-    if (existing.length) {
-      sessionId = String(existing[0].id);
-    } else {
-      sessionId = newId();
-      await req.pool.execute(
-        `INSERT INTO chat_session (id, channel, channel_user_id, status, created_at, updated_at)
-         VALUES (?, ?, ?, 0, NOW(), NOW())`,
-        [sessionId, channel, channelUserId]
-      );
-    }
+    const sessionId = String(sessRow.id);
 
     // Insert each message turn.
     let inserted = 0;
