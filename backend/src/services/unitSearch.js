@@ -15,6 +15,18 @@ function toDateStr(d) {
   return (d instanceof Date ? d : new Date(d)).toISOString().split('T')[0];
 }
 
+// Acceptable forward-vacancy-gap band (days) by reservation length. Returns the
+// max gap we'll tolerate, or null when the reservation length is unknown.
+//   1–2 months  → 5    3–5 months → 7    6–11 months → 10    12+ months → 20
+function gapBandDays(leaseDurationDays) {
+  if (leaseDurationDays == null) return null;
+  const months = Math.round(leaseDurationDays / 30.44);
+  if (months <= 2) return 5;
+  if (months <= 5) return 7;
+  if (months <= 11) return 10;
+  return 20;
+}
+
 /**
  * @param {object} pool  org DB pool
  * @param {object} criteria
@@ -211,6 +223,10 @@ async function searchUnits(pool, criteria = {}) {
   const leaseDurationDays = moveOut
     ? Math.max(0, Math.round((new Date(moveOut) - new Date(moveIn)) / 86400000))
     : null;
+  // Gap-tolerance verdict (deterministic; both bots consume it instead of doing
+  // their own band math). Band is null when reservation length is unknown.
+  const gapBand = gapBandDays(leaseDurationDays);
+  const needsManagerApproval = leaseDurationDays != null && Math.round(leaseDurationDays / 30.44) >= 12;
 
   const enriched = filtered.map(r => {
     let currentMoveOut = null;
@@ -264,6 +280,9 @@ async function searchUnits(pool, criteria = {}) {
       vacancy_gap_days: vacancyGapDays,
       forward_gap_days: forwardGapDays,
       lease_duration_days: leaseDurationDays,
+      gap_band_days: gapBand,                                            // max tolerated gap for this reservation length (null = unknown length)
+      gap_within_tolerance: gapBand == null ? null : (forwardGapDays <= gapBand),
+      needs_manager_approval: needsManagerApproval,                       // 12-month+ reservations
       days_until_available: Math.round((new Date(availableFrom) - realToday) / 86400000),
       over_budget_by: (budget != null && !Number.isNaN(budget) && monthlyRent != null)
         ? Number(monthlyRent) - budget : null,

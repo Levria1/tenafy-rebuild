@@ -193,8 +193,11 @@ const search_available_units = {
         available_from: r.available_from,
         days_until_available: r.days_until_available, // <=0 vacant now; >0 = wait this many days
         vacancy_gap_days: r.vacancy_gap_days,        // historical (since last move-out)
-        forward_gap_days: r.forward_gap_days,        // empty days from TODAY until move-in — use THIS for gap-tolerance policy
-        lease_duration_days: r.lease_duration_days,  // reservation length (when move_out/stay_months given) — picks the gap-tolerance band
+        forward_gap_days: r.forward_gap_days,        // empty days from TODAY until move-in
+        lease_duration_days: r.lease_duration_days,  // reservation length (when move_out/stay_months given)
+        gap_band_days: r.gap_band_days,              // max tolerated gap for this reservation length (null if length unknown)
+        gap_within_tolerance: r.gap_within_tolerance, // true=offer freely; false=offer only if nothing better; null=ask for stay length
+        needs_manager_approval: r.needs_manager_approval, // 12-month+ → don't confirm, route to the team
         amenities: r.amenities,
         listing_url: r.listing_url || propUrlById.get(r.property_id) || null,
         property: {
