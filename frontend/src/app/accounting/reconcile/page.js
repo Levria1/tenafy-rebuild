@@ -16,7 +16,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Card, Table, Button, Tag, message, Select, Space, Typography, Tooltip,
-  Modal, DatePicker, Alert, Popconfirm, Empty, Collapse,
+  Modal, DatePicker, Alert, Popconfirm, Empty, Collapse, InputNumber,
 } from 'antd';
 import {
   SyncOutlined, CheckOutlined, CloseOutlined, LinkOutlined,
@@ -157,6 +157,23 @@ export default function ReconcilePage() {
   const effectiveDirection = (row) =>
     overrides[row.id]?.direction || (Number(row.amount) < 0 ? 'outflow' : 'inflow');
 
+  // ── Category split helpers ────────────────────────────────────────────────
+  // overrides[id].lines = [{ amount, category_id }] when the user splits one
+  // transaction across multiple categories (null/absent = single category).
+  const setLines = (id, lines) =>
+    setOverrides(prev => ({ ...prev, [id]: { ...(prev[id] || {}), lines } }));
+  const splitSum = (lines) => (lines || []).reduce((s, l) => s + (Number(l.amount) || 0), 0);
+  const splitValid = (row) => {
+    const lines = overrides[row.id]?.lines;
+    if (!lines || !lines.length) return false;
+    if (!lines.every(l => l.category_id && Number(l.amount) > 0)) return false;
+    return Math.abs(splitSum(lines) - Math.abs(Number(row.amount) || 0)) < 0.01;
+  };
+  // A new-entry row is approvable when it has an account and, if split, the
+  // split is valid (every line categorized + sums to the transaction total).
+  const newEntryApprovable = (row) =>
+    !!effectiveAccount(row) && (overrides[row.id]?.lines ? splitValid(row) : true);
+
   // Build the approve payload the backend expects, per match_kind. Ambiguous
   // rows resolve EITHER to a link (accounting_id) or a new entry (account_id).
   const buildBody = (row) => {
@@ -167,12 +184,14 @@ export default function ReconcilePage() {
       return {
         account_id: effectiveAccount(row) || undefined,
         category_id: (ov.category_id || row.proposed_category_id) || undefined,
+        lines: (ov.lines && splitValid(row)) ? ov.lines.map(l => ({ amount: Number(l.amount), category_id: l.category_id })) : undefined,
         direction: effectiveDirection(row),
       };
     }
     return {
       account_id: effectiveAccount(row) || undefined,
       category_id: (ov.category_id || row.proposed_category_id) || undefined,
+      lines: (ov.lines && splitValid(row)) ? ov.lines.map(l => ({ amount: Number(l.amount), category_id: l.category_id })) : undefined,
       invoice_id: (ov.invoice_id || row.proposed_invoice_id) || undefined,
       accounting_id: ov.accounting_id || undefined,
       direction: effectiveDirection(row),
@@ -185,15 +204,15 @@ export default function ReconcilePage() {
 
   // Whether Approve should be enabled for a row given current selections.
   const isApprovable = (row) => {
-    if (row.match_kind === 'dedup_existing') return row.existing_accounting_id ? true : !!effectiveAccount(row);
+    if (row.match_kind === 'dedup_existing') return row.existing_accounting_id ? true : newEntryApprovable(row);
     if (row.match_kind === 'ambiguous') {
       const link = overrides[row.id]?.link;
       if (link && link !== '__new__') return true;        // linking to a match
-      if (link === '__new__') return !!effectiveAccount(row); // new entry needs an account
+      if (link === '__new__') return newEntryApprovable(row); // new entry needs an account (+ valid split if any)
       return false;                                        // no choice made yet
     }
-    // new_entry / unmapped_account / invoice_payment all create an entry → need an account
-    return !!effectiveAccount(row);
+    // new_entry / unmapped_account / invoice_payment all create an entry → need an account (+ valid split if any)
+    return newEntryApprovable(row);
   };
 
   const onApprove = async (row) => {
@@ -291,6 +310,65 @@ export default function ReconcilePage() {
     }
     return buckets;
   }, [pending]);
+
+  // Category control for a new entry: either a single Category select (+ a
+  // "Split" link) or, in split mode, one amount+category line per category with
+  // a running total that must equal the transaction amount.
+  const renderCategoryOrSplit = (row) => {
+    const ov = overrides[row.id] || {};
+    const categoryId = ov.category_id || row.proposed_category_id;
+    const lines = ov.lines || null;
+    const amountAbs = Math.abs(Number(row.amount) || 0);
+    const catOptions = categories.map(c => ({ label: c.name, value: String(c.id) }));
+    const catFilter = (input, option) => (option?.label || '').toLowerCase().includes(input.toLowerCase());
+    const linkBtn = { type: 'link', size: 'small', style: { padding: 0, height: 'auto', fontSize: 12 } };
+
+    if (!lines) {
+      return (
+        <>
+          <Select size="small" showSearch placeholder="Category" style={{ width: 220 }}
+            value={categoryId || undefined}
+            onChange={v => updateOverride(row.id, 'category_id', v)}
+            options={catOptions} filterOption={catFilter} />
+          <div>
+            <Button {...linkBtn} onClick={() => setLines(row.id, [{ amount: amountAbs, category_id: categoryId || null }])}>
+              Split into categories…
+            </Button>
+          </div>
+        </>
+      );
+    }
+    const sum = splitSum(lines);
+    const balanced = Math.abs(sum - amountAbs) < 0.01;
+    return (
+      <div style={{ width: 320 }}>
+        {lines.map((ln, i) => (
+          <Space key={i} size={4} style={{ display: 'flex', marginBottom: 4 }}>
+            <InputNumber size="small" prefix="$" style={{ width: 95 }} controls={false} min={0}
+              value={ln.amount}
+              onChange={v => { const next = lines.map((x, j) => j === i ? { ...x, amount: v } : x); setLines(row.id, next); }} />
+            <Select size="small" showSearch placeholder="Category" style={{ width: 150 }}
+              value={ln.category_id || undefined}
+              onChange={v => { const next = lines.map((x, j) => j === i ? { ...x, category_id: v } : x); setLines(row.id, next); }}
+              options={catOptions} filterOption={catFilter} status={!ln.category_id ? 'warning' : undefined} />
+            {lines.length > 1 && (
+              <Button type="text" size="small" icon={<CloseOutlined />}
+                onClick={() => setLines(row.id, lines.filter((_, j) => j !== i))} />
+            )}
+          </Space>
+        ))}
+        <Space size={10} wrap style={{ fontSize: 12 }}>
+          <Button {...linkBtn} onClick={() => setLines(row.id, [...lines, { amount: Math.max(0, Number((amountAbs - sum).toFixed(2))), category_id: null }])}>
+            + add line
+          </Button>
+          <Button {...linkBtn} onClick={() => setLines(row.id, null)}>single category</Button>
+          <span style={{ color: balanced ? '#52c41a' : '#ff4d4f' }}>
+            HK${sum.toFixed(2)} / HK${amountAbs.toFixed(2)}{balanced ? ' ✓' : ''}
+          </span>
+        </Space>
+      </div>
+    );
+  };
 
   const renderProposal = (row) => {
     const kind = KIND_META[row.match_kind] || { color: 'default', label: row.match_kind };
@@ -410,18 +488,7 @@ export default function ReconcilePage() {
                 }
                 status={!accountId ? 'warning' : undefined}
               />
-              <Select
-                size="small"
-                showSearch
-                placeholder="Category"
-                style={{ width: 220 }}
-                value={categoryId || undefined}
-                onChange={v => updateOverride(row.id, 'category_id', v)}
-                options={categories.map(c => ({ label: c.name, value: String(c.id) }))}
-                filterOption={(input, option) =>
-                  (option?.label || '').toLowerCase().includes(input.toLowerCase())
-                }
-              />
+              {renderCategoryOrSplit(row)}
             </Space>
           )}
         </div>
@@ -444,18 +511,7 @@ export default function ReconcilePage() {
             }
             status={!accountId ? 'warning' : undefined}
           />
-          <Select
-            size="small"
-            showSearch
-            placeholder="Category"
-            style={{ width: 220 }}
-            value={categoryId || undefined}
-            onChange={v => updateOverride(row.id, 'category_id', v)}
-            options={categories.map(c => ({ label: c.name, value: String(c.id) }))}
-            filterOption={(input, option) =>
-              (option?.label || '').toLowerCase().includes(input.toLowerCase())
-            }
-          />
+          {renderCategoryOrSplit(row)}
         </Space>
       </div>
     );
