@@ -68,6 +68,8 @@ const search_available_units = {
           area_flexible: { type: 'boolean', description: 'Set true ONLY if the prospect explicitly says they are open / flexible on location — this satisfies the area requirement.' },
           budget_flexible: { type: 'boolean', description: 'Set true ONLY if the prospect explicitly says they have no fixed budget / are flexible on price (or asked you to "just show what you have") — this satisfies the budget requirement.' },
           move_in_date: { type: 'string', description: 'Target move-in date YYYY-MM-DD. Drives the timing-fit ranking. Omit to use today.' },
+          move_out_date: { type: 'string', description: 'Intended move-out date YYYY-MM-DD (end of the reservation). Optional; sets reservation length.' },
+          stay_months: { type: 'integer', description: 'Reservation length in months (alternative to move_out_date — e.g. "6 months" => 6). Used with move_in_date to derive the reservation length, which sets the acceptable vacancy gap (see lease_duration_days + forward_gap_days in results).' },
           limit: { type: 'integer', description: 'Maximum number of units to return (default 10, max 25).' },
         },
       },
@@ -85,6 +87,18 @@ const search_available_units = {
         return { error: 'move_in_date must be formatted as YYYY-MM-DD' };
       }
       moveIn = String(dateArg);
+    }
+
+    // Reservation length (optional): explicit move_out_date, or derived from
+    // stay_months. Drives lease_duration_days, which the gap-tolerance policy
+    // pairs with forward_gap_days to pick the acceptable vacancy band.
+    let moveOut = null;
+    if (args.move_out_date && /^\d{4}-\d{2}-\d{2}$/.test(String(args.move_out_date))) {
+      moveOut = String(args.move_out_date);
+    } else if (Number.isFinite(Number(args.stay_months)) && Number(args.stay_months) > 0) {
+      const d = new Date(moveIn);
+      d.setMonth(d.getMonth() + Math.round(Number(args.stay_months)));
+      moveOut = d.toISOString().split('T')[0];
     }
 
     const budget = args.budget != null ? Number(args.budget) : null;
@@ -121,6 +135,7 @@ const search_available_units = {
     const { results, total } = await searchUnits(pool, {
       orgId: ctx.orgId,
       moveIn,
+      moveOut,
       bedrooms: args.beds != null ? Number(args.beds) : null,
       bathrooms: args.baths != null ? Number(args.baths) : null,
       maxPrice: args.max_price != null ? Number(args.max_price) : (budget != null ? budget : null),
@@ -177,7 +192,9 @@ const search_available_units = {
         over_budget_pct: r.over_budget_pct, // >0 = over the stated budget (flag it); null = no budget given
         available_from: r.available_from,
         days_until_available: r.days_until_available, // <=0 vacant now; >0 = wait this many days
-        vacancy_gap_days: r.vacancy_gap_days,
+        vacancy_gap_days: r.vacancy_gap_days,        // historical (since last move-out)
+        forward_gap_days: r.forward_gap_days,        // empty days from TODAY until move-in — use THIS for gap-tolerance policy
+        lease_duration_days: r.lease_duration_days,  // reservation length (when move_out/stay_months given) — picks the gap-tolerance band
         amenities: r.amenities,
         listing_url: r.listing_url || propUrlById.get(r.property_id) || null,
         property: {

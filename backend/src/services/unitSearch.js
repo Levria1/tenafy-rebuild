@@ -54,7 +54,14 @@ async function searchUnits(pool, criteria = {}) {
     sortBy = 'vacancy_gap',
     limit = 10,
     baseUrl = null,
+    // When true (default), a unit that is occupied RIGHT NOW is only offerable
+    // if its current lease ends before the move-in date AND the tenant is Not
+    // Renewing (contract_type=3). Empty-now units are always offerable. This
+    // stops us advertising "May Renew" units that probably won't free up.
+    excludeRenewing = true,
   } = criteria;
+  const NR_CONTRACT = 3; // contract_type: Not Renewing
+  const todayStr = new Date().toISOString().split('T')[0];
 
   let where = 'p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL AND u.active_status = 1 AND u.deleted_at IS NULL';
   const params = [orgId];
@@ -72,6 +79,28 @@ async function searchUnits(pool, criteria = {}) {
 
   // Candidate units with last-lease (pricing/availability) + next-lease data.
   // "Available on moveIn" = no active lease covers that day.
+  // today_lease = the lease occupying the unit RIGHT NOW (one row/unit). Used to
+  // exclude currently-occupied units whose lease ends before move-in but whose
+  // tenant might renew (only contract_type=3 / Not Renewing is offerable).
+  const todayJoin = excludeRenewing ? `
+     LEFT JOIN (
+       SELECT t1.unit_id, t1.end_date, t1.contract_type
+       FROM leasing t1
+       INNER JOIN (
+         SELECT unit_id, MAX(start_date) AS max_start FROM leasing
+         WHERE deleted_at IS NULL AND start_date <= ? AND (end_date >= ? OR end_date IS NULL)
+         GROUP BY unit_id
+       ) t2 ON t1.unit_id = t2.unit_id AND t1.start_date = t2.max_start
+       WHERE t1.deleted_at IS NULL
+     ) today_lease ON today_lease.unit_id = u.id` : '';
+  const renewClause = excludeRenewing ? `
+       AND (
+         today_lease.unit_id IS NULL          -- empty now → offerable
+         OR today_lease.end_date IS NULL       -- ongoing (also covered by active_lease)
+         OR today_lease.end_date >= ?          -- still occupied at move-in (also covered by active_lease)
+         OR today_lease.contract_type = ${NR_CONTRACT}  -- ends before move-in AND Not Renewing → offerable
+       )` : '';
+
   const [rows] = await pool.execute(
     `SELECT u.id AS unit_id, u.name AS unit_name, u.beds, u.baths,
             u.size, u.size_unit, u.deposit_price, u.rent_price_min, u.rent_price_max,
@@ -85,7 +114,7 @@ async function searchUnits(pool, criteria = {}) {
      JOIN property p ON u.property_id = p.id
      LEFT JOIN leasing active_lease
        ON active_lease.unit_id = u.id AND active_lease.deleted_at IS NULL
-       AND active_lease.start_date <= ? AND (active_lease.end_date >= ? OR active_lease.end_date IS NULL)
+       AND active_lease.start_date <= ? AND (active_lease.end_date >= ? OR active_lease.end_date IS NULL)${todayJoin}
      LEFT JOIN (
        SELECT l1.unit_id, l1.price, l1.end_date
        FROM leasing l1
@@ -101,8 +130,14 @@ async function searchUnits(pool, criteria = {}) {
        WHERE deleted_at IS NULL AND start_date > ?
        GROUP BY unit_id
      ) next_lease ON next_lease.unit_id = u.id
-     WHERE ${where} AND active_lease.id IS NULL`,
-    [moveIn, moveIn, moveIn, ...params]
+     WHERE ${where} AND active_lease.id IS NULL${renewClause}`,
+    [
+      moveIn, moveIn,
+      ...(excludeRenewing ? [todayStr, todayStr] : []),
+      moveIn,
+      ...params,
+      ...(excludeRenewing ? [moveIn] : []),
+    ]
   );
 
   // If a move-out is set, drop units whose next lease starts before it.
@@ -191,6 +226,12 @@ async function searchUnits(pool, criteria = {}) {
       availableFrom = out.toISOString().split('T')[0];
       vacancyGapDays = Math.max(0, Math.round((today - new Date(currentMoveOut)) / 86400000));
     }
+    // Forward vacancy gap: empty days from TODAY (or from when the unit frees
+    // up, whichever is later) until the prospect's move-in. Vacancy already
+    // incurred before today is sunk cost and NOT counted. This is the number the
+    // gap-tolerance-by-reservation-length policy should be judged against.
+    const gapFromTs = Math.max(realToday.getTime(), new Date(availableFrom).getTime());
+    const forwardGapDays = Math.max(0, Math.round((new Date(moveIn).getTime() - gapFromTs) / 86400000));
     const addressParts = [r.street_address, r.district, r.city, r.state, r.zip_code, r.country]
       .map(s => (s == null ? '' : String(s).trim())).filter(Boolean);
     const monthlyRent = r.last_lease_price != null ? Number(r.last_lease_price)
@@ -221,6 +262,7 @@ async function searchUnits(pool, criteria = {}) {
       available_from: availableFrom,
       current_move_out: currentMoveOut,
       vacancy_gap_days: vacancyGapDays,
+      forward_gap_days: forwardGapDays,
       lease_duration_days: leaseDurationDays,
       days_until_available: Math.round((new Date(availableFrom) - realToday) / 86400000),
       over_budget_by: (budget != null && !Number.isNaN(budget) && monthlyRent != null)
