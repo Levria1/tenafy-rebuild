@@ -23,7 +23,11 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requirePermission } = require('../middleware/auth');
+// Xero write actions (approve to ledger, mapping, rules, connect/disconnect)
+// require the same permission as creating a manual accounting entry, so the
+// Approve button can't bypass role checks. Read routes stay authenticate-only.
+const RECONCILE_PERM = 'LANDLORD/ACCOUNTING_CREATE';
 const xeroClient = require('../services/xeroClient');
 const xeroSync = require('../services/xeroSync');
 const { generateSequenceCode } = require('../utils/sequenceCode');
@@ -67,7 +71,7 @@ function fail(res, msg, s = 500) { return res.status(s).json({ code: s, message:
 // Authenticated. Builds Xero consent URL with CSRF state, 302s the browser
 // to Xero. The browser arrives at Xero with the auth code after consent.
 // ───────────────────────────────────────────────────────────────────────────
-router.get('/connect', authenticate, async (req, res) => {
+router.get('/connect', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const state = _signState(orgId);
@@ -384,7 +388,7 @@ router.get('/balances', authenticate, async (req, res) => {
 // time (clears old rows then re-inserts) — simpler than per-row PATCH and
 // the dataset is tiny (<20 rows per org).
 // ───────────────────────────────────────────────────────────────────────────
-router.post('/accounts/map', authenticate, async (req, res) => {
+router.post('/accounts/map', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   const orgId = req.user.orgId;
   const mappings = Array.isArray(req.body?.mappings) ? req.body.mappings : null;
   if (!mappings) return fail(res, 'Body must include `mappings` array', 400);
@@ -447,7 +451,7 @@ router.post('/accounts/map', authenticate, async (req, res) => {
 // the user can revoke from their Xero Connected Apps settings if they want
 // a full kill).
 // ───────────────────────────────────────────────────────────────────────────
-router.post('/disconnect', authenticate, async (req, res) => {
+router.post('/disconnect', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     await xeroClient.deleteConnection(req.pool, req.user.orgId);
     return ok(res, { disconnected: true });
@@ -473,7 +477,7 @@ router.post('/disconnect', authenticate, async (req, res) => {
 // can be 30+ API calls). The frontend should show a spinner and disable the
 // button until the response returns.
 // ───────────────────────────────────────────────────────────────────────────
-router.post('/sync', authenticate, async (req, res) => {
+router.post('/sync', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     // Bail if not connected — nicer error than the internal "no connection" throw.
@@ -784,6 +788,32 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
         throw e;
       }
       const newAcctId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+
+      // Optional CATEGORY SPLIT: overrides.lines = [{ amount, category_id }, ...].
+      // When provided, the entry is split into one accounting_line per category
+      // (they must sum to the transaction total). Otherwise it's a single line.
+      let splitLines = null;
+      if (Array.isArray(overrides.lines) && overrides.lines.length) {
+        splitLines = overrides.lines
+          .map(l => ({ amount: Math.abs(Number(l.amount) || 0), category_id: l.category_id ? String(l.category_id) : null }))
+          .filter(l => l.amount > 0);
+        if (!splitLines.length) splitLines = null;
+      }
+      if (splitLines) {
+        const sum = splitLines.reduce((s, l) => s + l.amount, 0);
+        if (Math.abs(sum - amount) > 0.01) {
+          await conn.rollback();
+          const e = new Error(`Split lines must sum to the transaction total (HK$${amount.toFixed(2)}); got HK$${sum.toFixed(2)}.`);
+          e.httpStatus = 400;
+          throw e;
+        }
+      }
+      // Header category: the single category, or null when split across many
+      // (matches how the manual multi-line entry stores it — "Multiple").
+      const headerCategory = splitLines
+        ? (splitLines.length === 1 ? splitLines[0].category_id : null)
+        : (categoryId || null);
+
       // accounting.transaction_code is NOT NULL with no default — generate one
       // from the org's sequence (same as the manual accounting create). Run it
       // on `conn` so the FOR UPDATE lock lives inside this approve transaction.
@@ -795,15 +825,19 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
              amount, note, type, payment_date, invoice_code,
              transaction_code, xero_transaction_id, reconciliation_status, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
-        [newAcctId, orgId, tenantId || null, null, categoryId || null, accountId,
+        [newAcctId, orgId, tenantId || null, null, headerCategory, accountId,
          currencyId, currencyType,
          amount, note, isOutflow, p.transaction_date, null, transactionCode, p.xero_transaction_id]
       );
-      const lineId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
-      await conn.execute(
-        `INSERT INTO accounting_line (id, accounting_id, amount, category, created_at) VALUES (?, ?, ?, ?, NOW())`,
-        [lineId, newAcctId, amount, categoryId || null]
-      );
+      // One accounting_line per split line, or a single line for the whole amount.
+      const lineRows = splitLines || [{ amount, category_id: categoryId || null }];
+      for (const l of lineRows) {
+        const lineId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+        await conn.execute(
+          `INSERT INTO accounting_line (id, accounting_id, amount, category, created_at) VALUES (?, ?, ?, ?, NOW())`,
+          [lineId, newAcctId, l.amount, l.category_id]
+        );
+      }
       resultingId = newAcctId;
 
       if (p.match_kind === 'invoice_payment' && invoiceId) {
@@ -836,7 +870,7 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
   }
 }
 
-router.post('/pending/:id/approve', authenticate, async (req, res) => {
+router.post('/pending/:id/approve', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     const resultingId = await commitPendingRow(req.pool, req.user.orgId, req.user.id, req.params.id, req.body || {});
     return ok(res, { resulting_accounting_id: resultingId });
@@ -849,7 +883,7 @@ router.post('/pending/:id/approve', authenticate, async (req, res) => {
 // Bulk approve — body { items: [{ id, account_id?, category_id?, invoice_id?,
 // tenant_id?, accounting_id? }] } OR { ids: [...] } using proposed values.
 // Each row commits in its own transaction; failures don't block the rest.
-router.post('/pending/bulk-approve', authenticate, async (req, res) => {
+router.post('/pending/bulk-approve', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const userId = req.user.id;
@@ -878,7 +912,7 @@ router.post('/pending/bulk-approve', authenticate, async (req, res) => {
 });
 
 // Bulk skip — body { ids: [...] }. Marks each pending row skipped.
-router.post('/pending/bulk-skip', authenticate, async (req, res) => {
+router.post('/pending/bulk-skip', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const userId = req.user.id;
@@ -903,7 +937,7 @@ router.post('/pending/bulk-skip', authenticate, async (req, res) => {
 // Mark a pending row as skipped (won't be re-proposed on next sync unless
 // the user wipes the staging row manually).
 // ───────────────────────────────────────────────────────────────────────────
-router.post('/pending/:id/skip', authenticate, async (req, res) => {
+router.post('/pending/:id/skip', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const userId = req.user.id;
@@ -955,7 +989,7 @@ router.get('/rules', authenticate, async (req, res) => {
 });
 
 // POST /rules — create. Body: { description_pattern, category_id, priority?, enabled? }
-router.post('/rules', authenticate, async (req, res) => {
+router.post('/rules', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const b = req.body || {};
@@ -981,7 +1015,7 @@ router.post('/rules', authenticate, async (req, res) => {
 });
 
 // PUT /rules/:id — update. Body: any subset of { description_pattern, category_id, priority, enabled }
-router.put('/rules/:id', authenticate, async (req, res) => {
+router.put('/rules/:id', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const b = req.body || {};
@@ -1007,7 +1041,7 @@ router.put('/rules/:id', authenticate, async (req, res) => {
 });
 
 // DELETE /rules/:id
-router.delete('/rules/:id', authenticate, async (req, res) => {
+router.delete('/rules/:id', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
   try {
     const [r] = await req.pool.execute(
       'DELETE FROM xero_category_rule WHERE id = ? AND org_id = ?',
