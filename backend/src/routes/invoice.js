@@ -375,24 +375,17 @@ router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE
     // Auto-generate invoice_code — skips codes with orphaned accounting_line records
     const code = await generateInvoiceCode(req.pool, orgId);
 
-    // Resolve category: if not provided, copy from the most recent invoice for the same lease,
-    // or fall back to the first "Rental Income" category for the org
+    // Resolve category: the publish button always creates the next recurring RENT
+    // invoice, so it must always be "Rental Income" — never copy the category from
+    // the most recent invoice (which could be a deposit/utility/other charge and
+    // would wrongly carry over). An explicit category in the body still wins.
     let catId = category || null;
     if (!catId) {
-      const [[prevInv]] = await req.pool.execute(
-        'SELECT category FROM invoice WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL ORDER BY due_on DESC LIMIT 1',
-        [leasing_id, orgId]
+      const [[rentalCat]] = await req.pool.execute(
+        "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1",
+        [orgId]
       );
-      if (prevInv && prevInv.category) {
-        catId = prevInv.category;
-      } else {
-        // Fall back to "Rental Income" category
-        const [[rentalCat]] = await req.pool.execute(
-          "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1",
-          [orgId]
-        );
-        if (rentalCat) catId = rentalCat.id;
-      }
+      if (rentalCat) catId = rentalCat.id;
     }
 
     // Resolve currency
