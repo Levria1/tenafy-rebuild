@@ -16,6 +16,7 @@ const {
   sendTemplateEmail,
   loadTemplate,
 } = require('../services/emailService');
+const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCalendarWebhook');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
@@ -976,6 +977,13 @@ router.post('/', authenticate, async (req, res) => {
     }
 
     await logActivity(req, 'CREATE', 'lease', leaseId.toString(), 'Created lease ' + (leaseNo || leaseId.toString()));
+
+    // Push to WordPress calendar — only for active leases (pending drafts don't
+    // touch the public calendar until confirmed). Fire-and-forget.
+    if (leaseState === 'active') {
+      notifyLeaseBlocked(req.pool, orgId, leaseId.toString());
+    }
+
     res.json({ code: 200, message: 'Lease created', data: { id: leaseId.toString(), lease_no: leaseNo } });
   } catch (error) {
     console.error('Create lease error:', error);
@@ -1278,6 +1286,9 @@ router.post('/:id/confirm', authenticate, async (req, res) => {
       );
     }
 
+    // Pending -> active: now block the WordPress calendar. Fire-and-forget.
+    notifyLeaseBlocked(req.pool, orgId, id);
+
     res.json({ code: 200, message: 'Lease confirmed', data: { id } });
   } catch (err) {
     console.error('Confirm lease error:', err);
@@ -1289,6 +1300,7 @@ router.post('/:id/confirm', authenticate, async (req, res) => {
 router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
+    const orgId = req.user.orgId;
     const [leases] = await req.pool.execute('SELECT unit_id FROM leasing WHERE id = ?', [id]);
     if (leases.length > 0) {
       await req.pool.execute('UPDATE unit SET status = 0 WHERE id = ?', [leases[0].unit_id]);
@@ -1296,6 +1308,11 @@ router.delete('/:id', authenticate, async (req, res) => {
     await req.pool.execute('DELETE FROM leasing_additional_tenant WHERE leasing_id = ?', [id]);
     await req.pool.execute('UPDATE leasing SET deleted_at = NOW() WHERE id = ?', [id]);
     await logActivity(req, 'DELETE', 'lease', id, 'Deleted lease ' + id);
+
+    // Free the WordPress calendar dates. Fired after the soft-delete; the row is
+    // still readable (loadLease ignores deleted_at). Fire-and-forget.
+    notifyLeaseCancelled(req.pool, orgId, id);
+
     res.json({ code: 200, message: 'Lease deleted' });
   } catch (error) {
     console.error('Delete lease error:', error);
