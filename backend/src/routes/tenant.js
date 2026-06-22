@@ -537,7 +537,9 @@ router.get('/:id/leases', authenticate, async (req, res) => {
       else if (end && end < today) lease.lease_status = 0; // inactive/past
       else lease.lease_status = 1; // active
 
-      if (lease.lease_status === 1 && lease.invoicing) {
+      // Compute next_invoice_date for active (1) AND upcoming (2) leases so staff
+      // can publish invoices for leases that haven't started yet.
+      if ((lease.lease_status === 1 || lease.lease_status === 2) && lease.invoicing) {
         const [[lastInv]] = rentalCatId
           ? await req.pool.execute(
               'SELECT due_on FROM invoice WHERE leasing_id = ? AND deleted_at IS NULL AND category = ? ORDER BY due_on DESC LIMIT 1',
