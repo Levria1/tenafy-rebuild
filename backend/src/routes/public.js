@@ -774,6 +774,103 @@ router.get('/tenants', async (req, res) => {
   }
 });
 
+// GET /api/public/tenants/lookup?phone=<number>
+// Classify a phone number: does it belong to an EXISTING tenant (current active
+// lease), a FUTURE tenant (upcoming lease), a PAST tenant, or a prospect (tenant
+// record but no lease) — or is it UNKNOWN (no match)?
+//
+// Matching is digit-only, last-8-suffix, so "+852 9028 6718", "85290286718" and
+// "90286718" all match the same stored number (HK local length = 8).
+//
+// Response data: {
+//   matched, classification: existing|future|past|prospect|unknown, count,
+//   tenants: [{ tenant_id, name, type, classification,
+//               lease: { lease_no, status, unit, property, start_date, end_date } | null }]
+// }
+// NOTE: must be defined BEFORE '/tenants/:id' (static-before-dynamic).
+router.get('/tenants/lookup', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const digits = String(req.query.phone || '').replace(/\D/g, '');
+    if (digits.length < 7) {
+      return fail(res, 'Query param "phone" must contain at least 7 digits.', 400);
+    }
+    const lastN = Math.min(8, digits.length);
+    const suffix = digits.slice(-lastN);
+
+    const [tenants] = await req.pool.execute(
+      `SELECT id, first_name, last_name, company_name, type
+         FROM tenant
+        WHERE org_id = ? AND category = 1
+          AND phone IS NOT NULL AND phone <> ''
+          AND RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), ?) = ?`,
+      [orgId, lastN, suffix]
+    );
+
+    if (tenants.length === 0) {
+      return ok(res, { matched: false, classification: 'unknown', count: 0, tenants: [] });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const asDate = (d) => d ? (typeof d === 'string' ? d.slice(0, 10) : new Date(d).toISOString().slice(0, 10)) : null;
+    const leaseStatus = (l) => {
+      const s = asDate(l.start_date), e = asDate(l.end_date);
+      if (s && s > today) return 'upcoming';
+      if (e && e < today) return 'past';
+      return 'active';
+    };
+    const rank = { active: 3, upcoming: 2, past: 1 };          // most-relevant lease
+    const classOf = { active: 'existing', upcoming: 'future', past: 'past' };
+    const topRank = { existing: 3, future: 2, past: 1, prospect: 0, unknown: -1 };
+
+    const out = [];
+    for (const t of tenants) {
+      const [leases] = await req.pool.execute(
+        `SELECT l.lease_no, l.start_date, l.end_date,
+                u.name AS unit_name, p.display_name AS property_name
+           FROM leasing l
+           LEFT JOIN unit u ON l.unit_id = u.id
+           LEFT JOIN property p ON u.property_id = p.id
+          WHERE l.tenant_id = ? AND l.deleted_at IS NULL
+          ORDER BY l.start_date DESC`,
+        [t.id]
+      );
+      let best = null, bestStatus = null;
+      for (const l of leases) {
+        const st = leaseStatus(l);
+        if (!best || rank[st] > rank[bestStatus]) { best = l; bestStatus = st; }
+      }
+      const classification = best ? classOf[bestStatus] : 'prospect';
+      const name = Number(t.type) === 1
+        ? (t.company_name || null)
+        : ([t.first_name, t.last_name].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim() || null);
+      out.push({
+        tenant_id: String(t.id),
+        name,
+        type: Number(t.type) === 1 ? 'company' : 'person',
+        classification,
+        lease: best ? {
+          lease_no: best.lease_no || null,
+          status: bestStatus,
+          unit: best.unit_name || null,
+          property: best.property_name || null,
+          start_date: asDate(best.start_date),
+          end_date: asDate(best.end_date),
+        } : null,
+      });
+    }
+
+    const classification = out.reduce(
+      (acc, t) => (topRank[t.classification] > topRank[acc] ? t.classification : acc),
+      'unknown'
+    );
+    ok(res, { matched: true, classification, count: out.length, tenants: out });
+  } catch (error) {
+    console.error('Public tenant lookup error:', error);
+    fail(res, 'Failed to look up tenant');
+  }
+});
+
 // GET /api/public/tenants/:id
 router.get('/tenants/:id', async (req, res) => {
   try {
