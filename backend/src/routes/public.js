@@ -774,13 +774,16 @@ router.get('/tenants', async (req, res) => {
   }
 });
 
-// GET /api/public/tenants/lookup?phone=<number>
-// Classify a phone number: does it belong to an EXISTING tenant (current active
-// lease), a FUTURE tenant (upcoming lease), a PAST tenant, or a prospect (tenant
-// record but no lease) — or is it UNKNOWN (no match)?
+// GET /api/public/tenants/lookup?phone=<number>   OR   ?email=<address>
+// Classify a contact: does the phone/email belong to an EXISTING tenant (current
+// active lease), a FUTURE tenant (upcoming lease), a PAST tenant, or a prospect
+// (tenant record but no lease) — or is it UNKNOWN (no match)?
 //
-// Matching is digit-only, last-8-suffix, so "+852 9028 6718", "85290286718" and
-// "90286718" all match the same stored number (HK local length = 8).
+// Pass EITHER `phone` or `email` (if both are given, `email` wins):
+//   - phone: digit-only, last-8-suffix match, so "+852 9028 6718", "85290286718"
+//     and "90286718" all match the same stored number (HK local length = 8).
+//   - email: case-insensitive, trimmed, exact match against the tenant's primary
+//     OR secondary email on file.
 //
 // Response data: {
 //   matched, classification: existing|future|past|prospect|unknown, count,
@@ -791,21 +794,33 @@ router.get('/tenants', async (req, res) => {
 router.get('/tenants/lookup', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
+    const email = String(req.query.email || '').trim().toLowerCase();
     const digits = String(req.query.phone || '').replace(/\D/g, '');
-    if (digits.length < 7) {
-      return fail(res, 'Query param "phone" must contain at least 7 digits.', 400);
-    }
-    const lastN = Math.min(8, digits.length);
-    const suffix = digits.slice(-lastN);
 
-    const [tenants] = await req.pool.execute(
-      `SELECT id, first_name, last_name, company_name, type
-         FROM tenant
-        WHERE org_id = ? AND category = 1
-          AND phone IS NOT NULL AND phone <> ''
-          AND RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), ?) = ?`,
-      [orgId, lastN, suffix]
-    );
+    let tenants;
+    if (email) {
+      // Exact, case-insensitive match against primary OR secondary email.
+      [tenants] = await req.pool.execute(
+        `SELECT id, first_name, last_name, company_name, type
+           FROM tenant
+          WHERE org_id = ? AND category = 1
+            AND ( LOWER(TRIM(email)) = ? OR LOWER(TRIM(secondary_email)) = ? )`,
+        [orgId, email, email]
+      );
+    } else if (digits.length >= 7) {
+      const lastN = Math.min(8, digits.length);
+      const suffix = digits.slice(-lastN);
+      [tenants] = await req.pool.execute(
+        `SELECT id, first_name, last_name, company_name, type
+           FROM tenant
+          WHERE org_id = ? AND category = 1
+            AND phone IS NOT NULL AND phone <> ''
+            AND RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), ?) = ?`,
+        [orgId, lastN, suffix]
+      );
+    } else {
+      return fail(res, 'Provide a "phone" (>= 7 digits) or "email" query param.', 400);
+    }
 
     if (tenants.length === 0) {
       return ok(res, { matched: false, classification: 'unknown', count: 0, tenants: [] });
