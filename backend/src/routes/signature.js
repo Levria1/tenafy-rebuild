@@ -58,7 +58,11 @@ async function sendSignatureInvite(pool, orgId, { leaseId, party, link, message,
 
   let tpl = null;
   try { tpl = await loadTemplate(pool, orgId, 'Lease-Signature-Request'); } catch { /* ignore */ }
-  if (tpl) {
+  // Only use the org template if it actually renders the signing link. A template
+  // without %Signing Link% would email the signer with NO way to sign — so in
+  // that case we skip it and use the built-in fallback (which always includes the
+  // Review & Sign button).
+  if (tpl && String(tpl.template_content || '').includes('%Signing Link%')) {
     try {
       const sent = await sendTemplateEmail(pool, orgId, {
         templateType: 'Lease-Signature-Request',
@@ -70,6 +74,8 @@ async function sendSignatureInvite(pool, orgId, { leaseId, party, link, message,
     } catch (e) {
       console.error('[signature] template invite failed, using fallback:', e.message);
     }
+  } else if (tpl) {
+    console.warn('[signature] Lease-Signature-Request template is missing %Signing Link% — using built-in fallback so the signer gets a working link.');
   }
 
   // Built-in fallback
