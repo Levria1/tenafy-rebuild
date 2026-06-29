@@ -16,6 +16,7 @@ const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 const KIND_LINK = 1;    // shareable per-unit URL (vbk_ prefix)
 const KIND_ACTION = 2;  // tenant / employee approve or decline token
 const KIND_MANAGE = 3;  // viewer self-cancel token
+const KIND_INVITE = 4;  // per-prospect prefilled, short-lived link (vbi_ prefix)
 
 async function lookupToken(token, kinds) {
   if (!token || typeof token !== 'string') return null;
@@ -62,12 +63,15 @@ function attachOrgPoolMiddleware(kinds) {
 const resolveOrgByViewingToken = attachOrgPoolMiddleware([KIND_LINK]);
 const resolveOrgByActionToken = attachOrgPoolMiddleware([KIND_ACTION]);
 const resolveOrgByManageToken = attachOrgPoolMiddleware([KIND_MANAGE]);
+const resolveOrgByInviteToken = attachOrgPoolMiddleware([KIND_INVITE]);
 
 module.exports = {
   KIND_LINK,
   KIND_ACTION,
   KIND_MANAGE,
+  KIND_INVITE,
   resolveOrgByViewingToken,
   resolveOrgByActionToken,
   resolveOrgByManageToken,
+  resolveOrgByInviteToken,
 };

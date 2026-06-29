@@ -1,8 +1,12 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const { authenticateApiKey } = require('../middleware/apiKeyAuth');
 const inquiryExtractor = require('../services/inquiryExtractor');
 const { searchUnits } = require('../services/unitSearch');
+const { getMasterPool } = require('../config/poolRegistry');
+const { KIND_INVITE } = require('../middleware/viewingTokenAuth');
+const config = require('../config');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
 // The middleware attaches req.pool (scoped to the caller's org DB) and
@@ -33,6 +37,93 @@ router.get('/health', (req, res) => {
     key_name: req.apiKey.name,
     timestamp: new Date().toISOString(),
   });
+});
+
+// ────────────────────────────────────────────────────────────────
+// VIEWINGS — per-prospect booking link (TaneChat calls this)
+// ────────────────────────────────────────────────────────────────
+
+// POST /api/public/viewing-link
+// The bot resolves the unit + extracts the prospect's preferred day, then calls
+// this. We state-gate (unit must be open for viewings), mint a per-prospect,
+// short-lived, prefilled link, and return it for the bot to send.
+//
+// Body: { unit_id, desired_date?: 'YYYY-MM-DD', prospect?: {name,phone,email} }
+// → 200 { available:true, url, token, expires_at, prefill_date, unit:{...} }
+// → 200 { available:false, reason:'not_marketing'|'unit_not_found' }
+router.post('/viewing-link', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const { unit_id, desired_date } = req.body || {};
+    const prospect = (req.body && req.body.prospect) || {};
+    if (!unit_id) return fail(res, 'unit_id is required', 400);
+
+    // Resolve unit + property (org-scoped, active only).
+    const [[unit]] = await req.pool.execute(
+      `SELECT u.id, u.name AS unit_name, u.property_id, p.display_name AS property_name
+         FROM unit u JOIN property p ON u.property_id = p.id
+        WHERE u.id = ? AND p.org_id = ? AND u.active_status = 1 AND (u.deleted_at IS NULL)
+        LIMIT 1`,
+      [unit_id, orgId]
+    );
+    if (!unit) return ok(res, { available: false, reason: 'unit_not_found' });
+
+    // State gate: open for viewings = the unit's current (departing) lease has
+    // viewing_enabled=1 and hasn't ended. Closes automatically once re-leased.
+    const [[lease]] = await req.pool.execute(
+      `SELECT id, viewing_enabled FROM leasing
+        WHERE unit_id = ? AND deleted_at IS NULL
+          AND start_date <= CURDATE() AND (end_date >= CURDATE() OR end_date IS NULL)
+        ORDER BY start_date DESC LIMIT 1`,
+      [unit_id]
+    );
+    if (!lease || !Number(lease.viewing_enabled)) {
+      return ok(res, { available: false, reason: 'not_marketing',
+        message: 'This unit is not open for viewings right now.' });
+    }
+
+    // Assigned host: the unit's active staff-generated link's employee, if any.
+    const [[link]] = await req.pool.execute(
+      `SELECT employee_id FROM viewing_link
+        WHERE unit_id = ? AND status = 1 AND employee_id IS NOT NULL
+        ORDER BY created_at DESC LIMIT 1`,
+      [unit_id]
+    );
+
+    const prefillDate = (typeof desired_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(desired_date))
+      ? desired_date : null;
+
+    // Mint the per-prospect invite (7-day TTL) + register the token for org resolution.
+    const token = 'vbi_' + crypto.randomBytes(24).toString('hex');
+    const inviteId = newId();
+    await req.pool.execute(
+      `INSERT INTO viewing_invite
+         (id, token, unit_id, property_id, employee_id, leasing_id,
+          prospect_name, prospect_phone, prospect_email, prefill_date, expires_at, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 7 DAY), 1, NOW())`,
+      [inviteId, token, unit_id, unit.property_id, link ? link.employee_id : null, lease.id,
+       (prospect.name || '').trim() || null, (prospect.phone || '').trim() || null,
+       (prospect.email || '').trim() || null, prefillDate]
+    );
+    await getMasterPool().execute(
+      `INSERT INTO viewing_link_registry (token, org_id, kind, status) VALUES (?, ?, ?, 1)`,
+      [token, String(orgId), KIND_INVITE]
+    );
+
+    const base = (config.frontendUrl || '').replace(/\/$/, '');
+    const [[row]] = await req.pool.execute('SELECT expires_at FROM viewing_invite WHERE id = ?', [inviteId]);
+    return ok(res, {
+      available: true,
+      url: `${base}/book/viewing/invite/${token}`,
+      token,
+      prefill_date: prefillDate,
+      expires_at: row ? row.expires_at : null,
+      unit: { id: String(unit.id), name: unit.unit_name, property: unit.property_name },
+    });
+  } catch (err) {
+    console.error('Public viewing-link error:', err);
+    fail(res, 'Failed to create viewing link');
+  }
 });
 
 // ────────────────────────────────────────────────────────────────
