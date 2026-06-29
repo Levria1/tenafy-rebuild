@@ -197,7 +197,12 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
           console.log(`[Scheduler] Created invoice ${invoiceCode} for lease ${lease.id} (due ${nextDueDateStr})`);
 
           try {
-            await sendInvoiceToTenant(pool, orgId, lease.id, { invoiceId, invoiceCode, category: catId, dueDate: nextDueDate });
+            // NOTE: the TENANT reminder is intentionally NOT sent here. Invoices
+            // are generated ~one cycle (≈30 days) ahead of their due date, which
+            // is far too early to nudge the tenant. The tenant reminder is sent
+            // closer to the due date by sendUpcomingInvoiceRemindersForOrg (see
+            // the daily "upcoming invoice reminders" job). The landlord notice
+            // still fires at generation so owners see invoices as they're raised.
             await sendInvoiceToLandlord(pool, orgId, lease.id, { invoiceId, invoiceCode, category: catId, dueDate: nextDueDate });
           } catch (emailErr) {
             console.error(`[Scheduler] Invoice email error for ${invoiceCode}:`, emailErr.message);
@@ -285,6 +290,81 @@ async function sendLeaseExpiryForOrg(pool, orgId) {
 
   if (sent > 0) await createNotification(pool, { orgId, type: 'info', title: `${sent} lease expiry notice(s) sent`, message: details.slice(0, 3).join(', '), link: '/leasing' });
   if (failures > 0) await createNotification(pool, { orgId, type: 'warning', title: `${failures} expiry email(s) failed`, message: 'Check tenant emails and SMTP config.', link: '/leasing' });
+}
+
+// ---------------------------------------------------------------------------
+// Job 2b: Upcoming invoice reminders (per org)
+// Sends the tenant the Invoice-Tenant reminder a configurable number of days
+// BEFORE the due date — instead of at generation time (≈30 days early). The
+// lead time is read from the Invoice-Tenant template's `date_first` (and an
+// optional second nudge from `date_second`); it defaults to 7 days when unset.
+// Runs daily and matches on an EXACT day offset (DATEDIFF == lead), so each
+// invoice is reminded exactly once per offset with no dedup bookkeeping.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_INVOICE_REMINDER_LEAD = 7;
+
+async function sendUpcomingInvoiceRemindersForOrg(pool, orgId) {
+  // Rent category — only rent invoices get the courtesy reminder (mirrors what
+  // the generation job used to send). Deposits / stamp duty etc. are excluded.
+  const [[rentalCat]] = await pool.execute(
+    "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1", [orgId]
+  );
+  if (!rentalCat) return;
+  const catId = rentalCat.id;
+
+  // Lead time(s) from the Invoice-Tenant template, default 7. A second nudge
+  // fires only if date_second is set and differs from date_first.
+  let leadDays = DEFAULT_INVOICE_REMINDER_LEAD;
+  let secondLead = null;
+  try {
+    const [[tpl]] = await pool.execute(
+      `SELECT date_first, date_second FROM email_template
+       WHERE org_id = ? AND template_type = 'Invoice-Tenant' AND status = 1
+       ORDER BY is_default_template DESC, created_time DESC LIMIT 1`,
+      [orgId]
+    );
+    if (tpl) {
+      if (Number(tpl.date_first) > 0) leadDays = Number(tpl.date_first);
+      if (Number(tpl.date_second) > 0) secondLead = Number(tpl.date_second);
+    }
+  } catch (err) {
+    console.error(`[Scheduler][upcomingReminders][org:${orgId}] template lookup failed, using default ${leadDays}d:`, err.message);
+  }
+
+  const offsets = [...new Set([leadDays, secondLead].filter(n => Number(n) > 0))];
+
+  const [invoices] = await pool.execute(
+    `SELECT i.id, i.invoice_code, i.leasing_id, i.due_on, DATEDIFF(i.due_on, CURDATE()) AS days_until
+       FROM invoice i
+       JOIN tenant t ON i.tenant_id = t.id
+      WHERE i.org_id = ? AND i.status = 0 AND i.deleted_at IS NULL
+        AND i.category = ? AND i.leasing_id IS NOT NULL
+        AND DATEDIFF(i.due_on, CURDATE()) IN (${offsets.map(() => '?').join(',')})`,
+    [orgId, catId, ...offsets]
+  );
+
+  if (invoices.length === 0) return;
+  let sent = 0, failures = 0;
+
+  for (const inv of invoices) {
+    try {
+      await sendInvoiceToTenant(pool, orgId, inv.leasing_id, {
+        invoiceId: inv.id,
+        invoiceCode: inv.invoice_code,
+        category: catId,
+        dueDate: new Date(inv.due_on),
+      });
+      sent++;
+    } catch (err) {
+      failures++;
+      console.error(`[Scheduler][upcomingReminders] Error for ${inv.invoice_code}:`, err.message);
+    }
+  }
+
+  if (sent > 0) {
+    await createNotification(pool, { orgId, type: 'info', title: `${sent} upcoming invoice reminder(s) sent`, message: `Reminded tenants of invoice(s) due in ${offsets.join('/')} day(s).`, link: '/invoices' });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -826,6 +906,12 @@ function startScheduler() {
   cron.schedule('0 8 * * *', () => {
     console.log('[Scheduler] Checking for expiring leases...');
     runForAllOrgs('leaseExpiry', sendLeaseExpiryForOrg);
+  });
+
+  // Daily at 09:30 - upcoming invoice reminders (N days before due, per template date_first; default 7)
+  cron.schedule('30 9 * * *', () => {
+    console.log('[Scheduler] Sending upcoming invoice reminders...');
+    runForAllOrgs('upcomingInvoiceReminders', sendUpcomingInvoiceRemindersForOrg);
   });
 
   // Every Monday at 09:00 - overdue reminders
