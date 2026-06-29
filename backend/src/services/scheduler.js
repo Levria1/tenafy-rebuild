@@ -309,7 +309,7 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
     try {
       let emailSent = false;
       if (inv.leasing_id) {
-        const templateResult = await sendOverdueToTenant(pool, orgId, inv.leasing_id, { dueDate: inv.due_on, overdueAmount: inv.amount });
+        const templateResult = await sendOverdueToTenant(pool, orgId, inv.leasing_id, { dueDate: inv.due_on, overdueAmount: inv.amount, invoiceId: inv.id, invoiceCode: inv.invoice_code });
         if (templateResult) emailSent = true;
       }
       if (!emailSent) {

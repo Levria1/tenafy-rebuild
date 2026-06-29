@@ -832,7 +832,7 @@ async function sendInvoiceToLandlord(pool, orgId, leaseId, { invoiceId, invoiceC
   });
 }
 
-async function sendOverdueToTenant(pool, orgId, leaseId, { dueDate, overdueAmount } = {}) {
+async function sendOverdueToTenant(pool, orgId, leaseId, { dueDate, overdueAmount, invoiceId, invoiceCode } = {}) {
   const shouldSend = await shouldSendEmail(pool, leaseId, 'Overdue-Tenant');
   if (!shouldSend) return null;
   return sendTemplateEmail(pool, orgId, {
@@ -840,10 +840,12 @@ async function sendOverdueToTenant(pool, orgId, leaseId, { dueDate, overdueAmoun
     leaseId,
     dueDate,
     overdueAmount,
+    invoiceId,
+    invoiceCode,
   });
 }
 
-async function sendOverdueToLandlord(pool, orgId, leaseId, { dueDate, overdueAmount } = {}) {
+async function sendOverdueToLandlord(pool, orgId, leaseId, { dueDate, overdueAmount, invoiceId, invoiceCode } = {}) {
   const shouldSend = await shouldSendEmail(pool, leaseId, 'Overdue-Landlord');
   if (!shouldSend) return null;
   return sendTemplateEmail(pool, orgId, {
@@ -851,6 +853,8 @@ async function sendOverdueToLandlord(pool, orgId, leaseId, { dueDate, overdueAmo
     leaseId,
     dueDate,
     overdueAmount,
+    invoiceId,
+    invoiceCode,
   });
 }
 
