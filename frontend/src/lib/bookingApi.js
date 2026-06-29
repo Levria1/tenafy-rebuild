@@ -20,6 +20,11 @@ export const viewingPublic = {
   decide: (token, decision) => bookingApi.post(`/api/viewing-public/action/${token}`, { decision }),
   getManage: (token) => bookingApi.get(`/api/viewing-public/manage/${token}`),
   cancel: (token) => bookingApi.post(`/api/viewing-public/manage/${token}/cancel`),
+  // Prospect-led invite flow
+  getInvite: (token) => bookingApi.get(`/api/viewing-public/invite/${token}`),
+  submitInvite: (token, data) => bookingApi.post(`/api/viewing-public/invite/${token}/submit`, data),
+  getConfirm: (token) => bookingApi.get(`/api/viewing-public/confirm/${token}`),
+  pickConfirm: (token) => bookingApi.post(`/api/viewing-public/confirm/${token}/pick`),
 };
 
 export default bookingApi;

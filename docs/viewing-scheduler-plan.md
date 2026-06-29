@@ -141,8 +141,11 @@ Calendar visual = **Google Calendar** (already gets confirmed viewings). No in-a
 - **Phase 0 — Open-for-viewings trigger** — NR checkbox + tenant heads-up. ✅ *built (pending deploy).*
 - **Phase A — Staff availability** — `getFreeBusy` + fold into slot computation. Prereq: connect CL/Dennis calendars.
 - **Phase B — Prospect link + prefilled multi-time booking** — `viewing-link` API (state-gated, per-prospect, prefilled, expiring) + `viewing_invite` + booking page with up to 3 candidates + soft-hold. + TaneChat handoff (prospect side).
-- **Phase C — Tenant confirm + auto-messages** — `viewing_candidate`, tenant multi-time tap-to-confirm, all confirmations via WhatsApp, calendar block + `.ics`, editable templates.
-- **Phase D — Change handling + dashboard** — status machine, cancel+rebook, staff reschedule, auto-expire, the filterable list dashboard.
+  - *Slice 1 ✅ built:* `POST /api/public/viewing-link` + `viewing_invite` (migration 011).
+  - *Slice 2 ✅ built (pending deploy):* `GET /api/viewing-public/invite/:token` (prefill + busy windows) + `POST /invite/:token/submit` (1–3 candidates → one pending `viewing_booking` + `viewing_candidate` rows (migration 012) + soft-hold + tenant prompt) + frontend `/book/viewing/invite/[token]`.
+  - *Remaining:* TaneChat handoff (bot side — templated prompt → read reply → call `viewing-link`).
+- **Phase C — Tenant confirm + auto-messages** — ✅ core built (pending deploy): `viewing_candidate` tap-to-confirm via `GET /confirm/:token` + `POST /confirm/:token/pick` (release others, confirm, gcal + `.ics` + confirmation emails) + frontend `/book/viewing/confirm/[token]`. Tenant prompt sent via email (`Viewing-Tenant-Confirm` template + fallback) **and WhatsApp** (plain-text with per-candidate links). *Remaining:* dedicated WhatsApp templates, prospect re-pick on full decline/expiry.
+- **Phase D — Change handling + dashboard** — status machine, cancel+rebook, staff reschedule, auto-expire, the filterable list dashboard. *(not built)*
 
 ---
 

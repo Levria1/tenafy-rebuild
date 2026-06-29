@@ -24,6 +24,7 @@ const {
 } = require('../services/emailService');
 const { buildViewingIcs } = require('../utils/ics');
 const { createViewingEvent, deleteViewingEvent, getFreeBusy } = require('../services/googleCalendar');
+const { sendWhatsApp } = require('../services/whatsappService');
 
 /**
  * Send a viewing-related email.
@@ -68,6 +69,7 @@ const {
   resolveOrgByViewingToken,
   resolveOrgByActionToken,
   resolveOrgByManageToken,
+  resolveOrgByInviteToken,
   KIND_ACTION,
   KIND_MANAGE,
 } = require('../middleware/viewingTokenAuth');
@@ -373,7 +375,7 @@ function overlapsWithBuffer(proposedStart, proposedEnd, existing, bufferMin) {
 async function findActiveLeaseForUnit(pool, unitId) {
   const [rows] = await pool.execute(
     `SELECT l.id AS leasing_id, l.tenant_id,
-            t.first_name, t.last_name, t.email, t.company_name
+            t.first_name, t.last_name, t.email, t.phone, t.company_name
      FROM leasing l
      LEFT JOIN tenant t ON l.tenant_id = t.id
      WHERE l.unit_id = ? AND l.deleted_at IS NULL
@@ -1122,6 +1124,533 @@ router.post('/lead/:token', postLimiter, resolveOrgByViewingToken, async (req, r
   } catch (err) {
     console.error('[viewing-public] lead error:', err);
     fail(res, 'Failed to capture lead');
+  }
+});
+
+// ===========================================================================
+// PROSPECT-LED INVITE FLOW (Phase B slice 2 + tenant pick)
+//
+// A prospect receives a per-prospect, prefilled, expiring link (minted by
+// POST /api/public/viewing-link). They open it, propose up to 3 candidate
+// times, and submit. We create ONE pending viewing_booking + one
+// viewing_candidate per time, then prompt the tenant (or host, if vacant) to
+// tap the time that works. Tapping confirms the booking and releases the rest.
+// ===========================================================================
+
+const INVITE_MAX_CANDIDATES = 3;
+
+async function findInviteByToken(pool, token) {
+  const [rows] = await pool.execute(
+    `SELECT vi.*, p.display_name AS property_name, p.street_address, p.city, p.state,
+            p.country, p.zip_code, u.name AS unit_name, u.type AS unit_type,
+            u.beds, u.baths, u.rent_price_min, u.rent_price_max,
+            usr.first_name AS employee_first_name, usr.last_name AS employee_last_name,
+            usr.email AS employee_email
+     FROM viewing_invite vi
+     JOIN property p ON vi.property_id = p.id
+     JOIN unit u     ON vi.unit_id = u.id
+     LEFT JOIN user usr ON vi.employee_id = usr.id
+     WHERE vi.token = ? LIMIT 1`,
+    [token]
+  );
+  return rows[0] || null;
+}
+
+async function findCandidateByToken(pool, token) {
+  const [rows] = await pool.execute(
+    `SELECT vc.id AS candidate_id, vc.booking_id, vc.proposed_datetime AS candidate_datetime,
+            vc.duration_minutes AS candidate_duration, vc.confirm_token, vc.status AS candidate_status,
+            vb.status AS booking_status,
+            p.display_name AS property_name, p.street_address, p.city, p.state,
+            u.name AS unit_name
+     FROM viewing_candidate vc
+     JOIN viewing_booking vb ON vc.booking_id = vb.id
+     JOIN property p ON vb.property_id = p.id
+     JOIN unit u     ON vb.unit_id = u.id
+     WHERE vc.confirm_token = ? LIMIT 1`,
+    [token]
+  );
+  return rows[0] || null;
+}
+
+async function findBookingById(pool, id) {
+  const [rows] = await pool.execute(
+    `SELECT vb.*, p.display_name AS property_name, p.street_address, p.city, p.state,
+            p.country, p.zip_code, u.name AS unit_name,
+            usr.first_name AS employee_first_name, usr.last_name AS employee_last_name,
+            usr.email AS employee_email, usr.google_calendar_id AS employee_google_calendar_id,
+            t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+            t.email AS tenant_email, t.company_name
+     FROM viewing_booking vb
+     JOIN property p ON vb.property_id = p.id
+     JOIN unit u     ON vb.unit_id = u.id
+     JOIN user usr   ON vb.employee_id = usr.id
+     LEFT JOIN tenant t ON vb.tenant_id = t.id
+     WHERE vb.id = ? LIMIT 1`,
+    [id]
+  );
+  return rows[0] || null;
+}
+
+// Fire the confirmation side-effects for a now-confirmed booking: push to the
+// host's Google Calendar, then email an .ics to viewer + host (+ tenant).
+// Modelled on the POST /action/:token confirmed branch. Fire-and-forget.
+function sendViewingConfirmation(pool, orgId, full) {
+  createViewingEvent({
+    calendarId: full.employee_google_calendar_id,
+    booking: {
+      proposed_datetime: full.proposed_datetime,
+      duration_minutes: full.duration_minutes,
+      viewer_name: full.viewer_name,
+      viewer_email: full.viewer_email,
+      viewer_phone: full.viewer_phone,
+      viewer_message: full.viewer_message,
+    },
+    unit: { name: full.unit_name },
+    property: {
+      name: full.property_name, street_address: full.street_address,
+      city: full.city, state: full.state,
+    },
+    employee: { name: employeeDisplayName(full), email: full.employee_email },
+  }).then(gcalEventId => {
+    if (gcalEventId) {
+      pool.execute('UPDATE viewing_booking SET gcal_event_id = ? WHERE id = ?', [gcalEventId, full.id])
+        .catch(e => console.error('[viewing-public] save gcal_event_id failed:', e.message));
+    }
+  }).catch(e => console.error('[viewing-public] Google Calendar create failed:', e.message));
+
+  const attendees = [
+    { name: full.viewer_name, email: full.viewer_email },
+    { name: employeeDisplayName(full), email: full.employee_email },
+  ];
+  if (full.tenant_id && full.tenant_email) {
+    attendees.push({ name: tenantDisplayName(full), email: full.tenant_email });
+  }
+
+  let ics;
+  try {
+    ics = buildViewingIcs({
+      uid: full.ics_uid,
+      startDateTime: full.proposed_datetime,
+      durationMinutes: full.duration_minutes,
+      summary: `Viewing: ${full.unit_name} @ ${full.property_name}`,
+      description: `Viewing request from ${full.viewer_name} (${full.viewer_email})`,
+      location: [full.street_address, full.city, full.state].filter(Boolean).join(', '),
+      organizer: { name: employeeDisplayName(full), email: full.employee_email },
+      attendees,
+      method: 'REQUEST',
+      sequence: 0,
+    });
+  } catch (e) {
+    console.error('[viewing-public] ICS build failed:', e.message);
+  }
+
+  const confirmVars = {
+    '%Viewer Name%':    full.viewer_name || '',
+    '%Viewer Email%':   full.viewer_email || '',
+    '%Viewer Phone%':   full.viewer_phone || '',
+    '%Viewing Date%':   formatWhen(full.proposed_datetime),
+    '%Unit Name%':      full.unit_name || '',
+    '%Property Name%':  full.property_name || '',
+    '%Property Address%': [full.street_address, full.city, full.state].filter(Boolean).join(', '),
+    '%Host Name%':      employeeDisplayName(full),
+  };
+  const fallbackHtml = bodyConfirmation({
+    viewer_name: full.viewer_name, property_name: full.property_name,
+    unit_name: full.unit_name, proposed_datetime: full.proposed_datetime,
+    employee_name: employeeDisplayName(full),
+  });
+  const recipients = [full.viewer_email, full.employee_email]
+    .concat(full.tenant_email ? [full.tenant_email] : [])
+    .filter(Boolean);
+  for (const to of recipients) {
+    sendViewingMail(pool, orgId, {
+      templateType: 'Viewing-Confirmation',
+      variables: confirmVars,
+      fallback: {
+        subject: `Viewing confirmed: ${full.unit_name} — ${formatWhen(full.proposed_datetime)}`,
+        html: fallbackHtml,
+      },
+      mailOpts: { to, attachments: ics ? [ics] : undefined },
+    }).catch(e => console.error('[viewing-public] confirmation email failed:', e.message));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /invite/:token — resolve a prefilled prospect invite
+// ---------------------------------------------------------------------------
+router.get('/invite/:token', resolveOrgByInviteToken, async (req, res) => {
+  try {
+    const invite = await findInviteByToken(req.pool, req.viewingToken);
+    if (!invite) return fail(res, 'Link not found or no longer active', 404);
+    if (Number(invite.status) !== 1 || (invite.booking_id != null)) {
+      return res.status(200).json({ code: 200, data: { state: 'used' } });
+    }
+    if (invite.expires_at && new Date(invite.expires_at).getTime() < Date.now()) {
+      return res.status(200).json({ code: 200, data: { state: 'expired' } });
+    }
+    // Re-check the unit is still open for viewings (lease may have been re-let).
+    const [[lease]] = await req.pool.execute(
+      `SELECT viewing_enabled FROM leasing WHERE id = ? LIMIT 1`, [invite.leasing_id]
+    );
+    if (lease && !Number(lease.viewing_enabled)) {
+      return res.status(200).json({ code: 200, data: { state: 'closed' } });
+    }
+    if (!invite.employee_id) {
+      return res.status(200).json({
+        code: 200,
+        data: { ready: false, property: { name: invite.property_name, city: invite.city }, unit: { name: invite.unit_name } },
+      });
+    }
+
+    // Busy windows (Tenafy bookings + host Google free/busy) for the next 21 days
+    // so the picker can grey out unavailable slots.
+    const now = new Date();
+    const rangeEnd = new Date(now.getTime() + 21 * 24 * 60 * 60 * 1000);
+    const { conflicts, bufferMin, googleBusy } = await findBlockingBookings(req.pool, {
+      employeeId: invite.employee_id, unitId: invite.unit_id, rangeStart: now, rangeEnd,
+    });
+    const busy = conflicts.map(b => ({
+      start: new Date(new Date(b.proposed_datetime).getTime() - bufferMin * 60 * 1000).toISOString(),
+      end: new Date(new Date(b.proposed_datetime).getTime() + (Number(b.duration_minutes) || 30) * 60 * 1000 + bufferMin * 60 * 1000).toISOString(),
+    }));
+    for (const w of googleBusy) busy.push({ start: new Date(w.start).toISOString(), end: new Date(w.end).toISOString() });
+
+    ok(res, {
+      ready: true,
+      state: 'active',
+      prefill_date: invite.prefill_date ? toDateString(new Date(invite.prefill_date)) : null,
+      max_candidates: INVITE_MAX_CANDIDATES,
+      prospect: {
+        name: invite.prospect_name || '',
+        phone: invite.prospect_phone || '',
+        email: invite.prospect_email || '',
+      },
+      unit: {
+        id: String(invite.unit_id), name: invite.unit_name, type: invite.unit_type,
+        beds: invite.beds, baths: invite.baths,
+        rent_price_min: invite.rent_price_min, rent_price_max: invite.rent_price_max,
+      },
+      property: {
+        id: String(invite.property_id), name: invite.property_name,
+        street_address: invite.street_address, city: invite.city, state: invite.state,
+      },
+      employee: { name: [invite.employee_first_name, invite.employee_last_name].filter(Boolean).join(' ') || invite.employee_email },
+      buffer_minutes: bufferMin,
+      busy,
+    });
+  } catch (err) {
+    console.error('[viewing-public] GET /invite/:token error:', err);
+    fail(res, 'Failed to load invite');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /invite/:token/submit — prospect proposes up to 3 candidate times
+// ---------------------------------------------------------------------------
+router.post('/invite/:token/submit', postLimiter, resolveOrgByInviteToken, async (req, res) => {
+  try {
+    const { prospect_name, prospect_email, prospect_phone, message, candidates } = req.body || {};
+
+    if (!prospect_name || !prospect_email || !prospect_phone) {
+      return fail(res, 'Name, email, and phone are required', 400);
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(prospect_email))) {
+      return fail(res, 'A valid email address is required', 400);
+    }
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+      return fail(res, 'Please propose at least one time', 400);
+    }
+
+    // Normalise + dedupe candidate datetimes, cap at the max.
+    const seen = new Set();
+    const times = [];
+    for (const c of candidates) {
+      const s = String(c).slice(0, 19); // YYYY-MM-DDTHH:mm:ss
+      if (seen.has(s)) continue;
+      seen.add(s);
+      const slotErr = validateBookingSlot(s, 30);
+      if (slotErr) return fail(res, `${s.replace('T', ' ')}: ${slotErr}`, 400);
+      const when = new Date(s);
+      if (isNaN(when.getTime())) return fail(res, 'Invalid date/time', 400);
+      if (when.getTime() < Date.now()) return fail(res, 'Please propose a future time', 400);
+      times.push({ raw: s, when });
+    }
+    if (times.length > INVITE_MAX_CANDIDATES) {
+      return fail(res, `Please propose at most ${INVITE_MAX_CANDIDATES} times`, 400);
+    }
+    times.sort((a, b) => a.when - b.when);
+
+    const invite = await findInviteByToken(req.pool, req.viewingToken);
+    if (!invite || Number(invite.status) !== 1 || invite.booking_id != null) {
+      return fail(res, 'This link is no longer active', 410);
+    }
+    if (invite.expires_at && new Date(invite.expires_at).getTime() < Date.now()) {
+      return fail(res, 'This link has expired', 410);
+    }
+    if (!invite.employee_id) {
+      return fail(res, 'This link is not ready yet — no host has been assigned. Please try again shortly.', 409);
+    }
+
+    // Conflict-check every candidate against the host's bookings + Google calendar.
+    const rangeStart = times[0].when;
+    const rangeEnd = new Date(times[times.length - 1].when.getTime() + 30 * 60 * 1000);
+    const { conflicts, bufferMin, googleBusy } = await findBlockingBookings(req.pool, {
+      employeeId: invite.employee_id, unitId: invite.unit_id, rangeStart, rangeEnd,
+    });
+    const clashes = [];
+    for (const t of times) {
+      const end = new Date(t.when.getTime() + 30 * 60 * 1000);
+      const hit = conflicts.find(b => overlapsWithBuffer(t.when, end, b, bufferMin))
+        || intersectsBusy(t.when, end, googleBusy);
+      if (hit) clashes.push(formatWhen(t.when));
+    }
+    if (clashes.length) {
+      return fail(res, `These times are no longer available: ${clashes.join('; ')}. Please pick others.`, 409);
+    }
+
+    // Occupancy — prompt the tenant if occupied, else the host.
+    const lease = await findActiveLeaseForUnit(req.pool, invite.unit_id);
+    const hasTenant = Boolean(lease && lease.tenant_id && lease.email);
+
+    // Capture this prospect as an inquiry (best-effort).
+    let inquiryId = null;
+    try {
+      inquiryId = await createInquiryForViewer(req.pool, req.orgId, {
+        name: prospect_name, email: prospect_email, phone: prospect_phone, message,
+        unitId: invite.unit_id, propertyId: invite.property_id,
+        unitName: invite.unit_name, propertyName: invite.property_name, source: 'chatbot',
+      });
+    } catch (e) {
+      console.error('[viewing-public] invite inquiry create failed:', e.message);
+    }
+
+    const bookingId = newId();
+    const employeeTok = newActionToken();
+    const manageTok = newActionToken();
+    const icsUid = `${bookingId}@tenafy-viewing`;
+    const firstWhen = times[0].when;
+
+    // Build candidate rows + confirm tokens up front so we can register them all.
+    const candidateRows = times.map(t => ({ id: newId(), token: newActionToken(), when: t.when }));
+
+    // Register employee/manage + every candidate confirm token in master.
+    const registryRows = [
+      [employeeTok, String(req.orgId), KIND_ACTION, 1],
+      [manageTok, String(req.orgId), KIND_MANAGE, 1],
+      ...candidateRows.map(c => [c.token, String(req.orgId), KIND_ACTION, 1]),
+    ];
+    await getMasterPool().query(
+      'INSERT INTO viewing_link_registry (token, org_id, kind, status) VALUES ?', [registryRows]
+    );
+
+    const conn = await req.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.execute(
+        `INSERT INTO viewing_booking (
+          id, link_id, unit_id, property_id, employee_id,
+          leasing_id, tenant_id, viewer_contact_id, inquiry_id, invite_id,
+          viewer_name, viewer_email, viewer_phone, viewer_message,
+          proposed_datetime, duration_minutes,
+          tenant_action_token, employee_action_token, viewer_manage_token,
+          tenant_decision, employee_decision, status, awaiting, source, ics_uid
+         ) VALUES (?, NULL, ?, ?, ?,  ?, ?, NULL, ?, ?,  ?, ?, ?, ?,  ?, 30,  NULL, ?, ?,  ?, 0, 0, ?, 'invite', ?)`,
+        [
+          bookingId, invite.unit_id, invite.property_id, invite.employee_id,
+          lease ? lease.leasing_id : null, lease ? lease.tenant_id : null,
+          inquiryId, invite.id,
+          prospect_name, prospect_email, prospect_phone, message || null,
+          firstWhen,
+          employeeTok, manageTok,
+          hasTenant ? 0 : 3,
+          hasTenant ? 'tenant' : 'prospect',
+          icsUid,
+        ]
+      );
+      for (const c of candidateRows) {
+        await conn.execute(
+          `INSERT INTO viewing_candidate (id, booking_id, proposed_datetime, duration_minutes, confirm_token, status)
+           VALUES (?, ?, ?, 30, ?, 1)`,
+          [c.id, bookingId, c.when, c.token]
+        );
+      }
+      // Burn the invite so the link can't be reused.
+      await conn.execute(
+        `UPDATE viewing_invite SET status = 0, booking_id = ? WHERE id = ?`,
+        [bookingId, invite.id]
+      );
+      await conn.commit();
+    } catch (e) {
+      try { await conn.rollback(); } catch {}
+      throw e;
+    } finally {
+      conn.release();
+    }
+
+    // --- Prompt the tenant (or host) to pick a time (fire-and-forget) ---
+    const propertyName = invite.property_name;
+    const unitName = invite.unit_name;
+    const candidateLinks = candidateRows.map(c => ({
+      when: c.when,
+      label: formatWhen(c.when),
+      url: buildUrl(`/book/viewing/confirm/${c.token}`),
+    }));
+
+    const buttonsHtml = candidateLinks.map(c =>
+      `<a href="${c.url}" style="background:#1677ff;color:#fff;padding:10px 18px;border-radius:4px;
+        text-decoration:none;display:inline-block;margin:4px 0;">${escapeHtml(c.label)}</a>`
+    ).join('<br>');
+    const fallbackPromptHtml = `
+      <p>Hi,</p>
+      <p><strong>${escapeHtml(prospect_name)}</strong> would like to view
+         <strong>${escapeHtml(unitName)}</strong> at <strong>${escapeHtml(propertyName)}</strong>.</p>
+      <p>Please tap the time that works best for you — the others will be released automatically:</p>
+      <p>${buttonsHtml}</p>
+      <p style="color:#8c8c8c;font-size:12px;">If the buttons don't work, copy a link into your browser:<br>
+        ${candidateLinks.map(c => `${escapeHtml(c.label)}: ${c.url}`).join('<br>')}</p>`;
+
+    const promptVars = {
+      '%Viewer Name%':   prospect_name || '',
+      '%Unit Name%':     unitName || '',
+      '%Property Name%': propertyName || '',
+      '%Property Address%': [invite.street_address, invite.city, invite.state].filter(Boolean).join(', '),
+      '%Candidate Buttons%': buttonsHtml,
+      '%Candidate Times%': candidateLinks.map(c => c.label).join(', '),
+    };
+
+    const promptEmail = hasTenant ? lease.email : invite.employee_email;
+    if (promptEmail) {
+      sendViewingMail(req.pool, req.orgId, {
+        templateType: 'Viewing-Tenant-Confirm',
+        variables: promptVars,
+        fallback: {
+          subject: `Choose a viewing time — ${unitName}`,
+          html: fallbackPromptHtml,
+        },
+        mailOpts: { to: promptEmail },
+      }).catch(e => console.error('[viewing-public] tenant-confirm email failed:', e.message));
+    }
+
+    // WhatsApp the tenant (plain text with links). Silent no-op if unconfigured.
+    const promptPhone = hasTenant ? (lease.phone || null) : null;
+    if (promptPhone) {
+      const waText =
+        `${prospect_name} would like to view ${unitName} at ${propertyName}.\n\n` +
+        `Please tap the time that works best for you — the others are released automatically:\n` +
+        candidateLinks.map(c => `• ${c.label}\n${c.url}`).join('\n');
+      sendWhatsApp(req.pool, req.orgId, promptPhone, waText)
+        .catch(e => console.error('[viewing-public] tenant-confirm WhatsApp failed:', e.message));
+    }
+
+    ok(res, {
+      booking_id: bookingId,
+      status: 'awaiting_tenant',
+      has_tenant: hasTenant,
+      candidates: candidateLinks.map(c => ({ when: c.when, label: c.label })),
+    });
+  } catch (err) {
+    console.error('[viewing-public] POST /invite/:token/submit error:', err);
+    fail(res, 'Failed to submit your viewing request');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /confirm/:token — data for the tenant's candidate-confirm page
+// ---------------------------------------------------------------------------
+router.get('/confirm/:token', resolveOrgByActionToken, async (req, res) => {
+  try {
+    const cand = await findCandidateByToken(req.pool, req.viewingToken);
+    if (!cand) return fail(res, 'Link not found', 404);
+
+    // Sibling candidate times (for context on the page).
+    const [siblings] = await req.pool.execute(
+      `SELECT proposed_datetime, status FROM viewing_candidate WHERE booking_id = ? ORDER BY proposed_datetime ASC`,
+      [cand.booking_id]
+    );
+
+    let state = 'pending';
+    if (Number(cand.booking_status) === 1) state = Number(cand.candidate_status) === 2 ? 'picked' : 'already_confirmed';
+    else if ([2, 3].includes(Number(cand.booking_status))) state = 'closed';
+
+    ok(res, {
+      state,
+      candidate: {
+        proposed_datetime: cand.candidate_datetime,
+        duration_minutes: cand.candidate_duration,
+        status: cand.candidate_status,
+      },
+      all_candidates: siblings.map(s => ({ proposed_datetime: s.proposed_datetime, status: s.status })),
+      unit: { name: cand.unit_name },
+      property: {
+        name: cand.property_name, street_address: cand.street_address,
+        city: cand.city, state: cand.state,
+      },
+    });
+  } catch (err) {
+    console.error('[viewing-public] GET /confirm/:token error:', err);
+    fail(res, 'Failed to load confirmation');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /confirm/:token/pick — tenant locks in one candidate time
+// ---------------------------------------------------------------------------
+router.post('/confirm/:token/pick', postLimiter, resolveOrgByActionToken, async (req, res) => {
+  const conn = await req.pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // Lock the candidate + its booking.
+    const [candRows] = await conn.execute(
+      `SELECT * FROM viewing_candidate WHERE confirm_token = ? LIMIT 1 FOR UPDATE`,
+      [req.viewingToken]
+    );
+    if (!candRows.length) {
+      await conn.rollback();
+      return fail(res, 'Link not found', 404);
+    }
+    const cand = candRows[0];
+    const [bookingRows] = await conn.execute(
+      `SELECT * FROM viewing_booking WHERE id = ? LIMIT 1 FOR UPDATE`, [cand.booking_id]
+    );
+    const booking = bookingRows[0];
+    if (!booking) {
+      await conn.rollback();
+      return fail(res, 'Booking not found', 404);
+    }
+    if (Number(booking.status) !== 0) {
+      await conn.rollback();
+      return res.status(410).json({ code: 410, message: 'This request has already been finalised.' });
+    }
+
+    // Confirm: this candidate picked, others released, booking → confirmed.
+    await conn.execute(`UPDATE viewing_candidate SET status = 2 WHERE id = ?`, [cand.id]);
+    await conn.execute(
+      `UPDATE viewing_candidate SET status = 0 WHERE booking_id = ? AND id <> ?`,
+      [cand.booking_id, cand.id]
+    );
+    await conn.execute(
+      `UPDATE viewing_booking
+          SET proposed_datetime = ?, status = 1, awaiting = NULL,
+              tenant_decision = 1, tenant_decided_at = NOW(),
+              employee_decision = 1, employee_decided_at = NOW()
+        WHERE id = ?`,
+      [cand.proposed_datetime, cand.booking_id]
+    );
+    await conn.commit();
+
+    // Fire calendar + .ics + confirmation emails outside the transaction.
+    const full = await findBookingById(req.pool, cand.booking_id);
+    if (full) sendViewingConfirmation(req.pool, req.orgId, full);
+
+    ok(res, { status: 'confirmed', proposed_datetime: cand.proposed_datetime });
+  } catch (err) {
+    try { await conn.rollback(); } catch {}
+    console.error('[viewing-public] POST /confirm/:token/pick error:', err);
+    fail(res, 'Failed to confirm the time');
+  } finally {
+    conn.release();
   }
 });
 
