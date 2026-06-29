@@ -17,6 +17,7 @@ const {
   loadTemplate,
 } = require('../services/emailService');
 const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCalendarWebhook');
+const { sendViewingAvailabilityRequest } = require('../services/viewingRequest');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
@@ -662,6 +663,8 @@ router.post('/', authenticate, async (req, res) => {
       booking_platform_id, sales_agent_id,
       // lease state — 'pending' draft (no unit block, no invoices) or 'active' (default)
       lease_state,
+      // "Request viewings" checkbox (shown when Tenant Status = NR)
+      viewing_enabled,
     } = req.body;
     const orgId = req.user.orgId;
     const leaseState = lease_state === 'pending' ? 'pending' : 'active';
@@ -984,6 +987,17 @@ router.post('/', authenticate, async (req, res) => {
       notifyLeaseBlocked(req.pool, orgId, leaseId.toString());
     }
 
+    // "Request viewings" ticked at creation → flag the lease + message the tenant
+    // for their availability (once). Fire-and-forget.
+    if (viewing_enabled) {
+      await req.pool.execute(
+        'UPDATE leasing SET viewing_enabled = 1, viewing_requested_at = NOW() WHERE id = ?',
+        [leaseId.toString()]
+      );
+      sendViewingAvailabilityRequest(req.pool, orgId, leaseId.toString())
+        .catch(err => console.error('[leasing] viewing availability request failed:', err.message));
+    }
+
     res.json({ code: 200, message: 'Lease created', data: { id: leaseId.toString(), lease_no: leaseNo } });
   } catch (error) {
     console.error('Create lease error:', error);
@@ -1013,8 +1027,18 @@ router.put('/:id', authenticate, async (req, res) => {
       tenant_checkin, tenant_checkout,
       landlord_expired, landlord_expired_days,
       tenant_renewal, tenant_renewal_days,
-      access_setting, share_lease, all_past
+      access_setting, share_lease, all_past,
+      // "Request viewings" checkbox (shown when Tenant Status = NR)
+      viewing_enabled
     } = req.body;
+
+    // Detect the 0 → 1 transition on "Request viewings" so we message the tenant
+    // exactly once (not on every later save).
+    let fireViewingRequest = false;
+    if (viewing_enabled) {
+      const [[cur]] = await req.pool.execute('SELECT viewing_enabled FROM leasing WHERE id = ?', [id]);
+      if (cur && !Number(cur.viewing_enabled)) fireViewingRequest = true;
+    }
 
     // Server-side overlap check on edit — check if new dates/unit conflict with other leases
     const checkUnit = unit_id || null;
@@ -1097,6 +1121,10 @@ router.put('/:id', authenticate, async (req, res) => {
     if (access_setting !== undefined) { fields.push('access_setting = ?'); params.push(access_setting || null); }
     if (share_lease !== undefined) { fields.push('share_lease = ?'); params.push(share_lease ? 1 : 0); }
     if (all_past !== undefined) { fields.push('all_past = ?'); params.push(all_past ? 1 : 0); }
+    if (viewing_enabled !== undefined) {
+      fields.push('viewing_enabled = ?'); params.push(viewing_enabled ? 1 : 0);
+      if (fireViewingRequest) fields.push('viewing_requested_at = NOW()');
+    }
     // Allow direct edit of lease_state via PUT for back-fill / corrections —
     // BUT do NOT fire deferred invoices here. Use POST /:id/confirm for the
     // pending → active flip with invoice generation.
@@ -1128,6 +1156,12 @@ router.put('/:id', authenticate, async (req, res) => {
         'UPDATE invoice SET status = 1 WHERE leasing_id = ? AND org_id = ? AND status = 0 AND due_on <= ? AND deleted_at IS NULL',
         [id, orgId, today]
       );
+    }
+
+    // "Request viewings" just turned on → message the tenant for availability (once).
+    if (fireViewingRequest) {
+      sendViewingAvailabilityRequest(req.pool, orgId, id)
+        .catch(err => console.error('[leasing] viewing availability request failed:', err.message));
     }
 
     await logActivity(req, 'UPDATE', 'lease', id, 'Updated lease ' + id);

@@ -67,6 +67,10 @@ const TEMPLATE_TYPES = [
   { value: 'Viewing-Confirmation', label: 'Viewing Confirmation (All)' },
   { value: 'Viewing-Declined', label: 'Viewing Declined (Viewer)' },
   { value: 'Viewing-Cancelled', label: 'Viewing Cancelled (All)' },
+  // Sent to the CURRENT tenant when staff tick "Request viewings" on an NR lease —
+  // asks them for their preferred viewing windows. Built-in fallback in
+  // services/viewingRequest.js if the org hasn't customised it.
+  { value: 'Viewing-Availability-Request', label: 'Viewing Availability Request (Tenant)' },
   // Inquiry follow-up reminder (sent to staff who created the inquiry)
   { value: 'Inquiry-Reminder', label: 'Inquiry Reminder (Staff)' },
 ];
