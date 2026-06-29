@@ -23,7 +23,7 @@ const {
   wrapEmailHtml,
 } = require('../services/emailService');
 const { buildViewingIcs } = require('../utils/ics');
-const { createViewingEvent, deleteViewingEvent } = require('../services/googleCalendar');
+const { createViewingEvent, deleteViewingEvent, getFreeBusy } = require('../services/googleCalendar');
 
 /**
  * Send a viewing-related email.
@@ -312,16 +312,18 @@ async function createInquiryForViewer(pool, orgId, { name, email, phone, message
  * @returns { conflicts: [ {id, proposed_datetime, duration_minutes, employee_id, unit_id} ], bufferMin }
  */
 async function findBlockingBookings(pool, { employeeId, unitId, rangeStart, rangeEnd }) {
-  // Look up employee's buffer
+  // Look up employee's buffer + Google calendar id
   let bufferMin = 30;
+  let calendarId = null;
   try {
     const [[row]] = await pool.execute(
-      'SELECT viewing_buffer_minutes AS b FROM user WHERE id = ?',
+      'SELECT viewing_buffer_minutes AS b, google_calendar_id AS gcal FROM user WHERE id = ?',
       [employeeId]
     );
     if (row && row.b != null) bufferMin = Number(row.b) || 0;
+    if (row && row.gcal) calendarId = String(row.gcal).trim() || null;
   } catch {
-    // Column may not exist yet — keep default
+    // Columns may not exist yet — keep defaults
   }
 
   // Pad the query range by the buffer so MySQL filter catches near-misses too.
@@ -336,7 +338,22 @@ async function findBlockingBookings(pool, { employeeId, unitId, rangeStart, rang
        AND proposed_datetime >= ? AND proposed_datetime <= ?`,
     [employeeId, unitId, padStart, padEnd]
   );
-  return { conflicts: rows, bufferMin };
+
+  // Staff's real availability from Google Calendar (free/busy). Empty array
+  // when the employee has no calendar linked or Google isn't configured —
+  // so this gracefully no-ops and falls back to the Tenafy-only check.
+  const googleBusy = calendarId
+    ? await getFreeBusy({ calendarId, timeMin: padStart, timeMax: padEnd })
+    : [];
+
+  return { conflicts: rows, bufferMin, googleBusy };
+}
+
+/** True if [propStart, propEnd) overlaps any {start,end} busy window. */
+function intersectsBusy(propStart, propEnd, busyWindows) {
+  const ps = new Date(propStart).getTime();
+  const pe = new Date(propEnd).getTime();
+  return (busyWindows || []).some(w => ps < new Date(w.end).getTime() && pe > new Date(w.start).getTime());
 }
 
 /**
@@ -456,7 +473,7 @@ router.get('/link/:token/availability', resolveOrgByViewingToken, async (req, re
     const rangeStart = req.query.from ? new Date(req.query.from) : now;
     const rangeEnd   = req.query.to   ? new Date(req.query.to)   : defaultEnd;
 
-    const { conflicts, bufferMin } = await findBlockingBookings(req.pool, {
+    const { conflicts, bufferMin, googleBusy } = await findBlockingBookings(req.pool, {
       employeeId: link.employee_id,
       unitId:     link.unit_id,
       rangeStart,
@@ -472,6 +489,11 @@ router.get('/link/:token/availability', resolveOrgByViewingToken, async (req, re
                            + bufferMin * 60 * 1000);
       return { start: start.toISOString(), end: end.toISOString() };
     });
+
+    // Also grey out times the assigned staffer is busy on their own calendar.
+    for (const w of googleBusy) {
+      busy.push({ start: new Date(w.start).toISOString(), end: new Date(w.end).toISOString() });
+    }
 
     ok(res, {
       buffer_minutes: bufferMin,
@@ -521,13 +543,14 @@ router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, asyn
     // (either same employee or same unit). Applies the employee's buffer.
     const proposedStart = new Date(proposed_datetime);
     const proposedEnd   = new Date(proposedStart.getTime() + durationMin * 60 * 1000);
-    const { conflicts, bufferMin } = await findBlockingBookings(req.pool, {
+    const { conflicts, bufferMin, googleBusy } = await findBlockingBookings(req.pool, {
       employeeId: link.employee_id,
       unitId: link.unit_id,
       rangeStart: proposedStart,
       rangeEnd: proposedEnd,
     });
-    const hit = conflicts.find(b => overlapsWithBuffer(proposedStart, proposedEnd, b, bufferMin));
+    const hit = conflicts.find(b => overlapsWithBuffer(proposedStart, proposedEnd, b, bufferMin))
+      || intersectsBusy(proposedStart, proposedEnd, googleBusy);
     if (hit) {
       return fail(
         res,

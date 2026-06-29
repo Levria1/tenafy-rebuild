@@ -106,4 +106,39 @@ async function deleteViewingEvent({ calendarId, gcalEventId }) {
   }
 }
 
-module.exports = { createViewingEvent, deleteViewingEvent };
+/**
+ * Query a calendar's busy intervals between timeMin and timeMax (ISO strings).
+ * Used to check whether the assigned staff member is actually free before
+ * offering a viewing slot.
+ *
+ * Returns an array of { start: Date, end: Date } busy windows.
+ * Returns [] (treated as "no calendar info → don't block") when Google isn't
+ * configured, the calendarId is missing, or the query fails — so callers
+ * gracefully fall back to the Tenafy-only conflict check.
+ */
+async function getFreeBusy({ calendarId, timeMin, timeMax }) {
+  const cal = getClient();
+  if (!cal || !calendarId) return [];
+
+  try {
+    const res = await cal.freebusy.query({
+      resource: {
+        timeMin: new Date(timeMin).toISOString(),
+        timeMax: new Date(timeMax).toISOString(),
+        items: [{ id: calendarId }],
+      },
+    });
+    const cals = res.data.calendars || {};
+    const entry = cals[calendarId] || Object.values(cals)[0] || {};
+    if (entry.errors && entry.errors.length) {
+      console.error(`[googleCalendar] freebusy errors for ${calendarId}:`, JSON.stringify(entry.errors));
+      return [];
+    }
+    return (entry.busy || []).map(b => ({ start: new Date(b.start), end: new Date(b.end) }));
+  } catch (err) {
+    console.error('[googleCalendar] getFreeBusy failed:', err.message);
+    return [];
+  }
+}
+
+module.exports = { createViewingEvent, deleteViewingEvent, getFreeBusy };
