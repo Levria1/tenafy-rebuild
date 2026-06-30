@@ -109,6 +109,19 @@ scratch on the page.
 
 ---
 
+## Multiple units
+There is no special multi-unit call — to request several units, the bot simply
+makes **one `viewing-request` per unit**. Each unit is handled independently
+(its own tenant/host is asked), so confirmed times may differ between units.
+
+## Occupied vs vacant units
+- **Occupied** (a current tenant): that tenant is asked to pick the time.
+- **Vacant** (no current tenant, but staff have assigned a host link): there's
+  no tenant, so the **host** is asked to pick — no tenant prompt. A unit only
+  counts as "vacant-marketable" if it has an active assigned viewing link.
+The bot doesn't need to know which case applies — `viewing-request` handles it;
+`has_tenant` in the response tells you who was asked (true = tenant, false = host).
+
 ## Notes
 - **Phone format:** pass E.164-ish (`+852...`); Tenafy normalises digits.
 - **Idempotency:** each `viewing-request` mints a NEW invite. Don't retry on

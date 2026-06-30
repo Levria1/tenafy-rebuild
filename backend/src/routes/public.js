@@ -140,8 +140,20 @@ async function resolveMarketedUnit(pool, orgId, unitId) {
       ORDER BY start_date DESC LIMIT 1`,
     [unitId]
   );
-  if (!lease || !Number(lease.viewing_enabled)) return { reason: 'not_marketing', unit };
-  return { unit, lease };
+  // Occupied + opted in → marketable (the tenant will be asked).
+  if (lease && Number(lease.viewing_enabled)) return { unit, lease };
+  // Vacant (no current lease) → marketable IF staff have set up a host link for
+  // it. No tenant to ask, so viewings are confirmed against the host directly.
+  if (!lease) {
+    const [[link]] = await pool.execute(
+      `SELECT employee_id FROM viewing_link
+        WHERE unit_id = ? AND status = 1 AND employee_id IS NOT NULL
+        ORDER BY created_at DESC LIMIT 1`,
+      [unitId]
+    );
+    if (link && link.employee_id) return { unit, lease: null };
+  }
+  return { reason: 'not_marketing', unit };
 }
 
 function stripToText(html) {
@@ -288,7 +300,7 @@ router.post('/viewing-request', async (req, res) => {
     const bookedIso = booking.candidates.map(c => new Date(c.when).toISOString().slice(0, 19));
     const invite = await mintInvite(req.pool, orgId, {
       unitId: unit_id, propertyId: unit.property_id,
-      employeeId: link.employee_id, leasingId: lease.id,
+      employeeId: link.employee_id, leasingId: lease ? lease.id : null,
       prospect: { name: prospect.name, phone: prospect.phone, email: prospect.email },
       prefillDate: bookedIso[0].slice(0, 10), prefillTimes: bookedIso, ttlDays: 7,
     });
