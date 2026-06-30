@@ -145,7 +145,12 @@ Calendar visual = **Google Calendar** (already gets confirmed viewings). No in-a
   - *Slice 2 ✅ built (pending deploy):* `GET /api/viewing-public/invite/:token` (prefill + busy windows) + `POST /invite/:token/submit` (1–3 candidates → one pending `viewing_booking` + `viewing_candidate` rows (migration 012) + soft-hold + tenant prompt) + frontend `/book/viewing/invite/[token]`.
   - *Remaining:* TaneChat handoff (bot side — templated prompt → read reply → call `viewing-link`).
 - **Phase C — Tenant confirm + auto-messages** — ✅ core built (pending deploy): `viewing_candidate` tap-to-confirm via `GET /confirm/:token` + `POST /confirm/:token/pick` (release others, confirm, gcal + `.ics` + confirmation emails) + frontend `/book/viewing/confirm/[token]`. Tenant prompt sent via email (`Viewing-Tenant-Confirm` template + fallback) **and WhatsApp** (plain-text with per-candidate links). *Remaining:* dedicated WhatsApp templates, prospect re-pick on full decline/expiry.
-- **Phase D — Change handling + dashboard** — status machine, cancel+rebook, staff reschedule, auto-expire, the filterable list dashboard. *(not built)*
+- **Phase D — Change handling + dashboard** — ✅ built (pending deploy):
+  - Staff `PATCH /api/viewing/bookings/:id/cancel` (release candidates + drop gcal event + notify prospect & tenant via email/WhatsApp) and `POST /bookings/:id/reschedule` (cancel + `mintInvite` fresh prospect link + notify). Shared services `viewingNotify.sendViewingMail` + `viewingInvite.mintInvite` (also used by `public.js`).
+  - `GET /bookings` returns `awaiting` + `source` + `candidate_times`, with `awaiting`/`source`/`q` filters.
+  - Auto-expire: the hourly auto-decline cron now releases tentative candidates + clears `awaiting` on stale invite bookings (guarded for pre-012 org DBs).
+  - Dashboard (`property/viewings/bookings`): "waiting on" tags, proposed-times count + list, source/awaiting filters, Reschedule action (modal shows the fresh link to copy).
+  - *Remaining*: prospect auto re-pick message on cron expiry (cron releases holds but doesn't yet message the prospect); dedicated `Viewing-Reschedule` WhatsApp/email templates (fallbacks in place).
 
 ---
 

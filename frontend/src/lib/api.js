@@ -603,6 +603,7 @@ export const viewingApi = {
   listAllBookings: (params) => api.get('/api/viewing/bookings', { params }),
   getBooking: (id) => api.get(`/api/viewing/bookings/${id}`),
   cancelBooking: (id) => api.patch(`/api/viewing/bookings/${id}/cancel`),
+  rescheduleBooking: (id) => api.post(`/api/viewing/bookings/${id}/reschedule`),
   createManualBooking: (data) => api.post('/api/viewing/bookings/manual', data),
 };
 

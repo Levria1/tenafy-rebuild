@@ -16,6 +16,10 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { getMasterPool } = require('../config/poolRegistry');
 const { KIND_LINK } = require('../middleware/viewingTokenAuth');
+const { deleteViewingEvent } = require('../services/googleCalendar');
+const { sendWhatsApp } = require('../services/whatsappService');
+const { sendViewingMail } = require('../services/viewingNotify');
+const { mintInvite } = require('../services/viewingInvite');
 
 router.use(authenticate);
 
@@ -28,6 +32,78 @@ function newId() {
 }
 function newLinkToken() {
   return 'vbk_' + crypto.randomBytes(24).toString('hex');
+}
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function formatWhen(dt) {
+  try {
+    return new Date(dt).toLocaleString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+    });
+  } catch { return String(dt); }
+}
+function employeeDisplay(b) {
+  return [b.employee_first_name, b.employee_last_name].filter(Boolean).join(' ') || b.employee_email || '';
+}
+
+// Load a booking with everything cancel / reschedule need: host (gcal),
+// tenant (email + phone), unit/property. Org-scoped.
+async function loadBookingForAction(pool, orgId, id) {
+  const [rows] = await pool.execute(
+    `SELECT vb.*, u.name AS unit_name,
+            p.display_name AS property_name, p.street_address, p.city, p.state,
+            usr.email AS employee_email, usr.google_calendar_id AS employee_google_calendar_id,
+            usr.first_name AS employee_first_name, usr.last_name AS employee_last_name,
+            t.email AS tenant_email, t.phone AS tenant_phone,
+            t.first_name AS tenant_first_name, t.last_name AS tenant_last_name
+     FROM viewing_booking vb
+     JOIN unit u ON vb.unit_id = u.id
+     JOIN property p ON vb.property_id = p.id
+     JOIN user usr ON vb.employee_id = usr.id
+     LEFT JOIN tenant t ON vb.tenant_id = t.id
+     WHERE vb.id = ? AND p.org_id = ? LIMIT 1`,
+    [id, orgId]
+  );
+  return rows[0] || null;
+}
+
+// Mark a booking cancelled: release tentative candidates, drop the Google
+// Calendar event (if confirmed), set status=3. Notifications are separate.
+async function cancelBookingRow(pool, b) {
+  await pool.execute(`UPDATE viewing_candidate SET status = 0 WHERE booking_id = ? AND status = 1`, [b.id]);
+  await pool.execute(`UPDATE viewing_booking SET status = 3, awaiting = NULL WHERE id = ?`, [b.id]);
+  if (b.gcal_event_id && b.employee_google_calendar_id) {
+    deleteViewingEvent({ calendarId: b.employee_google_calendar_id, gcalEventId: b.gcal_event_id })
+      .catch(e => console.error('[viewing] gcal delete failed:', e.message));
+  }
+}
+
+// Notify prospect + tenant that a viewing was cancelled (email + WhatsApp).
+function notifyCancelled(pool, orgId, b) {
+  const when = formatWhen(b.proposed_datetime);
+  const vars = {
+    '%Viewer Name%': b.viewer_name || '', '%Viewing Date%': when,
+    '%Unit Name%': b.unit_name || '', '%Property Name%': b.property_name || '',
+    '%Property Address%': [b.street_address, b.city, b.state].filter(Boolean).join(', '),
+    '%Host Name%': employeeDisplay(b),
+  };
+  const html = `<p>The viewing of <strong>${escapeHtml(b.unit_name)}</strong> at
+    <strong>${escapeHtml(b.property_name)}</strong> on <strong>${escapeHtml(when)}</strong>
+    has been cancelled by the property team.</p>`;
+  for (const to of [b.viewer_email, b.tenant_email].filter(Boolean)) {
+    sendViewingMail(pool, orgId, {
+      templateType: 'Viewing-Cancelled', variables: vars,
+      fallback: { subject: `Viewing cancelled: ${b.unit_name}`, html },
+      mailOpts: { to },
+    }).catch(e => console.error('[viewing] cancel email failed:', e.message));
+  }
+  const waText = `Your viewing of ${b.unit_name} at ${b.property_name} on ${when} has been cancelled by the property team.`;
+  for (const ph of [b.viewer_phone, b.tenant_phone].filter(Boolean)) {
+    sendWhatsApp(pool, orgId, ph, waText).catch(e => console.error('[viewing] cancel WhatsApp failed:', e.message));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +340,7 @@ router.get('/unit/:unitId/bookings', async (req, res) => {
 router.get('/bookings', async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { status, employee_id, property_id, unit_id, from, to } = req.query;
+    const { status, employee_id, property_id, unit_id, from, to, awaiting, source, q } = req.query;
     const limit = Math.min(parseInt(req.query.limit || '100', 10) || 100, 500);
 
     const where = ['p.org_id = ?'];
@@ -285,16 +361,26 @@ router.get('/bookings', async (req, res) => {
     if (unit_id)     { where.push('vb.unit_id = ?');     params.push(unit_id); }
     if (from)        { where.push('vb.proposed_datetime >= ?'); params.push(from); }
     if (to)          { where.push('vb.proposed_datetime <= ?'); params.push(to + ' 23:59:59'); }
+    if (awaiting)    { where.push('vb.awaiting = ?'); params.push(awaiting); }
+    if (source)      { where.push('vb.source = ?');   params.push(source); }
+    if (q) {
+      where.push('(vb.viewer_name LIKE ? OR vb.viewer_email LIKE ? OR vb.viewer_phone LIKE ?)');
+      const like = `%${q}%`;
+      params.push(like, like, like);
+    }
 
     const [rows] = await req.pool.execute(
       `SELECT vb.id, vb.viewer_name, vb.viewer_email, vb.viewer_phone, vb.viewer_message,
               vb.proposed_datetime, vb.duration_minutes, vb.created_at,
-              vb.tenant_decision, vb.employee_decision, vb.status, vb.source,
+              vb.tenant_decision, vb.employee_decision, vb.status, vb.source, vb.awaiting,
               vb.unit_id, vb.property_id, vb.employee_id,
               u.name AS unit_name,
               p.display_name AS property_name,
               usr.first_name AS employee_first_name,
-              usr.last_name AS employee_last_name
+              usr.last_name AS employee_last_name,
+              (SELECT GROUP_CONCAT(vc.proposed_datetime ORDER BY vc.proposed_datetime SEPARATOR '|')
+                 FROM viewing_candidate vc
+                WHERE vc.booking_id = vb.id AND vc.status IN (1, 2)) AS candidate_times
        FROM viewing_booking vb
        JOIN unit u     ON vb.unit_id = u.id
        JOIN property p ON vb.property_id = p.id
@@ -318,6 +404,8 @@ router.get('/bookings', async (req, res) => {
       employee_decision: r.employee_decision,
       status: r.status,
       source: r.source,
+      awaiting: r.awaiting || null,
+      candidate_times: r.candidate_times ? String(r.candidate_times).split('|') : [],
       unit: { id: String(r.unit_id), name: r.unit_name },
       property: { id: String(r.property_id), name: r.property_name },
       employee: {
@@ -367,24 +455,109 @@ router.get('/bookings/:id', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// PATCH /bookings/:id/cancel — staff-side cancel (for bookings in pending state)
+// PATCH /bookings/:id/cancel — staff-side cancel
+//
+// Releases any tentative candidates, removes the Google Calendar event (if
+// confirmed), sets status=3, and notifies the prospect + tenant (email + WA).
 // ---------------------------------------------------------------------------
 router.patch('/bookings/:id/cancel', async (req, res) => {
   try {
     const { id } = req.params;
-    const [rows] = await req.pool.execute(
-      `SELECT vb.status FROM viewing_booking vb
-       JOIN property p ON vb.property_id = p.id
-       WHERE vb.id = ? AND p.org_id = ? LIMIT 1`,
-      [id, req.user.orgId]
-    );
-    if (!rows.length) return fail(res, 'Booking not found', 404);
-    if (rows[0].status === 3) return ok(res, { already: true });
-    await req.pool.execute('UPDATE viewing_booking SET status = 3 WHERE id = ?', [id]);
+    const booking = await loadBookingForAction(req.pool, req.user.orgId, id);
+    if (!booking) return fail(res, 'Booking not found', 404);
+    if (Number(booking.status) === 3) return ok(res, { already: true });
+
+    await cancelBookingRow(req.pool, booking);
+    notifyCancelled(req.pool, req.user.orgId, booking);
+
     ok(res, { id: String(id), status: 3 });
   } catch (err) {
     console.error('[viewing] cancel booking error:', err);
     fail(res, 'Failed to cancel booking');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /bookings/:id/reschedule — staff cancel + re-issue a fresh prospect link
+//
+// Cancels the current booking (releasing candidates + calendar) WITHOUT the
+// generic "cancelled" blast, then mints a new per-prospect invite (same unit,
+// host, prospect) and sends the prospect a "let's find a new time" message with
+// the link. The tenant is told the previous time was cancelled. Returns the URL
+// so staff can also copy/send it manually.
+// ---------------------------------------------------------------------------
+router.post('/bookings/:id/reschedule', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const booking = await loadBookingForAction(req.pool, orgId, id);
+    if (!booking) return fail(res, 'Booking not found', 404);
+    if (Number(booking.status) === 3) return fail(res, 'Booking is already cancelled', 409);
+
+    // Cancel the existing booking (release candidates + drop calendar event).
+    await cancelBookingRow(req.pool, booking);
+
+    // Mint a fresh invite for the same prospect/unit/host.
+    const prefillDate = booking.proposed_datetime
+      ? new Date(booking.proposed_datetime).toISOString().slice(0, 10) : null;
+    const invite = await mintInvite(req.pool, orgId, {
+      unitId: booking.unit_id,
+      propertyId: booking.property_id,
+      employeeId: booking.employee_id,
+      leasingId: booking.leasing_id,
+      prospect: { name: booking.viewer_name, phone: booking.viewer_phone, email: booking.viewer_email },
+      prefillDate,
+      ttlDays: 7,
+    });
+
+    // Prospect: invite to re-pick (email + WhatsApp).
+    const vars = {
+      '%Viewer Name%': booking.viewer_name || '',
+      '%Unit Name%': booking.unit_name || '',
+      '%Property Name%': booking.property_name || '',
+      '%Booking URL%': invite.url,
+    };
+    const html = `<p>Hi ${escapeHtml(booking.viewer_name)},</p>
+      <p>We need to reschedule your viewing of <strong>${escapeHtml(booking.unit_name)}</strong> at
+      <strong>${escapeHtml(booking.property_name)}</strong>. Please pick new times here:</p>
+      <p><a href="${invite.url}">${invite.url}</a></p>`;
+    if (booking.viewer_email) {
+      sendViewingMail(req.pool, orgId, {
+        templateType: 'Viewing-Reschedule', variables: vars,
+        fallback: { subject: `Let's reschedule your viewing — ${booking.unit_name}`, html },
+        mailOpts: { to: booking.viewer_email },
+      }).catch(e => console.error('[viewing] reschedule email failed:', e.message));
+    }
+    if (booking.viewer_phone) {
+      const waText = `Hi ${booking.viewer_name}, we need to reschedule your viewing of ${booking.unit_name} at ${booking.property_name}. Please pick new times here:\n${invite.url}`;
+      sendWhatsApp(req.pool, orgId, booking.viewer_phone, waText)
+        .catch(e => console.error('[viewing] reschedule WhatsApp failed:', e.message));
+    }
+
+    // Tenant: the previous time is cancelled (no link — the prospect re-picks).
+    if (booking.tenant_email || booking.tenant_phone) {
+      const when = formatWhen(booking.proposed_datetime);
+      const tHtml = `<p>The viewing of <strong>${escapeHtml(booking.unit_name)}</strong> previously set for
+        <strong>${escapeHtml(when)}</strong> has been cancelled. We'll be in touch with a new time shortly.</p>`;
+      if (booking.tenant_email) {
+        sendViewingMail(req.pool, orgId, {
+          templateType: 'Viewing-Cancelled',
+          variables: { '%Unit Name%': booking.unit_name || '', '%Viewing Date%': when, '%Property Name%': booking.property_name || '' },
+          fallback: { subject: `Viewing rescheduled: ${booking.unit_name}`, html: tHtml },
+          mailOpts: { to: booking.tenant_email },
+        }).catch(e => console.error('[viewing] reschedule tenant email failed:', e.message));
+      }
+      if (booking.tenant_phone) {
+        sendWhatsApp(req.pool, orgId, booking.tenant_phone,
+          `The viewing of ${booking.unit_name} set for ${when} has been cancelled — a new time will follow shortly.`)
+          .catch(e => console.error('[viewing] reschedule tenant WhatsApp failed:', e.message));
+      }
+    }
+
+    ok(res, { id: String(id), status: 3, invite_url: invite.url, invite_token: invite.token });
+  } catch (err) {
+    console.error('[viewing] reschedule booking error:', err);
+    fail(res, 'Failed to reschedule booking');
   }
 });
 

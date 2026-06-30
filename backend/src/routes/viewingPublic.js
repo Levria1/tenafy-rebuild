@@ -25,46 +25,8 @@ const {
 const { buildViewingIcs } = require('../utils/ics');
 const { createViewingEvent, deleteViewingEvent, getFreeBusy } = require('../services/googleCalendar');
 const { sendWhatsApp } = require('../services/whatsappService');
+const { sendViewingMail } = require('../services/viewingNotify');
 
-/**
- * Send a viewing-related email.
- *
- * If a template of the given `templateType` exists in the org's email_template
- * table, its subject + body are used (with variables substituted). If not, the
- * provided `fallback` { subject, html } is used.
- *
- * In both cases the email is sent via the org's default SMTP account when one
- * is configured; otherwise it falls back to the env-based sendMail.
- *
- * Returns a Promise — caller should .catch() for fire-and-forget.
- */
-async function sendViewingMail(pool, orgId, { templateType, variables, fallback, mailOpts }) {
-  let subject = fallback.subject;
-  let html    = fallback.html;
-
-  if (templateType) {
-    try {
-      const template = await loadTemplate(pool, orgId, templateType);
-      if (template && template.template_content) {
-        subject = substituteVariables(template.subject || subject, variables || {});
-        let body = substituteVariables(template.template_content, variables || {});
-        // If the stored body is plain text, convert newlines to <br>
-        if (!/<[a-z][\s\S]*>/i.test(body)) body = body.replace(/\n/g, '<br>\n');
-        html = wrapEmailHtml(body);
-        if (template.from && !mailOpts.from) mailOpts.from = template.from;
-      }
-    } catch (e) {
-      console.error(`[viewing-public] template load failed (${templateType}):`, e.message);
-    }
-  }
-
-  const finalOpts = { ...mailOpts, subject, html };
-  const smtpAccount = await findSmtpAccount(pool, orgId, finalOpts.from);
-  if (smtpAccount) {
-    return sendMailWithAccount(smtpAccount, finalOpts);
-  }
-  return sendMail(finalOpts);
-}
 const {
   resolveOrgByViewingToken,
   resolveOrgByActionToken,

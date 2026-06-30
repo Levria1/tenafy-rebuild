@@ -637,6 +637,29 @@ async function promoteServiceTasksForOrg(pool, orgId) {
 
 async function autoDeclineStaleViewingsForOrg(pool, /* orgId */) {
   // status 0 = pending, 2 = declined
+  // Release any tentative candidates + clear `awaiting` on the bookings about
+  // to be declined, so an expired invite doesn't leave dangling soft-holds.
+  // viewing_candidate + the `awaiting` column only exist post-migration 012,
+  // so guard: orgs that haven't applied 012 yet simply skip this.
+  try {
+    await pool.execute(
+      `UPDATE viewing_candidate vc
+         JOIN viewing_booking vb ON vc.booking_id = vb.id
+          SET vc.status = 0
+        WHERE vc.status = 1 AND vb.status = 0
+          AND vb.created_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)`
+    );
+    await pool.execute(
+      `UPDATE viewing_booking SET awaiting = NULL
+        WHERE status = 0 AND awaiting IS NOT NULL
+          AND created_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)`
+    );
+  } catch (err) {
+    if (!/doesn't exist|Unknown column|Unknown table/i.test(err.message)) {
+      console.error('[Scheduler] candidate release on auto-decline failed:', err.message);
+    }
+  }
+
   // Mark both tenant_decision and employee_decision as 2 (declined) so the
   // derived status is unambiguous.
   const [result] = await pool.execute(

@@ -6,6 +6,7 @@ const inquiryExtractor = require('../services/inquiryExtractor');
 const { searchUnits } = require('../services/unitSearch');
 const { getMasterPool } = require('../config/poolRegistry');
 const { KIND_INVITE } = require('../middleware/viewingTokenAuth');
+const { mintInvite } = require('../services/viewingInvite');
 const config = require('../config');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
@@ -94,30 +95,21 @@ router.post('/viewing-link', async (req, res) => {
       ? desired_date : null;
 
     // Mint the per-prospect invite (7-day TTL) + register the token for org resolution.
-    const token = 'vbi_' + crypto.randomBytes(24).toString('hex');
-    const inviteId = newId();
-    await req.pool.execute(
-      `INSERT INTO viewing_invite
-         (id, token, unit_id, property_id, employee_id, leasing_id,
-          prospect_name, prospect_phone, prospect_email, prefill_date, expires_at, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 7 DAY), 1, NOW())`,
-      [inviteId, token, unit_id, unit.property_id, link ? link.employee_id : null, lease.id,
-       (prospect.name || '').trim() || null, (prospect.phone || '').trim() || null,
-       (prospect.email || '').trim() || null, prefillDate]
-    );
-    await getMasterPool().execute(
-      `INSERT INTO viewing_link_registry (token, org_id, kind, status) VALUES (?, ?, ?, 1)`,
-      [token, String(orgId), KIND_INVITE]
-    );
-
-    const base = (config.frontendUrl || '').replace(/\/$/, '');
-    const [[row]] = await req.pool.execute('SELECT expires_at FROM viewing_invite WHERE id = ?', [inviteId]);
+    const invite = await mintInvite(req.pool, orgId, {
+      unitId: unit_id,
+      propertyId: unit.property_id,
+      employeeId: link ? link.employee_id : null,
+      leasingId: lease.id,
+      prospect: { name: prospect.name, phone: prospect.phone, email: prospect.email },
+      prefillDate,
+      ttlDays: 7,
+    });
     return ok(res, {
       available: true,
-      url: `${base}/book/viewing/invite/${token}`,
-      token,
+      url: invite.url,
+      token: invite.token,
       prefill_date: prefillDate,
-      expires_at: row ? row.expires_at : null,
+      expires_at: invite.expires_at,
       unit: { id: String(unit.id), name: unit.unit_name, property: unit.property_name },
     });
   } catch (err) {
