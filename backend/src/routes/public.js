@@ -7,6 +7,7 @@ const { searchUnits } = require('../services/unitSearch');
 const { getMasterPool } = require('../config/poolRegistry');
 const { KIND_INVITE } = require('../middleware/viewingTokenAuth');
 const { mintInvite } = require('../services/viewingInvite');
+const { createCandidateBooking } = require('../services/viewingBooking');
 const { loadTemplate, substituteVariables } = require('../services/emailService');
 const { validateBookingSlot } = require('../utils/viewingWindow');
 const config = require('../config');
@@ -253,40 +254,60 @@ router.post('/viewing-request', async (req, res) => {
     }
     const candidates = times.sort().slice(0, 3);
 
-    // A ready-to-send text block so the bot can show the times AND the link in
-    // one message. Naive parse keeps the HK wall-clock (server runs UTC).
-    const summaryText = candidates
-      .map((iso, i) => `${i + 1}. ${new Date(iso).toLocaleString('en-US', {
-        weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-      })}`)
-      .join('\n');
-
     // Assigned host: the unit's active staff-generated link's employee, if any.
     const [[link]] = await req.pool.execute(
-      `SELECT employee_id FROM viewing_link
-        WHERE unit_id = ? AND status = 1 AND employee_id IS NOT NULL
-        ORDER BY created_at DESC LIMIT 1`,
+      `SELECT vl.employee_id, u.email AS employee_email FROM viewing_link vl
+         LEFT JOIN user u ON u.id = vl.employee_id
+        WHERE vl.unit_id = ? AND vl.status = 1 AND vl.employee_id IS NOT NULL
+        ORDER BY vl.created_at DESC LIMIT 1`,
       [unit_id]
     );
+    if (!link || !link.employee_id) {
+      return ok(res, { available: false, reason: 'no_host',
+        message: 'No host is assigned for this unit yet.' });
+    }
 
-    const invite = await mintInvite(req.pool, orgId, {
-      unitId: unit_id,
-      propertyId: unit.property_id,
-      employeeId: link ? link.employee_id : null,
-      leasingId: lease.id,
-      prospect: { name: prospect.name, phone: prospect.phone, email: prospect.email },
-      prefillDate: candidates[0].slice(0, 10),
-      prefillTimes: candidates,
-      ttlDays: 7,
+    // Create the booking + candidates and prompt the tenant IMMEDIATELY (no wait
+    // on the prospect). Drop any time the host is busy; fail only if none free.
+    const booking = await createCandidateBooking(req.pool, orgId, {
+      unitId: unit_id, propertyId: unit.property_id,
+      unitName: unit.unit_name, propertyName: unit.property_name,
+      propertyAddress: [unit.street_address, unit.city, unit.state].filter(Boolean).join(', '),
+      employeeId: link.employee_id, employeeEmail: link.employee_email,
+      prospect: { name: prospect.name, email: prospect.email, phone: prospect.phone },
+      message: prospect.message || null,
+      candidates, onClash: 'drop',
     });
+    if (!booking.ok) {
+      return ok(res, { available: false, reason: 'no_free_times',
+        message: 'None of those times are available.', clashes: booking.clashes });
+    }
+
+    // Mint a review link (prefilled with the BOOKED times) and link it to the
+    // booking, so the prospect can review/edit (editing re-asks the tenant).
+    const bookedIso = booking.candidates.map(c => new Date(c.when).toISOString().slice(0, 19));
+    const invite = await mintInvite(req.pool, orgId, {
+      unitId: unit_id, propertyId: unit.property_id,
+      employeeId: link.employee_id, leasingId: lease.id,
+      prospect: { name: prospect.name, phone: prospect.phone, email: prospect.email },
+      prefillDate: bookedIso[0].slice(0, 10), prefillTimes: bookedIso, ttlDays: 7,
+    });
+    await req.pool.execute('UPDATE viewing_invite SET booking_id = ? WHERE id = ?', [booking.bookingId, invite.id]);
+    await req.pool.execute('UPDATE viewing_booking SET invite_id = ? WHERE id = ?', [invite.id, booking.bookingId]);
+
+    // Ready-to-send text block of the BOOKED times (HK wall-clock).
+    const summaryText = booking.candidates.map((c, i) => `${i + 1}. ${c.label}`).join('\n');
 
     return ok(res, {
       available: true,
       review_url: invite.url,
       token: invite.token,
+      booking_id: booking.bookingId,
+      has_tenant: booking.hasTenant,
       expires_at: invite.expires_at,
-      candidates,
+      candidates: booking.candidates.map(c => ({ label: c.label })),
       summary_text: summaryText,
+      dropped: booking.dropped && booking.dropped.length ? booking.dropped : undefined,
       invalid: invalid.length ? invalid : undefined,
       unit: { id: String(unit.id), name: unit.unit_name, property: unit.property_name },
     });

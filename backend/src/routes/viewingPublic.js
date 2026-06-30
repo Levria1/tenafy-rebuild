@@ -26,6 +26,7 @@ const { buildViewingIcs } = require('../utils/ics');
 const { createViewingEvent, deleteViewingEvent, getFreeBusy } = require('../services/googleCalendar');
 const { sendWhatsApp } = require('../services/whatsappService');
 const { sendViewingMail } = require('../services/viewingNotify');
+const { createCandidateBooking, cancelCandidateBookingRow } = require('../services/viewingBooking');
 
 const {
   resolveOrgByViewingToken,
@@ -1221,8 +1222,19 @@ router.get('/invite/:token', resolveOrgByInviteToken, async (req, res) => {
   try {
     const invite = await findInviteByToken(req.pool, req.viewingToken);
     if (!invite) return fail(res, 'Link not found or no longer active', 404);
-    if (Number(invite.status) !== 1 || (invite.booking_id != null)) {
+    if (Number(invite.status) !== 1) {
       return res.status(200).json({ code: 200, data: { state: 'used' } });
+    }
+    // If this invite already created a booking (the bot sent the times to the
+    // tenant immediately), derive state from it. The prospect can still EDIT
+    // while it's pending — that re-asks the tenant.
+    let alreadySent = false;
+    if (invite.booking_id != null) {
+      const [[bk]] = await req.pool.execute('SELECT status FROM viewing_booking WHERE id = ? LIMIT 1', [invite.booking_id]);
+      const st = bk ? Number(bk.status) : null;
+      if (st === 1) return res.status(200).json({ code: 200, data: { state: 'confirmed' } });
+      if (st === 2 || st === 3) return res.status(200).json({ code: 200, data: { state: 'closed' } });
+      alreadySent = st === 0;
     }
     if (invite.expires_at && new Date(invite.expires_at).getTime() < Date.now()) {
       return res.status(200).json({ code: 200, data: { state: 'expired' } });
@@ -1266,6 +1278,7 @@ router.get('/invite/:token', resolveOrgByInviteToken, async (req, res) => {
     ok(res, {
       ready: true,
       state: 'active',
+      already_sent: alreadySent,
       prefill_date: invite.prefill_date ? toDateString(new Date(invite.prefill_date)) : null,
       prefill_times: prefillTimes,
       max_candidates: INVITE_MAX_CANDIDATES,
@@ -1310,7 +1323,7 @@ router.post('/invite/:token/submit', postLimiter, resolveOrgByInviteToken, async
       return fail(res, 'Please propose at least one time', 400);
     }
 
-    // Normalise + dedupe candidate datetimes, cap at the max.
+    // Normalise + dedupe + window-validate candidate datetimes.
     const seen = new Set();
     const times = [];
     for (const c of candidates) {
@@ -1322,15 +1335,14 @@ router.post('/invite/:token/submit', postLimiter, resolveOrgByInviteToken, async
       const when = new Date(s);
       if (isNaN(when.getTime())) return fail(res, 'Invalid date/time', 400);
       if (when.getTime() < Date.now()) return fail(res, 'Please propose a future time', 400);
-      times.push({ raw: s, when });
+      times.push(s);
     }
     if (times.length > INVITE_MAX_CANDIDATES) {
       return fail(res, `Please propose at most ${INVITE_MAX_CANDIDATES} times`, 400);
     }
-    times.sort((a, b) => a.when - b.when);
 
     const invite = await findInviteByToken(req.pool, req.viewingToken);
-    if (!invite || Number(invite.status) !== 1 || invite.booking_id != null) {
+    if (!invite || Number(invite.status) !== 1) {
       return fail(res, 'This link is no longer active', 410);
     }
     if (invite.expires_at && new Date(invite.expires_at).getTime() < Date.now()) {
@@ -1340,162 +1352,48 @@ router.post('/invite/:token/submit', postLimiter, resolveOrgByInviteToken, async
       return fail(res, 'This link is not ready yet — no host has been assigned. Please try again shortly.', 409);
     }
 
-    // Conflict-check every candidate against the host's bookings + Google calendar.
-    const rangeStart = times[0].when;
-    const rangeEnd = new Date(times[times.length - 1].when.getTime() + 30 * 60 * 1000);
-    const { conflicts, bufferMin, googleBusy } = await findBlockingBookings(req.pool, {
-      employeeId: invite.employee_id, unitId: invite.unit_id, rangeStart, rangeEnd,
-    });
-    const clashes = [];
-    for (const t of times) {
-      const end = new Date(t.when.getTime() + 30 * 60 * 1000);
-      const hit = conflicts.find(b => overlapsWithBuffer(t.when, end, b, bufferMin))
-        || intersectsBusy(t.when, end, googleBusy);
-      if (hit) clashes.push(formatWhen(t.when));
-    }
-    if (clashes.length) {
-      return fail(res, `These times are no longer available: ${clashes.join('; ')}. Please pick others.`, 409);
-    }
-
-    // Occupancy — prompt the tenant if occupied, else the host.
-    const lease = await findActiveLeaseForUnit(req.pool, invite.unit_id);
-    const hasTenant = Boolean(lease && lease.tenant_id && lease.email);
-
-    // Capture this prospect as an inquiry (best-effort).
-    let inquiryId = null;
-    try {
-      inquiryId = await createInquiryForViewer(req.pool, req.orgId, {
-        name: prospect_name, email: prospect_email, phone: prospect_phone, message,
-        unitId: invite.unit_id, propertyId: invite.property_id,
-        unitName: invite.unit_name, propertyName: invite.property_name, source: 'chatbot',
-      });
-    } catch (e) {
-      console.error('[viewing-public] invite inquiry create failed:', e.message);
-    }
-
-    const bookingId = newId();
-    const employeeTok = newActionToken();
-    const manageTok = newActionToken();
-    const icsUid = `${bookingId}@tenafy-viewing`;
-    const firstWhen = times[0].when;
-
-    // Build candidate rows + confirm tokens up front so we can register them all.
-    const candidateRows = times.map(t => ({ id: newId(), token: newActionToken(), when: t.when }));
-
-    // Register employee/manage + every candidate confirm token in master.
-    const registryRows = [
-      [employeeTok, String(req.orgId), KIND_ACTION, 1],
-      [manageTok, String(req.orgId), KIND_MANAGE, 1],
-      ...candidateRows.map(c => [c.token, String(req.orgId), KIND_ACTION, 1]),
-    ];
-    await getMasterPool().query(
-      'INSERT INTO viewing_link_registry (token, org_id, kind, status) VALUES ?', [registryRows]
-    );
-
-    const conn = await req.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      await conn.execute(
-        `INSERT INTO viewing_booking (
-          id, link_id, unit_id, property_id, employee_id,
-          leasing_id, tenant_id, viewer_contact_id, inquiry_id, invite_id,
-          viewer_name, viewer_email, viewer_phone, viewer_message,
-          proposed_datetime, duration_minutes,
-          tenant_action_token, employee_action_token, viewer_manage_token,
-          tenant_decision, employee_decision, status, awaiting, source, ics_uid
-         ) VALUES (?, NULL, ?, ?, ?,  ?, ?, NULL, ?, ?,  ?, ?, ?, ?,  ?, 30,  NULL, ?, ?,  ?, 0, 0, ?, 'invite', ?)`,
-        [
-          bookingId, invite.unit_id, invite.property_id, invite.employee_id,
-          lease ? lease.leasing_id : null, lease ? lease.tenant_id : null,
-          inquiryId, invite.id,
-          prospect_name, prospect_email, prospect_phone, message || null,
-          firstWhen,
-          employeeTok, manageTok,
-          hasTenant ? 0 : 3,
-          hasTenant ? 'tenant' : 'prospect',
-          icsUid,
-        ]
+    // Supersede: if this invite already created a booking, the prospect is
+    // EDITING. If the tenant already picked, it's locked. Otherwise cancel the
+    // pending booking FIRST (so its slot doesn't self-conflict), then re-create.
+    let supersedeOldId = null;
+    if (invite.booking_id != null) {
+      const [[existing]] = await req.pool.execute(
+        'SELECT id, status FROM viewing_booking WHERE id = ? LIMIT 1', [invite.booking_id]
       );
-      for (const c of candidateRows) {
-        await conn.execute(
-          `INSERT INTO viewing_candidate (id, booking_id, proposed_datetime, duration_minutes, confirm_token, status)
-           VALUES (?, ?, ?, 30, ?, 1)`,
-          [c.id, bookingId, c.when, c.token]
-        );
+      if (existing && Number(existing.status) === 1) {
+        return fail(res, 'A time has already been confirmed for this viewing.', 409);
       }
-      // Burn the invite so the link can't be reused.
-      await conn.execute(
-        `UPDATE viewing_invite SET status = 0, booking_id = ? WHERE id = ?`,
-        [bookingId, invite.id]
-      );
-      await conn.commit();
-    } catch (e) {
-      try { await conn.rollback(); } catch {}
-      throw e;
-    } finally {
-      conn.release();
+      if (existing && Number(existing.status) === 0) {
+        supersedeOldId = String(existing.id);
+        await cancelCandidateBookingRow(req.pool, supersedeOldId, null);
+      }
     }
 
-    // --- Prompt the tenant (or host) to pick a time (fire-and-forget) ---
-    const propertyName = invite.property_name;
-    const unitName = invite.unit_name;
-    const candidateLinks = candidateRows.map(c => ({
-      when: c.when,
-      label: formatWhen(c.when),
-      url: buildUrl(`/book/viewing/confirm/${c.token}`),
-    }));
-
-    const buttonsHtml = candidateLinks.map(c =>
-      `<a href="${c.url}" style="background:#1677ff;color:#fff;padding:10px 18px;border-radius:4px;
-        text-decoration:none;display:inline-block;margin:4px 0;">${escapeHtml(c.label)}</a>`
-    ).join('<br>');
-    const fallbackPromptHtml = `
-      <p>Hi,</p>
-      <p><strong>${escapeHtml(prospect_name)}</strong> would like to view
-         <strong>${escapeHtml(unitName)}</strong> at <strong>${escapeHtml(propertyName)}</strong>.</p>
-      <p>Please tap the time that works best for you — the others will be released automatically:</p>
-      <p>${buttonsHtml}</p>
-      <p style="color:#8c8c8c;font-size:12px;">If the buttons don't work, copy a link into your browser:<br>
-        ${candidateLinks.map(c => `${escapeHtml(c.label)}: ${c.url}`).join('<br>')}</p>`;
-
-    const promptVars = {
-      '%Viewer Name%':   prospect_name || '',
-      '%Unit Name%':     unitName || '',
-      '%Property Name%': propertyName || '',
-      '%Property Address%': [invite.street_address, invite.city, invite.state].filter(Boolean).join(', '),
-      '%Candidate Buttons%': buttonsHtml,
-      '%Candidate Times%': candidateLinks.map(c => c.label).join(', '),
-    };
-
-    const promptEmail = hasTenant ? lease.email : invite.employee_email;
-    if (promptEmail) {
-      sendViewingMail(req.pool, req.orgId, {
-        templateType: 'Viewing-Tenant-Confirm',
-        variables: promptVars,
-        fallback: {
-          subject: `Choose a viewing time — ${unitName}`,
-          html: fallbackPromptHtml,
-        },
-        mailOpts: { to: promptEmail },
-      }).catch(e => console.error('[viewing-public] tenant-confirm email failed:', e.message));
+    const result = await createCandidateBooking(req.pool, req.orgId, {
+      unitId: invite.unit_id, propertyId: invite.property_id,
+      unitName: invite.unit_name, propertyName: invite.property_name,
+      propertyAddress: [invite.street_address, invite.city, invite.state].filter(Boolean).join(', '),
+      employeeId: invite.employee_id, employeeEmail: invite.employee_email,
+      prospect: { name: prospect_name, email: prospect_email, phone: prospect_phone },
+      message, candidates: times, inviteId: invite.id, onClash: 'reject',
+    });
+    if (!result.ok) {
+      return fail(res, `These times are no longer available: ${result.clashes.join('; ')}. Please pick others.`, 409);
     }
 
-    // WhatsApp the tenant (plain text with links). Silent no-op if unconfigured.
-    const promptPhone = hasTenant ? (lease.phone || null) : null;
-    if (promptPhone) {
-      const waText =
-        `${prospect_name} would like to view ${unitName} at ${propertyName}.\n\n` +
-        `Please tap the time that works best for you — the others are released automatically:\n` +
-        candidateLinks.map(c => `• ${c.label}\n${c.url}`).join('\n');
-      sendWhatsApp(req.pool, req.orgId, promptPhone, waText)
-        .catch(e => console.error('[viewing-public] tenant-confirm WhatsApp failed:', e.message));
+    // Point the invite at the (new) booking and keep it active so the prospect
+    // can still edit until the tenant picks. Link the superseded booking.
+    await req.pool.execute('UPDATE viewing_invite SET booking_id = ? WHERE id = ?', [result.bookingId, invite.id]);
+    if (supersedeOldId) {
+      await req.pool.execute('UPDATE viewing_booking SET superseded_by = ? WHERE id = ?', [result.bookingId, supersedeOldId]);
     }
 
     ok(res, {
-      booking_id: bookingId,
+      booking_id: result.bookingId,
       status: 'awaiting_tenant',
-      has_tenant: hasTenant,
-      candidates: candidateLinks.map(c => ({ when: c.when, label: c.label })),
+      has_tenant: result.hasTenant,
+      superseded: Boolean(supersedeOldId),
+      candidates: result.candidates,
     });
   } catch (err) {
     console.error('[viewing-public] POST /invite/:token/submit error:', err);

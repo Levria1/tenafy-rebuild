@@ -88,6 +88,7 @@ export default function ViewingInvitePage() {
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(null);
   const [fromChat, setFromChat] = useState(false);
+  const [alreadySent, setAlreadySent] = useState(false);
   const [form] = Form.useForm();
   const candidateValues = Form.useWatch('candidates', form);
 
@@ -101,6 +102,7 @@ export default function ViewingInvitePage() {
         // Prefill prospect + candidate times. If the bot already parsed times
         // from chat (prefill_times), load them so the prospect can review/fix.
         if (d.ready) {
+          setAlreadySent(Boolean(d.already_sent));
           const parsedTimes = Array.isArray(d.prefill_times) ? d.prefill_times : [];
           let candidates;
           if (parsedTimes.length) {
@@ -183,9 +185,11 @@ export default function ViewingInvitePage() {
     return (
       <Result
         status="success"
-        title="Times sent!"
+        title={success.superseded ? 'Times updated!' : 'Times sent!'}
         subTitle={
-          success.has_tenant
+          success.superseded
+            ? 'Thanks! We\'ve re-asked the current occupant with your updated times and will confirm shortly.'
+            : success.has_tenant
             ? 'Thanks! The current occupant will pick whichever of your times works best, and we\'ll confirm the viewing with you shortly.'
             : 'Thanks! Our team will confirm one of your proposed times shortly.'
         }
@@ -222,11 +226,17 @@ export default function ViewingInvitePage() {
 
       <Alert
         style={{ marginBottom: 16 }}
-        type={fromChat ? 'warning' : 'info'}
+        type={fromChat || alreadySent ? 'warning' : 'info'}
         showIcon
-        message={fromChat ? 'Please review the times from your chat' : 'Pick up to 3 times that work for you'}
+        message={
+          alreadySent ? 'These times were already sent to the occupant'
+            : fromChat ? 'Please review the times from your chat'
+            : 'Pick up to 3 times that work for you'
+        }
         description={
-          fromChat
+          alreadySent
+            ? 'The current occupant has been asked to pick one of these times. You can still change them here — that will re-ask them with the updated times. Viewings run Monday–Saturday, 11:00 AM – 7:00 PM.'
+            : fromChat
             ? 'We filled these in from your messages — please double-check them and fix any that are wrong before sending. The current occupant will then choose whichever suits them. Viewings run Monday–Saturday, 11:00 AM – 7:00 PM.'
             : 'The current occupant will choose whichever one suits them, then we\'ll confirm. Viewings run Monday–Saturday, 11:00 AM – 7:00 PM.'
         }
@@ -301,7 +311,7 @@ export default function ViewingInvitePage() {
         </Form.Item>
         <Form.Item>
           <Button type="primary" htmlType="submit" loading={submitting} size="large" block>
-            Send my times
+            {alreadySent ? 'Update times' : 'Send my times'}
           </Button>
         </Form.Item>
       </Form>

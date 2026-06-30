@@ -18,18 +18,24 @@ unit resolution, time parsing). Tenafy owns the *wording* (templates), the
 3. Bot → GET  /api/public/viewing-prompt?unit_id=...        ── get the prompt
    Bot sends the returned `prompt` text verbatim to the prospect.
 4. Prospect replies with free text ("Thu 3pm or Fri morning").
-5. Bot PARSES that into ISO times, then ECHOES them back to confirm:
-   "Got it — Thu Jul 3 3:00 PM or Fri Jul 4 11:00 AM, correct?"
-6. Bot → POST /api/public/viewing-request                    ── create + review
-   Bot sends the returned `review_url` to the prospect:
-   "Please confirm your times here: <review_url>"
-7. Prospect opens the link, the times are PRE-FILLED, fixes any mis-parse,
-   and submits. Tenafy then notifies the current tenant to pick one.
-   (Everything from here — tenant pick, confirmations, calendar — is Tenafy.)
+5. Bot PARSES that into ISO times → POST /api/public/viewing-request.
+   Tenafy IMMEDIATELY creates the booking and asks the current tenant to pick
+   a time. No wait on the prospect.
+6. Bot sends the prospect `summary_text` + `review_url` so they can SEE what
+   was sent and fix a mis-parse if needed:
+   "Got these times, sent to the occupant:
+    1. Thu Jul 3, 3:00 PM
+    2. Fri Jul 4, 11:00 AM
+    Need to change them? <review_url>"
+7. Tenant taps a time → confirmed → prospect + host notified + calendar/.ics.
+   If the prospect EDITS on review_url first, that supersedes: the old request
+   is cancelled and the tenant is re-asked with the new times (rejected if the
+   tenant already picked).
 ```
 
-Step 5's echo + step 7's review page are the **two safety nets** against a
-parsing mistake: the prospect sees the parsed times in chat AND on the page.
+So the prospect doesn't gate the flow — the tenant is asked right away — but
+the prospect still gets a review link as a safety net (editing re-asks the
+tenant). Everything from the tenant's tap onward is Tenafy.
 
 ---
 
@@ -54,7 +60,8 @@ viewings (or hand to a human).
 
 ### POST `/api/public/viewing-request`
 Submit the parsed times. Tenafy validates them (Mon–Sat 11:00–19:00, future,
-max 3, de-duped), mints a prefilled invite, and returns a **review link**.
+max 3, de-duped), **creates the booking and asks the tenant immediately**,
+dropping any time the host is busy, and returns a review link for the prospect.
 
 ```json
 // request
@@ -68,12 +75,16 @@ max 3, de-duped), mints a prefilled invite, and returns a **review link**.
   "review_url": "https://platform.tenafy.com/book/viewing/invite/vbi_...",
   "token": "vbi_...",
   "expires_at": "2026-07-07T...",
-  "candidates": ["2026-07-03T15:00:00","2026-07-04T11:00:00"],  // accepted (sorted, ≤3)
+  "booking_id": "...",
+  "has_tenant": true,                                            // false → host was asked instead
+  "candidates": [ { "label":"Thu, Jul 3, 3:00 PM" }, { "label":"Fri, Jul 4, 11:00 AM" } ],  // booked
   "summary_text": "1. Thu, Jul 3, 3:00 PM\n2. Fri, Jul 4, 11:00 AM",  // ready to paste into the message
+  "dropped": [ "Sat, Jul 5, 2:00 PM" ],                         // host busy → not booked (if any)
   "invalid": [ { "value":"2026-07-06T10:00", "reason":"Viewings are not available on Sundays" } ]
 }}
 200 { "code":200, "data": { "available": false, "reason": "not_marketing" } }
-400 { "code":400, "message":"No valid times", "invalid":[ ... ] }   // none usable
+   reason ∈ { "not_marketing", "unit_not_found", "no_host", "no_free_times" }
+400 { "code":400, "message":"No valid times", "invalid":[ ... ] }   // none parseable/in-window
 ```
 - Send `review_url` to the prospect, with `summary_text` above it so they see
   the parsed times **and** the link in one message, e.g.:
