@@ -69,12 +69,18 @@ max 3, de-duped), mints a prefilled invite, and returns a **review link**.
   "token": "vbi_...",
   "expires_at": "2026-07-07T...",
   "candidates": ["2026-07-03T15:00:00","2026-07-04T11:00:00"],  // accepted (sorted, ≤3)
+  "summary_text": "1. Thu, Jul 3, 3:00 PM\n2. Fri, Jul 4, 11:00 AM",  // ready to paste into the message
   "invalid": [ { "value":"2026-07-06T10:00", "reason":"Viewings are not available on Sundays" } ]
 }}
 200 { "code":200, "data": { "available": false, "reason": "not_marketing" } }
 400 { "code":400, "message":"No valid times", "invalid":[ ... ] }   // none usable
 ```
-- Send `review_url` to the prospect. The invite expires in 7 days.
+- Send `review_url` to the prospect, with `summary_text` above it so they see
+  the parsed times **and** the link in one message, e.g.:
+  > Here are your viewing times for 1A:
+  > {summary_text}
+  > Confirm or adjust here: {review_url}
+- The invite expires in 7 days.
 - If some times were dropped (`invalid` present) but others accepted, the link
   still works with the accepted ones — optionally tell the prospect which were
   dropped and why.

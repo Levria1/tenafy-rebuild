@@ -253,6 +253,14 @@ router.post('/viewing-request', async (req, res) => {
     }
     const candidates = times.sort().slice(0, 3);
 
+    // A ready-to-send text block so the bot can show the times AND the link in
+    // one message. Naive parse keeps the HK wall-clock (server runs UTC).
+    const summaryText = candidates
+      .map((iso, i) => `${i + 1}. ${new Date(iso).toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+      })}`)
+      .join('\n');
+
     // Assigned host: the unit's active staff-generated link's employee, if any.
     const [[link]] = await req.pool.execute(
       `SELECT employee_id FROM viewing_link
@@ -278,6 +286,7 @@ router.post('/viewing-request', async (req, res) => {
       token: invite.token,
       expires_at: invite.expires_at,
       candidates,
+      summary_text: summaryText,
       invalid: invalid.length ? invalid : undefined,
       unit: { id: String(unit.id), name: unit.unit_name, property: unit.property_name },
     });
