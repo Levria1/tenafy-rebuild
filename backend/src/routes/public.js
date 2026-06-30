@@ -7,6 +7,8 @@ const { searchUnits } = require('../services/unitSearch');
 const { getMasterPool } = require('../config/poolRegistry');
 const { KIND_INVITE } = require('../middleware/viewingTokenAuth');
 const { mintInvite } = require('../services/viewingInvite');
+const { loadTemplate, substituteVariables } = require('../services/emailService');
+const { validateBookingSlot } = require('../utils/viewingWindow');
 const config = require('../config');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
@@ -115,6 +117,173 @@ router.post('/viewing-link', async (req, res) => {
   } catch (err) {
     console.error('Public viewing-link error:', err);
     fail(res, 'Failed to create viewing link');
+  }
+});
+
+// Resolve an active, marketed unit for the bot endpoints. Returns
+// { unit, lease } or { reason } — caller decides the response shape.
+async function resolveMarketedUnit(pool, orgId, unitId) {
+  const [[unit]] = await pool.execute(
+    `SELECT u.id, u.name AS unit_name, u.property_id, p.display_name AS property_name,
+            p.street_address, p.city, p.state
+       FROM unit u JOIN property p ON u.property_id = p.id
+      WHERE u.id = ? AND p.org_id = ? AND u.active_status = 1 AND (u.deleted_at IS NULL)
+      LIMIT 1`,
+    [unitId, orgId]
+  );
+  if (!unit) return { reason: 'unit_not_found' };
+  const [[lease]] = await pool.execute(
+    `SELECT id, viewing_enabled FROM leasing
+      WHERE unit_id = ? AND deleted_at IS NULL
+        AND start_date <= CURDATE() AND (end_date >= CURDATE() OR end_date IS NULL)
+      ORDER BY start_date DESC LIMIT 1`,
+    [unitId]
+  );
+  if (!lease || !Number(lease.viewing_enabled)) return { reason: 'not_marketing', unit };
+  return { unit, lease };
+}
+
+function stripToText(html) {
+  return String(html || '')
+    .replace(/<br\s*\/?>(?=\S)/gi, '\n').replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n').replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// GET /api/public/viewing-prompt?unit_id=...
+// Returns the rendered "please give us 2–3 times" prompt for the bot to send.
+// The wording lives in the org's `Viewing-Prospect-Prompt` template (Settings →
+// Email Templates), with a built-in fallback. State-gated.
+// → 200 { available:true, prompt, unit:{...} } | { available:false, reason }
+router.get('/viewing-prompt', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const unit_id = req.query.unit_id;
+    if (!unit_id) return fail(res, 'unit_id is required', 400);
+
+    const resolved = await resolveMarketedUnit(req.pool, orgId, unit_id);
+    if (resolved.reason) {
+      return ok(res, {
+        available: false,
+        reason: resolved.reason,
+        message: resolved.reason === 'not_marketing'
+          ? 'This unit is not open for viewings right now.' : 'Unit not found.',
+      });
+    }
+    const { unit } = resolved;
+
+    const vars = {
+      '%Unit Name%': unit.unit_name || '',
+      '%Property Name%': unit.property_name || '',
+      '%Property Address%': [unit.street_address, unit.city, unit.state].filter(Boolean).join(', '),
+    };
+    let prompt =
+      `Hi! We'd be glad to arrange a viewing of ${unit.unit_name} at ${unit.property_name}. ` +
+      `Could you share 2–3 dates and times that suit you? Viewings run Monday–Saturday, 11am–7pm.`;
+    try {
+      const tpl = await loadTemplate(req.pool, orgId, 'Viewing-Prospect-Prompt');
+      if (tpl && tpl.template_content) {
+        prompt = stripToText(substituteVariables(tpl.template_content, vars));
+      }
+    } catch (e) {
+      console.error('Public viewing-prompt template error:', e.message);
+    }
+
+    return ok(res, {
+      available: true,
+      prompt,
+      unit: { id: String(unit.id), name: unit.unit_name, property: unit.property_name },
+    });
+  } catch (err) {
+    console.error('Public viewing-prompt error:', err);
+    fail(res, 'Failed to build viewing prompt');
+  }
+});
+
+// POST /api/public/viewing-request
+// TaneChat has parsed the prospect's reply into concrete times. We validate
+// them against the viewing window, mint an invite PRE-FILLED with those times,
+// and return a REVIEW link — the prospect opens it, double-checks the parsed
+// times (fixing any mistake), and submits, which is what notifies the tenant.
+//
+// Body: { unit_id, prospect:{name,phone,email}, candidates:["YYYY-MM-DDTHH:mm", ...] }
+// → 200 { available:true, review_url, token, expires_at, candidates, unit }
+// → 200 { available:false, reason } | 400 { invalid: [...] }
+router.post('/viewing-request', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const { unit_id } = req.body || {};
+    const prospect = (req.body && req.body.prospect) || {};
+    const candidatesIn = (req.body && req.body.candidates) || [];
+    if (!unit_id) return fail(res, 'unit_id is required', 400);
+    if (!Array.isArray(candidatesIn) || candidatesIn.length === 0) {
+      return fail(res, 'candidates must be a non-empty array of date-times', 400);
+    }
+
+    const resolved = await resolveMarketedUnit(req.pool, orgId, unit_id);
+    if (resolved.reason) {
+      return ok(res, {
+        available: false,
+        reason: resolved.reason,
+        message: resolved.reason === 'not_marketing'
+          ? 'This unit is not open for viewings right now.' : 'Unit not found.',
+      });
+    }
+    const { unit, lease } = resolved;
+
+    // Validate + normalise the parsed times against the viewing window.
+    const seen = new Set();
+    const times = [];
+    const invalid = [];
+    for (const c of candidatesIn) {
+      const m = String(c).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+      if (!m) { invalid.push({ value: c, reason: 'unparseable' }); continue; }
+      const norm = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00`;
+      if (seen.has(norm)) continue;
+      const slotErr = validateBookingSlot(norm, 30);
+      if (slotErr) { invalid.push({ value: c, reason: slotErr }); continue; }
+      if (new Date(norm).getTime() < Date.now()) { invalid.push({ value: c, reason: 'in the past' }); continue; }
+      seen.add(norm);
+      times.push(norm);
+    }
+    if (times.length === 0) {
+      return res.status(400).json({ code: 400, message: 'No valid times', invalid });
+    }
+    const candidates = times.sort().slice(0, 3);
+
+    // Assigned host: the unit's active staff-generated link's employee, if any.
+    const [[link]] = await req.pool.execute(
+      `SELECT employee_id FROM viewing_link
+        WHERE unit_id = ? AND status = 1 AND employee_id IS NOT NULL
+        ORDER BY created_at DESC LIMIT 1`,
+      [unit_id]
+    );
+
+    const invite = await mintInvite(req.pool, orgId, {
+      unitId: unit_id,
+      propertyId: unit.property_id,
+      employeeId: link ? link.employee_id : null,
+      leasingId: lease.id,
+      prospect: { name: prospect.name, phone: prospect.phone, email: prospect.email },
+      prefillDate: candidates[0].slice(0, 10),
+      prefillTimes: candidates,
+      ttlDays: 7,
+    });
+
+    return ok(res, {
+      available: true,
+      review_url: invite.url,
+      token: invite.token,
+      expires_at: invite.expires_at,
+      candidates,
+      invalid: invalid.length ? invalid : undefined,
+      unit: { id: String(unit.id), name: unit.unit_name, property: unit.property_name },
+    });
+  } catch (err) {
+    console.error('Public viewing-request error:', err);
+    fail(res, 'Failed to create viewing request');
   }
 });
 

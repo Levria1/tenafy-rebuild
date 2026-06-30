@@ -67,6 +67,13 @@ const TEMPLATE_TYPES = [
   { value: 'Viewing-Confirmation', label: 'Viewing Confirmation (All)' },
   { value: 'Viewing-Declined', label: 'Viewing Declined (Viewer)' },
   { value: 'Viewing-Cancelled', label: 'Viewing Cancelled (All)' },
+  // The "please give us 2–3 times" prompt the chatbot sends a prospect. Rendered
+  // by GET /api/public/viewing-prompt; built-in fallback if not customised.
+  { value: 'Viewing-Prospect-Prompt', label: 'Viewing Prompt (Prospect / Bot)' },
+  // The multi-time "which works for you?" message to the current tenant.
+  { value: 'Viewing-Tenant-Confirm', label: 'Viewing Time Choice (Tenant)' },
+  // Reschedule invite sent to the prospect when staff reschedule a booking.
+  { value: 'Viewing-Reschedule', label: 'Viewing Reschedule (Prospect)' },
   // Sent to the CURRENT tenant when staff tick "Request viewings" on an NR lease —
   // asks them for their preferred viewing windows. Built-in fallback in
   // services/viewingRequest.js if the org hasn't customised it.

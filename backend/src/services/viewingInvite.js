@@ -21,23 +21,26 @@ function newId() {
 
 async function mintInvite(pool, orgId, {
   unitId, propertyId, employeeId = null, leasingId = null,
-  prospect = {}, prefillDate = null, ttlDays = 7,
+  prospect = {}, prefillDate = null, prefillTimes = null, ttlDays = 7,
 }) {
   const token = 'vbi_' + crypto.randomBytes(24).toString('hex');
   const inviteId = newId();
   const ttl = Number(ttlDays) > 0 ? Math.floor(Number(ttlDays)) : 7;
+  // prefillTimes: array of 'YYYY-MM-DDTHH:mm:ss' strings the bot already parsed.
+  const prefillTimesJson = Array.isArray(prefillTimes) && prefillTimes.length
+    ? JSON.stringify(prefillTimes) : null;
 
   await pool.execute(
     `INSERT INTO viewing_invite
        (id, token, unit_id, property_id, employee_id, leasing_id,
-        prospect_name, prospect_phone, prospect_email, prefill_date, expires_at, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? DAY), 1, NOW())`,
+        prospect_name, prospect_phone, prospect_email, prefill_date, prefill_times, expires_at, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? DAY), 1, NOW())`,
     [
       inviteId, token, unitId, propertyId, employeeId || null, leasingId || null,
       (prospect.name || '').trim() || null,
       (prospect.phone || '').trim() || null,
       (prospect.email || '').trim() || null,
-      prefillDate, ttl,
+      prefillDate, prefillTimesJson, ttl,
     ]
   );
 

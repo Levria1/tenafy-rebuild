@@ -76,34 +76,10 @@ function buildUrl(path) {
   return `${base}${path}`;
 }
 
-// ---------------------------------------------------------------------------
-// Availability window (keep in sync with frontend /book/viewing/[token]/page.js)
-//
-// Viewings: Monday–Saturday, 11:00 AM – 7:00 PM. Sunday is closed.
-// The "7 PM" boundary is the END of the viewing, so the latest start time
-// for a 30-min slot is 18:30.
-//
-// We intentionally parse the submitted datetime as a literal wall-clock value
-// (what the viewer picked in the UI) rather than going through Date's timezone
-// coercion, so the rule applies consistently regardless of server TZ.
-// ---------------------------------------------------------------------------
-const VIEWING_OPEN_MIN = 11 * 60;   // 11:00
-const VIEWING_CLOSE_MIN = 19 * 60;  // 19:00 (7 PM) — last end time
-
-function validateBookingSlot(datetimeStr, durationMinutes = 30) {
-  const m = String(datetimeStr).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
-  if (!m) return 'Invalid date/time format';
-  const [, yyyy, mm, dd, HH, MM] = m;
-  // Compute day-of-week in UTC to avoid server-TZ shifts on the calendar date.
-  const dow = new Date(Date.UTC(+yyyy, +mm - 1, +dd)).getUTCDay(); // 0=Sun
-  if (dow === 0) return 'Viewings are not available on Sundays';
-  const startMin = +HH * 60 + +MM;
-  if (startMin < VIEWING_OPEN_MIN) return 'Viewings start from 11:00 AM';
-  if (startMin + durationMinutes > VIEWING_CLOSE_MIN) {
-    return 'Viewings must end by 7:00 PM';
-  }
-  return null;
-}
+// Viewing availability window (Mon–Sat 11:00–19:00) — shared util so the bot
+// endpoints (public.js) enforce the exact same rule. Keep the frontend pickers
+// (/book/viewing/**) in sync.
+const { validateBookingSlot } = require('../utils/viewingWindow');
 
 // Rate limiter for the three public POST endpoints.
 // 20 requests per 10 minutes per IP is generous for a human but blocks bots.
@@ -1278,10 +1254,20 @@ router.get('/invite/:token', resolveOrgByInviteToken, async (req, res) => {
     }));
     for (const w of googleBusy) busy.push({ start: new Date(w.start).toISOString(), end: new Date(w.end).toISOString() });
 
+    // Times the bot already parsed from the prospect's chat (for review/edit).
+    let prefillTimes = [];
+    if (invite.prefill_times) {
+      try {
+        const parsed = JSON.parse(invite.prefill_times);
+        if (Array.isArray(parsed)) prefillTimes = parsed.filter(s => typeof s === 'string');
+      } catch { /* ignore malformed */ }
+    }
+
     ok(res, {
       ready: true,
       state: 'active',
       prefill_date: invite.prefill_date ? toDateString(new Date(invite.prefill_date)) : null,
+      prefill_times: prefillTimes,
       max_candidates: INVITE_MAX_CANDIDATES,
       prospect: {
         name: invite.prospect_name || '',

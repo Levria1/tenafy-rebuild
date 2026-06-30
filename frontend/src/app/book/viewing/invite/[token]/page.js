@@ -87,6 +87,7 @@ export default function ViewingInvitePage() {
   const [busyWindows, setBusyWindows] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(null);
+  const [fromChat, setFromChat] = useState(false);
   const [form] = Form.useForm();
   const candidateValues = Form.useWatch('candidates', form);
 
@@ -97,13 +98,22 @@ export default function ViewingInvitePage() {
         const d = r.data.data;
         setDetail(d);
         setBusyWindows(d.busy || []);
-        // Prefill prospect + first candidate's date.
+        // Prefill prospect + candidate times. If the bot already parsed times
+        // from chat (prefill_times), load them so the prospect can review/fix.
         if (d.ready) {
+          const parsedTimes = Array.isArray(d.prefill_times) ? d.prefill_times : [];
+          let candidates;
+          if (parsedTimes.length) {
+            setFromChat(true);
+            candidates = parsedTimes.slice(0, d.max_candidates || 3).map((s) => dayjs(s));
+          } else {
+            candidates = [d.prefill_date ? dayjs(`${d.prefill_date} 11:00`) : undefined];
+          }
           form.setFieldsValue({
             prospect_name: d.prospect?.name || '',
             prospect_email: d.prospect?.email || '',
             prospect_phone: d.prospect?.phone || '',
-            candidates: [d.prefill_date ? dayjs(`${d.prefill_date} 11:00`) : undefined],
+            candidates,
           });
         }
       })
@@ -212,10 +222,14 @@ export default function ViewingInvitePage() {
 
       <Alert
         style={{ marginBottom: 16 }}
-        type="info"
+        type={fromChat ? 'warning' : 'info'}
         showIcon
-        message="Pick up to 3 times that work for you"
-        description="The current occupant will choose whichever one suits them, then we'll confirm. Viewings run Monday–Saturday, 11:00 AM – 7:00 PM."
+        message={fromChat ? 'Please review the times from your chat' : 'Pick up to 3 times that work for you'}
+        description={
+          fromChat
+            ? 'We filled these in from your messages — please double-check them and fix any that are wrong before sending. The current occupant will then choose whichever suits them. Viewings run Monday–Saturday, 11:00 AM – 7:00 PM.'
+            : 'The current occupant will choose whichever one suits them, then we\'ll confirm. Viewings run Monday–Saturday, 11:00 AM – 7:00 PM.'
+        }
       />
 
       {error && (
