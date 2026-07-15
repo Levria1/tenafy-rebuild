@@ -11,7 +11,7 @@ import {
   EditOutlined, UserOutlined, MailOutlined,
   FileTextOutlined, DollarOutlined, PrinterOutlined,
   DownOutlined, EyeOutlined, DeleteOutlined, SearchOutlined, UndoOutlined,
-  ExclamationCircleOutlined,
+  ExclamationCircleOutlined, FilePdfOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
@@ -1399,6 +1399,7 @@ function TenantDetailPage() {
                     <Descriptions.Item label="Date:">{p.payment_date ? dayjs(p.payment_date).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
                     <Descriptions.Item label="Contact:">{[p.contact_first_name, p.contact_last_name].filter(Boolean).join(' ') || '-'}</Descriptions.Item>
                     <Descriptions.Item label="Method:">{p.payment_method_name || '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Category:">{p.payment_category_name || '—'}</Descriptions.Item>
                     <Descriptions.Item label="Amount Paid:">{fmtCur(p.amount, getCurSymbol(selectedInvoice.property_currency))}</Descriptions.Item>
                   </Descriptions>
                   <div style={{ margin: '8px 0 4px' }}>
@@ -1409,6 +1410,20 @@ function TenantDetailPage() {
                     <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
                     <div>—</div>
                   </div>
+                  <Button type="link" size="small" icon={<FilePdfOutlined />}
+                    style={{ color: '#52c41a', padding: 0 }}
+                    onClick={async () => {
+                      try {
+                        const res = await pdf.fetchReceipt(p.id);
+                        const blob = new Blob([res.data], { type: 'application/pdf' });
+                        const url = URL.createObjectURL(blob);
+                        window.open(url, '_blank');
+                      } catch (err) {
+                        message.error('Failed to generate receipt');
+                      }
+                    }}>
+                    Download Receipt
+                  </Button>
                 </div>
               ))
             ) : (
