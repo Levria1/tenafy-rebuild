@@ -53,7 +53,7 @@ async function loadInvoicePdfData(pool, id, orgId) {
        FROM accounting_line al
        JOIN accounting a ON al.accounting_id = a.id
        WHERE al.invoice_code = ? AND a.org_id = ?
-         AND a.type = 0 AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
+         AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
       [inv.invoice_code, orgId]
     );
     amountPaid = parseFloat(paidRows?.[0]?.paid) || 0;
