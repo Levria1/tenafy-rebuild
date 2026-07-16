@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
+import SelectAllCheckbox from '../../../components/SelectAllCheckbox';
 import { leasing, property, tenant, file as fileApi, settings, bookingPlatform, salesAgent, utility } from '../../../lib/api';
 
 const { TextArea } = Input;
@@ -745,6 +746,7 @@ export default function LeaseCreatePage() {
         size="small"
         title="E-Signature"
         style={{ marginBottom: 16, background: '#fafbff', borderColor: '#d6e4ff' }}
+        extra={<SelectAllCheckbox form={form} fields={['send_for_esignature', 'save_as_pending']} />}
       >
         <Form.Item name="send_for_esignature" valuePropName="checked" style={{ marginBottom: 8 }}>
           <Checkbox>Send for e-signature after save</Checkbox>
@@ -762,7 +764,8 @@ export default function LeaseCreatePage() {
         </div>
       </Card>
 
-      <Card size="small" title="Email Notifications" style={{ marginBottom: 16 }}>
+      <Card size="small" title="Email Notifications" style={{ marginBottom: 16 }}
+        extra={<SelectAllCheckbox form={form} fields={['tenant_posted', 'landlord_posted', 'tenant_due', 'landlord_due', 'tenant_overdue', 'landlord_overdue', 'tenant_deposit_posted', 'payment_receipt', 'tenant_checkin', 'tenant_checkout']} />}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px' }}>
           <Form.Item name="tenant_posted" valuePropName="checked" style={{ marginBottom: 0 }}>
             <Checkbox>Email tenant when invoice is posted</Checkbox>
@@ -824,7 +827,8 @@ export default function LeaseCreatePage() {
         </Row>
       </Card>
 
-      <Card size="small" title="Access & Sharing" style={{ marginBottom: 16 }}>
+      <Card size="small" title="Access & Sharing" style={{ marginBottom: 16 }}
+        extra={<SelectAllCheckbox form={form} fields={['share_lease', 'all_past']} />}>
         <Row gutter={16}>
           <Col span={12}>
             <Form.Item name="access_setting" label="Access Setting">

@@ -6,6 +6,7 @@ import { Form, Input, InputNumber, DatePicker, Select, Button, message, Spin, Ro
 import { ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
+import SelectAllCheckbox from '../../../../components/SelectAllCheckbox';
 import { leasing, property, tenant as tenantApi, bookingPlatform, salesAgent } from '../../../../lib/api';
 
 const INVOICE_SCHEDULES = [
@@ -699,7 +700,10 @@ export default function LeasingEditPage() {
 
         {/* Email Notifications */}
         <div style={sectionStyle}>
-          <div style={sectionTitle}>Email Notifications</div>
+          <div style={{ ...sectionTitle, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Email Notifications</span>
+            <SelectAllCheckbox form={form} fields={['tenant_posted', 'landlord_posted', 'tenant_due', 'landlord_due', 'tenant_overdue', 'landlord_overdue', 'tenant_deposit_posted', 'tenant_checkin', 'tenant_checkout']} />
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px' }}>
             <Form.Item name="tenant_posted" valuePropName="checked" style={{ marginBottom: 0 }}>
               <Checkbox>Email tenant when invoice is posted</Checkbox>
@@ -760,7 +764,10 @@ export default function LeasingEditPage() {
 
         {/* Access & Sharing */}
         <div style={sectionStyle}>
-          <div style={sectionTitle}>Access & Sharing</div>
+          <div style={{ ...sectionTitle, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Access & Sharing</span>
+            <SelectAllCheckbox form={form} fields={['share_lease', 'all_past']} />
+          </div>
           <Row gutter={16}>
             <Col span={12}>
               <FLabel>Access Setting</FLabel>
