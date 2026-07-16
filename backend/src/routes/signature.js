@@ -62,7 +62,11 @@ async function sendSignatureInvite(pool, orgId, { leaseId, party, link, message,
   // without %Signing Link% would email the signer with NO way to sign — so in
   // that case we skip it and use the built-in fallback (which always includes the
   // Review & Sign button).
-  if (tpl && String(tpl.template_content || '').includes('%Signing Link%')) {
+  // Normalize &nbsp; before checking: the rich-text editor stores spaces inside
+  // variables as non-breaking spaces (e.g. %Signing&nbsp;Link%). substituteVariables
+  // already renders the &nbsp; form, so this gate must recognize it too — otherwise
+  // a valid template is wrongly rejected and the built-in fallback is used.
+  if (tpl && String(tpl.template_content || '').replace(/&nbsp;/gi, ' ').includes('%Signing Link%')) {
     try {
       const sent = await sendTemplateEmail(pool, orgId, {
         templateType: 'Lease-Signature-Request',
