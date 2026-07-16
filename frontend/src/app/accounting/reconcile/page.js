@@ -12,7 +12,7 @@
 // throughput (you may have 50+ rows to clear after the first sync) rather
 // than visual polish. Bulk actions can be layered on later.
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Card, Table, Button, Tag, message, Select, Space, Typography, Tooltip,
@@ -54,6 +54,7 @@ export default function ReconcilePage() {
   const [balances, setBalances] = useState(null);   // null = not loaded yet
   const [balancesLoading, setBalancesLoading] = useState(false);
   const [balancesError, setBalancesError] = useState(null);
+  const [invCandidates, setInvCandidates] = useState({}); // row id → [{invoice_id, invoice_code, tenant_name, outstanding, ...}]
 
   const loadBalances = async () => {
     setBalancesLoading(true);
@@ -157,6 +158,13 @@ export default function ReconcilePage() {
   const effectiveDirection = (row) =>
     overrides[row.id]?.direction || (Number(row.amount) < 0 ? 'outflow' : 'inflow');
 
+  const loadInvCandidates = useCallback(async (row, search) => {
+    try {
+      const r = await xero.getInvoiceCandidates(row.id, search, effectiveDirection(row));
+      if (r.data?.code === 200) setInvCandidates(prev => ({ ...prev, [row.id]: r.data.data || [] }));
+    } catch { /* non-fatal — manual search still works */ }
+  }, []);
+
   // ── Category split helpers ────────────────────────────────────────────────
   // overrides[id].lines = [{ amount, category_id }] when the user splits one
   // transaction across multiple categories (null/absent = single category).
@@ -169,10 +177,26 @@ export default function ReconcilePage() {
     if (!lines.every(l => l.category_id && Number(l.amount) > 0)) return false;
     return Math.abs(splitSum(lines) - Math.abs(Number(row.amount) || 0)) < 0.01;
   };
+  const splitBlockReason = (row) => {
+    const lines = overrides[row.id]?.lines;
+    if (!lines || !lines.length) return null;
+    const cands = invCandidates[row.id] || [];
+    const chosen = lines.map(l => l.invoice_id).filter(Boolean);
+    if (new Set(chosen).size !== chosen.length) {
+      return 'The same invoice is allocated on more than one line. Each invoice can appear only once.';
+    }
+    for (const l of lines) {
+      const c = cands.find(x => x.invoice_id === l.invoice_id);
+      if (c && Number(l.amount) > Number(c.outstanding) + 0.01) {
+        return `The amount on invoice ${c.invoice_code} (HK$${Number(l.amount).toFixed(2)}) is more than its outstanding balance of HK$${Number(c.outstanding).toFixed(2)}. Lower the amount or pick another invoice.`;
+      }
+    }
+    return null;
+  };
   // A new-entry row is approvable when it has an account and, if split, the
   // split is valid (every line categorized + sums to the transaction total).
   const newEntryApprovable = (row) =>
-    !!effectiveAccount(row) && (overrides[row.id]?.lines ? splitValid(row) : true);
+    !!effectiveAccount(row) && (overrides[row.id]?.lines ? (splitValid(row) && !splitBlockReason(row)) : true);
 
   // Build the approve payload the backend expects, per match_kind. Ambiguous
   // rows resolve EITHER to a link (accounting_id) or a new entry (account_id).
@@ -216,6 +240,8 @@ export default function ReconcilePage() {
   };
 
   const onApprove = async (row) => {
+    const blocked = overrides[row.id]?.lines ? splitBlockReason(row) : null;
+    if (blocked) { Modal.error({ title: 'Cannot approve this allocation', content: blocked }); return; }
     try {
       const body = buildBody(row);
       const r = await xero.approvePending(row.id, body);
@@ -331,8 +357,11 @@ export default function ReconcilePage() {
             onChange={v => updateOverride(row.id, 'category_id', v)}
             options={catOptions} filterOption={catFilter} />
           <div>
-            <Button {...linkBtn} onClick={() => setLines(row.id, [{ amount: amountAbs, category_id: categoryId || null }])}>
-              Split into categories…
+            <Button {...linkBtn} onClick={() => {
+              setLines(row.id, [{ amount: amountAbs, category_id: categoryId || null, invoice_id: null }]);
+              if (!invCandidates[row.id]) loadInvCandidates(row);
+            }}>
+              Split invoices / categories…
             </Button>
           </div>
         </>
@@ -343,14 +372,35 @@ export default function ReconcilePage() {
     return (
       <div style={{ width: 320 }}>
         {lines.map((ln, i) => (
-          <Space key={i} size={4} style={{ display: 'flex', marginBottom: 4 }}>
+          <Space key={i} size={4} style={{ display: 'flex', marginBottom: 4 }} align="start" wrap>
             <InputNumber size="small" prefix="$" style={{ width: 95 }} controls={false} min={0}
               value={ln.amount}
               onChange={v => { const next = lines.map((x, j) => j === i ? { ...x, amount: v } : x); setLines(row.id, next); }} />
-            <Select size="small" showSearch placeholder="Category" style={{ width: 150 }}
+            <Select size="small" showSearch placeholder="Category" style={{ width: 140 }}
               value={ln.category_id || undefined}
               onChange={v => { const next = lines.map((x, j) => j === i ? { ...x, category_id: v } : x); setLines(row.id, next); }}
               options={catOptions} filterOption={catFilter} status={!ln.category_id ? 'warning' : undefined} />
+            <Select size="small" showSearch allowClear placeholder="Invoice (optional)" style={{ width: 200 }}
+              value={ln.invoice_id || undefined}
+              onSearch={(txt) => { if (txt && txt.length >= 2) loadInvCandidates(row, txt); }}
+              filterOption={false} notFoundContent={null}
+              status={(() => {
+                const dupe = ln.invoice_id && lines.filter(x => x.invoice_id === ln.invoice_id).length > 1;
+                const cand = (invCandidates[row.id] || []).find(c => c.invoice_id === ln.invoice_id);
+                const over = cand && Number(ln.amount) > Number(cand.outstanding) + 0.01;
+                return (dupe || over) ? 'error' : undefined;
+              })()}
+              options={(invCandidates[row.id] || []).map(c => ({
+                value: c.invoice_id,
+                label: `${c.invoice_code} · ${c.tenant_name} · out HK$${Number(c.outstanding).toFixed(2)}`,
+              }))}
+              onChange={(v) => {
+                const cand = (invCandidates[row.id] || []).find(c => c.invoice_id === v);
+                const next = lines.map((x, j) => j === i
+                  ? { ...x, invoice_id: v || null, amount: (v && cand) ? Number(cand.outstanding) : x.amount }
+                  : x);
+                setLines(row.id, next);
+              }} />
             {lines.length > 1 && (
               <Button type="text" size="small" icon={<CloseOutlined />}
                 onClick={() => setLines(row.id, lines.filter((_, j) => j !== i))} />
@@ -358,7 +408,7 @@ export default function ReconcilePage() {
           </Space>
         ))}
         <Space size={10} wrap style={{ fontSize: 12 }}>
-          <Button {...linkBtn} onClick={() => setLines(row.id, [...lines, { amount: Math.max(0, Number((amountAbs - sum).toFixed(2))), category_id: null }])}>
+          <Button {...linkBtn} onClick={() => setLines(row.id, [...lines, { amount: Math.max(0, Number((amountAbs - sum).toFixed(2))), category_id: null, invoice_id: null }])}>
             + add line
           </Button>
           <Button {...linkBtn} onClick={() => setLines(row.id, null)}>single category</Button>
@@ -366,6 +416,9 @@ export default function ReconcilePage() {
             HK${sum.toFixed(2)} / HK${amountAbs.toFixed(2)}{balanced ? ' ✓' : ''}
           </span>
         </Space>
+        {splitBlockReason(row) && (
+          <div style={{ color: '#ff4d4f', fontSize: 12, marginTop: 2 }}>⛔ {splitBlockReason(row)}</div>
+        )}
       </div>
     );
   };
