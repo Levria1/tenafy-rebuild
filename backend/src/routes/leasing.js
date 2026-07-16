@@ -15,11 +15,32 @@ const {
   sendCheckoutToTenant,
   sendTemplateEmail,
   loadTemplate,
+  resolvePaymentOptionsTemplate,
 } = require('../services/emailService');
 const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCalendarWebhook');
 const { sendViewingAvailabilityRequest } = require('../services/viewingRequest');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
+
+// Send the building's Payment-Options email to the lease's tenant. Never throws.
+async function maybeSendPaymentOptions(pool, orgId, leaseId) {
+  try {
+    const [[row]] = await pool.execute(
+      `SELECT u.property_id AS property_id
+         FROM leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+        WHERE l.id = ? AND p.org_id = ? LIMIT 1`,
+      [leaseId, orgId]
+    );
+    if (!row || !row.property_id) return;
+    const tpl = await resolvePaymentOptionsTemplate(pool, orgId, String(row.property_id));
+    if (!tpl) { console.warn(`[PaymentOptions] no template for property ${row.property_id} — skipped`); return; }
+    await sendTemplateEmail(pool, orgId, { templateType: 'Payment-Options', templateId: String(tpl.id), leaseId: String(leaseId) });
+  } catch (err) {
+    console.error('[PaymentOptions] send failed:', err.message);
+  }
+}
 
 // Helper: compute lease status purely from dates
 // 0=Inactive (past end date), 1=Active (current), 2=Upcoming (future start date)
@@ -998,6 +1019,8 @@ router.post('/', authenticate, async (req, res) => {
         .catch(err => console.error('[leasing] viewing availability request failed:', err.message));
     }
 
+    if (req.body.send_payment_options) { maybeSendPaymentOptions(req.pool, req.user.orgId, leaseId.toString()); }
+
     res.json({ code: 200, message: 'Lease created', data: { id: leaseId.toString(), lease_no: leaseNo } });
   } catch (error) {
     console.error('Create lease error:', error);
@@ -1163,6 +1186,8 @@ router.put('/:id', authenticate, async (req, res) => {
       sendViewingAvailabilityRequest(req.pool, orgId, id)
         .catch(err => console.error('[leasing] viewing availability request failed:', err.message));
     }
+
+    if (req.body.send_payment_options) { maybeSendPaymentOptions(req.pool, req.user.orgId, id); }
 
     await logActivity(req, 'UPDATE', 'lease', id, 'Updated lease ' + id);
     res.json({ code: 200, message: 'Lease updated' });
