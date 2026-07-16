@@ -168,7 +168,7 @@ export default function CreateEmailTemplatePage() {
                 </Row>
 
                 {selectedType === 'Payment-Options' && (
-                  <Form.Item name="property_ids" label="Available for these properties"
+                  <Form.Item name="property_ids" label="Available for these properties" preserve={false}
                     tooltip="Which buildings this Payment Options email applies to. Leave empty = applies to any building without a specific one.">
                     <Select mode="multiple" allowClear showSearch optionFilterProp="label"
                       placeholder="All buildings (leave empty for catch-all)"

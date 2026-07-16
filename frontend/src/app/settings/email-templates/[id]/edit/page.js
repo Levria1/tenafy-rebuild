@@ -73,12 +73,12 @@ export default function EditEmailTemplatePage() {
   const bodyRef = useRef(null);
 
   useEffect(() => {
+    propertyApi.getAll().then(r => { setProperties(r.data.data || []); }).catch(() => {});
     Promise.all([
       emailTemplate.get(templateId),
       emailTemplate.getTypes(),
       emailTemplate.getVariables(),
-      propertyApi.getAll(),
-    ]).then(([templateRes, typesRes, varsRes, propertiesRes]) => {
+    ]).then(([templateRes, typesRes, varsRes]) => {
       if (templateRes.data.code === 200) {
         const data = templateRes.data.data;
         // Normalize before_date from BIT/Buffer to boolean
@@ -109,7 +109,6 @@ export default function EditEmailTemplatePage() {
       if (varsRes.data.code === 200 && Array.isArray(varsRes.data.data)) {
         setVariables(varsRes.data.data);
       }
-      setProperties(propertiesRes.data.data || []);
     }).catch(() => message.error('Failed to load template'))
       .finally(() => setLoading(false));
   }, [templateId]);
@@ -188,7 +187,7 @@ export default function EditEmailTemplatePage() {
                 </Row>
 
                 {selectedType === 'Payment-Options' && (
-                  <Form.Item name="property_ids" label="Available for these properties"
+                  <Form.Item name="property_ids" label="Available for these properties" preserve={false}
                     tooltip="Which buildings this Payment Options email applies to. Leave empty = applies to any building without a specific one.">
                     <Select mode="multiple" allowClear showSearch optionFilterProp="label"
                       placeholder="All buildings (leave empty for catch-all)"
