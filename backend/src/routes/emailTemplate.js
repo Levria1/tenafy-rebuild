@@ -10,6 +10,32 @@ const {
   findSmtpAccount,
 } = require('../services/emailService');
 
+// Email-template → property allowlist (property_email_template). Only the
+// Payment-Options type uses this. undefined = leave untouched; [] = clear.
+async function applyEmailPropertyAllowlist(pool, orgId, templateId, propertyIds) {
+  if (!Array.isArray(propertyIds)) return;
+  const ids = [...new Set(propertyIds.map(String).filter(Boolean))];
+  await pool.execute(
+    `DELETE FROM property_email_template WHERE org_id = ? AND template_id = ?`,
+    [orgId, templateId]
+  );
+  for (const pid of ids) {
+    const rid = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+    await pool.execute(
+      `INSERT INTO property_email_template (id, org_id, property_id, template_id) VALUES (?, ?, ?, ?)`,
+      [rid, orgId, pid, templateId]
+    );
+  }
+}
+
+async function getEmailAllowedProperties(pool, orgId, templateId) {
+  const [rows] = await pool.execute(
+    `SELECT property_id FROM property_email_template WHERE org_id = ? AND template_id = ?`,
+    [orgId, templateId]
+  );
+  return rows.map(r => String(r.property_id));
+}
+
 // POST /api/email-template/list - List email templates with paging
 router.post('/list', authenticate, async (req, res) => {
   try {
@@ -243,7 +269,9 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ code: 404, message: 'Email template not found' });
     }
 
-    res.json({ code: 200, data: templates[0] });
+    const row = templates[0];
+    row.property_ids = await getEmailAllowedProperties(req.pool, orgId, req.params.id);
+    res.json({ code: 200, data: row });
   } catch (error) {
     console.error('Get email template error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get email template' });
@@ -258,6 +286,7 @@ router.post('/', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_CREATE
       bcc, cc, reply_to, from: fromAddr, to_address,
       is_default_template,
       before_date, date_first, date_second,
+      property_ids,
     } = req.body;
     const orgId = req.user.orgId;
 
@@ -284,6 +313,8 @@ router.post('/', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_CREATE
         date_first || null, date_second || null,
       ]
     );
+
+    await applyEmailPropertyAllowlist(req.pool, orgId, id.toString(), property_ids);
 
     res.json({ code: 200, message: 'Email template created', data: { id: id.toString() } });
   } catch (error) {
@@ -330,6 +361,8 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_EDIT
       ]
     );
 
+    await applyEmailPropertyAllowlist(req.pool, orgId, id, req.body.property_ids);
+
     res.json({ code: 200, message: 'Email template updated' });
   } catch (error) {
     console.error('Update email template error:', error);
@@ -342,6 +375,7 @@ router.delete('/:id', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_D
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
+    await req.pool.execute('DELETE FROM property_email_template WHERE org_id = ? AND template_id = ?', [orgId, id]);
     await req.pool.execute('UPDATE email_template SET status = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
     res.json({ code: 200, message: 'Email template deleted' });
   } catch (error) {
