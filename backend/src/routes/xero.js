@@ -847,25 +847,27 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
         }
       }
 
-      // Guard: the same invoice may not be used on more than one line.
-      const chosenInvoiceIds = rawLines.map(l => l.invoice_id).filter(Boolean);
-      if (new Set(chosenInvoiceIds).size !== chosenInvoiceIds.length) {
-        await conn.rollback();
-        const e = new Error('The same invoice cannot be allocated on more than one line.');
-        e.httpStatus = 400;
-        throw e;
-      }
-      // Guard: a line may not exceed its invoice's current outstanding balance.
-      for (const l of rawLines) {
-        if (!l.invoice_id) continue;
-        const meta = invoiceMeta.get(l.invoice_id);
-        if (!meta || meta.code == null) continue;
-        const outstanding = meta.amount - meta.paid;
-        if (l.amount > outstanding + 0.01) {
+      if (splitLines) {
+        // Guard: the same invoice may not be used on more than one line.
+        const chosenInvoiceIds = rawLines.map(l => l.invoice_id).filter(Boolean);
+        if (new Set(chosenInvoiceIds).size !== chosenInvoiceIds.length) {
           await conn.rollback();
-          const e = new Error(`Allocation for invoice ${meta.code} (HK$${l.amount.toFixed(2)}) exceeds its outstanding balance of HK$${outstanding.toFixed(2)}.`);
+          const e = new Error('The same invoice cannot be allocated on more than one line.');
           e.httpStatus = 400;
           throw e;
+        }
+        // Guard: a line may not exceed its invoice's current outstanding balance.
+        for (const l of rawLines) {
+          if (!l.invoice_id) continue;
+          const meta = invoiceMeta.get(l.invoice_id);
+          if (!meta || meta.code == null) continue;
+          const outstanding = meta.amount - meta.paid;
+          if (l.amount > outstanding + 0.01) {
+            await conn.rollback();
+            const e = new Error(`Allocation for invoice ${meta.code} (HK$${Number(l.amount).toFixed(2)}) exceeds its outstanding balance of HK$${outstanding.toFixed(2)}.`);
+            e.httpStatus = 400;
+            throw e;
+          }
         }
       }
 
