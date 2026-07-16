@@ -31,6 +31,8 @@ const RECONCILE_PERM = 'LANDLORD/ACCOUNTING_CREATE';
 const xeroClient = require('../services/xeroClient');
 const xeroSync = require('../services/xeroSync');
 const { generateSequenceCode } = require('../utils/sequenceCode');
+const { recalcInvoiceStatuses } = require('../utils/invoiceStatus');
+const { resolveHeaderInvoiceCode, validateSplitTotal } = require('../utils/reconcileSplit');
 
 // Short-lived CSRF state cookie. Encoded as {orgId}.{random}.{hmac} so the
 // callback (which runs in the SAME browser tab as /connect) can recover the
@@ -789,34 +791,59 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
       }
       const newAcctId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-      // Optional CATEGORY SPLIT: overrides.lines = [{ amount, category_id }, ...].
-      // When provided, the entry is split into one accounting_line per category
-      // (they must sum to the transaction total). Otherwise it's a single line.
+      // Optional SPLIT: overrides.lines = [{ amount, category_id, invoice_id? }].
+      // Each line is its own accounting_line (own amount, category, and invoice).
+      // Lines must sum to the transaction total. Absent = single line.
       let splitLines = null;
       if (Array.isArray(overrides.lines) && overrides.lines.length) {
         splitLines = overrides.lines
-          .map(l => ({ amount: Math.abs(Number(l.amount) || 0), category_id: l.category_id ? String(l.category_id) : null }))
+          .map(l => ({
+            amount: Math.abs(Number(l.amount) || 0),
+            category_id: l.category_id ? String(l.category_id) : null,
+            invoice_id: l.invoice_id ? String(l.invoice_id) : null,
+          }))
           .filter(l => l.amount > 0);
         if (!splitLines.length) splitLines = null;
       }
       if (splitLines) {
-        const sum = splitLines.reduce((s, l) => s + l.amount, 0);
-        if (Math.abs(sum - amount) > 0.01) {
+        const { ok, sum } = validateSplitTotal(splitLines, amount);
+        if (!ok) {
           await conn.rollback();
           const e = new Error(`Split lines must sum to the transaction total (HK$${amount.toFixed(2)}); got HK$${sum.toFixed(2)}.`);
           e.httpStatus = 400;
           throw e;
         }
       }
-      // Header category: the single category, or null when split across many
-      // (matches how the manual multi-line entry stores it — "Multiple").
+
+      // Resolve each line's invoice_code from its invoice_id (org-scoped). For the
+      // non-split invoice_payment path, the single line inherits `invoiceId`.
+      const rawLines = splitLines || [{
+        amount, category_id: categoryId || null,
+        invoice_id: (p.match_kind === 'invoice_payment' && invoiceId) ? String(invoiceId) : null,
+      }];
+      const codeByInvoiceId = new Map();
+      for (const l of rawLines) {
+        if (l.invoice_id && !codeByInvoiceId.has(l.invoice_id)) {
+          const [[invRow]] = await conn.execute(
+            'SELECT invoice_code FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1',
+            [l.invoice_id, orgId]
+          );
+          codeByInvoiceId.set(l.invoice_id, invRow && invRow.invoice_code ? invRow.invoice_code : null);
+        }
+      }
+      const lineRows = rawLines.map(l => ({
+        amount: l.amount,
+        category_id: l.category_id,
+        invoice_code: l.invoice_id ? (codeByInvoiceId.get(l.invoice_id) || null) : null,
+      }));
+
+      // Header category: single category, or null ("Multiple") when split.
       const headerCategory = splitLines
         ? (splitLines.length === 1 ? splitLines[0].category_id : null)
         : (categoryId || null);
+      // Header invoice_code: shared code if all lines point at one invoice, else null.
+      const headerInvoiceCode = resolveHeaderInvoiceCode(lineRows);
 
-      // accounting.transaction_code is NOT NULL with no default — generate one
-      // from the org's sequence (same as the manual accounting create). Run it
-      // on `conn` so the FOR UPDATE lock lives inside this approve transaction.
       const transactionCode = await generateSequenceCode(conn, orgId, 'transaction_code');
       await conn.execute(
         `INSERT INTO accounting
@@ -827,26 +854,21 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
         [newAcctId, orgId, tenantId || null, null, headerCategory, accountId,
          currencyId, currencyType,
-         amount, note, isOutflow, p.transaction_date, null, transactionCode, p.xero_transaction_id]
+         amount, note, isOutflow, p.transaction_date, headerInvoiceCode, transactionCode, p.xero_transaction_id]
       );
-      // One accounting_line per split line, or a single line for the whole amount.
-      const lineRows = splitLines || [{ amount, category_id: categoryId || null }];
       for (const l of lineRows) {
         const lineId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
         await conn.execute(
-          `INSERT INTO accounting_line (id, accounting_id, amount, category, created_at) VALUES (?, ?, ?, ?, NOW())`,
-          [lineId, newAcctId, l.amount, l.category_id]
+          `INSERT INTO accounting_line (id, accounting_id, amount, category, invoice_code, created_at)
+           VALUES (?, ?, ?, ?, ?, NOW())`,
+          [lineId, newAcctId, l.amount, l.category_id, l.invoice_code]
         );
       }
       resultingId = newAcctId;
 
-      if (p.match_kind === 'invoice_payment' && invoiceId) {
-        const [[invRow]] = await conn.execute('SELECT invoice_code FROM invoice WHERE id = ?', [invoiceId]);
-        if (invRow && invRow.invoice_code) {
-          await conn.execute('UPDATE accounting SET invoice_code = ? WHERE id = ?', [invRow.invoice_code, newAcctId]);
-          await conn.execute('UPDATE accounting_line SET invoice_code = ? WHERE accounting_id = ?', [invRow.invoice_code, newAcctId]);
-        }
-      }
+      // Recompute status for every invoice this entry now pays (partial→Open,
+      // full→Paid, past-due→Overdue). Runs inside the approve transaction.
+      await recalcInvoiceStatuses(conn, newAcctId, orgId);
     } else {
       await conn.rollback();
       const e = new Error(`Unknown match_kind: ${p.match_kind}`);
