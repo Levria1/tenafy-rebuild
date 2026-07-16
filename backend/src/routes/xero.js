@@ -821,20 +821,58 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
         amount, category_id: categoryId || null,
         invoice_id: (p.match_kind === 'invoice_payment' && invoiceId) ? String(invoiceId) : null,
       }];
-      const codeByInvoiceId = new Map();
+      // Resolve each line's invoice: code + amount + current paid (org-scoped).
+      const invoiceMeta = new Map(); // invoice_id → { code, amount, paid }
       for (const l of rawLines) {
-        if (l.invoice_id && !codeByInvoiceId.has(l.invoice_id)) {
+        if (l.invoice_id && !invoiceMeta.has(l.invoice_id)) {
           const [[invRow]] = await conn.execute(
-            'SELECT invoice_code FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1',
+            'SELECT invoice_code, amount FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1',
             [l.invoice_id, orgId]
           );
-          codeByInvoiceId.set(l.invoice_id, invRow && invRow.invoice_code ? invRow.invoice_code : null);
+          if (!invRow || !invRow.invoice_code) {
+            invoiceMeta.set(l.invoice_id, { code: null, amount: 0, paid: 0 });
+          } else {
+            const [[paidRow]] = await conn.execute(
+              `SELECT COALESCE(SUM(al.amount),0) AS paid FROM accounting_line al
+                 JOIN accounting a ON al.accounting_id = a.id
+                WHERE al.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
+              [invRow.invoice_code, orgId]
+            );
+            invoiceMeta.set(l.invoice_id, {
+              code: invRow.invoice_code,
+              amount: Number(invRow.amount) || 0,
+              paid: Number(paidRow.paid) || 0,
+            });
+          }
         }
       }
+
+      // Guard: the same invoice may not be used on more than one line.
+      const chosenInvoiceIds = rawLines.map(l => l.invoice_id).filter(Boolean);
+      if (new Set(chosenInvoiceIds).size !== chosenInvoiceIds.length) {
+        await conn.rollback();
+        const e = new Error('The same invoice cannot be allocated on more than one line.');
+        e.httpStatus = 400;
+        throw e;
+      }
+      // Guard: a line may not exceed its invoice's current outstanding balance.
+      for (const l of rawLines) {
+        if (!l.invoice_id) continue;
+        const meta = invoiceMeta.get(l.invoice_id);
+        if (!meta || meta.code == null) continue;
+        const outstanding = meta.amount - meta.paid;
+        if (l.amount > outstanding + 0.01) {
+          await conn.rollback();
+          const e = new Error(`Allocation for invoice ${meta.code} (HK$${l.amount.toFixed(2)}) exceeds its outstanding balance of HK$${outstanding.toFixed(2)}.`);
+          e.httpStatus = 400;
+          throw e;
+        }
+      }
+
       const lineRows = rawLines.map(l => ({
         amount: l.amount,
         category_id: l.category_id,
-        invoice_code: l.invoice_id ? (codeByInvoiceId.get(l.invoice_id) || null) : null,
+        invoice_code: l.invoice_id ? (invoiceMeta.get(l.invoice_id)?.code || null) : null,
       }));
 
       // Header category: single category, or null ("Multiple") when split.
@@ -989,10 +1027,15 @@ router.get('/pending/:id/invoice-candidates', authenticate, requirePermission(RE
     const search = (req.query.search || '').trim();
 
     const [[p]] = await req.pool.execute(
-      'SELECT proposed_tenant_id, contact_name FROM xero_pending_reconciliation WHERE id = ? AND org_id = ?',
+      'SELECT proposed_tenant_id, contact_name, amount FROM xero_pending_reconciliation WHERE id = ? AND org_id = ?',
       [req.params.id, orgId]
     );
     if (!p) return fail(res, 'Pending row not found', 404);
+
+    const dir = String(req.query.direction || '').toLowerCase();
+    // inflow payment -> inflow invoices (type 0); outflow payment -> outflow (type 1).
+    // Fallback to the pending row's amount sign (negative = outflow) when no param.
+    const invType = dir === 'outflow' ? 1 : dir === 'inflow' ? 0 : (Number(p.amount) < 0 ? 1 : 0);
 
     // paid subquery mirrors recalcInvoiceStatuses so outstanding matches status.
     const paidSub = `(SELECT COALESCE(SUM(al.amount),0) FROM accounting_line al
@@ -1007,7 +1050,7 @@ router.get('/pending/:id/invoice-candidates', authenticate, requirePermission(RE
                     FROM invoice inv
                     LEFT JOIN category_setting cs ON cs.id = inv.category
                     LEFT JOIN tenant t ON t.id = inv.tenant_id
-                   WHERE inv.org_id = ? AND inv.deleted_at IS NULL AND inv.status IN (0,2)`;
+                   WHERE inv.org_id = ? AND inv.type = ? AND inv.deleted_at IS NULL AND inv.status IN (0,2)`;
 
     let rows;
     if (search) {
@@ -1016,19 +1059,19 @@ router.get('/pending/:id/invoice-candidates', authenticate, requirePermission(RE
         `${base} AND (inv.invoice_code LIKE ? OR t.first_name LIKE ? OR t.last_name LIKE ?
                       OR t.company_name LIKE ? OR CAST(inv.amount AS CHAR) LIKE ?)
          ORDER BY inv.due_on DESC LIMIT 50`,
-        [orgId, like, like, like, like, like]
+        [orgId, invType, like, like, like, like, like]
       );
     } else if (p.proposed_tenant_id) {
       [rows] = await req.pool.execute(
         `${base} AND inv.tenant_id = ? ORDER BY inv.due_on DESC LIMIT 50`,
-        [orgId, String(p.proposed_tenant_id)]
+        [orgId, invType, String(p.proposed_tenant_id)]
       );
     } else if (p.contact_name) {
       const like = `%${p.contact_name.trim()}%`;
       [rows] = await req.pool.execute(
         `${base} AND (CONCAT(COALESCE(t.first_name,''),' ',COALESCE(t.last_name,'')) LIKE ?
                       OR t.company_name LIKE ?) ORDER BY inv.due_on DESC LIMIT 50`,
-        [orgId, like, like]
+        [orgId, invType, like, like]
       );
     } else {
       rows = [];
