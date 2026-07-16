@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { Card, Form, Input, Button, Space, message, Select, Switch, Row, Col, Tag, InputNumber, Radio } from 'antd';
 import { ArrowLeftOutlined, CopyOutlined, EyeOutlined, SendOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../components/Layout';
-import { emailTemplate } from '../../../../../lib/api';
+import { emailTemplate, property as propertyApi } from '../../../../../lib/api';
 
 const ReactQuill = dynamic(() => import('react-quill-new'), { ssr: false });
 import 'react-quill-new/dist/quill.snow.css';
@@ -68,10 +68,12 @@ export default function EditEmailTemplatePage() {
   const [sendingTest, setSendingTest] = useState(false);
   const [types, setTypes] = useState([]);
   const [variables, setVariables] = useState([]);
+  const [properties, setProperties] = useState([]);
   const [previewMode, setPreviewMode] = useState(false);
   const bodyRef = useRef(null);
 
   useEffect(() => {
+    propertyApi.getAll().then(r => { setProperties(r.data.data || []); }).catch(() => {});
     Promise.all([
       emailTemplate.get(templateId),
       emailTemplate.getTypes(),
@@ -94,6 +96,7 @@ export default function EditEmailTemplatePage() {
           before_date: beforeDate ? 1 : 0,
           date_first: data.date_first || 0,
           date_second: data.date_second || 0,
+          property_ids: (data.property_ids || []).map(String),
         });
       }
       if (typesRes.data.code === 200 && Array.isArray(typesRes.data.data)) {
@@ -126,7 +129,7 @@ export default function EditEmailTemplatePage() {
   const onFinish = async (values) => {
     setSubmitting(true);
     try {
-      await emailTemplate.update(templateId, values);
+      await emailTemplate.update(templateId, { ...values, property_ids: values.property_ids || [] });
       message.success('Email template updated');
       router.push('/settings?tab=emailTemplates');
     } catch (error) {
@@ -159,6 +162,7 @@ export default function EditEmailTemplatePage() {
 
   const bodyValue = Form.useWatch('body', form) || '';
   const subjectValue = Form.useWatch('subject', form) || '';
+  const selectedType = Form.useWatch('type', form);
 
   return (
     <MainLayout>
@@ -181,6 +185,15 @@ export default function EditEmailTemplatePage() {
                     </Form.Item>
                   </Col>
                 </Row>
+
+                {selectedType === 'Payment-Options' && (
+                  <Form.Item name="property_ids" label="Available for these properties" preserve={false}
+                    tooltip="Which buildings this Payment Options email applies to. Leave empty = applies to any building without a specific one.">
+                    <Select mode="multiple" allowClear showSearch optionFilterProp="label"
+                      placeholder="All buildings (leave empty for catch-all)"
+                      options={properties.map(p => ({ label: p.display_name, value: String(p.id) }))} />
+                  </Form.Item>
+                )}
 
                 <Form.Item name="subject" label="Email Subject" rules={[{ required: true }]}>
                   <Input />

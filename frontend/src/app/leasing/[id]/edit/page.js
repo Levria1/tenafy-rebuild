@@ -314,6 +314,7 @@ export default function LeasingEditPage() {
         access_setting: values.access_setting ?? null,
         share_lease: !!values.share_lease,
         all_past: !!values.all_past,
+        send_payment_options: !!values.send_payment_options,
       };
       const res = await leasing.update(leaseId, payload);
       if (res.data.code === 200) {
@@ -760,6 +761,11 @@ export default function LeasingEditPage() {
               </div>
             </Col>
           </Row>
+          <div style={{ marginTop: 16 }}>
+            <Form.Item name="send_payment_options" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>Send Payment Options email to tenant on save</Checkbox>
+            </Form.Item>
+          </div>
         </div>
 
         {/* Access & Sharing */}

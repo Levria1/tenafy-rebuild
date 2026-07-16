@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { Card, Form, Input, Button, Space, message, Select, Switch, Row, Col, Tag, Tabs, Modal, InputNumber, Radio } from 'antd';
 import { ArrowLeftOutlined, CopyOutlined, EyeOutlined, SendOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
-import { emailTemplate } from '../../../../lib/api';
+import { emailTemplate, property as propertyApi } from '../../../../lib/api';
 
 const ReactQuill = dynamic(() => import('react-quill-new'), { ssr: false });
 import 'react-quill-new/dist/quill.snow.css';
@@ -64,10 +64,14 @@ export default function CreateEmailTemplatePage() {
   const [submitting, setSubmitting] = useState(false);
   const [types, setTypes] = useState([]);
   const [variables, setVariables] = useState([]);
+  const [properties, setProperties] = useState([]);
   const [previewMode, setPreviewMode] = useState(false);
   const bodyRef = useRef(null);
 
   useEffect(() => {
+    propertyApi.getAll().then(r => {
+      setProperties(r.data.data || []);
+    }).catch(() => {});
     emailTemplate.getTypes().then(r => {
       if (r.data.code === 200 && Array.isArray(r.data.data)) {
         setTypes(
@@ -101,7 +105,7 @@ export default function CreateEmailTemplatePage() {
   const onFinish = async (values) => {
     setSubmitting(true);
     try {
-      await emailTemplate.create(values);
+      await emailTemplate.create({ ...values, property_ids: values.property_ids || [] });
       message.success('Email template created');
       router.push('/settings?tab=emailTemplates');
     } catch (error) {
@@ -139,6 +143,7 @@ export default function CreateEmailTemplatePage() {
 
   const bodyValue = Form.useWatch('body', form) || '';
   const subjectValue = Form.useWatch('subject', form) || '';
+  const selectedType = Form.useWatch('type', form);
 
   return (
     <MainLayout>
@@ -161,6 +166,15 @@ export default function CreateEmailTemplatePage() {
                     </Form.Item>
                   </Col>
                 </Row>
+
+                {selectedType === 'Payment-Options' && (
+                  <Form.Item name="property_ids" label="Available for these properties" preserve={false}
+                    tooltip="Which buildings this Payment Options email applies to. Leave empty = applies to any building without a specific one.">
+                    <Select mode="multiple" allowClear showSearch optionFilterProp="label"
+                      placeholder="All buildings (leave empty for catch-all)"
+                      options={properties.map(p => ({ label: p.display_name, value: String(p.id) }))} />
+                  </Form.Item>
+                )}
 
                 <Form.Item name="subject" label="Email Subject" rules={[{ required: true }]}>
                   <Input placeholder="e.g. Invoice for %Payment Month% - %Name - Property%" />
