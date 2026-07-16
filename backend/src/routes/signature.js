@@ -97,7 +97,7 @@ async function sendSignatureInvite(pool, orgId, { leaseId, party, link, message,
   }).catch(err => console.error('[signature] invite email send failed:', err.message));
 }
 
-// Completion — signed PDF to all parties + the creator.
+// Completion — signed PDF to all signing parties (not staff/creators).
 async function sendSignedCopy(pool, orgId, { leaseId, recipients, link, finalPdf }) {
   if (!recipients || !recipients.length) return;
   const attachments = [{ filename: 'signed-lease.pdf', content: finalPdf, contentType: 'application/pdf' }];
@@ -791,14 +791,10 @@ async function finalizeRequest(pool, orgId, requestId) {
     [newId(), requestId]
   );
 
-  // Email signed PDF to all parties + the creator
+  // Email signed PDF to the signing parties only.
+  // NOTE: the lease creator (a staff/user account) is intentionally NOT added
+  // here — staff should not be CC'd on the tenant-facing signed copy.
   const recipients = parties.filter(p => p.signer_email).map(p => p.signer_email);
-  if (r.created_by) {
-    const [[creator]] = await pool.execute(
-      `SELECT email FROM user WHERE id = ? LIMIT 1`, [r.created_by]
-    );
-    if (creator && creator.email && !recipients.includes(creator.email)) recipients.push(creator.email);
-  }
 
   if (recipients.length) {
     const link = `${config.frontendUrl}/sign/${parties[0].party_token}`;
