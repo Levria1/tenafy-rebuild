@@ -1241,7 +1241,12 @@ function SmtpAccountSettings({ isMobile }) {
   return (
     <>
       <Card>
-        <h3 style={{ marginBottom: 4 }}>SMTP Accounts</h3>
+        <h3 style={{ marginBottom: 4 }}>
+          SMTP Accounts
+          <Tooltip title="This is only required if you haven't set up another provider such as Mailgun, etc.">
+            <sup style={{ color: '#1677ff', cursor: 'help', marginLeft: 2, fontSize: 12 }}>*</sup>
+          </Tooltip>
+        </h3>
         <p style={{ color: '#666', marginBottom: 16, fontSize: 13 }}>
           Add SMTP accounts for each email address you send from. When a template uses a specific &quot;From&quot; address, the matching SMTP credentials will be used automatically.
         </p>
