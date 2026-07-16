@@ -1,5 +1,6 @@
 
 const { sendMail, sendMailWithAccount } = require('../config/mailer');
+const { pickTemplate } = require('../utils/pickTemplate');
 
 // ---------------------------------------------------------------------------
 // SMTP account lookup — match "from" address to smtp_account table
@@ -55,6 +56,7 @@ const TEMPLATE_TYPES = [
   { value: 'Leaseexpiry-Landlord', label: 'Lease Expiry (Landlord)' },
   { value: 'Deposit-Tenant', label: 'Deposit (Tenant)' },
   { value: 'Receipt-Tenant', label: 'Payment Receipt (Tenant)' },
+  { value: 'Payment-Options', label: 'Payment Options (Tenant)' },
   { value: 'Inventory-Tenant', label: 'Inventory (Tenant)' },
   // Lease e-signature templates (sent from routes/signature.js; if no template
   // exists the route falls back to a built-in plain email so signing still works)
@@ -981,6 +983,41 @@ async function hasEmailBeenSent(pool, leaseId, templateType) {
 }
 
 // ---------------------------------------------------------------------------
+// Payment-Options resolver
+// ---------------------------------------------------------------------------
+
+// Resolve the Payment-Options email template for a building:
+//   1) a template explicitly linked to this property (via property_email_template)
+//   2) else a catch-all Payment-Options template (no property_email_template rows)
+//   3) else null (caller skips sending)
+async function resolvePaymentOptionsTemplate(pool, orgId, propertyId) {
+  // 1) building-specific
+  const [linked] = await pool.execute(
+    `SELECT et.id, et.is_default_template, et.created_time
+       FROM email_template et
+       JOIN property_email_template pet ON pet.template_id = et.id AND pet.org_id = et.org_id
+      WHERE et.org_id = ? AND pet.property_id = ?
+        AND et.template_type = 'Payment-Options' AND et.status = 1`,
+    [orgId, propertyId]
+  );
+  const specific = pickTemplate(linked);
+  if (specific) return specific;
+
+  // 2) catch-all: Payment-Options templates with NO property links
+  const [catchAll] = await pool.execute(
+    `SELECT et.id, et.is_default_template, et.created_time
+       FROM email_template et
+      WHERE et.org_id = ? AND et.template_type = 'Payment-Options' AND et.status = 1
+        AND NOT EXISTS (
+          SELECT 1 FROM property_email_template pet
+           WHERE pet.template_id = et.id AND pet.org_id = et.org_id
+        )`,
+    [orgId]
+  );
+  return pickTemplate(catchAll);
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -1014,4 +1051,7 @@ module.exports = {
   sendLeaseExpiryToLandlord,
   sendDepositToTenant,
   sendReceiptToTenant,
+
+  // Per-building resolvers
+  resolvePaymentOptionsTemplate,
 };
