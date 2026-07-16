@@ -333,6 +333,7 @@ export default function LeaseCreatePage() {
       booking_platform_id: values.booking_platform_id || null,
       sales_agent_id: values.sales_agent_id || null,
       lease_state: values.save_as_pending ? 'pending' : 'active',
+      send_payment_options: values.send_payment_options || false,
     };
   };
 
@@ -751,13 +752,16 @@ export default function LeaseCreatePage() {
         <Form.Item name="send_for_esignature" valuePropName="checked" style={{ marginBottom: 8 }}>
           <Checkbox>Send for e-signature after save</Checkbox>
         </Form.Item>
-        <Form.Item name="save_as_pending" valuePropName="checked" style={{ marginBottom: 0 }}>
+        <Form.Item name="save_as_pending" valuePropName="checked" style={{ marginBottom: 8 }}>
           <Checkbox>
             Save as Pending
             <span style={{ color: '#888', fontSize: 12, marginLeft: 8 }}>
               — invoices are not generated until lease status is confirmed
             </span>
           </Checkbox>
+        </Form.Item>
+        <Form.Item name="send_payment_options" valuePropName="checked" style={{ marginBottom: 0 }}>
+          <Checkbox>Send Payment Options email to tenant on save</Checkbox>
         </Form.Item>
         <div style={{ fontSize: 11, color: '#888', marginTop: 8 }}>
           Both checkboxes are auto-set based on the Booking Platform you picked. Override either as needed.
