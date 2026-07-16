@@ -978,6 +978,80 @@ router.post('/pending/:id/skip', authenticate, requirePermission(RECONCILE_PERM)
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// GET /pending/:id/invoice-candidates
+// Candidate invoices for a split allocation. Without ?search=, returns the
+// payer's OPEN invoices (resolved from the pending row). With ?search=, returns
+// open invoices matching code / tenant name / amount across the org.
+// ───────────────────────────────────────────────────────────────────────────
+router.get('/pending/:id/invoice-candidates', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const search = (req.query.search || '').trim();
+
+    const [[p]] = await req.pool.execute(
+      'SELECT proposed_tenant_id, contact_name FROM xero_pending_reconciliation WHERE id = ? AND org_id = ?',
+      [req.params.id, orgId]
+    );
+    if (!p) return fail(res, 'Pending row not found', 404);
+
+    // paid subquery mirrors recalcInvoiceStatuses so outstanding matches status.
+    const paidSub = `(SELECT COALESCE(SUM(al.amount),0) FROM accounting_line al
+                        JOIN accounting a ON al.accounting_id = a.id
+                       WHERE al.invoice_code = inv.invoice_code AND a.org_id = inv.org_id
+                         AND a.deleted_at IS NULL AND al.deleted_at IS NULL)`;
+    const base = `SELECT inv.id AS invoice_id, inv.invoice_code, inv.amount, inv.due_on,
+                         inv.category AS category_id, cs.name AS category_name,
+                         TRIM(CONCAT(COALESCE(t.first_name,''),' ',COALESCE(t.last_name,''))) AS person_name,
+                         t.company_name,
+                         (inv.amount - ${paidSub}) AS outstanding
+                    FROM invoice inv
+                    LEFT JOIN category_setting cs ON cs.id = inv.category
+                    LEFT JOIN tenant t ON t.id = inv.tenant_id
+                   WHERE inv.org_id = ? AND inv.deleted_at IS NULL AND inv.status IN (0,2)`;
+
+    let rows;
+    if (search) {
+      const like = `%${search}%`;
+      [rows] = await req.pool.execute(
+        `${base} AND (inv.invoice_code LIKE ? OR t.first_name LIKE ? OR t.last_name LIKE ?
+                      OR t.company_name LIKE ? OR CAST(inv.amount AS CHAR) LIKE ?)
+         ORDER BY inv.due_on DESC LIMIT 50`,
+        [orgId, like, like, like, like, like]
+      );
+    } else if (p.proposed_tenant_id) {
+      [rows] = await req.pool.execute(
+        `${base} AND inv.tenant_id = ? ORDER BY inv.due_on DESC LIMIT 50`,
+        [orgId, String(p.proposed_tenant_id)]
+      );
+    } else if (p.contact_name) {
+      const like = `%${p.contact_name.trim()}%`;
+      [rows] = await req.pool.execute(
+        `${base} AND (CONCAT(COALESCE(t.first_name,''),' ',COALESCE(t.last_name,'')) LIKE ?
+                      OR t.company_name LIKE ?) ORDER BY inv.due_on DESC LIMIT 50`,
+        [orgId, like, like]
+      );
+    } else {
+      rows = [];
+    }
+
+    const data = rows.map(r => ({
+      invoice_id: String(r.invoice_id),
+      invoice_code: r.invoice_code,
+      tenant_name: (r.company_name || r.person_name || '').trim() || '(no name)',
+      amount: Number(r.amount),
+      outstanding: Number(r.outstanding),
+      due_on: r.due_on,
+      category_id: r.category_id ? String(r.category_id) : null,
+      category_name: r.category_name || null,
+    }));
+    return ok(res, data);
+  } catch (err) {
+    console.error('[xero/invoice-candidates] error:', err);
+    return fail(res, err.message || 'Failed to load candidates', 500);
+  }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // Categorization rules — CRUD for xero_category_rule
 //
 // Rules are applied during sync (xeroSync.categorize) in `priority` ascending
