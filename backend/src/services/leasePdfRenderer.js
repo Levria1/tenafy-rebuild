@@ -50,7 +50,11 @@ function wrapBody(bodyHtml) {
 <head>
   <meta charset="UTF-8" />
   <style>
-    @page { size: A4; margin: 0; }
+    /* NOTE: do NOT declare @page { margin } / @page { size } here.
+       Chrome's print engine lets a CSS @page margin OVERRIDE Puppeteer's
+       page.pdf({ margin }) option — an @page margin:0 here silently zeroed
+       the 50px/60px page margins and rendered every lease edge-to-edge.
+       Page size + margins are owned solely by the page.pdf() options below. */
     html, body { margin: 0; padding: 0; }
     body {
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
