@@ -184,14 +184,14 @@ export default function ReconcilePage() {
       return {
         account_id: effectiveAccount(row) || undefined,
         category_id: (ov.category_id || row.proposed_category_id) || undefined,
-        lines: (ov.lines && splitValid(row)) ? ov.lines.map(l => ({ amount: Number(l.amount), category_id: l.category_id })) : undefined,
+        lines: (ov.lines && splitValid(row)) ? ov.lines.map(l => ({ amount: Number(l.amount), category_id: l.category_id, invoice_id: l.invoice_id || undefined })) : undefined,
         direction: effectiveDirection(row),
       };
     }
     return {
       account_id: effectiveAccount(row) || undefined,
       category_id: (ov.category_id || row.proposed_category_id) || undefined,
-      lines: (ov.lines && splitValid(row)) ? ov.lines.map(l => ({ amount: Number(l.amount), category_id: l.category_id })) : undefined,
+      lines: (ov.lines && splitValid(row)) ? ov.lines.map(l => ({ amount: Number(l.amount), category_id: l.category_id, invoice_id: l.invoice_id || undefined })) : undefined,
       invoice_id: (ov.invoice_id || row.proposed_invoice_id) || undefined,
       accounting_id: ov.accounting_id || undefined,
       direction: effectiveDirection(row),
