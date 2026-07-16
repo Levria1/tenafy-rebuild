@@ -162,3 +162,30 @@ grouped by `invoice_code`, so allocations require no new read path.
 - `frontend/src/app/accounting/reconcile/page.js` — split editor extension.
 - `frontend/src/lib/api.js` — candidate endpoint client + approve payload.
 - Tests as above.
+
+---
+
+## Revision 2026-07-16 — edge-case changes (post-review)
+
+User changed three edge cases after Tasks 1–5 were built:
+
+1. **Over-allocation → BLOCKED** (was: allowed-with-warning). A split line may not exceed
+   its invoice's current outstanding. Blocked in the UI with an explanatory popup, and
+   rejected server-side (400) as defense-in-depth on the money path.
+2. **Same invoice on two lines → BLOCKED** (was: allowed-with-warning). Duplicate invoice
+   across split lines is blocked in the UI with a popup, and rejected server-side (400).
+3. **Outflow allocation → SUPPORTED** (was: non-goal / inflow-only). The user allocates
+   outgoing payments (e.g. several deposit refunds in one bank transfer). This is safe:
+   `recalcInvoiceStatuses` and the invoice-list paid/outstanding are direction-agnostic
+   (sum all lines by invoice_code). Two additions make it fully consistent:
+   - **Direction guard on candidates:** the candidate endpoint filters `inv.type` to match
+     the payment's direction (incoming → inflow invoices `type=0`; outgoing → outflow
+     invoices `type=1`), so you can't cross-pay a rent invoice with an outgoing payment.
+     Direction comes from a `direction` query param (UI's effective direction), falling
+     back to the pending row's amount sign.
+   - **Invoice PDF fix:** `backend/src/routes/pdf.js` invoice paid-sum hardcodes
+     `AND a.type = 0` (inflow-only), so an outflow invoice's PDF would show $0 paid. Drop
+     that filter so the PDF matches `recalcInvoiceStatuses` and the invoice list.
+
+These are implemented as follow-up Tasks 7–9 (see the plan). Task 6 (original inflow-only,
+warning-based frontend) is superseded by Task 9.

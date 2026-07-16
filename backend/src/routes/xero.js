@@ -31,6 +31,8 @@ const RECONCILE_PERM = 'LANDLORD/ACCOUNTING_CREATE';
 const xeroClient = require('../services/xeroClient');
 const xeroSync = require('../services/xeroSync');
 const { generateSequenceCode } = require('../utils/sequenceCode');
+const { recalcInvoiceStatuses } = require('../utils/invoiceStatus');
+const { resolveHeaderInvoiceCode, validateSplitTotal } = require('../utils/reconcileSplit');
 
 // Short-lived CSRF state cookie. Encoded as {orgId}.{random}.{hmac} so the
 // callback (which runs in the SAME browser tab as /connect) can recover the
@@ -789,34 +791,99 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
       }
       const newAcctId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
-      // Optional CATEGORY SPLIT: overrides.lines = [{ amount, category_id }, ...].
-      // When provided, the entry is split into one accounting_line per category
-      // (they must sum to the transaction total). Otherwise it's a single line.
+      // Optional SPLIT: overrides.lines = [{ amount, category_id, invoice_id? }].
+      // Each line is its own accounting_line (own amount, category, and invoice).
+      // Lines must sum to the transaction total. Absent = single line.
       let splitLines = null;
       if (Array.isArray(overrides.lines) && overrides.lines.length) {
         splitLines = overrides.lines
-          .map(l => ({ amount: Math.abs(Number(l.amount) || 0), category_id: l.category_id ? String(l.category_id) : null }))
+          .map(l => ({
+            amount: Math.abs(Number(l.amount) || 0),
+            category_id: l.category_id ? String(l.category_id) : null,
+            invoice_id: l.invoice_id ? String(l.invoice_id) : null,
+          }))
           .filter(l => l.amount > 0);
         if (!splitLines.length) splitLines = null;
       }
       if (splitLines) {
-        const sum = splitLines.reduce((s, l) => s + l.amount, 0);
-        if (Math.abs(sum - amount) > 0.01) {
+        const { ok, sum } = validateSplitTotal(splitLines, amount);
+        if (!ok) {
           await conn.rollback();
           const e = new Error(`Split lines must sum to the transaction total (HK$${amount.toFixed(2)}); got HK$${sum.toFixed(2)}.`);
           e.httpStatus = 400;
           throw e;
         }
       }
-      // Header category: the single category, or null when split across many
-      // (matches how the manual multi-line entry stores it — "Multiple").
+
+      // Resolve each line's invoice_code from its invoice_id (org-scoped). For the
+      // non-split invoice_payment path, the single line inherits `invoiceId`.
+      const rawLines = splitLines || [{
+        amount, category_id: categoryId || null,
+        invoice_id: (p.match_kind === 'invoice_payment' && invoiceId) ? String(invoiceId) : null,
+      }];
+      // Resolve each line's invoice: code + amount + current paid (org-scoped).
+      const invoiceMeta = new Map(); // invoice_id → { code, amount, paid }
+      for (const l of rawLines) {
+        if (l.invoice_id && !invoiceMeta.has(l.invoice_id)) {
+          const [[invRow]] = await conn.execute(
+            'SELECT invoice_code, amount FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1',
+            [l.invoice_id, orgId]
+          );
+          if (!invRow || !invRow.invoice_code) {
+            invoiceMeta.set(l.invoice_id, { code: null, amount: 0, paid: 0 });
+          } else {
+            const [[paidRow]] = await conn.execute(
+              `SELECT COALESCE(SUM(al.amount),0) AS paid FROM accounting_line al
+                 JOIN accounting a ON al.accounting_id = a.id
+                WHERE al.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
+              [invRow.invoice_code, orgId]
+            );
+            invoiceMeta.set(l.invoice_id, {
+              code: invRow.invoice_code,
+              amount: Number(invRow.amount) || 0,
+              paid: Number(paidRow.paid) || 0,
+            });
+          }
+        }
+      }
+
+      if (splitLines) {
+        // Guard: the same invoice may not be used on more than one line.
+        const chosenInvoiceIds = rawLines.map(l => l.invoice_id).filter(Boolean);
+        if (new Set(chosenInvoiceIds).size !== chosenInvoiceIds.length) {
+          await conn.rollback();
+          const e = new Error('The same invoice cannot be allocated on more than one line.');
+          e.httpStatus = 400;
+          throw e;
+        }
+        // Guard: a line may not exceed its invoice's current outstanding balance.
+        for (const l of rawLines) {
+          if (!l.invoice_id) continue;
+          const meta = invoiceMeta.get(l.invoice_id);
+          if (!meta || meta.code == null) continue;
+          const outstanding = meta.amount - meta.paid;
+          if (l.amount > outstanding + 0.01) {
+            await conn.rollback();
+            const e = new Error(`Allocation for invoice ${meta.code} (HK$${Number(l.amount).toFixed(2)}) exceeds its outstanding balance of HK$${outstanding.toFixed(2)}.`);
+            e.httpStatus = 400;
+            throw e;
+          }
+        }
+      }
+
+      const lineRows = rawLines.map(l => ({
+        amount: l.amount,
+        category_id: l.category_id,
+        invoice_code: l.invoice_id ? (invoiceMeta.get(l.invoice_id)?.code || null) : null,
+      }));
+
+      // Header category: single category, or null ("Multiple") when split.
       const headerCategory = splitLines
         ? (splitLines.length === 1 ? splitLines[0].category_id : null)
         : (categoryId || null);
+      // Header invoice_code: shared code if all lines point at one invoice, else null.
+      const headerInvoiceCode = resolveHeaderInvoiceCode(lineRows);
 
-      // accounting.transaction_code is NOT NULL with no default — generate one
-      // from the org's sequence (same as the manual accounting create). Run it
-      // on `conn` so the FOR UPDATE lock lives inside this approve transaction.
       const transactionCode = await generateSequenceCode(conn, orgId, 'transaction_code');
       await conn.execute(
         `INSERT INTO accounting
@@ -827,26 +894,21 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
         [newAcctId, orgId, tenantId || null, null, headerCategory, accountId,
          currencyId, currencyType,
-         amount, note, isOutflow, p.transaction_date, null, transactionCode, p.xero_transaction_id]
+         amount, note, isOutflow, p.transaction_date, headerInvoiceCode, transactionCode, p.xero_transaction_id]
       );
-      // One accounting_line per split line, or a single line for the whole amount.
-      const lineRows = splitLines || [{ amount, category_id: categoryId || null }];
       for (const l of lineRows) {
         const lineId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
         await conn.execute(
-          `INSERT INTO accounting_line (id, accounting_id, amount, category, created_at) VALUES (?, ?, ?, ?, NOW())`,
-          [lineId, newAcctId, l.amount, l.category_id]
+          `INSERT INTO accounting_line (id, accounting_id, amount, category, invoice_code, created_at)
+           VALUES (?, ?, ?, ?, ?, NOW())`,
+          [lineId, newAcctId, l.amount, l.category_id, l.invoice_code]
         );
       }
       resultingId = newAcctId;
 
-      if (p.match_kind === 'invoice_payment' && invoiceId) {
-        const [[invRow]] = await conn.execute('SELECT invoice_code FROM invoice WHERE id = ?', [invoiceId]);
-        if (invRow && invRow.invoice_code) {
-          await conn.execute('UPDATE accounting SET invoice_code = ? WHERE id = ?', [invRow.invoice_code, newAcctId]);
-          await conn.execute('UPDATE accounting_line SET invoice_code = ? WHERE accounting_id = ?', [invRow.invoice_code, newAcctId]);
-        }
-      }
+      // Recompute status for every invoice this entry now pays (partial→Open,
+      // full→Paid, past-due→Overdue). Runs inside the approve transaction.
+      await recalcInvoiceStatuses(conn, newAcctId, orgId);
     } else {
       await conn.rollback();
       const e = new Error(`Unknown match_kind: ${p.match_kind}`);
@@ -952,6 +1014,85 @@ router.post('/pending/:id/skip', authenticate, requirePermission(RECONCILE_PERM)
   } catch (err) {
     console.error('[xero/pending/skip] error:', err);
     return fail(res, 'Failed to skip');
+  }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /pending/:id/invoice-candidates
+// Candidate invoices for a split allocation. Without ?search=, returns the
+// payer's OPEN invoices (resolved from the pending row). With ?search=, returns
+// open invoices matching code / tenant name / amount across the org.
+// ───────────────────────────────────────────────────────────────────────────
+router.get('/pending/:id/invoice-candidates', authenticate, requirePermission(RECONCILE_PERM), async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const search = (req.query.search || '').trim();
+
+    const [[p]] = await req.pool.execute(
+      'SELECT proposed_tenant_id, contact_name, amount FROM xero_pending_reconciliation WHERE id = ? AND org_id = ?',
+      [req.params.id, orgId]
+    );
+    if (!p) return fail(res, 'Pending row not found', 404);
+
+    const dir = String(req.query.direction || '').toLowerCase();
+    // inflow payment -> inflow invoices (type 0); outflow payment -> outflow (type 1).
+    // Fallback to the pending row's amount sign (negative = outflow) when no param.
+    const invType = dir === 'outflow' ? 1 : dir === 'inflow' ? 0 : (Number(p.amount) < 0 ? 1 : 0);
+
+    // paid subquery mirrors recalcInvoiceStatuses so outstanding matches status.
+    const paidSub = `(SELECT COALESCE(SUM(al.amount),0) FROM accounting_line al
+                        JOIN accounting a ON al.accounting_id = a.id
+                       WHERE al.invoice_code = inv.invoice_code AND a.org_id = inv.org_id
+                         AND a.deleted_at IS NULL AND al.deleted_at IS NULL)`;
+    const base = `SELECT inv.id AS invoice_id, inv.invoice_code, inv.amount, inv.due_on,
+                         inv.category AS category_id, cs.name AS category_name,
+                         TRIM(CONCAT(COALESCE(t.first_name,''),' ',COALESCE(t.last_name,''))) AS person_name,
+                         t.company_name,
+                         (inv.amount - ${paidSub}) AS outstanding
+                    FROM invoice inv
+                    LEFT JOIN category_setting cs ON cs.id = inv.category
+                    LEFT JOIN tenant t ON t.id = inv.tenant_id
+                   WHERE inv.org_id = ? AND inv.type = ? AND inv.deleted_at IS NULL AND inv.status IN (0,2)`;
+
+    let rows;
+    if (search) {
+      const like = `%${search}%`;
+      [rows] = await req.pool.execute(
+        `${base} AND (inv.invoice_code LIKE ? OR t.first_name LIKE ? OR t.last_name LIKE ?
+                      OR t.company_name LIKE ? OR CAST(inv.amount AS CHAR) LIKE ?)
+         ORDER BY inv.due_on DESC LIMIT 50`,
+        [orgId, invType, like, like, like, like, like]
+      );
+    } else if (p.proposed_tenant_id) {
+      [rows] = await req.pool.execute(
+        `${base} AND inv.tenant_id = ? ORDER BY inv.due_on DESC LIMIT 50`,
+        [orgId, invType, String(p.proposed_tenant_id)]
+      );
+    } else if (p.contact_name) {
+      const like = `%${p.contact_name.trim()}%`;
+      [rows] = await req.pool.execute(
+        `${base} AND (CONCAT(COALESCE(t.first_name,''),' ',COALESCE(t.last_name,'')) LIKE ?
+                      OR t.company_name LIKE ?) ORDER BY inv.due_on DESC LIMIT 50`,
+        [orgId, invType, like, like]
+      );
+    } else {
+      rows = [];
+    }
+
+    const data = rows.map(r => ({
+      invoice_id: String(r.invoice_id),
+      invoice_code: r.invoice_code,
+      tenant_name: (r.company_name || r.person_name || '').trim() || '(no name)',
+      amount: Number(r.amount),
+      outstanding: Number(r.outstanding),
+      due_on: r.due_on,
+      category_id: r.category_id ? String(r.category_id) : null,
+      category_name: r.category_name || null,
+    }));
+    return ok(res, data);
+  } catch (err) {
+    console.error('[xero/invoice-candidates] error:', err);
+    return fail(res, err.message || 'Failed to load candidates', 500);
   }
 });
 

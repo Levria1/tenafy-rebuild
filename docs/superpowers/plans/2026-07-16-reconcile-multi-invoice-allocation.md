@@ -666,3 +666,267 @@ git commit -m "feat(reconcile): per-line invoice picker with auto-fill + allocat
 **Type consistency:** `resolveHeaderInvoiceCode(lineRows)` receives objects with `invoice_code` — matches Task 2 signature. `validateSplitTotal(splitLines, amount)` returns `{ok, sum}` — used as such. `getInvoiceCandidates(pendingId, search)` — matches Task 5/6 usage. Line objects use `invoice_id` consistently across Tasks 3/5/6. ✓
 
 **One flagged decision** (carried from the design): outflow rows aren't hard-blocked from the invoice picker — noted above as a trivial optional guard if you want it stricter.
+
+---
+
+## Revision 2026-07-16 — edge-case changes (Tasks 7–9)
+
+Follow-up on committed Tasks 1–5. New rules: over-allocation BLOCKED (was warn),
+duplicate-invoice BLOCKED (was warn), outflow allocation SUPPORTED (was non-goal).
+Task 6 (inflow-only, warning-based frontend) is **superseded by Task 9** — do not
+implement the original Task 6.
+
+### Task 7: Backend enforcement + candidate direction filter (`xero.js`)
+
+**Files:**
+- Modify: `backend/src/routes/xero.js` — (a) the `/pending/:id/invoice-candidates` route (add direction filter); (b) `commitPendingRow` new-entry branch (the block Task 3 wrote — add duplicate + over-allocation guards, extending the `codeByInvoiceId` map to also carry amount/paid).
+
+**Interfaces:**
+- Consumes: existing `resolveHeaderInvoiceCode`, `validateSplitTotal`, `recalcInvoiceStatuses`.
+- The candidate route gains an optional `?direction=inflow|outflow` query param.
+
+- [ ] **Step 1 (candidate direction filter):** In the `/pending/:id/invoice-candidates` route, right after the `const [[p]] = ...` pending-row fetch (and its not-found guard), compute the invoice type to filter by:
+
+```javascript
+    const dir = String(req.query.direction || '').toLowerCase();
+    // inflow payment -> inflow invoices (type 0); outflow payment -> outflow (type 1).
+    // Fallback to the pending row's amount sign (negative = outflow) when no param.
+    const invType = dir === 'outflow' ? 1 : dir === 'inflow' ? 0 : (Number(p.amount) < 0 ? 1 : 0);
+```
+
+Then add `AND inv.type = ?` to the shared `base` WHERE clause, so it reads:
+
+```javascript
+                   WHERE inv.org_id = ? AND inv.type = ? AND inv.deleted_at IS NULL AND inv.status IN (0,2)`;
+```
+
+And insert `invType` as the second param (right after `orgId`) in ALL THREE branch queries:
+- search branch params: `[orgId, invType, like, like, like, like, like]`
+- `proposed_tenant_id` branch params: `[orgId, invType, String(p.proposed_tenant_id)]`
+- `contact_name` branch params: `[orgId, invType, like, like]`
+
+- [ ] **Step 2 (commitPendingRow guards):** In `commitPendingRow`, locate the block Task 3 added that builds `const codeByInvoiceId = new Map();` … through the `const lineRows = rawLines.map(...)`. Replace that map-population + `lineRows` construction with an `invoiceMeta` map (code + amount + paid) and add the two guards immediately after it:
+
+```javascript
+      // Resolve each line's invoice: code + amount + current paid (org-scoped).
+      const invoiceMeta = new Map(); // invoice_id → { code, amount, paid }
+      for (const l of rawLines) {
+        if (l.invoice_id && !invoiceMeta.has(l.invoice_id)) {
+          const [[invRow]] = await conn.execute(
+            'SELECT invoice_code, amount FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1',
+            [l.invoice_id, orgId]
+          );
+          if (!invRow || !invRow.invoice_code) {
+            invoiceMeta.set(l.invoice_id, { code: null, amount: 0, paid: 0 });
+          } else {
+            const [[paidRow]] = await conn.execute(
+              `SELECT COALESCE(SUM(al.amount),0) AS paid FROM accounting_line al
+                 JOIN accounting a ON al.accounting_id = a.id
+                WHERE al.invoice_code = ? AND a.org_id = ? AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
+              [invRow.invoice_code, orgId]
+            );
+            invoiceMeta.set(l.invoice_id, {
+              code: invRow.invoice_code,
+              amount: Number(invRow.amount) || 0,
+              paid: Number(paidRow.paid) || 0,
+            });
+          }
+        }
+      }
+
+      // Guard: the same invoice may not be used on more than one line.
+      const chosenInvoiceIds = rawLines.map(l => l.invoice_id).filter(Boolean);
+      if (new Set(chosenInvoiceIds).size !== chosenInvoiceIds.length) {
+        await conn.rollback();
+        const e = new Error('The same invoice cannot be allocated on more than one line.');
+        e.httpStatus = 400;
+        throw e;
+      }
+      // Guard: a line may not exceed its invoice's current outstanding balance.
+      for (const l of rawLines) {
+        if (!l.invoice_id) continue;
+        const meta = invoiceMeta.get(l.invoice_id);
+        if (!meta || meta.code == null) continue;
+        const outstanding = meta.amount - meta.paid;
+        if (l.amount > outstanding + 0.01) {
+          await conn.rollback();
+          const e = new Error(`Allocation for invoice ${meta.code} (HK$${l.amount.toFixed(2)}) exceeds its outstanding balance of HK$${outstanding.toFixed(2)}.`);
+          e.httpStatus = 400;
+          throw e;
+        }
+      }
+
+      const lineRows = rawLines.map(l => ({
+        amount: l.amount,
+        category_id: l.category_id,
+        invoice_code: l.invoice_id ? (invoiceMeta.get(l.invoice_id)?.code || null) : null,
+      }));
+```
+
+- [ ] **Step 3:** Parse check: `cd backend && node -e "require('./src/routes/xero.js'); console.log('ok')"` → prints `ok`.
+- [ ] **Step 4:** Manual DB smoke deferred (needs live backend + seeded data). Verify by re-reading: the two guards roll back before any INSERT; `invoiceMeta` replaces `codeByInvoiceId` everywhere it was used; `lineRows` still yields the same shape. Confirm no remaining reference to `codeByInvoiceId`.
+- [ ] **Step 5:** Commit: `git commit -am "feat(reconcile): block over-allocation + duplicate invoice; direction-filter candidates"`
+
+### Task 8: Fix invoice PDF paid-sum for outflow invoices (`pdf.js`)
+
+**Files:**
+- Modify: `backend/src/routes/pdf.js` — the invoice PDF `amountPaid` query (around line 52-59).
+
+- [ ] **Step 1:** In the `amountPaid` query, remove the `AND a.type = 0` filter so the paid-sum matches `recalcInvoiceStatuses` and the invoice list (both sum all lines by invoice_code regardless of direction). The WHERE clause becomes:
+
+```javascript
+       WHERE al.invoice_code = ? AND a.org_id = ?
+         AND a.deleted_at IS NULL AND al.deleted_at IS NULL`,
+```
+
+Leave the two OTHER `accounting_line` queries in this file (around lines 398 and 612) UNCHANGED — they select a transaction's line items for the receipt PDF, not a per-invoice paid-sum.
+
+- [ ] **Step 2:** Parse check: `cd backend && node -e "require('./src/routes/pdf.js'); console.log('ok')"` → prints `ok`.
+- [ ] **Step 3:** Commit: `git commit -am "fix(pdf): invoice paid-sum counts all payments (fixes outflow invoice PDFs)"`
+
+### Task 9: Frontend reconcile picker — direction-matched candidates + blocking (supersedes Task 6)
+
+**Files:**
+- Modify: `frontend/src/lib/api.js` — `getInvoiceCandidates` gains a `direction` arg.
+- Modify: `frontend/src/app/accounting/reconcile/page.js` — extend `renderCategoryOrSplit`, add candidate state/loader, block Approve on over-allocation/duplicate with an explanatory popup.
+
+**Interfaces:**
+- Consumes: `xero.getInvoiceCandidates(pendingId, search, direction)`, existing `setLines`, `splitSum`, `overrides`, `effectiveDirection(row)`, `onApprove`.
+
+- [ ] **Step 1 (api client direction arg):** In `frontend/src/lib/api.js`, change `getInvoiceCandidates` to:
+
+```javascript
+  getInvoiceCandidates: (pendingId, search, direction) =>
+    api.get(`/api/integrations/xero/pending/${pendingId}/invoice-candidates`, {
+      params: { ...(search ? { search } : {}), ...(direction ? { direction } : {}) },
+    }),
+```
+
+- [ ] **Step 2 (candidate state + loader):** In `reconcile/page.js`, near the other `useState` hooks:
+
+```javascript
+  const [invCandidates, setInvCandidates] = useState({}); // row id → [{invoice_id, invoice_code, tenant_name, outstanding, ...}]
+```
+
+And a loader that passes the row's effective direction:
+
+```javascript
+  const loadInvCandidates = useCallback(async (row, search) => {
+    try {
+      const r = await xero.getInvoiceCandidates(row.id, search, effectiveDirection(row));
+      if (r.data?.code === 200) setInvCandidates(prev => ({ ...prev, [row.id]: r.data.data || [] }));
+    } catch { /* non-fatal — manual search still works */ }
+  }, []);
+```
+
+- [ ] **Step 3 (block-reason helper):** Add a helper that returns a human message when a split is invalid due to over-allocation or duplicate invoice, else null:
+
+```javascript
+  const splitBlockReason = (row) => {
+    const lines = overrides[row.id]?.lines;
+    if (!lines || !lines.length) return null;
+    const cands = invCandidates[row.id] || [];
+    const chosen = lines.map(l => l.invoice_id).filter(Boolean);
+    if (new Set(chosen).size !== chosen.length) {
+      return 'The same invoice is allocated on more than one line. Each invoice can appear only once.';
+    }
+    for (const l of lines) {
+      const c = cands.find(x => x.invoice_id === l.invoice_id);
+      if (c && Number(l.amount) > Number(c.outstanding) + 0.01) {
+        return `The amount on invoice ${c.invoice_code} (HK$${Number(l.amount).toFixed(2)}) is more than its outstanding balance of HK$${Number(c.outstanding).toFixed(2)}. Lower the amount or pick another invoice.`;
+      }
+    }
+    return null;
+  };
+```
+
+- [ ] **Step 4 (gate Approve):** In the row's approvable check (`newEntryApprovable`), also require no block reason. Change:
+
+```javascript
+    !!effectiveAccount(row) && (overrides[row.id]?.lines ? splitValid(row) : true);
+```
+
+to:
+
+```javascript
+    !!effectiveAccount(row) && (overrides[row.id]?.lines ? (splitValid(row) && !splitBlockReason(row)) : true);
+```
+
+And in `onApprove(row)`, before building/sending the body, pop the explanatory modal if blocked:
+
+```javascript
+    const blocked = overrides[row.id]?.lines ? splitBlockReason(row) : null;
+    if (blocked) { Modal.error({ title: 'Cannot approve this allocation', content: blocked }); return; }
+```
+
+(`Modal` is already imported in this file.)
+
+- [ ] **Step 5 (split editor UI):** In `renderCategoryOrSplit`, change the "Split into categories…" button's onClick to seed a line with `invoice_id: null` and load candidates, and rename its label to "Split invoices / categories…":
+
+```javascript
+            <Button {...linkBtn} onClick={() => {
+              setLines(row.id, [{ amount: amountAbs, category_id: categoryId || null, invoice_id: null }]);
+              if (!invCandidates[row.id]) loadInvCandidates(row);
+            }}>
+              Split invoices / categories…
+            </Button>
+```
+
+Replace the per-line `<Space key={i} ...>` block with one that adds the invoice Select (auto-fills amount from the chosen invoice's outstanding). Flag over-allocated lines and any duplicated invoice with `status="error"` on the invoice Select:
+
+```javascript
+          <Space key={i} size={4} style={{ display: 'flex', marginBottom: 4 }} align="start" wrap>
+            <InputNumber size="small" prefix="$" style={{ width: 95 }} controls={false} min={0}
+              value={ln.amount}
+              onChange={v => { const next = lines.map((x, j) => j === i ? { ...x, amount: v } : x); setLines(row.id, next); }} />
+            <Select size="small" showSearch placeholder="Category" style={{ width: 140 }}
+              value={ln.category_id || undefined}
+              onChange={v => { const next = lines.map((x, j) => j === i ? { ...x, category_id: v } : x); setLines(row.id, next); }}
+              options={catOptions} filterOption={catFilter} status={!ln.category_id ? 'warning' : undefined} />
+            <Select size="small" showSearch allowClear placeholder="Invoice (optional)" style={{ width: 200 }}
+              value={ln.invoice_id || undefined}
+              onSearch={(txt) => { if (txt && txt.length >= 2) loadInvCandidates(row, txt); }}
+              filterOption={false} notFoundContent={null}
+              status={(() => {
+                const dupe = ln.invoice_id && lines.filter(x => x.invoice_id === ln.invoice_id).length > 1;
+                const cand = (invCandidates[row.id] || []).find(c => c.invoice_id === ln.invoice_id);
+                const over = cand && Number(ln.amount) > Number(cand.outstanding) + 0.01;
+                return (dupe || over) ? 'error' : undefined;
+              })()}
+              options={(invCandidates[row.id] || []).map(c => ({
+                value: c.invoice_id,
+                label: `${c.invoice_code} · ${c.tenant_name} · out HK$${Number(c.outstanding).toFixed(2)}`,
+              }))}
+              onChange={(v) => {
+                const cand = (invCandidates[row.id] || []).find(c => c.invoice_id === v);
+                const next = lines.map((x, j) => j === i
+                  ? { ...x, invoice_id: v || null, amount: (v && cand) ? Number(cand.outstanding) : x.amount }
+                  : x);
+                setLines(row.id, next);
+              }} />
+            {lines.length > 1 && (
+              <Button type="text" size="small" icon={<CloseOutlined />}
+                onClick={() => setLines(row.id, lines.filter((_, j) => j !== i))} />
+            )}
+          </Space>
+```
+
+Update the footer "+ add line" button to seed `invoice_id: null`, and below the running total show the block reason inline in red when present:
+
+```javascript
+        <Space size={10} wrap style={{ fontSize: 12 }}>
+          <Button {...linkBtn} onClick={() => setLines(row.id, [...lines, { amount: Math.max(0, Number((amountAbs - sum).toFixed(2))), category_id: null, invoice_id: null }])}>
+            + add line
+          </Button>
+          <Button {...linkBtn} onClick={() => setLines(row.id, null)}>single category</Button>
+          <span style={{ color: balanced ? '#52c41a' : '#ff4d4f' }}>
+            HK${sum.toFixed(2)} / HK${amountAbs.toFixed(2)}{balanced ? ' ✓' : ''}
+          </span>
+        </Space>
+        {splitBlockReason(row) && (
+          <div style={{ color: '#ff4d4f', fontSize: 12, marginTop: 2 }}>⛔ {splitBlockReason(row)}</div>
+        )}
+```
+
+- [ ] **Step 6 (build):** `cd frontend && npx next build 2>&1 | tail -25` — completes without errors for `accounting/reconcile` and `lib/api`. Fallback if build unavailable: `npx eslint src/app/accounting/reconcile/page.js src/lib/api.js` and report actual output.
+- [ ] **Step 7:** Commit: `git commit -am "feat(reconcile): invoice picker with direction-matched candidates + blocking over-allocation/duplicate"`
