@@ -124,7 +124,12 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     chatChildren.push({ key: '/chatbot/test', label: <Link href="/chatbot/test">Assistant</Link> });
   }
   if (hasPermission('LANDLORD/CHAT_SETTINGS_VIEW')) {
-    chatChildren.push({ key: '/chatbot/settings', label: <Link href="/chatbot/settings">Settings</Link> });
+    // Config, Rules and FAQ are separate pages — flat siblings rather than a
+    // nested sub-dropdown, so each is one click (and the sidebar collapses to
+    // 80px, where deep nesting turns into a fiddly flyout).
+    chatChildren.push({ key: '/chatbot/settings', label: <Link href="/chatbot/settings">Chatbot Settings</Link> });
+    chatChildren.push({ key: '/chatbot/rules', label: <Link href="/chatbot/rules">Rules</Link> });
+    chatChildren.push({ key: '/chatbot/faq', label: <Link href="/chatbot/faq">FAQ</Link> });
   }
   if (chatChildren.length > 0) {
     items.push({
@@ -561,6 +566,7 @@ function MainLayout({ children }) {
     if (pathname.startsWith('/accounting') || pathname.startsWith('/invoices')) keys.push('/accounting');
     if (pathname.startsWith('/leasing')) keys.push('/leasing');
     if (pathname.startsWith('/contacts')) keys.push('/contacts');
+    if (pathname.startsWith('/chatbot')) keys.push('/chatbot');
     if (pathname.startsWith('/settings')) {
       keys.push('/settings'); // Always open parent Settings
       if (['payment', 'categories', 'accounts', 'sequences'].includes(tab)) {
