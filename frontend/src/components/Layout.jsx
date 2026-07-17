@@ -120,16 +120,16 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   // Chatbot — parent shown if user has at least one child permission
   const chatChildren = [];
   if (hasPermission('LANDLORD/CHAT_SESSION_LIST')) {
-    chatChildren.push({ key: '/chatbot/sessions', label: <Link href="/chatbot/sessions">Sessions</Link> });
-    chatChildren.push({ key: '/chatbot/test', label: <Link href="/chatbot/test">Assistant</Link> });
+    chatChildren.push({ key: '/chatbot/test', label: <Link href="/chatbot/test">Chat Assistant</Link> });
+    chatChildren.push({ key: '/chatbot/sessions', label: <Link href="/chatbot/sessions">Sessions History</Link> });
   }
   if (hasPermission('LANDLORD/CHAT_SETTINGS_VIEW')) {
     // Config, Rules and FAQ are separate pages — flat siblings rather than a
     // nested sub-dropdown, so each is one click (and the sidebar collapses to
     // 80px, where deep nesting turns into a fiddly flyout).
     chatChildren.push({ key: '/chatbot/settings', label: <Link href="/chatbot/settings">Chatbot Settings</Link> });
-    chatChildren.push({ key: '/chatbot/rules', label: <Link href="/chatbot/rules">Rules</Link> });
-    chatChildren.push({ key: '/chatbot/faq', label: <Link href="/chatbot/faq">FAQ</Link> });
+    chatChildren.push({ key: '/chatbot/rules', label: <Link href="/chatbot/rules">Rules Database</Link> });
+    chatChildren.push({ key: '/chatbot/faq', label: <Link href="/chatbot/faq">FAQ Database</Link> });
   }
   if (chatChildren.length > 0) {
     items.push({
