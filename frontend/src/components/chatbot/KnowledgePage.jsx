@@ -18,13 +18,15 @@ import { chatApi } from '../../lib/api';
 
 const { Title, Text } = Typography;
 
+// Titles match the sidebar labels ("Rules Database" / "FAQ Database") so the
+// page you land on is named the same as the link you clicked.
 const COPY = {
   rule: {
-    title: 'Rules',
+    title: 'Rules Database',
     subtitle: "Behavior rules that shape how the bot responds.",
   },
   faq: {
-    title: 'FAQ',
+    title: 'FAQ Database',
     subtitle: 'Question-and-answer entries the bot falls back on when live data has no answer.',
   },
 };
