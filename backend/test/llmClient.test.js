@@ -81,15 +81,17 @@ test('both providers down → throws the ORIGINAL primary error', async () => {
   }
 });
 
-test('auth error (401) does NOT fail over — rethrows immediately', async () => {
+test('bad primary key (401) DOES fail over — separate keys per provider', async () => {
   const origKimi = kimi.chat, origOR = openrouter.chat;
-  kimi.chat = async () => { const e = new Error('bad key'); e.status = 401; throw e; };
+  kimi.chat = async () => { const e = new Error('bad kimi key'); e.status = 401; throw e; };
   let fallbackCalled = false;
-  openrouter.chat = async () => { fallbackCalled = true; return { message: { content: 'x' } }; };
+  openrouter.chat = async () => { fallbackCalled = true; return { message: { content: 'glm saved it' }, model: 'z-ai/glm-5.2' }; };
   mute();
   try {
-    await assert.rejects(() => llm.chat([{ role: 'user', content: 'hi' }], null, {}), /bad key/);
-    assert.equal(fallbackCalled, false, 'must not fall over on an auth error');
+    const r = await llm.chat([{ role: 'user', content: 'hi' }], null, {});
+    assert.equal(fallbackCalled, true, 'a bad primary key must fall over to the other provider');
+    assert.equal(r.provider, 'openrouter');
+    assert.equal(r.via, 'failover');
   } finally {
     unmute();
     kimi.chat = origKimi;

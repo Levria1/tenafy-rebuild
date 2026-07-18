@@ -91,7 +91,11 @@ async function chat(messages, tools, opts = {}) {
   const body = {
     model,
     messages,
-    temperature: opts.temperature ?? 0.3,
+    // K3 is a reasoning model and ONLY accepts temperature=1 — any other value
+    // (e.g. a caller's 0/0.1 for "deterministic" extraction) returns a hard 400.
+    // Its determinism comes from the reasoning pass, not the sampling temp, so we
+    // pin 1 regardless of what the caller asked for.
+    temperature: 1,
     max_tokens: cfg.maxTokens || 12288,
     reasoning_effort: cfg.reasoningEffort || 'low',
     stream: false,

@@ -12,10 +12,12 @@
  * same { message, finish_reason, usage, model } shape, so messages/tools flow
  * through untouched and callers never see which provider answered.
  *
- * Failover fires on ANY primary failure (thrown error, non-2xx, timeout, or
- * empty content) EXCEPT auth/request-shape errors (400/401/403) — those signal
- * a config problem that swapping providers won't fix. If the fallback also
- * fails, the ORIGINAL primary error is re-thrown (that's the real failure).
+ * Failover fires on ANY primary failure — thrown error, non-2xx (incl. auth
+ * errors and model-specific 400s), timeout, or empty content. The two providers
+ * have SEPARATE keys and different request constraints, so even a bad Kimi key
+ * or a Kimi-only 400 (e.g. its temperature=1 rule) can succeed on OpenRouter.
+ * If the fallback ALSO fails, the ORIGINAL primary error is re-thrown (that's
+ * the failure that matters).
  *
  * Model selection is entirely the router's job — callers pass only
  * messages/tools/temperature. The primary gets AI_REPLY_MODEL (or opts.model);
@@ -28,7 +30,6 @@ const openrouter = require('./openRouterClient');
 const minimax = require('./miniMaxClient');
 
 const PROVIDERS = { kimi, openrouter, minimax };
-const AUTH_ERRORS = new Set([400, 401, 403]);
 
 function resolvePrimary() {
   const key = config.chat.provider || 'kimi';
@@ -50,11 +51,11 @@ function resolveFallback(primaryKey) {
   return null;
 }
 
+// Fail over on ANY primary error as long as a distinct fallback is configured.
+// (Separate keys + different request rules mean even auth/400 errors can succeed
+// on the other provider — the reference impl's live test does bad-key → GLM.)
 function shouldFallback(err, fallback) {
-  if (!fallback) return false;
-  // Auth/request-shape errors won't be fixed by swapping providers.
-  if (err && AUTH_ERRORS.has(err.status)) return false;
-  return true;
+  return !!fallback;
 }
 
 async function chat(messages, tools, opts = {}) {
