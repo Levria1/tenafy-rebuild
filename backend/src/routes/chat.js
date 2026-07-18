@@ -257,8 +257,17 @@ router.post('/message', async (req, res) => {
   if (!config.chat.enabled) {
     return fail(res, 'Chat is currently disabled', 503);
   }
-  if (!config.chat.minimax.apiKey) {
-    return fail(res, 'MiniMax API key is not configured on the server', 500);
+  // Gate on the ACTIVE primary provider's key, not MiniMax's — the primary is
+  // configurable (kimi by default), so requiring a MiniMax key here would block
+  // chat even when Kimi/OpenRouter is fully configured.
+  const primary = config.chat.provider || 'kimi';
+  const primaryKeyPresent = {
+    kimi: !!config.chat.kimi.apiKey,
+    openrouter: !!config.chat.openrouter.apiKey,
+    minimax: !!config.chat.minimax.apiKey,
+  }[primary];
+  if (!primaryKeyPresent) {
+    return fail(res, `LLM provider '${primary}' has no API key configured on the server`, 500);
   }
 
   const { message, session_id, channel: channelIn } = req.body || {};

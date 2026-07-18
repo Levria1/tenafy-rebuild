@@ -27,7 +27,7 @@ const http = require('http');
 const { URL } = require('url');
 const config = require('../config');
 
-function postJson(urlStr, headers, body) {
+function postJson(urlStr, headers, body, timeoutMs) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const lib = u.protocol === 'https:' ? https : http;
@@ -59,7 +59,9 @@ function postJson(urlStr, headers, body) {
       }
     );
     req.on('error', reject);
-    req.setTimeout(60000, () => { req.destroy(new Error('OpenRouter request timeout')); });
+    req.setTimeout(timeoutMs || 60000, () => {
+      req.destroy(Object.assign(new Error('OpenRouter request timeout'), { code: 'ETIMEDOUT' }));
+    });
     req.write(JSON.stringify(body));
     req.end();
   });
@@ -86,6 +88,10 @@ async function chat(messages, tools, opts = {}) {
     messages,
     temperature: opts.temperature ?? 0.3,
     stream: false,
+    // GLM (and other reasoning models) otherwise put the answer in a separate
+    // reasoning field; disabling reasoning makes it land in `content` where our
+    // parser reads it. Harmless for non-reasoning models (OpenRouter ignores it).
+    reasoning: { enabled: false },
   };
   const modelChoice = opts.model || cfg.model;
   if (modelChoice) body.model = modelChoice;
@@ -102,7 +108,7 @@ async function chat(messages, tools, opts = {}) {
     'X-Title': 'Tenafy',
   };
 
-  const resp = await postJson(url, headers, body);
+  const resp = await postJson(url, headers, body, config.chat.timeoutMs);
 
   if (resp.error) {
     const err = new Error(`OpenRouter error: ${resp.error.message || JSON.stringify(resp.error)}`);
@@ -113,10 +119,24 @@ async function chat(messages, tools, opts = {}) {
   const choice = resp.choices && resp.choices[0];
   if (!choice) throw new Error('OpenRouter returned no choices');
 
+  const message = choice.message || {};
+  if ('reasoning_content' in message) delete message.reasoning_content;
+
+  // Empty content with no tool calls = nothing usable; treat as a service error.
+  // (A blank content WITH tool_calls is a normal tool-calling turn — not an error.)
+  const hasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+  const hasContent = typeof message.content === 'string' && message.content.trim().length > 0;
+  if (!hasContent && !hasTools) {
+    const err = new Error('OpenRouter returned empty content');
+    err.status = 502;
+    throw err;
+  }
+
   return {
-    message: choice.message || {},
+    message,
     finish_reason: choice.finish_reason,
     usage: resp.usage || {},
+    model: modelChoice,
   };
 }
 
