@@ -250,6 +250,85 @@ function serializeSession(row) {
 }
 
 // ---------------------------------------------------------------------------
+// runToolLoop — shared LLM tool-call loop used by BOTH the prospect (/message)
+// and internal (/internal/message) endpoints. Persists assistant + tool turns
+// as it goes. Returns { finalText (null if the model never produced a plain-text
+// reply within maxIterations), totalTokensIn, totalTokensOut }.
+//
+//   guardToolCall(name, session) -> errorString | null   (optional per-call veto;
+//     the prospect path uses it for the request_viewing booking cap)
+//   roPool  -> read-only pool passed into each tool's ctx (internal ask_data)
+// ---------------------------------------------------------------------------
+async function runToolLoop({
+  pool, orgId, user, session, sessionId, history, definitions, byName,
+  maxIterations, roPool = undefined, guardToolCall = null,
+}) {
+  let finalText = null;
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
+
+  for (let i = 0; i < maxIterations; i++) {
+    const { message: assistantMsg, usage } = await llmChat(history, definitions, {});
+    totalTokensIn += usage?.prompt_tokens || 0;
+    totalTokensOut += usage?.completion_tokens || 0;
+
+    if (assistantMsg.tool_calls && assistantMsg.tool_calls.length) {
+      await saveMessage(pool, sessionId, {
+        role: 'assistant',
+        content: assistantMsg.content || null,
+        tool_calls: assistantMsg.tool_calls,
+        tokens_in: usage?.prompt_tokens || 0,
+        tokens_out: usage?.completion_tokens || 0,
+      });
+      history.push({ role: 'assistant', content: assistantMsg.content || null, tool_calls: assistantMsg.tool_calls });
+
+      for (const tc of assistantMsg.tool_calls) {
+        const name = tc.function?.name;
+        const rawArgs = tc.function?.arguments || '{}';
+        let args = {};
+        try { args = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs; } catch {}
+
+        let toolResult;
+        const tool = byName[name];
+        const guardErr = (tool && guardToolCall) ? guardToolCall(name, session) : null;
+        if (!tool) {
+          toolResult = { error: `Unknown tool: ${name}` };
+        } else if (guardErr) {
+          toolResult = { error: guardErr };
+        } else {
+          try {
+            toolResult = await tool.execute({ pool, roPool, orgId, session, user }, args);
+          } catch (e) {
+            console.error(`[chat] tool ${name} failed:`, e.message);
+            toolResult = { error: e.message || 'Tool execution failed' };
+          }
+        }
+
+        await saveMessage(pool, sessionId, {
+          role: 'tool',
+          content: JSON.stringify(toolResult),
+          tool_call_id: tc.id,
+          tool_name: name,
+        });
+        history.push({ role: 'tool', content: JSON.stringify(toolResult), tool_call_id: tc.id });
+      }
+      continue;
+    }
+
+    finalText = assistantMsg.content || '';
+    await saveMessage(pool, sessionId, {
+      role: 'assistant',
+      content: finalText,
+      tokens_in: usage?.prompt_tokens || 0,
+      tokens_out: usage?.completion_tokens || 0,
+    });
+    break;
+  }
+
+  return { finalText, totalTokensIn, totalTokensOut };
+}
+
+// ---------------------------------------------------------------------------
 // POST /message  — send a user turn, get the assistant's reply.
 // body: { message: string, session_id?: string, channel?: 'staff-test'|'web' }
 // ---------------------------------------------------------------------------
@@ -334,83 +413,17 @@ router.post('/message', async (req, res) => {
     // Build message history for the model
     let history = await loadMessageHistory(req.pool, sessionRow.id);
 
-    // Tool-call loop
+    // Tool-call loop (shared with /internal/message via runToolLoop). The
+    // request_viewing booking cap is prospect-specific, passed as a guard.
     const maxIterations = config.chat.maxToolIterations || 6;
-    let finalAssistantText = null;
-    let totalTokensIn = 0;
-    let totalTokensOut = 0;
-
-    for (let i = 0; i < maxIterations; i++) {
-      const { message: assistantMsg, usage } = await llmChat(history, definitions, {});
-      totalTokensIn += usage?.prompt_tokens || 0;
-      totalTokensOut += usage?.completion_tokens || 0;
-
-      if (assistantMsg.tool_calls && assistantMsg.tool_calls.length) {
-        // Save assistant tool-call turn
-        await saveMessage(req.pool, sessionRow.id, {
-          role: 'assistant',
-          content: assistantMsg.content || null,
-          tool_calls: assistantMsg.tool_calls,
-          tokens_in: usage?.prompt_tokens || 0,
-          tokens_out: usage?.completion_tokens || 0,
-        });
-        history.push({
-          role: 'assistant',
-          content: assistantMsg.content || null,
-          tool_calls: assistantMsg.tool_calls,
-        });
-
-        // Execute each tool call
-        for (const tc of assistantMsg.tool_calls) {
-          const name = tc.function?.name;
-          const rawArgs = tc.function?.arguments || '{}';
-          let args = {};
-          try { args = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs; } catch {}
-
-          let toolResult;
-          const tool = byName[name];
-          if (!tool) {
-            toolResult = { error: `Unknown tool: ${name}` };
-          } else if (name === 'request_viewing' && session.booking_count >= settings.max_bookings_per_session) {
-            toolResult = { error: 'Maximum bookings for this session reached. Ask the user to contact staff for further bookings.' };
-          } else {
-            try {
-              toolResult = await tool.execute(
-                { pool: req.pool, orgId: req.user.orgId, session, user: req.user },
-                args
-              );
-            } catch (e) {
-              console.error(`[chat] tool ${name} failed:`, e.message);
-              toolResult = { error: e.message || 'Tool execution failed' };
-            }
-          }
-
-          await saveMessage(req.pool, sessionRow.id, {
-            role: 'tool',
-            content: JSON.stringify(toolResult),
-            tool_call_id: tc.id,
-            tool_name: name,
-          });
-          history.push({
-            role: 'tool',
-            content: JSON.stringify(toolResult),
-            tool_call_id: tc.id,
-          });
-        }
-        // Loop again to let the model respond to tool results
-        continue;
-      }
-
-      // Plain text reply → done
-      finalAssistantText = assistantMsg.content || '';
-      await saveMessage(req.pool, sessionRow.id, {
-        role: 'assistant',
-        content: finalAssistantText,
-        tokens_in: usage?.prompt_tokens || 0,
-        tokens_out: usage?.completion_tokens || 0,
-      });
-      break;
-    }
+    const guardToolCall = (name, sess) =>
+      (name === 'request_viewing' && sess.booking_count >= settings.max_bookings_per_session)
+        ? 'Maximum bookings for this session reached. Ask the user to contact staff for further bookings.'
+        : null;
+    let { finalText: finalAssistantText, totalTokensIn, totalTokensOut } = await runToolLoop({
+      pool: req.pool, orgId: req.user.orgId, user: req.user, session,
+      sessionId: sessionRow.id, history, definitions, byName, maxIterations, guardToolCall,
+    });
 
     if (finalAssistantText == null) {
       finalAssistantText = "I'm having trouble getting a reply right now. Please try again in a moment.";
