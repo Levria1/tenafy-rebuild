@@ -15,6 +15,15 @@ module.exports = {
     connectionLimit: 10,
     queueLimit: 0
   },
+  // SELECT-only MySQL credentials used ONLY by the internal assistant's ask_data
+  // (NL->SQL) tool. This is the DB-level half of the read-only guarantee: even if
+  // the app-side SQL guard were bypassed, the grant makes writes physically fail.
+  // Leave DB_RO_USER unset to disable ask_data cleanly (the tool reports it's
+  // not configured rather than falling back to the read-write pool).
+  dbReadOnly: {
+    user: process.env.DB_RO_USER || '',
+    password: process.env.DB_RO_PASSWORD || '',
+  },
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
   appUrl: process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000',
   googleServiceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '',

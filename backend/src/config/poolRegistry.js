@@ -93,6 +93,39 @@ async function getOrgPoolByDbName(dbName) {
   return pool;
 }
 
+// Read-only org pools — Map<orgId, pool>. Same org database as getOrgPool, but
+// connected with SELECT-only credentials (config.dbReadOnly). Used exclusively by
+// the internal assistant's ask_data (NL->SQL) tool, so a generated query can not
+// write even if the app-side SQL guard were bypassed.
+const roPools = new Map();
+
+async function getReadOnlyOrgPool(orgId) {
+  const ro = config.dbReadOnly || {};
+  if (!ro.user) return null; // ask_data disabled — no read-only user configured
+
+  const orgIdStr = String(orgId);
+  if (roPools.has(orgIdStr)) return roPools.get(orgIdStr);
+
+  // Resolve the org's database (reuse the cache the read-write path populated).
+  let org = orgCache.get(orgIdStr);
+  if (!org) {
+    const master = getMasterPool();
+    const [rows] = await master.execute(
+      'SELECT db_name, db_host, db_port, status FROM organizations WHERE id = ?',
+      [orgIdStr]
+    );
+    if (!rows.length) throw new Error(`Organization ${orgIdStr} not found`);
+    org = rows[0];
+    if (org.status !== 1) throw new Error(`Organization ${orgIdStr} is disabled`);
+  }
+
+  // Same host/port/database as the org's normal pool, but READ-ONLY credentials.
+  const pool = createPool(org.db_name, org.db_host, org.db_port, ro.user, ro.password);
+  roPools.set(orgIdStr, pool);
+  console.log(`Read-only pool created for org ${orgIdStr} → database: ${org.db_name}`);
+  return pool;
+}
+
 async function closePools() {
   if (masterPool) {
     await masterPool.end();
@@ -101,9 +134,13 @@ async function closePools() {
   for (const [orgId, entry] of orgPools.entries()) {
     await entry.pool.end();
   }
+  for (const [orgId, pool] of roPools.entries()) {
+    await pool.end();
+  }
   orgPools.clear();
+  roPools.clear();
   orgCache.clear();
   console.log('All database pools closed');
 }
 
-module.exports = { getMasterPool, getOrgPool, getOrgPoolByDbName, closePools };
+module.exports = { getMasterPool, getOrgPool, getOrgPoolByDbName, getReadOnlyOrgPool, closePools };
