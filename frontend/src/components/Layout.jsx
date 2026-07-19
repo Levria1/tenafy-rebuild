@@ -117,10 +117,18 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     });
   }
 
-  // Chatbot — parent shown if user has at least one child permission
+  // Chatbot — parent shown if user has at least one child permission.
+  // Order: Bookings, Internal, Sessions, then the settings-gated config pages.
+  // Chat: Internal is gated on CHAT_SETTINGS_VIEW (it exposes all data + ad-hoc
+  // SQL), so it has its own permission check between the session-gated items.
   const chatChildren = [];
   if (hasPermission('LANDLORD/CHAT_SESSION_LIST')) {
     chatChildren.push({ key: '/chatbot/test', label: <Link href="/chatbot/test">Chat: Bookings</Link> });
+  }
+  if (hasPermission('LANDLORD/CHAT_SETTINGS_VIEW')) {
+    chatChildren.push({ key: '/chatbot/internal', label: <Link href="/chatbot/internal">Chat: Internal</Link> });
+  }
+  if (hasPermission('LANDLORD/CHAT_SESSION_LIST')) {
     chatChildren.push({ key: '/chatbot/sessions', label: <Link href="/chatbot/sessions">Sessions History</Link> });
   }
   if (hasPermission('LANDLORD/CHAT_SETTINGS_VIEW')) {

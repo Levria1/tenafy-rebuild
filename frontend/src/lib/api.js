@@ -577,6 +577,8 @@ export const bookingPlatform = {
 export const chatApi = {
   // Chat (staff-test and eventually widget)
   sendMessage: (data) => api.post('/api/chat/message', data),
+  // Internal staff data assistant (Chat: Internal)
+  internalMessage: (data) => api.post('/api/chat/internal/message', data),
   // Sessions
   listSessions: () => api.get('/api/chat/sessions'),
   getSession:   (id) => api.get(`/api/chat/sessions/${id}`),
