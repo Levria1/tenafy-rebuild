@@ -1273,6 +1273,100 @@ const search_documents = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Tool: search_vacancies  (INTERNAL ONLY — staff data query, no prospect gate)
+// ---------------------------------------------------------------------------
+const search_vacancies = {
+  cap: null, // internal-only; excluded from the prospect toolset via INTERNAL_ONLY
+  definition: {
+    type: 'function',
+    function: {
+      name: 'search_vacancies',
+      description:
+        'INTERNAL vacancy report (staff only, NO prospect qualification). Returns two lists: ' +
+        'vacant_now (units with no active lease as of the reference date) and upcoming_vacant ' +
+        '(units whose current lease ends within the horizon AND no new tenant moves in within ' +
+        'min_gap_days of the last tenant leaving — i.e. a real gap). Use for "what is vacant now", ' +
+        '"upcoming vacancies", "units with no one moving in within N days of the last tenant".',
+      parameters: {
+        type: 'object',
+        properties: {
+          as_of:        { type: 'string',  description: 'Reference date YYYY-MM-DD. Default: today.' },
+          horizon_days: { type: 'integer', description: 'Look-ahead window for upcoming vacancies (days). Default 60.' },
+          min_gap_days: { type: 'integer', description: 'For upcoming_vacant only: include a unit if its next tenant moves in at least N days after the last tenant leaves (or never). Default 15.' },
+          property_id:  { type: 'string',  description: 'Restrict to one property id.' },
+          limit:        { type: 'integer', description: 'Max units scanned. Default 500, max 1000.' },
+        },
+      },
+    },
+  },
+  async execute(ctx, args) {
+    const orgId = ctx.orgId;
+    const asOf = /^\d{4}-\d{2}-\d{2}$/.test(String(args.as_of || '')) ? args.as_of : new Date().toISOString().split('T')[0];
+    const horizon = clampLimit(args.horizon_days, 60, 3650);
+    const minGap = Number.isInteger(args.min_gap_days) ? args.min_gap_days : 15;
+    const limit = clampLimit(args.limit, 500, 1000);
+
+    let where = 'p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL AND u.active_status = 1 AND u.deleted_at IS NULL';
+    const params = [asOf, asOf, asOf, orgId];
+    if (args.property_id) { where += ' AND p.id = ?'; params.push(str(args.property_id)); }
+
+    const [rows] = await ctx.pool.execute(
+      `SELECT u.id AS unit_id, u.name AS unit_name,
+              p.display_name AS property_name, p.street_address, p.district, p.city,
+              cur.id AS cur_lease_id, cur.end_date AS cur_end_date,
+              nxt.start_date AS next_start_date
+         FROM unit u
+         JOIN property p ON u.property_id = p.id
+         LEFT JOIN leasing cur
+           ON cur.unit_id = u.id AND cur.deleted_at IS NULL
+           AND cur.start_date <= ? AND (cur.end_date >= ? OR cur.end_date IS NULL)
+         LEFT JOIN (
+           SELECT unit_id, MIN(start_date) AS start_date FROM leasing
+           WHERE deleted_at IS NULL AND start_date > ? GROUP BY unit_id
+         ) nxt ON nxt.unit_id = u.id
+        WHERE ${where}
+        LIMIT ${limit}`,
+      params
+    );
+
+    const d = (v) => (v ? String(v).slice(0, 10) : null);
+    const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+    const horizonEnd = d(new Date(new Date(asOf).getTime() + horizon * 86400000).toISOString());
+
+    const vacant_now = [];
+    const upcoming_vacant = [];
+    const seen = new Set();
+    for (const r of rows) {
+      const uid = String(r.unit_id);
+      if (seen.has(uid)) continue; // dedupe if >1 lease matched the "covering" join
+      seen.add(uid);
+      const base = {
+        unit_id: uid, unit: r.unit_name, property: r.property_name,
+        address: [r.street_address, r.district, r.city].filter(Boolean).join(', '),
+        next_tenant_moves_in: d(r.next_start_date),
+      };
+      if (!r.cur_lease_id) {
+        const gap = r.next_start_date ? daysBetween(asOf, r.next_start_date) : null;
+        vacant_now.push({ ...base, gap_days_until_next: gap });
+        continue;
+      }
+      const endStr = d(r.cur_end_date);
+      if (endStr && endStr >= asOf && endStr <= horizonEnd) {
+        const gap = r.next_start_date ? daysBetween(endStr, r.next_start_date) : null;
+        if (gap == null || gap >= minGap) {
+          upcoming_vacant.push({ ...base, becomes_vacant_on: endStr, gap_days_until_next: gap });
+        }
+      }
+    }
+    return {
+      as_of: asOf, horizon_days: horizon, min_gap_days: minGap,
+      vacant_now_count: vacant_now.length, upcoming_vacant_count: upcoming_vacant.length,
+      vacant_now, upcoming_vacant,
+    };
+  },
+};
+
 const ALL_TOOLS = [
   search_available_units,
   resolve_unit,
@@ -1285,23 +1379,57 @@ const ALL_TOOLS = [
   search_invoices,
   search_services,
   search_documents,
+  search_vacancies,
 ];
 
 const ALL_BY_NAME = Object.fromEntries(
   ALL_TOOLS.map(t => [t.definition.function.name, t])
 );
 
+// Tools that must NEVER reach the prospect-facing bot, even if their `cap` is
+// unset. The internal endpoint assembles these explicitly via toolsForInternal().
+const INTERNAL_ONLY = new Set(['search_vacancies', 'ask_data']);
+
 /**
  * Return tool definitions + executor map filtered by the org's capabilities.
+ * INTERNAL_ONLY tools are always excluded here — this is the PROSPECT toolset.
  * @param {object} capabilities  e.g. { can_search: true, can_book_viewings: false, ... }
  */
 function toolsForCapabilities(capabilities) {
   const caps = capabilities || {};
-  const allowed = ALL_TOOLS.filter(t => !t.cap || caps[t.cap] !== false);
+  const allowed = ALL_TOOLS.filter(t =>
+    !INTERNAL_ONLY.has(t.definition.function.name) && (!t.cap || caps[t.cap] !== false));
   return {
     definitions: allowed.map(t => t.definition),
     byName: Object.fromEntries(allowed.map(t => [t.definition.function.name, t])),
   };
 }
 
-module.exports = { toolsForCapabilities, ALL_BY_NAME };
+// Fixed internal toolset for Chat: Internal (staff-only). Assembled in code, NOT
+// from bot_settings — so the PII tools + vacancy + ask_data can never leak to the
+// prospect bot. `extra` lets the internal endpoint add ask_data (Phase 3).
+const INTERNAL_TOOL_NAMES = [
+  'search_leases', 'search_invoices', 'search_services',
+  'search_documents', 'search_inquiries', 'search_vacancies',
+];
+function toolsForInternal(extra = []) {
+  const base = INTERNAL_TOOL_NAMES.map(n => ALL_BY_NAME[n]).filter(Boolean);
+  const all = [...base, ...extra];
+  return {
+    definitions: all.map(t => t.definition),
+    byName: Object.fromEntries(all.map(t => [t.definition.function.name, t])),
+  };
+}
+
+const INTERNAL_SYSTEM_PROMPT = [
+  'You are the INTERNAL operations assistant for a property-management team using Tenafy.',
+  'You are talking to STAFF, not prospects. Answer their data questions directly and completely.',
+  'Do NOT use a sales tone. Do NOT ask for a move-in date, area, or budget. There is no qualification gate — just answer.',
+  'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, and search_vacancies (vacant-now + upcoming vacancies).',
+  'Be precise with numbers, dates (DD-MMM-YYYY), and money (HK$). If a tool returns nothing, say so plainly — never invent rows.',
+  'When you list units/leases/invoices, include the identifying details (unit, property, tenant, dates, amounts). Group long lists sensibly.',
+].join('\n');
+
+module.exports = {
+  toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT, ALL_BY_NAME,
+};
