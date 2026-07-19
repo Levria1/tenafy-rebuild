@@ -17,6 +17,7 @@ const { buildViewingIcs } = require('../utils/ics');
 const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
 const { searchUnits } = require('./unitSearch');
+const { validateSelect, runReadOnly } = require('./askDataService');
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -1367,6 +1368,50 @@ const search_vacancies = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Tool: ask_data  (INTERNAL ONLY — read-only NL->SQL escape hatch)
+// ---------------------------------------------------------------------------
+const ask_data = {
+  cap: null, // internal-only; excluded from the prospect toolset via INTERNAL_ONLY
+  definition: {
+    type: 'function',
+    function: {
+      name: 'ask_data',
+      description:
+        'INTERNAL read-only SQL against this organization\'s database, for questions the structured ' +
+        'tools do not cover — aggregations, counts, sums, ad-hoc joins (e.g. "total rent collected in ' +
+        'June", "how many leases expire in Q3", "average rent by district"). Provide ONE MySQL SELECT. ' +
+        'Strictly read-only: writes/DDL are rejected and the connection has SELECT-only rights. ' +
+        'Results are capped at 500 rows. PREFER the structured tools when they already answer the question.',
+      parameters: {
+        type: 'object',
+        properties: {
+          sql: {
+            type: 'string',
+            description: 'A single MySQL SELECT (or WITH ... SELECT). No semicolon chaining, no writes, no system schemas.',
+          },
+          purpose: {
+            type: 'string',
+            description: 'One short line on what this query answers (shown to staff for transparency).',
+          },
+        },
+        required: ['sql'],
+      },
+    },
+  },
+  async execute(ctx, args) {
+    const check = validateSelect(args.sql);
+    if (!check.ok) return { error: `Query rejected: ${check.reason}`, sql: args.sql };
+    try {
+      const result = await runReadOnly(ctx.roPool, check.sql);
+      return { ...result, purpose: args.purpose || null };
+    } catch (e) {
+      // Surface the DB error so the model can correct its SQL and retry.
+      return { error: e.message, sql: check.sql };
+    }
+  },
+};
+
 const ALL_TOOLS = [
   search_available_units,
   resolve_unit,
@@ -1380,6 +1425,7 @@ const ALL_TOOLS = [
   search_services,
   search_documents,
   search_vacancies,
+  ask_data,
 ];
 
 const ALL_BY_NAME = Object.fromEntries(
@@ -1421,15 +1467,36 @@ function toolsForInternal(extra = []) {
   };
 }
 
+// Curated schema summary for ask_data. Deliberately an ALLOWLIST — only tables/
+// columns staff legitimately query. Credentials, tokens and auth tables are
+// omitted on purpose (and the read-only user + SQL guard back this up).
+const ASK_DATA_SCHEMA = [
+  'When using ask_data, the connection is already scoped to THIS organization\'s database, so do not filter by org except where noted. Available tables/columns:',
+  '  property(id, display_name, street_address, district, city, state, country, zip_code, type, status, currency, org_id)  -- type 1=Residential 2=Commercial; filter status=1 AND deleted_at IS NULL',
+  '  unit(id, name, type, property_id, beds, baths, size, status, active_status, rent_price_min, rent_price_max, deposit_price)  -- status 0=vacant 1=occupied; active_status 1=active; filter deleted_at IS NULL',
+  '  leasing(id, lease_no, unit_id, tenant_id, start_date, end_date, amount, price, deposit, status, type, contract_type, due_date, invoicing, note)  -- type 0=fixed 1=month-to-month; contract_type 1=MR 2=MTM 3=NR 4=UC; filter deleted_at IS NULL',
+  '  tenant(id, first_name, middle_name, last_name, company_name, type, email, phone, status, category)  -- type 0=personal 1=company; category 1=tenant 2=payee; status 0=Pending 1=Active 2=Inactive',
+  '  invoice(id, invoice_code, property_id, unit_id, leasing_id, tenant_id, due_on, category, amount, note, type, status)  -- status 0=Open 1=Paid 2=Overdue; type 0=Inflow 1=Outflow; ALWAYS filter deleted_at IS NULL',
+  '  accounting(id, type, amount, payment_date, tenant_id, transaction_code, note)  -- type 0=Inflow(CR) 1=Outflow(DR); filter deleted_at IS NULL',
+  '  accounting_line(id, accounting_id, invoice_code, amount)  -- links a payment to invoice(s); filter deleted_at IS NULL',
+  '  category_setting(id, name)  -- invoice.category is a FK to this',
+  'Join hints: unit.property_id->property.id; leasing.unit_id->unit.id; leasing.tenant_id->tenant.id; invoice.leasing_id->leasing.id; accounting_line.invoice_code->invoice.invoice_code.',
+  'Money is HK$. Dates are DATE/DATETIME — use CURDATE() for "today".',
+].join('\n');
+
 const INTERNAL_SYSTEM_PROMPT = [
   'You are the INTERNAL operations assistant for a property-management team using Tenafy.',
   'You are talking to STAFF, not prospects. Answer their data questions directly and completely.',
   'Do NOT use a sales tone. Do NOT ask for a move-in date, area, or budget. There is no qualification gate — just answer.',
   'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, and search_vacancies (vacant-now + upcoming vacancies).',
+  'Use ask_data ONLY when the structured tools cannot answer it — aggregations, sums, counts, ad-hoc joins. It is strictly read-only.',
   'Be precise with numbers, dates (DD-MMM-YYYY), and money (HK$). If a tool returns nothing, say so plainly — never invent rows.',
   'When you list units/leases/invoices, include the identifying details (unit, property, tenant, dates, amounts). Group long lists sensibly.',
+  '',
+  ASK_DATA_SCHEMA,
 ].join('\n');
 
 module.exports = {
   toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT, ALL_BY_NAME,
+  ASK_DATA: ask_data,
 };

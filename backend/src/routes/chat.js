@@ -13,7 +13,8 @@ const router = express.Router();
 const config = require('../config');
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { chat: llmChat } = require('../services/llmClient');
-const { toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT } = require('../services/chatTools');
+const { toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT, ASK_DATA } = require('../services/chatTools');
+const { getReadOnlyOrgPool } = require('../config/poolRegistry');
 
 router.use(authenticate);
 
@@ -504,12 +505,20 @@ router.post('/internal/message', requirePermission('LANDLORD/CHAT_SETTINGS_VIEW'
     const session = sessionView(sessionRow);
     const history = await loadMessageHistory(req.pool, sessionRow.id);
 
-    const { definitions, byName } = toolsForInternal(); // Phase 3 passes [ASK_DATA]
+    // ask_data is only offered when a read-only DB user is configured — otherwise
+    // the model would see a tool it can't use. getReadOnlyOrgPool returns null
+    // when DB_RO_USER is unset, so the feature degrades off cleanly.
+    let roPool = null;
+    try {
+      roPool = await getReadOnlyOrgPool(req.user.orgId);
+    } catch (e) {
+      console.error('[chat/internal] read-only pool unavailable:', e.message);
+    }
+    const { definitions, byName } = toolsForInternal(roPool ? [ASK_DATA] : []);
     const maxIterations = config.chat.maxToolIterations || 6;
     let { finalText } = await runToolLoop({
       pool: req.pool, orgId: req.user.orgId, user: req.user, session,
-      sessionId: sessionRow.id, history, definitions, byName, maxIterations,
-      // roPool omitted in Phase 2 — added with ask_data in Phase 3.
+      sessionId: sessionRow.id, history, definitions, byName, maxIterations, roPool,
     });
     if (finalText == null) {
       finalText = "I couldn't complete that in the available steps — please narrow the question.";
