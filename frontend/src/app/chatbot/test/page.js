@@ -98,9 +98,9 @@ export default function TestChatPage() {
     <MainLayout>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <Title level={4} style={{ margin: 0 }}>Assistant</Title>
+          <Title level={4} style={{ margin: 0 }}>Chat: Bookings</Title>
           <Text type="secondary">
-            Chat with the assistant to answer prospect enquiries. Conversations are saved — reopen and continue any of them from Sessions.
+            Preview of the prospect-facing booking bot — this is what prospects experience on WhatsApp/web. Conversations are saved — reopen and continue any of them from Sessions.
           </Text>
         </div>
         <Space wrap>

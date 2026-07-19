@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
-  Card, Table, Tag, Input, Select, Typography, Button, Space, Empty, message,
+  Card, Table, Tag, Input, Select, Typography, Button, Space, Empty, Segmented, message,
 } from 'antd';
 import { SearchOutlined, ReloadOutlined, MessageOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -17,8 +17,15 @@ const { Title, Text } = Typography;
 const CHANNEL_LABELS = {
   'web': { label: 'Web', color: 'blue' },
   'whatsapp': { label: 'WhatsApp', color: 'green' },
-  'staff-test': { label: 'Staff test', color: 'default' },
+  'email': { label: 'Email', color: 'purple' },
+  'staff-test': { label: 'Bookings (staff)', color: 'default' },
+  'staff-internal': { label: 'Internal (staff)', color: 'geekblue' },
 };
+
+// A conversation's "source": chats run inside Tenafy (the staff assistants) vs
+// chats logged from TaneChat (WhatsApp/email/web prospect conversations).
+const TENAFY_CHANNELS = new Set(['staff-test', 'staff-internal']);
+const sourceOf = (row) => (TENAFY_CHANNELS.has(row.channel) ? 'tenafy' : 'tanechat');
 
 export default function ChatSessionsPage() {
   const { isMobile } = useIsMobile();
@@ -26,6 +33,9 @@ export default function ChatSessionsPage() {
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [channel, setChannel] = useState('all');
+  // Default to Tenafy — this page's original purpose was the Tenafy assistants'
+  // own chats; TaneChat (WhatsApp/email) conversations are kept but opt-in.
+  const [source, setSource] = useState('tenafy');
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -37,16 +47,23 @@ export default function ChatSessionsPage() {
 
   useEffect(() => { reload(); }, [reload]);
 
+  const sourceCounts = useMemo(() => ({
+    all: rows.length,
+    tenafy: rows.filter((r) => sourceOf(r) === 'tenafy').length,
+    tanechat: rows.filter((r) => sourceOf(r) === 'tanechat').length,
+  }), [rows]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
+      if (source !== 'all' && sourceOf(r) !== source) return false;
       if (channel !== 'all' && r.channel !== channel) return false;
       if (!q) return true;
       const hay = [r.viewer_name, r.viewer_email, r.viewer_phone, r.channel_user_id]
         .filter(Boolean).join(' ').toLowerCase();
       return hay.includes(q);
     });
-  }, [rows, search, channel]);
+  }, [rows, search, channel, source]);
 
   const columns = [
     {
@@ -120,7 +137,7 @@ export default function ChatSessionsPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <Title level={4} style={{ margin: 0 }}>Chat Sessions</Title>
-          <Text type="secondary">Every conversation the assistant has had with a prospect.</Text>
+          <Text type="secondary">Conversations run in Tenafy (the staff assistants) and logged from TaneChat (WhatsApp/email).</Text>
         </div>
         <Space>
           <Link href="/chatbot/test">
@@ -131,6 +148,16 @@ export default function ChatSessionsPage() {
       </div>
 
       <Card size="small">
+        <Segmented
+          value={source}
+          onChange={setSource}
+          style={{ marginBottom: 12 }}
+          options={[
+            { label: `Tenafy (${sourceCounts.tenafy})`, value: 'tenafy' },
+            { label: `TaneChat (${sourceCounts.tanechat})`, value: 'tanechat' },
+            { label: `All (${sourceCounts.all})`, value: 'all' },
+          ]}
+        />
         <Space style={{ marginBottom: 12 }} wrap>
           <Input
             allowClear
@@ -143,12 +170,14 @@ export default function ChatSessionsPage() {
           <Select
             value={channel}
             onChange={setChannel}
-            style={{ width: 160 }}
+            style={{ width: 180 }}
             options={[
-              { value: 'all', label: `All (${rows.length})` },
-              { value: 'web', label: 'Web widget' },
+              { value: 'all', label: 'All channels' },
+              { value: 'staff-test', label: 'Bookings (staff)' },
+              { value: 'staff-internal', label: 'Internal (staff)' },
               { value: 'whatsapp', label: 'WhatsApp' },
-              { value: 'staff-test', label: 'Staff test' },
+              { value: 'email', label: 'Email' },
+              { value: 'web', label: 'Web widget' },
             ]}
           />
         </Space>

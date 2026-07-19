@@ -120,7 +120,7 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   // Chatbot — parent shown if user has at least one child permission
   const chatChildren = [];
   if (hasPermission('LANDLORD/CHAT_SESSION_LIST')) {
-    chatChildren.push({ key: '/chatbot/test', label: <Link href="/chatbot/test">Chat Assistant</Link> });
+    chatChildren.push({ key: '/chatbot/test', label: <Link href="/chatbot/test">Chat: Bookings</Link> });
     chatChildren.push({ key: '/chatbot/sessions', label: <Link href="/chatbot/sessions">Sessions History</Link> });
   }
   if (hasPermission('LANDLORD/CHAT_SETTINGS_VIEW')) {
