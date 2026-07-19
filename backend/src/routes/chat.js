@@ -11,9 +11,9 @@ const express = require('express');
 const router = express.Router();
 
 const config = require('../config');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requirePermission } = require('../middleware/auth');
 const { chat: llmChat } = require('../services/llmClient');
-const { toolsForCapabilities } = require('../services/chatTools');
+const { toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT } = require('../services/chatTools');
 
 router.use(authenticate);
 
@@ -461,6 +461,70 @@ router.post('/message', async (req, res) => {
   } catch (err) {
     console.error('[chat] POST /message error:', err);
     return fail(res, err.message || 'Chat failed', 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /internal/message  — STAFF-ONLY internal data assistant.
+// Hardcoded ops persona + fixed internal toolset (PII search tools + vacancy;
+// ask_data added in Phase 3). Fully isolated from the prospect bot_settings, so
+// PII tools can never reach prospects. Gated on CHAT_SETTINGS_VIEW.
+// body: { message: string, session_id?: string }
+// ---------------------------------------------------------------------------
+router.post('/internal/message', requirePermission('LANDLORD/CHAT_SETTINGS_VIEW'), async (req, res) => {
+  if (!config.chat.enabled) return fail(res, 'Chat is currently disabled', 503);
+  const primary = config.chat.provider || 'kimi';
+  const keyPresent = {
+    kimi: !!config.chat.kimi.apiKey,
+    openrouter: !!config.chat.openrouter.apiKey,
+    minimax: !!config.chat.minimax.apiKey,
+  }[primary];
+  if (!keyPresent) return fail(res, `LLM provider '${primary}' has no API key configured on the server`, 500);
+
+  const { message, session_id } = req.body || {};
+  if (!message || typeof message !== 'string') return fail(res, 'message is required', 400);
+
+  try {
+    // Resolve or create a staff-internal session. createSession seeds the internal
+    // system prompt as the first (system) message, so history carries it forward.
+    let sessionRow;
+    if (session_id) {
+      sessionRow = await getSessionById(req.pool, session_id);
+      if (!sessionRow) return fail(res, 'Conversation not found', 404);
+      if (sessionRow.channel !== 'staff-internal') return fail(res, 'Not an internal conversation', 400);
+    } else {
+      sessionRow = await createSession(req.pool, {
+        channel: 'staff-internal',
+        channelUserId: `staff-${req.user.id}-${Date.now()}`,
+        seedSystemPrompt: INTERNAL_SYSTEM_PROMPT,
+      });
+    }
+
+    await saveMessage(req.pool, sessionRow.id, { role: 'user', content: message });
+    const session = sessionView(sessionRow);
+    const history = await loadMessageHistory(req.pool, sessionRow.id);
+
+    const { definitions, byName } = toolsForInternal(); // Phase 3 passes [ASK_DATA]
+    const maxIterations = config.chat.maxToolIterations || 6;
+    let { finalText } = await runToolLoop({
+      pool: req.pool, orgId: req.user.orgId, user: req.user, session,
+      sessionId: sessionRow.id, history, definitions, byName, maxIterations,
+      // roPool omitted in Phase 2 — added with ask_data in Phase 3.
+    });
+    if (finalText == null) {
+      finalText = "I couldn't complete that in the available steps — please narrow the question.";
+      await saveMessage(req.pool, sessionRow.id, { role: 'assistant', content: finalText });
+    }
+
+    await req.pool.execute(
+      `UPDATE chat_session SET message_count = message_count + 1, last_message_at = NOW() WHERE id = ?`,
+      [sessionRow.id]
+    );
+
+    return ok(res, { session_id: String(sessionRow.id), reply: finalText });
+  } catch (err) {
+    console.error('[chat/internal] error:', err);
+    return fail(res, err.message || 'Internal chat failed', 500);
   }
 });
 
