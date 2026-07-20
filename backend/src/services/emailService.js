@@ -116,7 +116,8 @@ const TEMPLATE_VARIABLES = [
   { key: '%Outstandings%', description: 'Total outstanding balance for the lease (all unpaid invoices)' },
   { key: '%Invoice Outstanding%', description: 'Outstanding amount for the specific invoice being referenced' },
   { key: '%Monthly utility credit%', description: 'Monthly utility credit amount' },
-  { key: '%Monthly rent%', description: 'Monthly rent from the lease (the lease form\'s Amount field)' },
+  { key: '%Rent amount%', description: 'Rent per billing period from the lease (the Amount field) — monthly, quarterly, or a one-off total depending on the lease' },
+  { key: '%Payment frequency%', description: 'How often rent is billed: monthly / quarterly / weekly / one-time' },
   { key: '%Security deposit amount%', description: 'Security deposit amount' },
   { key: '%Payment Month%', description: 'Payment month name (e.g. March)' },
   { key: '%Payment Date%', description: 'Payment date (e.g. March 15)' },
@@ -186,6 +187,34 @@ const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
+
+// leasing.invoicing holds either a word ('monthly') or a day count ('30').
+// Empty/absent means the lease has no recurring schedule — the scheduler skips
+// those (it requires invoicing IS NOT NULL AND != ''), so it's a one-off payment.
+function formatInvoicingFrequency(invoicing) {
+  const v = String(invoicing == null ? '' : invoicing).trim().toLowerCase();
+  if (!v) return 'one-time';
+  const byWord = {
+    weekly: 'weekly',
+    'bi-weekly': 'every 2 weeks',
+    biweekly: 'every 2 weeks',
+    monthly: 'monthly',
+    quarterly: 'quarterly',
+    'bi-annually': 'every 6 months',
+    biannually: 'every 6 months',
+    annually: 'yearly',
+    yearly: 'yearly',
+  };
+  if (byWord[v]) return byWord[v];
+  const days = Number(v);
+  if (Number.isFinite(days)) {
+    if (days <= 0) return 'one-time';   // '0' means no recurrence, same as empty
+    if (days === 1) return 'daily';     // avoid "every 1 days"
+    return ({ 7: 'weekly', 14: 'every 2 weeks', 30: 'monthly', 90: 'quarterly', 180: 'every 6 months', 365: 'yearly' })[days]
+      || `every ${days} days`;
+  }
+  return v; // unrecognised word — surface it rather than silently blanking
+}
 
 function formatMonth(date) {
   if (!date) return '';
@@ -270,7 +299,7 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
     `SELECT
        l.id AS lease_id, l.start_date, l.end_date, l.unit_information,
        l.credits, l.deposit, l.amount AS lease_amount, l.price AS lease_price,
-       l.notice_period_days,
+       l.invoicing, l.notice_period_days,
        t.first_name, t.middle_name, t.last_name, t.company_name,
        t.type AS tenant_type, t.phone AS tenant_phone,
        u.name AS unit_name, u.access_information, u.wifi_information,
@@ -421,8 +450,14 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
     '%Outstandings%': formatAmount(sym, outstanding),
     '%Invoice Outstanding%': invoiceOutstandingResolved ? formatAmount(sym, invoiceOutstanding) : '',
     '%Monthly utility credit%': formatAmount(sym, r.credits),
-    // leasing.price is the monthly rent (the lease form's "AMOUNT" field writes
-    // to `price`; leasing.amount is a separate legacy column).
+    // The lease form's "AMOUNT" field writes the SAME value to both price and
+    // amount; the scheduler bills from `amount`. It is the rent PER BILLING
+    // PERIOD (leasing.invoicing) — so it is only "monthly" when the lease is
+    // billed monthly. Pair with %Payment frequency% to keep copy accurate.
+    '%Rent amount%': formatAmount(sym, r.lease_price),
+    '%Payment frequency%': formatInvoicingFrequency(r.invoicing),
+    // Deprecated alias — kept resolving so any template already using it doesn't
+    // start emitting a raw placeholder. Not listed in TEMPLATE_VARIABLES.
     '%Monthly rent%': formatAmount(sym, r.lease_price),
     '%Security deposit amount%': formatAmount(sym, r.deposit),
     '%Payment Month%': formatMonth(effectiveDueDate),
@@ -455,6 +490,8 @@ function getSampleVariables() {
     '%Outstandings%': '$1,200.00',
     '%Invoice Outstanding%': '$800.00',
     '%Monthly utility credit%': '$50.00',
+    '%Rent amount%': '$2,400.00',
+    '%Payment frequency%': 'monthly',
     '%Monthly rent%': '$2,400.00',
     '%Security deposit amount%': '$2,400.00',
     '%Payment Month%': 'March',
@@ -1036,6 +1073,7 @@ module.exports = {
   // Core functions
   findSmtpAccount,
   extractEmail,
+  formatInvoicingFrequency,
   loadTemplate,
   resolveVariables,
   substituteVariables,
