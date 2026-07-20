@@ -47,7 +47,12 @@ function newToken() {
 
 // Invite (or resend) — sent per signer with their personal link.
 async function sendSignatureInvite(pool, orgId, { leaseId, party, link, message, expiryDays }) {
-  if (!party.signer_email) return;
+  // Callers validate this upfront (POST /request rejects email-less signers), so
+  // reaching here means a party slipped through — log it rather than vanishing.
+  if (!party.signer_email) {
+    console.error(`[signature] cannot send invite for party ${party.id || '?'} (${party.signer_name || 'unnamed'}) on lease ${leaseId}: no signer_email`);
+    return;
+  }
   const expiryLabel = `${expiryDays || 14} days`;
   const extraVariables = {
     '%Signer Name%': party.signer_name || 'Signer',
@@ -248,6 +253,20 @@ router.post('/request', authenticate, async (req, res) => {
             parties, message, expires_in_days } = req.body || {};
     if (!lease_id || !template_id) return fail(res, 'lease_id and template_id are required', 400);
     if (!Array.isArray(parties) || parties.length === 0) return fail(res, 'At least one signer is required', 400);
+
+    // Every signer needs an email — the invite is delivered ONLY by email. Without
+    // this the request is created and the invite silently no-ops (sendSignatureInvite
+    // returns early on a missing signer_email), leaving a lease that looks "sent"
+    // but that nobody was ever asked to sign. Fail loudly instead.
+    const unreachable = parties.filter(p => !p || !String(p.signer_email || '').trim());
+    if (unreachable.length) {
+      const names = unreachable.map((p, i) => (p && p.signer_name) || `Signer ${i + 1}`).join(', ');
+      return fail(
+        res,
+        `${names} ${unreachable.length > 1 ? 'have' : 'has'} no email address, so the signing link can't be sent. Add an email to the contact first.`,
+        400
+      );
+    }
 
     // Render the unsigned lease PDF using the template + lease data. Store it
     // in the file table so we can re-serve it for the signer (no auth needed

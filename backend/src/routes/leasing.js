@@ -663,6 +663,61 @@ router.post('/check-conflict', authenticate, async (req, res) => {
 });
 
 // POST /api/leasing - Create lease
+// ---------------------------------------------------------------------------
+// Missing-email guard
+//
+// Tenant-facing options below can ONLY be delivered by email. Without an address
+// the send doesn't error — it silently does nothing (e.g. signature.js returns
+// early when a party has no signer_email), so the lease looks fine while the
+// tenant never receives anything. Additional tenants count too: they're
+// signature parties. Landlord_* flags are excluded — those go to staff.
+// ---------------------------------------------------------------------------
+const TENANT_EMAIL_FLAGS = [
+  'send_for_esignature', 'send_payment_options',
+  'tenant_posted', 'tenant_due', 'tenant_overdue', 'tenant_checkin',
+  'tenant_checkout', 'tenant_renewal', 'tenant_deposit_posted', 'payment_receipt',
+];
+
+function enabledEmailOptions(body) {
+  return TENANT_EMAIL_FLAGS.filter(f => !!body[f]);
+}
+
+// Returns [] when every party is reachable, else [{ id, name }] of those without.
+async function partiesMissingEmail(pool, orgId, tenantId, additionalTenantIds) {
+  const ids = [tenantId, ...(Array.isArray(additionalTenantIds) ? additionalTenantIds : [])]
+    .filter(Boolean).map(String);
+  if (!ids.length) return [];
+  const ph = ids.map(() => '?').join(',');
+  const [rows] = await pool.execute(
+    `SELECT id, first_name, last_name, company_name, email FROM tenant
+      WHERE org_id = ? AND id IN (${ph}) AND deleted_at IS NULL`,
+    [orgId, ...ids]
+  );
+  return rows
+    .filter(r => !r.email || !String(r.email).trim())
+    .map(r => ({
+      id: String(r.id),
+      name: r.company_name || [r.first_name, r.last_name].filter(Boolean).join(' ') || `Contact ${r.id}`,
+    }));
+}
+
+// Shared 400 responder so create + edit report identically (the frontend reads
+// data.missing_email to reopen the inline "add email" prompt).
+async function blockIfUnreachable(req, res, tenantId, additionalTenantIds) {
+  const opts = enabledEmailOptions(req.body);
+  if (!opts.length) return false;
+  const missing = await partiesMissingEmail(req.pool, req.user.orgId, tenantId, additionalTenantIds);
+  if (!missing.length) return false;
+  res.status(400).json({
+    code: 400,
+    message:
+      `${missing.map(m => m.name).join(', ')} ${missing.length > 1 ? 'have' : 'has'} no email address, ` +
+      `so the selected email options can't be delivered. Add an email, or turn those options off.`,
+    data: { missing_email: missing, email_options: opts },
+  });
+  return true;
+}
+
 router.post('/', authenticate, async (req, res) => {
   try {
     const {
@@ -689,6 +744,10 @@ router.post('/', authenticate, async (req, res) => {
     } = req.body;
     const orgId = req.user.orgId;
     const leaseState = lease_state === 'pending' ? 'pending' : 'active';
+
+    // Backstop for the frontend prompt — also catches API/import callers and a
+    // stale client whose tenant list predates an email being added elsewhere.
+    if (await blockIfUnreachable(req, res, tenant_id, additionalTenantIds)) return;
 
     // Server-side overlap check — block new lease if dates conflict with ANY
     // existing lease on the unit (pending OR active). Per the user's design:
@@ -1054,6 +1113,9 @@ router.put('/:id', authenticate, async (req, res) => {
       // "Request viewings" checkbox (shown when Tenant Status = NR)
       viewing_enabled
     } = req.body;
+
+    // Same missing-email guard as create (see blockIfUnreachable).
+    if (await blockIfUnreachable(req, res, tenant_id, additionalTenantIds)) return;
 
     // Detect the 0 → 1 transition on "Request viewings" so we message the tenant
     // exactly once (not on every later save).

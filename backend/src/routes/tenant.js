@@ -343,6 +343,50 @@ router.get('/:id/profile', authenticate, async (req, res) => {
   }
 });
 
+// PATCH /api/tenant/:id/email - Set ONLY the email address.
+// Deliberately separate from PUT /:id/profile, which overwrites every column —
+// sending a partial body there would null out the tenant's name/phone. Used by
+// the lease form's "add email inline" prompt so staff can fix a missing email
+// without leaving the page (and without clobbering the rest of the record).
+router.patch('/:id/email', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const email = (req.body?.email || '').trim();
+
+    if (!email) {
+      return res.status(400).json({ code: 400, message: 'Email is required' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ code: 400, message: 'Invalid email address' });
+    }
+
+    // Same uniqueness rule as create — but exclude this tenant so re-saving the
+    // same address isn't reported as a duplicate.
+    const [dup] = await req.pool.execute(
+      'SELECT id FROM tenant WHERE org_id = ? AND deleted_at IS NULL AND LOWER(email) = LOWER(?) AND id <> ? LIMIT 1',
+      [orgId, email, String(id)]
+    );
+    if (dup.length > 0) {
+      return res.status(400).json({ code: 400, message: 'This email address is already in use' });
+    }
+
+    const [result] = await req.pool.execute(
+      'UPDATE tenant SET email = ? WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
+      [email, String(id), orgId]
+    );
+    if (!result.affectedRows) {
+      return res.status(404).json({ code: 404, message: 'Contact not found' });
+    }
+
+    await logActivity(req, 'UPDATE', 'tenant', id, `Set email for contact ${id}`);
+    res.json({ code: 200, data: { id: String(id), email } });
+  } catch (error) {
+    console.error('Set tenant email error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to set email' });
+  }
+});
+
 // PUT /api/tenant/:id/profile - Update tenant
 router.put('/:id/profile', authenticate, async (req, res) => {
   try {
