@@ -582,6 +582,12 @@ export const chatApi = {
   sendMessage: (data) => api.post('/api/chat/message', data),
   // Internal staff data assistant (Chat: Internal)
   internalMessage: (data) => api.post('/api/chat/internal/message', data),
+  // OCR an image attachment before sending a normal text-only chat message.
+  ocrImage: (file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return api.post('/api/chat/ocr', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
   // Sessions
   listSessions: (params) => api.get('/api/chat/sessions', { params }),
   getSession:   (id) => api.get(`/api/chat/sessions/${id}`),

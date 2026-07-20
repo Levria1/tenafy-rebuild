@@ -9,10 +9,12 @@
 
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 
 const config = require('../config');
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { chat: llmChat } = require('../services/llmClient');
+const visionClient = require('../services/visionClient');
 const { toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT, ASK_DATA } = require('../services/chatTools');
 const { getReadOnlyOrgPool } = require('../config/poolRegistry');
 
@@ -31,6 +33,28 @@ function newId() {
 }
 function safeParseJson(v) {
   try { return JSON.parse(v); } catch { return null; }
+}
+
+const ocrUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+    if (!allowed.has(file.mimetype)) {
+      return cb(new Error('Only PNG, JPEG, WebP, or GIF images are accepted.'), false);
+    }
+    cb(null, true);
+  },
+});
+
+function ocrSingle(req, res, next) {
+  ocrUpload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return fail(res, 'Image too large (max 10 MB).', 400);
+    }
+    return fail(res, err.message || 'Upload failed', 400);
+  });
 }
 
 // MySQL BIT(1) columns come back as Buffer (<Buffer 00> / <Buffer 01>) in mysql2.
@@ -201,6 +225,39 @@ async function saveMessage(pool, sessionId, fields) {
   );
   return id;
 }
+
+// ---------------------------------------------------------------------------
+// POST /ocr — OCR an attached chat image in memory.
+// The chat message endpoints stay JSON-only; this keeps large image payloads
+// away from the default express.json() body limit and avoids widening it.
+// ---------------------------------------------------------------------------
+router.post('/ocr', ocrSingle, async (req, res) => {
+  try {
+    if (!req.file) return fail(res, 'Image file is required.', 400);
+
+    let text = '';
+    try {
+      text = await visionClient.extractText(req.file.buffer);
+    } catch (err) {
+      console.error('[chat/ocr] Vision OCR failed:', err.message);
+      const configured = !!config.googleVision?.apiKey || !!process.env.GOOGLE_VISION_API_KEY;
+      return fail(
+        res,
+        configured ? 'OCR failed. Please try another image.' : 'OCR is not configured on the server.',
+        configured ? 500 : 400
+      );
+    }
+
+    text = String(text || '').trim();
+    if (!text) {
+      return ok(res, { text: '', message: 'No text found in the image.' });
+    }
+    return ok(res, { text });
+  } catch (err) {
+    console.error('[chat/ocr] error:', err);
+    return fail(res, err.message || 'OCR failed', 500);
+  }
+});
 
 // Load an existing session by its real id (so a conversation can be continued
 // or resumed). Returns null if not found. The pool is already org-scoped.

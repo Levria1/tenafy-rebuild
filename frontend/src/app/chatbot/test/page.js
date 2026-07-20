@@ -5,8 +5,9 @@ import Link from 'next/link';
 import {
   Card, Typography, Input, Button, Space, Spin, Tag, Alert, Avatar, message as antMessage,
 } from 'antd';
-import { SendOutlined, RobotOutlined, UserOutlined, ReloadOutlined, ClearOutlined } from '@ant-design/icons';
+import { SendOutlined, RobotOutlined, UserOutlined, ClearOutlined } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
+import { ImageOcrPreview, useChatImageOcr } from '../../../components/chatbot/ImageAttach';
 import { chatApi } from '../../../lib/api';
 
 const { Title, Text, Paragraph } = Typography;
@@ -47,6 +48,12 @@ export default function TestChatPage() {
   const [sessionId, setSessionId] = useState(null);
   const [error, setError] = useState(null);
   const endRef = useRef(null);
+  const imageOcr = useChatImageOcr({
+    onError: (msg) => {
+      setError(msg);
+      antMessage.error(msg);
+    },
+  });
 
   const scrollToBottom = useCallback(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -55,9 +62,11 @@ export default function TestChatPage() {
   useEffect(() => { scrollToBottom(); }, [messages, scrollToBottom]);
 
   const send = async () => {
-    const text = input.trim();
-    if (!text || sending) return;
+    if (sending || imageOcr.reading) return;
+    if (!input.trim() && !imageOcr.attachment?.text) return;
+    const text = imageOcr.composeMessage(input);
     setInput('');
+    imageOcr.clearAttachment();
     setError(null);
     const userMsg = { role: 'user', content: text };
     setMessages((ms) => [...ms, userMsg]);
@@ -66,7 +75,7 @@ export default function TestChatPage() {
       const payload = { message: text };
       if (sessionId) payload.session_id = sessionId;
       const r = await chatApi.sendMessage(payload);
-      const { session_id, reply, usage } = r.data.data;
+      const { session_id, reply } = r.data.data;
       setSessionId(session_id);
       setMessages((ms) => [...ms, {
         role: 'assistant',
@@ -164,22 +173,29 @@ export default function TestChatPage() {
           )}
           <div ref={endRef} />
         </div>
-        <div style={{ borderTop: '1px solid #f0f0f0', padding: 12 }}>
+        <div style={{ borderTop: '1px solid #f0f0f0', padding: 12 }} {...imageOcr.dropProps}>
+          <ImageOcrPreview
+            attachment={imageOcr.attachment}
+            reading={imageOcr.reading}
+            onRemove={imageOcr.clearAttachment}
+          />
           <Space.Compact style={{ width: '100%' }}>
+            {imageOcr.attachButton}
             <Input.TextArea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKey}
+              {...imageOcr.textAreaProps}
               placeholder="Ask anything… (Enter to send, Shift+Enter for new line)"
               autoSize={{ minRows: 1, maxRows: 4 }}
-              disabled={sending}
+              disabled={sending || imageOcr.reading}
             />
             <Button
               type="primary"
               icon={<SendOutlined />}
               onClick={send}
               loading={sending}
-              disabled={!input.trim()}
+              disabled={imageOcr.reading || (!input.trim() && !imageOcr.attachment?.text)}
             >
               Send
             </Button>
