@@ -12,6 +12,7 @@ import {
 import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
 import SelectAllCheckbox from '../../../components/SelectAllCheckbox';
+import TenantEmailPrompt from '../../../components/TenantEmailPrompt';
 import { leasing, property, tenant, file as fileApi, settings, bookingPlatform, salesAgent, utility } from '../../../lib/api';
 
 const { TextArea } = Input;
@@ -221,6 +222,59 @@ export default function LeaseCreatePage() {
     lookupCheckInMeter(form.getFieldValue('unit_id'), form.getFieldValue('start_date'));
   };
 
+  // ── Missing-email prompt ──────────────────────────────────────────────────
+  // Warn as soon as an email-less contact is picked (nothing typed yet, so
+  // nothing to lose) rather than at submit. Fixing it inline avoids the trap
+  // where you'd add the email in another tab and the form kept the stale record.
+  const [emailPrompt, setEmailPrompt] = useState({ open: false, parties: [], mode: 'warn' });
+
+  const partiesWithoutEmail = (ids, list = tenants) =>
+    (ids || [])
+      .map(id => list.find(x => String(x.id) === String(id)))
+      .filter(t => t && !(t.email || '').trim())
+      .map(t => ({
+        id: t.id,
+        name: t.company_name || [t.first_name, t.last_name].filter(Boolean).join(' ') || `Contact ${t.id}`,
+      }));
+
+  const warnIfUnreachable = (ids, list = tenants) => {
+    const missing = partiesWithoutEmail(ids, list);
+    if (missing.length) setEmailPrompt({ open: true, parties: missing, mode: 'warn' });
+  };
+
+  // Patch the cached contact list in place so selects/labels update immediately.
+  const applySavedEmails = (saved) => {
+    setTenants(prev => prev.map(t => {
+      const hit = saved.find(s => String(s.id) === String(t.id));
+      return hit ? { ...t, email: hit.email } : t;
+    }));
+    setSelectedTenant(prev => {
+      const hit = prev && saved.find(s => String(s.id) === String(prev.id));
+      return hit ? { ...prev, email: hit.email } : prev;
+    });
+    setEmailPrompt(p => ({ ...p, open: false }));
+  };
+
+  // Re-fetch contacts without touching the form instance — loadData() only sets
+  // list state, so everything already entered in the lease form survives.
+  const recheckEmails = async () => {
+    // Re-fetch from the SAME endpoint this page loads contacts from, so the
+    // shape matches. Only list state is replaced — the form instance (and every
+    // value already typed into the lease) is untouched.
+    const res = await leasing.getTenants().catch(() => null);
+    const fresh = res?.data?.data || null;
+    const list = fresh || tenants;
+    if (fresh) setTenants(fresh);
+    const stillMissing = partiesWithoutEmail(emailPrompt.parties.map(p => p.id), list);
+    if (!stillMissing.length) {
+      message.success('Email found — you can continue.');
+      setEmailPrompt(p => ({ ...p, open: false }));
+    } else {
+      setEmailPrompt(p => ({ ...p, parties: stillMissing }));
+      message.info('Still no email on file for those contacts.');
+    }
+  };
+
   const handleTenantChange = (tenantId) => {
     const t = tenants.find(x => x.id === tenantId);
     setSelectedTenant(t || null);
@@ -229,6 +283,7 @@ export default function LeaseCreatePage() {
         contact_phone: t.phone || '',
       });
     }
+    warnIfUnreachable([tenantId]);
   };
 
   const handleFileUpload = async (info) => {
@@ -358,7 +413,15 @@ export default function LeaseCreatePage() {
         message.error(response.data.message || 'Failed to create lease');
       }
     } catch (error) {
-      message.error(error.response?.data?.message || 'Failed to create lease');
+      // The server blocks the save when email-dependent options are on but a
+      // party has no address. Reopen the prompt (block mode) so it can be fixed
+      // inline — the form keeps everything already entered.
+      const missing = error.response?.data?.data?.missing_email;
+      if (Array.isArray(missing) && missing.length) {
+        setEmailPrompt({ open: true, parties: missing, mode: 'block' });
+      } else {
+        message.error(error.response?.data?.message || 'Failed to create lease');
+      }
     } finally {
       setLoading(false);
     }
@@ -527,6 +590,7 @@ export default function LeaseCreatePage() {
               optionFilterProp="children"
               loading={loadingData}
               allowClear
+              onChange={(ids) => warnIfUnreachable(ids)}
               style={{ width: '100%' }}
             >
               {tenants.map(t => (
@@ -920,6 +984,15 @@ export default function LeaseCreatePage() {
           </Space>
         </div>
       </div>
+
+      <TenantEmailPrompt
+        open={emailPrompt.open}
+        parties={emailPrompt.parties}
+        mode={emailPrompt.mode}
+        onSaved={applySavedEmails}
+        onRecheck={recheckEmails}
+        onClose={() => setEmailPrompt(p => ({ ...p, open: false }))}
+      />
     </MainLayout>
   );
 }

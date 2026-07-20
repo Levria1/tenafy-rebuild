@@ -159,6 +159,9 @@ export const tenant = {
   getProfileSum: (id) => api.get(`/api/tenant/${id}/profile/sum`),
   create: (data) => api.post('/api/tenant', data),
   update: (id, data) => api.put(`/api/tenant/${id}/profile`, data),
+  // Email-only update. Do NOT use `update` for this — that endpoint overwrites
+  // every column, so a partial body would null out the contact's name/phone.
+  updateEmail: (id, email) => api.patch(`/api/tenant/${id}/email`, { email }),
   delete: (id) => api.delete(`/api/tenant/${id}`),
   getLeases: (id) => api.get(`/api/tenant/${id}/leases`),
   getLeasesSum: (id) => api.get(`/api/tenant/${id}/leases/sum`),

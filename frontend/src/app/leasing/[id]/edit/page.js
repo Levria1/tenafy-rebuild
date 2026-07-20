@@ -7,6 +7,7 @@ import { ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined } from '@
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
 import SelectAllCheckbox from '../../../../components/SelectAllCheckbox';
+import TenantEmailPrompt from '../../../../components/TenantEmailPrompt';
 import { leasing, property, tenant as tenantApi, bookingPlatform, salesAgent } from '../../../../lib/api';
 
 const INVOICE_SCHEDULES = [
@@ -325,9 +326,57 @@ export default function LeasingEditPage() {
       }
     } catch (error) {
       console.error('Update error:', error);
-      message.error(error.response?.data?.message || 'Failed to update lease');
+      // Server blocked the save because an email-dependent option is on but a
+      // party has no address — reopen the inline prompt instead of a dead-end toast.
+      const missing = error.response?.data?.data?.missing_email;
+      if (Array.isArray(missing) && missing.length) {
+        setEmailPrompt({ open: true, parties: missing, mode: 'block' });
+      } else {
+        message.error(error.response?.data?.message || 'Failed to update lease');
+      }
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ── Missing-email prompt (mirrors the create page) ────────────────────────
+  const [emailPrompt, setEmailPrompt] = useState({ open: false, parties: [], mode: 'warn' });
+
+  const partiesWithoutEmail = (ids, list = tenants) =>
+    (ids || [])
+      .map(id => list.find(x => String(x.id) === String(id)))
+      .filter(t => t && !(t.email || '').trim())
+      .map(t => ({
+        id: t.id,
+        name: t.company_name || [t.first_name, t.last_name].filter(Boolean).join(' ') || `Contact ${t.id}`,
+      }));
+
+  const warnIfUnreachable = (ids) => {
+    const missing = partiesWithoutEmail(ids);
+    if (missing.length) setEmailPrompt({ open: true, parties: missing, mode: 'warn' });
+  };
+
+  const applySavedEmails = (saved) => {
+    setTenants(prev => prev.map(t => {
+      const hit = saved.find(s => String(s.id) === String(t.id));
+      return hit ? { ...t, email: hit.email } : t;
+    }));
+    setEmailPrompt(p => ({ ...p, open: false }));
+  };
+
+  // Re-fetch contacts only — the form instance is untouched, so edits survive.
+  const recheckEmails = async () => {
+    const { data } = await tenantApi.getAll().catch(() => ({ data: { data: null } }));
+    const fresh = data?.data || null;
+    const list = fresh || tenants;
+    if (fresh) setTenants(fresh);
+    const stillMissing = partiesWithoutEmail(emailPrompt.parties.map(p => p.id), list);
+    if (!stillMissing.length) {
+      message.success('Email found — you can continue.');
+      setEmailPrompt(p => ({ ...p, open: false }));
+    } else {
+      setEmailPrompt(p => ({ ...p, parties: stillMissing }));
+      message.info('Still no email on file for those contacts.');
     }
   };
 
@@ -383,6 +432,7 @@ export default function LeasingEditPage() {
                 <Select
                   placeholder="Select tenant"
                   showSearch optionFilterProp="label"
+                  onChange={(id) => warnIfUnreachable([id])}
                   options={tenants.map(t => ({
                     label: Number(t.type) === 1 && t.company_name
                       ? t.company_name
@@ -401,6 +451,7 @@ export default function LeasingEditPage() {
                 <Select
                   mode="multiple" placeholder="Select additional tenants (optional)"
                   showSearch optionFilterProp="label" allowClear
+                  onChange={(ids) => warnIfUnreachable(ids)}
                   options={tenants.map(t => ({
                     label: [t.first_name, t.last_name].filter(Boolean).join(' '),
                     value: String(t.id),
@@ -861,6 +912,15 @@ export default function LeasingEditPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <TenantEmailPrompt
+        open={emailPrompt.open}
+        parties={emailPrompt.parties}
+        mode={emailPrompt.mode}
+        onSaved={applySavedEmails}
+        onRecheck={recheckEmails}
+        onClose={() => setEmailPrompt(p => ({ ...p, open: false }))}
+      />
     </MainLayout>
   );
 }
