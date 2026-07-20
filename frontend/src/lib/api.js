@@ -583,7 +583,7 @@ export const chatApi = {
   // Internal staff data assistant (Chat: Internal)
   internalMessage: (data) => api.post('/api/chat/internal/message', data),
   // Sessions
-  listSessions: () => api.get('/api/chat/sessions'),
+  listSessions: (params) => api.get('/api/chat/sessions', { params }),
   getSession:   (id) => api.get(`/api/chat/sessions/${id}`),
   takeover:     (id, disabled) => api.patch(`/api/chat/sessions/${id}/takeover`, { disabled }),
   // Settings

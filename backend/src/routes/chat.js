@@ -542,13 +542,89 @@ router.post('/internal/message', requirePermission('LANDLORD/CHAT_SETTINGS_VIEW'
 // ---------------------------------------------------------------------------
 router.get('/sessions', async (req, res) => {
   try {
+    // page/pageSize are interpolated into LIMIT/OFFSET (mysql2 can't bind those),
+    // so they must be coerced to finite integers. Number('Infinity') and 1e400
+    // both survive Math.trunc, which would emit `OFFSET Infinity` and 500.
+    const toInt = (v, def, min, max) => {
+      const n = Math.trunc(Number(v));
+      if (!Number.isFinite(n) || n < min) return def;
+      return Math.min(n, max);
+    };
+    const page = toInt(req.query.page, 1, 1, 1e6);
+    const pageSize = toInt(req.query.pageSize, 25, 1, 100);
+    const offset = (page - 1) * pageSize;
+
+    const buildFilters = ({ includeSource = true } = {}) => {
+      const where = [];
+      const params = [];
+      const channel = String(req.query.channel || '').trim();
+      const source = String(req.query.source || 'all').trim();
+      const search = String(req.query.search || '').trim();
+
+      if (channel && channel !== 'all') {
+        where.push('channel = ?');
+        params.push(channel);
+      } else if (includeSource && source === 'tenafy') {
+        where.push("channel IN ('staff-test','staff-internal')");
+      } else if (includeSource && source === 'tanechat') {
+        where.push("channel IN ('whatsapp','email','web')");
+      }
+
+      if (search) {
+        const like = `%${search.replace(/[\\%_]/g, '\\$&')}%`;
+        where.push(`(
+          viewer_name LIKE ? ESCAPE '\\\\'
+          OR viewer_email LIKE ? ESCAPE '\\\\'
+          OR viewer_phone LIKE ? ESCAPE '\\\\'
+          OR channel_user_id LIKE ? ESCAPE '\\\\'
+        )`);
+        params.push(like, like, like, like);
+      }
+
+      return {
+        sql: where.length ? `WHERE ${where.join(' AND ')}` : '',
+        params,
+      };
+    };
+
+    const filters = buildFilters();
     const [rows] = await req.pool.execute(
       `SELECT id, channel, channel_user_id, contact_id, viewer_name, viewer_email, viewer_phone,
               status, bot_disabled, message_count, booking_count, lead_captured,
               last_message_at, created_at
-       FROM chat_session ORDER BY COALESCE(last_message_at, created_at) DESC LIMIT 200`
+       FROM chat_session
+       ${filters.sql}
+       ORDER BY COALESCE(last_message_at, created_at) DESC
+       LIMIT ${pageSize} OFFSET ${offset}`,
+      filters.params
     );
-    ok(res, rows.map(serializeSession));
+    const [[{ total }]] = await req.pool.execute(
+      `SELECT COUNT(*) AS total FROM chat_session ${filters.sql}`,
+      filters.params
+    );
+
+    const countFilters = buildFilters({ includeSource: false });
+    const [[sourceCounts]] = await req.pool.execute(
+      `SELECT
+         COUNT(*) AS all_count,
+         SUM(CASE WHEN channel IN ('staff-test','staff-internal') THEN 1 ELSE 0 END) AS tenafy_count,
+         SUM(CASE WHEN channel IN ('whatsapp','email','web') THEN 1 ELSE 0 END) AS tanechat_count
+       FROM chat_session
+       ${countFilters.sql}`,
+      countFilters.params
+    );
+
+    ok(res, {
+      sessions: rows.map(serializeSession),
+      total: Number(total) || 0,
+      page,
+      pageSize,
+      sourceCounts: {
+        all: Number(sourceCounts.all_count) || 0,
+        tenafy: Number(sourceCounts.tenafy_count) || 0,
+        tanechat: Number(sourceCounts.tanechat_count) || 0,
+      },
+    });
   } catch (err) {
     console.error('[chat] list sessions error:', err);
     fail(res, 'Failed to load sessions');

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   Card, Table, Tag, Input, Select, Typography, Button, Space, Empty, Segmented, message,
@@ -22,48 +22,66 @@ const CHANNEL_LABELS = {
   'staff-internal': { label: 'Internal (staff)', color: 'geekblue' },
 };
 
-// A conversation's "source": chats run inside Tenafy (the staff assistants) vs
-// chats logged from TaneChat (WhatsApp/email/web prospect conversations).
-const TENAFY_CHANNELS = new Set(['staff-test', 'staff-internal']);
-const sourceOf = (row) => (TENAFY_CHANNELS.has(row.channel) ? 'tenafy' : 'tanechat');
-
 export default function ChatSessionsPage() {
   const { isMobile } = useIsMobile();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [channel, setChannel] = useState('all');
   // Default to Tenafy — this page's original purpose was the Tenafy assistants'
   // own chats; TaneChat (WhatsApp/email) conversations are kept but opt-in.
   const [source, setSource] = useState('tenafy');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [total, setTotal] = useState(0);
+  const [sourceCounts, setSourceCounts] = useState({ all: 0, tenafy: 0, tanechat: 0 });
 
   const reload = useCallback(() => {
     setLoading(true);
-    chatApi.listSessions()
-      .then((r) => setRows(r.data.data || []))
-      .catch(() => setRows([]))
+    chatApi.listSessions({
+      page,
+      pageSize,
+      source,
+      ...(channel !== 'all' ? { channel } : {}),
+      ...(debouncedSearch.trim() ? { search: debouncedSearch.trim() } : {}),
+    })
+      .then((r) => {
+        const data = r.data.data || {};
+        // Older backends returned an array. Keep the page tolerant during deploys.
+        if (Array.isArray(data)) {
+          setRows(data);
+          setTotal(data.length);
+          setSourceCounts({ all: data.length, tenafy: 0, tanechat: 0 });
+          return;
+        }
+        setRows(data.sessions || []);
+        setTotal(Number(data.total) || 0);
+        setSourceCounts(data.sourceCounts || { all: 0, tenafy: 0, tanechat: 0 });
+      })
+      .catch(() => {
+        setRows([]);
+        setTotal(0);
+        message.error('Failed to load chat sessions');
+      })
       .finally(() => setLoading(false));
-  }, []);
+  }, [channel, debouncedSearch, page, pageSize, source]);
 
   useEffect(() => { reload(); }, [reload]);
 
-  const sourceCounts = useMemo(() => ({
-    all: rows.length,
-    tenafy: rows.filter((r) => sourceOf(r) === 'tenafy').length,
-    tanechat: rows.filter((r) => sourceOf(r) === 'tanechat').length,
-  }), [rows]);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (source !== 'all' && sourceOf(r) !== source) return false;
-      if (channel !== 'all' && r.channel !== channel) return false;
-      if (!q) return true;
-      const hay = [r.viewer_name, r.viewer_email, r.viewer_phone, r.channel_user_id]
-        .filter(Boolean).join(' ').toLowerCase();
-      return hay.includes(q);
-    });
-  }, [rows, search, channel, source]);
+  const resetPage = () => setPage(1);
+
+  const handlePageChange = (nextPage, nextPageSize) => {
+    setPage(nextPage);
+    if (nextPageSize !== pageSize) {
+      setPageSize(nextPageSize);
+    }
+  };
 
   const columns = [
     {
@@ -150,7 +168,10 @@ export default function ChatSessionsPage() {
       <Card size="small">
         <Segmented
           value={source}
-          onChange={setSource}
+          onChange={(value) => {
+            setSource(value);
+            resetPage();
+          }}
           style={{ marginBottom: 12 }}
           options={[
             { label: `Tenafy (${sourceCounts.tenafy})`, value: 'tenafy' },
@@ -164,12 +185,18 @@ export default function ChatSessionsPage() {
             placeholder="Search name, email, phone"
             prefix={<SearchOutlined />}
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              resetPage();
+            }}
             style={{ width: 260 }}
           />
           <Select
             value={channel}
-            onChange={setChannel}
+            onChange={(value) => {
+              setChannel(value);
+              resetPage();
+            }}
             style={{ width: 180 }}
             options={[
               { value: 'all', label: 'All channels' },
@@ -182,7 +209,7 @@ export default function ChatSessionsPage() {
           />
         </Space>
 
-        {filtered.length === 0 && !loading ? (
+        {rows.length === 0 && !loading ? (
           <Empty description={
             <Text type="secondary">
               No chat sessions yet. Start one from the <Link href="/chatbot/test">Assistant</Link> page.
@@ -191,8 +218,14 @@ export default function ChatSessionsPage() {
         ) : isMobile ? (
           <MobileCardList
             loading={loading}
-            dataSource={filtered}
+            dataSource={rows}
             rowKey="id"
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              onChange: handlePageChange,
+            }}
             renderCard={(r) => (
               <Link href={`/chatbot/sessions/${r.id}`}>
                 <div style={{ padding: 8 }}>
@@ -216,9 +249,15 @@ export default function ChatSessionsPage() {
             size="small"
             rowKey="id"
             loading={loading}
-            dataSource={filtered}
+            dataSource={rows}
             columns={columns}
-            pagination={{ pageSize: 25 }}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+            }}
+            onChange={(pagination) => handlePageChange(pagination.current, pagination.pageSize)}
             scroll={{ x: 'max-content' }}
           />
         )}
