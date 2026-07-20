@@ -116,6 +116,7 @@ const TEMPLATE_VARIABLES = [
   { key: '%Outstandings%', description: 'Total outstanding balance for the lease (all unpaid invoices)' },
   { key: '%Invoice Outstanding%', description: 'Outstanding amount for the specific invoice being referenced' },
   { key: '%Monthly utility credit%', description: 'Monthly utility credit amount' },
+  { key: '%Monthly rent%', description: 'Monthly rent from the lease (the lease form\'s Amount field)' },
   { key: '%Security deposit amount%', description: 'Security deposit amount' },
   { key: '%Payment Month%', description: 'Payment month name (e.g. March)' },
   { key: '%Payment Date%', description: 'Payment date (e.g. March 15)' },
@@ -268,7 +269,8 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
   const [rows] = await pool.execute(
     `SELECT
        l.id AS lease_id, l.start_date, l.end_date, l.unit_information,
-       l.credits, l.deposit, l.amount AS lease_amount, l.notice_period_days,
+       l.credits, l.deposit, l.amount AS lease_amount, l.price AS lease_price,
+       l.notice_period_days,
        t.first_name, t.middle_name, t.last_name, t.company_name,
        t.type AS tenant_type, t.phone AS tenant_phone,
        u.name AS unit_name, u.access_information, u.wifi_information,
@@ -419,6 +421,9 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
     '%Outstandings%': formatAmount(sym, outstanding),
     '%Invoice Outstanding%': invoiceOutstandingResolved ? formatAmount(sym, invoiceOutstanding) : '',
     '%Monthly utility credit%': formatAmount(sym, r.credits),
+    // leasing.price is the monthly rent (the lease form's "AMOUNT" field writes
+    // to `price`; leasing.amount is a separate legacy column).
+    '%Monthly rent%': formatAmount(sym, r.lease_price),
     '%Security deposit amount%': formatAmount(sym, r.deposit),
     '%Payment Month%': formatMonth(effectiveDueDate),
     '%Payment Date%': formatPaymentDate(effectiveDueDate),
@@ -450,6 +455,7 @@ function getSampleVariables() {
     '%Outstandings%': '$1,200.00',
     '%Invoice Outstanding%': '$800.00',
     '%Monthly utility credit%': '$50.00',
+    '%Monthly rent%': '$2,400.00',
     '%Security deposit amount%': '$2,400.00',
     '%Payment Month%': 'March',
     '%Payment Date%': 'March 15',
