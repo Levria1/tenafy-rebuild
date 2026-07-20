@@ -161,7 +161,15 @@ export default function ReconcilePage() {
   const loadInvCandidates = useCallback(async (row, search) => {
     try {
       const r = await xero.getInvoiceCandidates(row.id, search, effectiveDirection(row));
-      if (r.data?.code === 200) setInvCandidates(prev => ({ ...prev, [row.id]: r.data.data || [] }));
+      if (r.data?.code === 200) {
+        // The endpoint used to return a bare array and now returns
+        // { bank_account, candidates }. Accept both so a rolling deploy (new
+        // frontend / old backend, or vice versa) can't leave this page mapping
+        // over a non-array and crashing.
+        const payload = r.data.data;
+        const list = Array.isArray(payload) ? payload : (payload?.candidates || []);
+        setInvCandidates(prev => ({ ...prev, [row.id]: list }));
+      }
     } catch { /* non-fatal — manual search still works */ }
   }, []);
 

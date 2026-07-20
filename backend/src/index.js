@@ -34,6 +34,7 @@ app.use('/api/invoice', require('./routes/invoice'));
 app.use('/api/service', require('./routes/service'));
 app.use('/api/contact', require('./routes/contact'));
 app.use('/api/payee', require('./routes/payee'));
+app.use('/api/bank-account', require('./routes/bankAccount'));
 app.use('/api/property-owner', require('./routes/propertyOwner'));
 app.use('/api/service-vendor', require('./routes/serviceVendor'));
 app.use('/api/role', require('./routes/role'));

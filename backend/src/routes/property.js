@@ -84,6 +84,14 @@ router.post('/list', authenticate, async (req, res) => {
   }
 });
 
+function nullableId(value) {
+  return value === '' || value === undefined ? null : value;
+}
+
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+
 // GET /api/property/summary - Portfolio-wide unit totals across ALL active properties
 // (not paginated). Excludes inactive properties (status != 1) and deleted ones.
 // Occupied = active unit with a lease covering today (same rule as /list).
@@ -121,7 +129,7 @@ router.get('/all', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [properties] = await req.pool.execute(
-      'SELECT id, display_name, street_address, city, status, leasing_cost FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
+      'SELECT id, display_name, street_address, city, status, leasing_cost, bank_account_id FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
       [orgId]
     );
     res.json({ code: 200, data: properties });
@@ -136,7 +144,7 @@ router.get('/all/with_units', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [properties] = await req.pool.execute(
-      'SELECT id, display_name, street_address, city FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
+      'SELECT id, display_name, street_address, city, bank_account_id FROM property WHERE org_id = ? AND status = 1 ORDER BY display_name',
       [orgId]
     );
 
@@ -521,7 +529,7 @@ router.get('/:id/base', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const [properties] = await req.pool.execute(
-      'SELECT id, display_name, street_address, city, state, country, zip_code, type FROM property WHERE id = ? AND org_id = ? AND status = 1',
+      'SELECT id, display_name, street_address, city, state, country, zip_code, type, bank_account_id FROM property WHERE id = ? AND org_id = ? AND status = 1',
       [id, orgId]
     );
     if (properties.length === 0) {
@@ -659,18 +667,20 @@ router.post('/', authenticate, async (req, res) => {
   try {
     const { display_name, street_address, city, state, country, zip_code, district,
             type, status, currency, year_of_built, notes, payment_instructions, amenityIds,
-            photo, galleryFileIds, listing_url } = req.body;
+            photo, galleryFileIds, listing_url, bank_account_id } = req.body;
     const orgId = req.user.orgId;
 
     const propertyId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
     await req.pool.execute(
       `INSERT INTO property (id, org_id, display_name, street_address, city, state, country,
-       zip_code, district, type, status, currency, year_of_built, notes, payment_instructions, photo, listing_url, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+       zip_code, district, type, status, currency, year_of_built, notes, payment_instructions,
+       photo, listing_url, bank_account_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [propertyId, orgId, display_name || null, street_address || null, city || null, state || null, country || null, zip_code || null,
        district || null, type || 1, status ?? 1, currency || null,
-       year_of_built || null, notes || null, payment_instructions || null, photo || null, listing_url || null]
+       year_of_built || null, notes || null, payment_instructions || null, photo || null, listing_url || null,
+       nullableId(bank_account_id)]
     );
 
     // Save amenities if provided
@@ -705,8 +715,9 @@ router.put('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const { display_name, street_address, city, state, country, zip_code, district,
             type, status, currency, year_of_built, mls, notes, payment_instructions, amenityIds,
-            photo, galleryFileIds, listing_url } = req.body;
+            photo, galleryFileIds, listing_url, bank_account_id } = req.body;
     const orgId = req.user.orgId;
+    const updateBankAccount = hasOwn(req.body, 'bank_account_id') ? 1 : 0;
 
     // Block deactivation if there are active or upcoming leases on any unit of this property
     if (status != null && Number(status) === 0) {
@@ -732,13 +743,14 @@ router.put('/:id', authenticate, async (req, res) => {
       `UPDATE property SET display_name = ?, street_address = ?, city = ?, state = ?,
        country = ?, zip_code = ?, district = ?, type = ?, status = ?, currency = ?,
        year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, photo = ?,
-       listing_url = ?, updated_at = NOW()
+       listing_url = ?, bank_account_id = CASE WHEN ? = 1 THEN ? ELSE bank_account_id END,
+       updated_at = NOW()
        WHERE id = ? AND org_id = ?`,
       [display_name || null, street_address || null, city || null, state || null,
        country || null, zip_code || null, district || null, type ?? 1, status ?? 1,
        currency || null, year_of_built || null, mls || null, notes || null,
        payment_instructions || null, photo || null,
-       listing_url || null, id, orgId]
+       listing_url || null, updateBankAccount, nullableId(bank_account_id), id, orgId]
     );
 
     // Update amenities if provided

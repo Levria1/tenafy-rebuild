@@ -190,6 +190,7 @@ router.get('/status', authenticate, async (req, res) => {
 // Response: {
 //   xero_accounts: [{ id, code, name, type, currencyCode, status }, ...],
 //   mappings:      { [xero_account_id]: tenafy_account_setting_id, ... },
+//   bank_account_mappings: { [xero_account_id]: bank_account_id, ... },
 //   tenafy_accounts: [{ id, name, type }, ...],
 // }
 // ───────────────────────────────────────────────────────────────────────────
@@ -222,16 +223,18 @@ router.get('/accounts', authenticate, async (req, res) => {
     // '__IGNORE__' so the frontend can render it as the "Ignore (don't sync)"
     // choice in the same dropdown used for real account mappings.
     const [mapRows] = await req.pool.execute(
-      `SELECT xero_account_id, tenafy_account_setting_id, ignored
+      `SELECT xero_account_id, tenafy_account_setting_id, bank_account_id, ignored
          FROM xero_account_map
         WHERE org_id = ?`,
       [orgId]
     );
     const mappings = {};
+    const bank_account_mappings = {};
     for (const r of mapRows) {
       mappings[r.xero_account_id] = r.ignored
         ? '__IGNORE__'
         : (r.tenafy_account_setting_id ? String(r.tenafy_account_setting_id) : null);
+      bank_account_mappings[r.xero_account_id] = r.bank_account_id ? String(r.bank_account_id) : null;
     }
 
     // Tenafy accounts for the dropdown.
@@ -248,7 +251,7 @@ router.get('/accounts', authenticate, async (req, res) => {
       name: a.name,
     }));
 
-    return ok(res, { xero_accounts, mappings, tenafy_accounts });
+    return ok(res, { xero_accounts, mappings, bank_account_mappings, tenafy_accounts });
   } catch (err) {
     console.error('[xero/accounts] error:', err);
     // Xero-specific errors carry useful context in err.response.data.
@@ -384,7 +387,8 @@ router.get('/balances', authenticate, async (req, res) => {
 // ───────────────────────────────────────────────────────────────────────────
 // POST /accounts/map
 // Body: { mappings: [{ xero_account_id, xero_account_code, xero_account_name,
-//                      xero_account_type, tenafy_account_setting_id }, ...] }
+//                      xero_account_type, tenafy_account_setting_id,
+//                      bank_account_id }, ...] }
 //
 // Upserts the full mapping set for the org. Send the COMPLETE list every
 // time (clears old rows then re-inserts) — simpler than per-row PATCH and
@@ -413,6 +417,9 @@ router.post('/accounts/map', authenticate, requirePermission(RECONCILE_PERM), as
       const tenafyId = (!isIgnored && m.tenafy_account_setting_id && m.tenafy_account_setting_id !== '__IGNORE__')
         ? String(m.tenafy_account_setting_id)
         : null;
+      const bankAccountId = (!isIgnored && m.bank_account_id)
+        ? String(m.bank_account_id)
+        : null;
       // Allow unmapped rows (tenafy_account_setting_id may be null) so the
       // user can persist their "I want to map these but haven't picked yet"
       // state — useful for incremental setup.
@@ -420,8 +427,8 @@ router.post('/accounts/map', authenticate, requirePermission(RECONCILE_PERM), as
       await conn.execute(
         `INSERT INTO xero_account_map
             (id, org_id, xero_account_id, xero_account_code, xero_account_name,
-             xero_account_type, tenafy_account_setting_id, ignored, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+             xero_account_type, tenafy_account_setting_id, bank_account_id, ignored, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
         [
           id, orgId,
           String(m.xero_account_id),
@@ -429,6 +436,7 @@ router.post('/accounts/map', authenticate, requirePermission(RECONCILE_PERM), as
           m.xero_account_name || null,
           m.xero_account_type || null,
           tenafyId,
+          bankAccountId,
           isIgnored ? 1 : 0,
         ]
       );
@@ -1029,10 +1037,21 @@ router.get('/pending/:id/invoice-candidates', authenticate, requirePermission(RE
     const search = (req.query.search || '').trim();
 
     const [[p]] = await req.pool.execute(
-      'SELECT proposed_tenant_id, contact_name, amount FROM xero_pending_reconciliation WHERE id = ? AND org_id = ?',
+      `SELECT pr.proposed_tenant_id, pr.contact_name, pr.amount, pr.xero_account_id,
+              ba.id AS bank_account_id, ba.label AS bank_account_label
+         FROM xero_pending_reconciliation pr
+         LEFT JOIN xero_account_map xm
+           ON xm.org_id = pr.org_id AND xm.xero_account_id = pr.xero_account_id
+         LEFT JOIN bank_account ba
+           ON ba.id = xm.bank_account_id AND ba.org_id = pr.org_id AND ba.deleted_at IS NULL
+        WHERE pr.id = ? AND pr.org_id = ?`,
       [req.params.id, orgId]
     );
     if (!p) return fail(res, 'Pending row not found', 404);
+    const paymentBankAccountId = p.bank_account_id ? String(p.bank_account_id) : null;
+    const bank_account = paymentBankAccountId
+      ? { id: paymentBankAccountId, label: p.bank_account_label }
+      : null;
 
     const dir = String(req.query.direction || '').toLowerCase();
     // inflow payment -> inflow invoices (type 0); outflow payment -> outflow (type 1).
@@ -1048,11 +1067,17 @@ router.get('/pending/:id/invoice-candidates', authenticate, requirePermission(RE
                          inv.category AS category_id, cs.name AS category_name,
                          TRIM(CONCAT(COALESCE(t.first_name,''),' ',COALESCE(t.last_name,''))) AS person_name,
                          t.company_name,
+                         prop.bank_account_id AS property_bank_account_id,
                          (inv.amount - ${paidSub}) AS outstanding
                     FROM invoice inv
                     LEFT JOIN category_setting cs ON cs.id = inv.category
                     LEFT JOIN tenant t ON t.id = inv.tenant_id
+                    LEFT JOIN unit u ON u.id = inv.unit_id
+                    LEFT JOIN property prop ON prop.id = COALESCE(inv.property_id, u.property_id)
+                                           AND prop.org_id = inv.org_id
                    WHERE inv.org_id = ? AND inv.type = ? AND inv.deleted_at IS NULL AND inv.status IN (0,2)`;
+    const order = `ORDER BY CASE WHEN ? IS NOT NULL AND prop.bank_account_id = ? THEN 0 ELSE 1 END,
+                            inv.due_on DESC LIMIT 50`;
 
     let rows;
     if (search) {
@@ -1060,20 +1085,20 @@ router.get('/pending/:id/invoice-candidates', authenticate, requirePermission(RE
       [rows] = await req.pool.execute(
         `${base} AND (inv.invoice_code LIKE ? OR t.first_name LIKE ? OR t.last_name LIKE ?
                       OR t.company_name LIKE ? OR CAST(inv.amount AS CHAR) LIKE ?)
-         ORDER BY inv.due_on DESC LIMIT 50`,
-        [orgId, invType, like, like, like, like, like]
+         ${order}`,
+        [orgId, invType, like, like, like, like, like, paymentBankAccountId, paymentBankAccountId]
       );
     } else if (p.proposed_tenant_id) {
       [rows] = await req.pool.execute(
-        `${base} AND inv.tenant_id = ? ORDER BY inv.due_on DESC LIMIT 50`,
-        [orgId, invType, String(p.proposed_tenant_id)]
+        `${base} AND inv.tenant_id = ? ${order}`,
+        [orgId, invType, String(p.proposed_tenant_id), paymentBankAccountId, paymentBankAccountId]
       );
     } else if (p.contact_name) {
       const like = `%${p.contact_name.trim()}%`;
       [rows] = await req.pool.execute(
         `${base} AND (CONCAT(COALESCE(t.first_name,''),' ',COALESCE(t.last_name,'')) LIKE ?
-                      OR t.company_name LIKE ?) ORDER BY inv.due_on DESC LIMIT 50`,
-        [orgId, invType, like, like]
+                      OR t.company_name LIKE ?) ${order}`,
+        [orgId, invType, like, like, paymentBankAccountId, paymentBankAccountId]
       );
     } else {
       rows = [];
@@ -1088,8 +1113,11 @@ router.get('/pending/:id/invoice-candidates', authenticate, requirePermission(RE
       due_on: r.due_on,
       category_id: r.category_id ? String(r.category_id) : null,
       category_name: r.category_name || null,
+      bank_match: !paymentBankAccountId || !r.property_bank_account_id
+        ? null
+        : String(r.property_bank_account_id) === paymentBankAccountId,
     }));
-    return ok(res, data);
+    return ok(res, { bank_account, candidates: data });
   } catch (err) {
     console.error('[xero/invoice-candidates] error:', err);
     return fail(res, err.message || 'Failed to load candidates', 500);
