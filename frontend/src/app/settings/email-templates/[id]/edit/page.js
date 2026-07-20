@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { Card, Form, Input, Button, Space, message, Select, Switch, Row, Col, Tag, InputNumber, Radio } from 'antd';
 import { ArrowLeftOutlined, CopyOutlined, EyeOutlined, SendOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../components/Layout';
+import EmailTimingCard from '../../../../../components/EmailTimingCard';
 import { emailTemplate, property as propertyApi } from '../../../../../lib/api';
 
 const ReactQuill = dynamic(() => import('react-quill-new'), { ssr: false });
@@ -235,34 +236,10 @@ export default function EditEmailTemplatePage() {
                   </Col>
                 </Row>
 
-                {/* Email Timing */}
-                <Card size="small" style={{ marginBottom: 24, background: '#fafafa' }}>
-                  <div style={{ fontWeight: 600, marginBottom: 12 }}>Email Timing</div>
-                  <Row gutter={16} align="middle">
-                    <Col xs={24} md={8}>
-                      <Form.Item name="before_date" label="Send Timing" style={{ marginBottom: 0 }}>
-                        <Radio.Group>
-                          <Radio value={1}>Before event</Radio>
-                          <Radio value={0}>After event</Radio>
-                        </Radio.Group>
-                      </Form.Item>
-                    </Col>
-                    <Col xs={12} md={8}>
-                      <Form.Item name="date_first" label="First Email (days)" style={{ marginBottom: 0 }}>
-                        <InputNumber min={0} max={365} style={{ width: '100%' }} placeholder="e.g. 7" />
-                      </Form.Item>
-                    </Col>
-                    <Col xs={12} md={8}>
-                      <Form.Item name="date_second" label="Second Email (days)" style={{ marginBottom: 0 }}>
-                        <InputNumber min={0} max={365} style={{ width: '100%' }} placeholder="e.g. 3" />
-                      </Form.Item>
-                    </Col>
-                  </Row>
-                  <div style={{ marginTop: 8, color: '#888', fontSize: 12 }}>
-                    Example: Check-In set to "Before event" + 7 days = email sent 7 days before lease start date.
-                    Set to 0 to disable.
-                  </div>
-                </Card>
+                {/* Email Timing — disabled + explained for event-driven types.
+                    withDefaults=false: this form loads saved values, so Form.Item
+                    initialValue must not seed (and potentially stomp) them. */}
+                <EmailTimingCard selectedType={selectedType} withDefaults={false} />
 
                 {/* Body with Edit/Preview tabs */}
                 <div style={{ marginBottom: 24 }}>
