@@ -1369,6 +1369,119 @@ const search_vacancies = {
 };
 
 // ---------------------------------------------------------------------------
+// Tool: search_chats  (INTERNAL ONLY — search conversation transcripts)
+//
+// Searches chat_message.content across every logged conversation: TaneChat's
+// WhatsApp/email prospect chats (mirrored into Tenafy via /api/public/chat/log)
+// and the in-Tenafy staff assistants. Queries the DB directly, so it is NOT
+// subject to the Sessions History page's 200-row display cap.
+//
+// Only 'user'/'assistant' turns are searched — 'system' rows hold the seeded
+// system prompt (huge, and would leak the prompt) and 'tool' rows are raw JSON.
+// ---------------------------------------------------------------------------
+const CHAT_SOURCE_CHANNELS = {
+  tenafy: ['staff-test', 'staff-internal'],
+  tanechat: ['whatsapp', 'email', 'web'],
+};
+
+const search_chats = {
+  cap: null, // internal-only
+  definition: {
+    type: 'function',
+    function: {
+      name: 'search_chats',
+      description:
+        'INTERNAL search of conversation transcripts (staff only). Finds what was actually SAID in ' +
+        'WhatsApp/email prospect chats (logged from TaneChat) and the in-Tenafy assistants. ' +
+        'Use for "find chats mentioning X", "what did <person> say about Y", "who asked about <unit>". ' +
+        'Returns matching message snippets with the prospect, channel, date and session id. ' +
+        'For the extracted prospect summary (name/budget/move-in) use search_inquiries instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          keyword:  { type: 'string',  description: 'Text to find inside message content (e.g. "Hollywood 3A", "deposit", "parking").' },
+          prospect: { type: 'string',  description: 'Filter by who the conversation is with — matches viewer name, email, phone, or channel user id.' },
+          source:   { type: 'string',  description: "'tanechat' (WhatsApp/email/web prospect chats) or 'tenafy' (the staff assistants). Default: both." },
+          channel:  { type: 'string',  description: "Exact channel: whatsapp | email | web | staff-test | staff-internal. Overrides `source`." },
+          since:    { type: 'string',  description: 'Only messages on/after this date (YYYY-MM-DD).' },
+          until:    { type: 'string',  description: 'Only messages on/before this date (YYYY-MM-DD).' },
+          limit:    { type: 'integer', description: 'Max messages. Default 25, max 100.' },
+        },
+      },
+    },
+  },
+  async execute(ctx, args) {
+    const limit = clampLimit(args.limit, 25, 100);
+    let where = "m.role IN ('user','assistant') AND m.content IS NOT NULL AND m.content <> ''";
+    const params = [];
+
+    if (args.keyword) {
+      where += ' AND m.content LIKE ?';
+      params.push('%' + String(args.keyword).trim() + '%');
+    }
+    if (args.prospect) {
+      const s = '%' + String(args.prospect).trim() + '%';
+      where += ` AND (s.viewer_name LIKE ? OR s.viewer_email LIKE ? OR s.viewer_phone LIKE ?
+                      OR s.channel_user_id LIKE ?)`;
+      params.push(s, s, s, s);
+    }
+    if (args.channel) {
+      where += ' AND s.channel = ?';
+      params.push(String(args.channel).trim());
+    } else if (args.source) {
+      const chans = CHAT_SOURCE_CHANNELS[String(args.source).trim().toLowerCase()];
+      if (chans) {
+        where += ` AND s.channel IN (${chans.map(() => '?').join(',')})`;
+        params.push(...chans);
+      }
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(args.since || ''))) {
+      where += ' AND m.created_at >= ?'; params.push(args.since + ' 00:00:00');
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(args.until || ''))) {
+      where += ' AND m.created_at <= ?'; params.push(args.until + ' 23:59:59');
+    }
+
+    const [rows] = await ctx.pool.execute(
+      `SELECT m.id, m.session_id, m.role, m.content, m.created_at,
+              s.channel, s.viewer_name, s.viewer_email, s.viewer_phone, s.channel_user_id
+         FROM chat_message m
+         JOIN chat_session s ON s.id = m.session_id
+        WHERE ${where}
+        ORDER BY m.created_at DESC
+        LIMIT ${limit}`,
+      params
+    );
+
+    // Content is LONGTEXT — return a window around the match rather than the
+    // whole message, so a few hits can't blow up the model's context.
+    const snippet = (text, kw) => {
+      const t = String(text).replace(/\s+/g, ' ').trim();
+      if (!kw) return t.length > 300 ? t.slice(0, 300) + '…' : t;
+      const i = t.toLowerCase().indexOf(String(kw).toLowerCase());
+      if (i < 0) return t.length > 300 ? t.slice(0, 300) + '…' : t;
+      const start = Math.max(0, i - 120);
+      const end = Math.min(t.length, i + String(kw).length + 180);
+      return (start > 0 ? '…' : '') + t.slice(start, end) + (end < t.length ? '…' : '');
+    };
+
+    return {
+      count: rows.length,
+      limit,
+      messages: rows.map(r => ({
+        session_id: String(r.session_id),
+        source: CHAT_SOURCE_CHANNELS.tenafy.includes(r.channel) ? 'tenafy' : 'tanechat',
+        channel: r.channel,
+        prospect: r.viewer_name || r.viewer_email || r.viewer_phone || r.channel_user_id,
+        who: r.role === 'user' ? 'prospect' : 'assistant',
+        said: snippet(r.content, args.keyword),
+        at: r.created_at,
+      })),
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Tool: ask_data  (INTERNAL ONLY — read-only NL->SQL escape hatch)
 // ---------------------------------------------------------------------------
 const ask_data = {
@@ -1425,6 +1538,7 @@ const ALL_TOOLS = [
   search_services,
   search_documents,
   search_vacancies,
+  search_chats,
   ask_data,
 ];
 
@@ -1434,7 +1548,7 @@ const ALL_BY_NAME = Object.fromEntries(
 
 // Tools that must NEVER reach the prospect-facing bot, even if their `cap` is
 // unset. The internal endpoint assembles these explicitly via toolsForInternal().
-const INTERNAL_ONLY = new Set(['search_vacancies', 'ask_data']);
+const INTERNAL_ONLY = new Set(['search_vacancies', 'search_chats', 'ask_data']);
 
 /**
  * Return tool definitions + executor map filtered by the org's capabilities.
@@ -1456,7 +1570,7 @@ function toolsForCapabilities(capabilities) {
 // prospect bot. `extra` lets the internal endpoint add ask_data (Phase 3).
 const INTERNAL_TOOL_NAMES = [
   'search_leases', 'search_invoices', 'search_services',
-  'search_documents', 'search_inquiries', 'search_vacancies',
+  'search_documents', 'search_inquiries', 'search_vacancies', 'search_chats',
 ];
 function toolsForInternal(extra = []) {
   const base = INTERNAL_TOOL_NAMES.map(n => ALL_BY_NAME[n]).filter(Boolean);
@@ -1480,6 +1594,8 @@ const ASK_DATA_SCHEMA = [
   '  accounting(id, type, amount, payment_date, tenant_id, transaction_code, note)  -- type 0=Inflow(CR) 1=Outflow(DR); filter deleted_at IS NULL',
   '  accounting_line(id, accounting_id, invoice_code, amount)  -- links a payment to invoice(s); filter deleted_at IS NULL',
   '  category_setting(id, name)  -- invoice.category is a FK to this',
+  '  chat_session(id, channel, channel_user_id, contact_id, viewer_name, viewer_email, viewer_phone, message_count, last_message_at, created_at)  -- channel: whatsapp/email/web = TaneChat prospect chats, staff-test/staff-internal = the in-Tenafy assistants',
+  '  chat_message(id, session_id, role, content, created_at)  -- role: user/assistant (also system/tool — exclude those, they are prompts and raw JSON)',
   'Join hints: unit.property_id->property.id; leasing.unit_id->unit.id; leasing.tenant_id->tenant.id; invoice.leasing_id->leasing.id; accounting_line.invoice_code->invoice.invoice_code.',
   'Money is HK$. Dates are DATE/DATETIME — use CURDATE() for "today".',
 ].join('\n');
@@ -1488,7 +1604,7 @@ const INTERNAL_SYSTEM_PROMPT = [
   'You are the INTERNAL operations assistant for a property-management team using Tenafy.',
   'You are talking to STAFF, not prospects. Answer their data questions directly and completely.',
   'Do NOT use a sales tone. Do NOT ask for a move-in date, area, or budget. There is no qualification gate — just answer.',
-  'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, and search_vacancies (vacant-now + upcoming vacancies).',
+  'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, search_vacancies (vacant-now + upcoming vacancies), and search_chats (what was actually said in WhatsApp/email/staff conversations).',
   'Use ask_data ONLY when the structured tools cannot answer it — aggregations, sums, counts, ad-hoc joins. It is strictly read-only.',
   'Be precise with numbers, dates (DD-MMM-YYYY), and money (HK$). If a tool returns nothing, say so plainly — never invent rows.',
   'When you list units/leases/invoices, include the identifying details (unit, property, tenant, dates, amounts). Group long lists sensibly.',

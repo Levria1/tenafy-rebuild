@@ -9,9 +9,9 @@ const {
   toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT, ASK_DATA,
 } = require('../src/services/chatTools');
 
-test('internal toolset contains the staff data tools + vacancy', () => {
+test('internal toolset contains the staff data tools + vacancy + chats', () => {
   const internal = toolsForInternal();
-  for (const n of ['search_leases', 'search_invoices', 'search_services', 'search_documents', 'search_inquiries', 'search_vacancies']) {
+  for (const n of ['search_leases', 'search_invoices', 'search_services', 'search_documents', 'search_inquiries', 'search_vacancies', 'search_chats']) {
     assert.ok(internal.byName[n], `internal set has ${n}`);
   }
 });
@@ -24,6 +24,8 @@ test('prospect toolset EXCLUDES internal-only tools even with all caps on', () =
   });
   assert.ok(!prospect.byName.search_vacancies, 'prospect set must exclude search_vacancies');
   assert.ok(!prospect.byName.ask_data, 'prospect set must exclude ask_data');
+  // Transcripts of other prospects' conversations must never be reachable by a prospect.
+  assert.ok(!prospect.byName.search_chats, 'prospect set must exclude search_chats');
   // sanity: prospect DOES still get its normal tools
   assert.ok(prospect.byName.search_available_units, 'prospect keeps search_available_units');
 });
