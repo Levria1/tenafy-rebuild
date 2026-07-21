@@ -72,6 +72,11 @@ module.exports = {
       // default if neither is passed.
       model:   process.env.OPENROUTER_MODEL    || '',
     },
+    taneChat: {
+      baseUrl: process.env.TANECHAT_API_URL || 'https://chat.taneresidence.com/api/integration',
+      apiKey:  process.env.TANECHAT_API_KEY || '',
+      timeoutMs: parseInt(process.env.TANECHAT_TIMEOUT_MS || '10000'),
+    },
     minimax: {
       apiKey:  process.env.MINIMAX_API_KEY  || '',
       groupId: process.env.MINIMAX_GROUP_ID || '',

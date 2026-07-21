@@ -18,6 +18,7 @@ const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
 const { searchUnits } = require('./unitSearch');
 const { validateSelect, runReadOnly } = require('./askDataService');
+const taneChatClient = require('./taneChatClient');
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -1482,6 +1483,113 @@ const search_chats = {
 };
 
 // ---------------------------------------------------------------------------
+// Tool: search_whatsapp  (INTERNAL ONLY — live TaneChat PII search)
+// ---------------------------------------------------------------------------
+const search_whatsapp = {
+  cap: null, // internal-only; excluded from the prospect toolset via INTERNAL_ONLY
+  definition: {
+    type: 'function',
+    function: {
+      name: 'search_whatsapp',
+      description:
+        'INTERNAL live search of TaneChat WhatsApp/email history (staff only). This queries the LIVE ' +
+        'TaneChat integration API, not the local Tenafy chat-session mirror used by search_chats. ' +
+        'Use for "who paid this amount", matching bank-statement amounts to WhatsApp/email messages, ' +
+        'or finding exact live message text with deep links back to TaneChat. ' +
+        'REQUIRES a content filter — amount, amount_min/amount_max, or q. phone/from/to/direction only ' +
+        'narrow the search and cannot be used alone. Amount search is tuned for recall and only matches ' +
+        'amounts written literally in the text, so expect incidental hits: rank them by how close the ' +
+        'message date is to the payment date (±14 days is high-signal) and cite the deep_link.',
+      parameters: {
+        type: 'object',
+        properties: {
+          amount:     { type: 'number',  description: 'Exact amount to search for, e.g. 13800 or 13800.50.' },
+          amount_min: { type: 'number',  description: 'Inclusive minimum amount for range searches.' },
+          amount_max: { type: 'number',  description: 'Inclusive maximum amount for range searches.' },
+          q:          { type: 'string',  description: 'Case-insensitive substring to find in the message body.' },
+          from:       { type: 'string',  description: 'Message timestamp lower bound: YYYY-MM-DD or ISO-8601.' },
+          to:         { type: 'string',  description: 'Message timestamp upper bound: YYYY-MM-DD (whole day) or ISO-8601.' },
+          phone:      { type: 'string',  description: 'Narrow to one contact phone, e.g. +85290001234 or 85290001234.' },
+          direction:  { type: 'string',  description: 'Message direction: inbound or outbound.' },
+          limit:      { type: 'integer', description: 'Max messages. Default 25, max 100.' },
+        },
+      },
+    },
+  },
+  async execute(ctx, args = {}) {
+    const has = (v) => v != null && String(v).trim() !== '';
+    // TaneChat requires a CONTENT filter (amount / amount range / q). `phone`,
+    // `from`, `to` and `direction` only narrow a search — on their own the API
+    // answers 400. Reject here with actionable guidance instead of spending a
+    // call (and a tool-loop iteration) on a known-bad request.
+    if (![args.amount, args.amount_min, args.amount_max, args.q].some(has)) {
+      return {
+        error: has(args.phone)
+          ? 'A phone number alone is not a searchable filter. Add a content filter: amount (e.g. 13800) ' +
+            'or q (e.g. "transferred", "paid").'
+          : 'Provide at least one search filter: amount, amount_min, amount_max, or q.',
+      };
+    }
+    if (!taneChatClient.isConfigured()) {
+      return {
+        error: 'TaneChat search is not configured. Set TANECHAT_API_KEY to enable live WhatsApp/email search.',
+      };
+    }
+
+    const limit = clampLimit(args.limit, 25, 100);
+    const requested = {
+      amount: args.amount,
+      amount_min: args.amount_min,
+      amount_max: args.amount_max,
+      q: args.q,
+      from: args.from,
+      to: args.to,
+      phone: args.phone,
+      direction: args.direction,
+      limit,
+    };
+
+    const truncate = (value) => {
+      const text = String(value || '').replace(/\s+/g, ' ').trim();
+      return text.length > 400 ? text.slice(0, 400) + '…' : text;
+    };
+    const coverageStart = '2026-03-01';
+    const fromDate = has(args.from) ? String(args.from).slice(0, 10) : null;
+
+    try {
+      const resp = await taneChatClient.searchMessages(requested);
+      const rows = Array.isArray(resp.results) ? resp.results : [];
+      return {
+        count: rows.length,
+        results: rows.map(r => ({
+          message_id: r.message_id,
+          conversation_id: r.conversation_id,
+          timestamp: r.timestamp,
+          direction: r.direction,
+          content: truncate(r.content),
+          contact: r.contact ? {
+            name: r.contact.name || null,
+            phone: r.contact.phone || null,
+            channel: r.contact.channel || null,
+          } : null,
+          deep_link: r.deep_link || null,
+          context: Array.isArray(r.context) ? r.context.map(c => ({
+            timestamp: c.timestamp,
+            direction: c.direction,
+            content: truncate(c.content),
+          })) : [],
+        })),
+        note: fromDate && fromDate < coverageStart
+          ? 'Searchable TaneChat history starts around 2026-03-01; older matching messages may not be available.'
+          : null,
+      };
+    } catch (e) {
+      return { error: e.message };
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Tool: ask_data  (INTERNAL ONLY — read-only NL->SQL escape hatch)
 // ---------------------------------------------------------------------------
 const ask_data = {
@@ -1539,6 +1647,7 @@ const ALL_TOOLS = [
   search_documents,
   search_vacancies,
   search_chats,
+  search_whatsapp,
   ask_data,
 ];
 
@@ -1548,7 +1657,7 @@ const ALL_BY_NAME = Object.fromEntries(
 
 // Tools that must NEVER reach the prospect-facing bot, even if their `cap` is
 // unset. The internal endpoint assembles these explicitly via toolsForInternal().
-const INTERNAL_ONLY = new Set(['search_vacancies', 'search_chats', 'ask_data']);
+const INTERNAL_ONLY = new Set(['search_vacancies', 'search_chats', 'search_whatsapp', 'ask_data']);
 
 /**
  * Return tool definitions + executor map filtered by the org's capabilities.
@@ -1570,7 +1679,7 @@ function toolsForCapabilities(capabilities) {
 // prospect bot. `extra` lets the internal endpoint add ask_data (Phase 3).
 const INTERNAL_TOOL_NAMES = [
   'search_leases', 'search_invoices', 'search_services',
-  'search_documents', 'search_inquiries', 'search_vacancies', 'search_chats',
+  'search_documents', 'search_inquiries', 'search_vacancies', 'search_chats', 'search_whatsapp',
 ];
 function toolsForInternal(extra = []) {
   const base = INTERNAL_TOOL_NAMES.map(n => ALL_BY_NAME[n]).filter(Boolean);
@@ -1604,7 +1713,7 @@ const INTERNAL_SYSTEM_PROMPT = [
   'You are the INTERNAL operations assistant for a property-management team using Tenafy.',
   'You are talking to STAFF, not prospects. Answer their data questions directly and completely.',
   'Do NOT use a sales tone. Do NOT ask for a move-in date, area, or budget. There is no qualification gate — just answer.',
-  'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, search_vacancies (vacant-now + upcoming vacancies), and search_chats (what was actually said in WhatsApp/email/staff conversations).',
+  'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, search_vacancies (vacant-now + upcoming vacancies), search_chats (local mirrored chat sessions), and search_whatsapp (LIVE TaneChat WhatsApp/email search for who paid an amount).',
   'Use ask_data ONLY when the structured tools cannot answer it — aggregations, sums, counts, ad-hoc joins. It is strictly read-only.',
   'Be precise with numbers, dates (DD-MMM-YYYY), and money (HK$). If a tool returns nothing, say so plainly — never invent rows.',
   'When you list units/leases/invoices, include the identifying details (unit, property, tenant, dates, amounts). Group long lists sensibly.',
@@ -1615,4 +1724,6 @@ const INTERNAL_SYSTEM_PROMPT = [
 module.exports = {
   toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT, ALL_BY_NAME,
   ASK_DATA: ask_data,
+  INTERNAL_ONLY,
+  INTERNAL_TOOL_NAMES,
 };
