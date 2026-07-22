@@ -153,11 +153,11 @@ async function fetchLeases(pool, orgId, row, opts) {
        FROM leasing l
        LEFT JOIN tenant t ON l.tenant_id = t.id AND t.org_id = ? AND t.deleted_at IS NULL
        LEFT JOIN unit u ON l.unit_id = u.id
-      WHERE l.org_id = ? AND l.deleted_at IS NULL
+      WHERE l.deleted_at IS NULL
         AND (l.amount = ? OR l.price = ? OR l.deposit = ?)
       ORDER BY l.status DESC, l.end_date DESC
       LIMIT ${safeLimit(opts.perSourceLimit)}`,
-    [orgId, orgId, row.amount, row.amount, row.amount]
+    [orgId, row.amount, row.amount, row.amount]
   );
 
   return rows.map(r => {
