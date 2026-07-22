@@ -19,6 +19,7 @@ const { getMasterPool } = require('../config/poolRegistry');
 const { searchUnits } = require('./unitSearch');
 const { validateSelect, runReadOnly } = require('./askDataService');
 const taneChatClient = require('./taneChatClient');
+const { traceAmounts } = require('./paymentMatchService');
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -1590,6 +1591,78 @@ const search_whatsapp = {
 };
 
 // ---------------------------------------------------------------------------
+// Tool: trace_amount  (INTERNAL ONLY — reconciliation lead finder)
+// ---------------------------------------------------------------------------
+const trace_amount = {
+  cap: null, // internal-only; excluded from the prospect toolset via INTERNAL_ONLY
+  definition: {
+    type: 'function',
+    function: {
+      name: 'trace_amount',
+      description:
+        'INTERNAL bank-line reconciliation helper (staff only). Given Xero bank statement lines ' +
+        '(amount + date + Received/Spent), searches open invoices, leases, accounting history, and ' +
+        'live TaneChat WhatsApp/email messages to identify likely leads. IMPORTANT: when the user ' +
+        'pastes multiple statement lines or a screenshot, pass ALL parsed rows in ONE call to avoid ' +
+        'spending the tool budget one row at a time.',
+      parameters: {
+        type: 'object',
+        properties: {
+          rows: {
+            type: 'array',
+            description: 'All parsed bank lines in one call. Each row is { amount, date, direction }. Use direction "received" for Xero Received and "spent" for Xero Spent.',
+            items: {
+              type: 'object',
+              properties: {
+                amount:    { type: 'number', description: 'Bank line amount.' },
+                date:      { type: 'string', description: 'Bank line date YYYY-MM-DD.' },
+                direction: { type: 'string', enum: ['received', 'spent'], description: 'Xero column: received or spent.' },
+              },
+              required: ['amount'],
+            },
+          },
+          amount: { type: 'number', description: 'Single-line shortcut amount.' },
+          date: { type: 'string', description: 'Single-line shortcut date YYYY-MM-DD.' },
+          direction: { type: 'string', enum: ['received', 'spent'], description: 'Single-line shortcut direction.' },
+          chat_window_days: { type: 'integer', description: 'WhatsApp search window around the bank date. Default 14.' },
+          invoice_date_tolerance_days: { type: 'integer', description: 'Invoice date scoring tolerance. Default 30.' },
+        },
+      },
+    },
+  },
+  async execute(ctx, args = {}) {
+    const rows = Array.isArray(args.rows) ? args.rows : {
+      amount: args.amount,
+      date: args.date,
+      direction: args.direction,
+    };
+    const result = await traceAmounts(
+      { pool: ctx.pool, orgId: ctx.orgId, taneChat: taneChatClient },
+      rows,
+      {
+        chatWindowDays: clampLimit(args.chat_window_days, 14, 90),
+        invoiceDateToleranceDays: clampLimit(args.invoice_date_tolerance_days, 30, 365),
+        perSourceLimit: 5,
+      }
+    );
+
+    const notes = [];
+    if (result.truncated) notes.push('Only the first 10 valid rows were processed; pass fewer rows for a focused trace.');
+    if (result.rows.some(r => r.input.date && r.input.date < '2026-03-01')) {
+      notes.push('Searchable TaneChat history starts around 2026-03-01; older matching messages may not be available.');
+    }
+    if (result.rows.some(r => r.whatsapp && r.whatsapp.available === false)) {
+      notes.push('TaneChat search is not configured, so WhatsApp/email history was unavailable.');
+    }
+
+    return {
+      rows: result.rows,
+      note: notes.length ? notes.join(' ') : null,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Tool: ask_data  (INTERNAL ONLY — read-only NL->SQL escape hatch)
 // ---------------------------------------------------------------------------
 const ask_data = {
@@ -1648,6 +1721,7 @@ const ALL_TOOLS = [
   search_vacancies,
   search_chats,
   search_whatsapp,
+  trace_amount,
   ask_data,
 ];
 
@@ -1657,7 +1731,7 @@ const ALL_BY_NAME = Object.fromEntries(
 
 // Tools that must NEVER reach the prospect-facing bot, even if their `cap` is
 // unset. The internal endpoint assembles these explicitly via toolsForInternal().
-const INTERNAL_ONLY = new Set(['search_vacancies', 'search_chats', 'search_whatsapp', 'ask_data']);
+const INTERNAL_ONLY = new Set(['search_vacancies', 'search_chats', 'search_whatsapp', 'trace_amount', 'ask_data']);
 
 /**
  * Return tool definitions + executor map filtered by the org's capabilities.
@@ -1679,7 +1753,7 @@ function toolsForCapabilities(capabilities) {
 // prospect bot. `extra` lets the internal endpoint add ask_data (Phase 3).
 const INTERNAL_TOOL_NAMES = [
   'search_leases', 'search_invoices', 'search_services',
-  'search_documents', 'search_inquiries', 'search_vacancies', 'search_chats', 'search_whatsapp',
+  'search_documents', 'search_inquiries', 'search_vacancies', 'search_chats', 'search_whatsapp', 'trace_amount',
 ];
 function toolsForInternal(extra = []) {
   const base = INTERNAL_TOOL_NAMES.map(n => ALL_BY_NAME[n]).filter(Boolean);
@@ -1713,7 +1787,10 @@ const INTERNAL_SYSTEM_PROMPT = [
   'You are the INTERNAL operations assistant for a property-management team using Tenafy.',
   'You are talking to STAFF, not prospects. Answer their data questions directly and completely.',
   'Do NOT use a sales tone. Do NOT ask for a move-in date, area, or budget. There is no qualification gate — just answer.',
-  'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, search_vacancies (vacant-now + upcoming vacancies), search_chats (local mirrored chat sessions), and search_whatsapp (LIVE TaneChat WhatsApp/email search for who paid an amount).',
+  'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, search_vacancies (vacant-now + upcoming vacancies), search_chats (local mirrored chat sessions), search_whatsapp (LIVE TaneChat WhatsApp/email search), and trace_amount (reconcile bank-line amounts).',
+  'For Xero screenshots or reconciliation requests, first parse each bank line into {amount, date, direction}, echo the parsed rows back for confirmation, and call out Spent vs Received explicitly because OCR can flip columns.',
+  'Then call trace_amount ONCE with all parsed rows. For each row, rank leads by returned score and date closeness; always show alternatives, never a lone confident answer, because common HK surnames and identical rents collide.',
+  'Cite WhatsApp deep_link values so staff can verify. Treat chat mentions as corroboration, not proof of identity. Nothing is auto-reconciled; this is advice and the human reconciles in Xero.',
   'Use ask_data ONLY when the structured tools cannot answer it — aggregations, sums, counts, ad-hoc joins. It is strictly read-only.',
   'Be precise with numbers, dates (DD-MMM-YYYY), and money (HK$). If a tool returns nothing, say so plainly — never invent rows.',
   'When you list units/leases/invoices, include the identifying details (unit, property, tenant, dates, amounts). Group long lists sensibly.',
