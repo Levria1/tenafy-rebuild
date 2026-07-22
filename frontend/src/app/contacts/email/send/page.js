@@ -150,8 +150,12 @@ function SendEmailPage() {
       const res = await tenantApi.getLeases(tid);
       if (res.data.code === 200) {
         const leases = res.data.data || [];
-        // Filter to active leases only
-        const activeLeases = leases.filter(l => Number(l.status) === 1);
+        // Filter to CURRENTLY-active leases only. Use the API's computed,
+        // date-based `lease_status` (0=inactive, 1=active, 2=upcoming) — NOT the
+        // raw stored `status` column, which is not maintained on expiry and would
+        // list already-expired and not-yet-started leases as active. Fall back to
+        // the stored column only if the computed field is somehow absent.
+        const activeLeases = leases.filter(l => Number(l.lease_status ?? l.status) === 1);
         setTenantLeases(activeLeases);
 
         // If only one active lease, auto-select it
