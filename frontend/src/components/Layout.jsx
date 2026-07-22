@@ -28,6 +28,7 @@ import {
   CloseCircleOutlined,
   CheckCircleOutlined,
   MessageOutlined,
+  SoundOutlined,
 } from '@ant-design/icons';
 import Cookies from 'js-cookie';
 import { notification as notificationApi } from '../lib/api';
@@ -88,6 +89,18 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
       children: [
         { key: '/leasing/list', label: <Link href="/leasing">Leases</Link> },
         { key: '/leasing/calendar', label: <Link href="/leasing/calendar">Calendar</Link> },
+      ],
+    });
+  }
+
+  // Advertising — surfaces units expiring soon that need re-advertising.
+  if (hasPermission('LANDLORD/LEASING_LIST')) {
+    items.push({
+      key: '/advertising',
+      icon: <SoundOutlined />,
+      label: 'Advertising',
+      children: [
+        { key: '/advertising/vacancy', label: <Link href="/advertising/vacancy">Vacancy</Link> },
       ],
     });
   }

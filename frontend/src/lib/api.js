@@ -622,6 +622,12 @@ export const viewingApi = {
   createManualBooking: (data) => api.post('/api/viewing/bookings/manual', data),
 };
 
+export const advertisingApi = {
+  // Advertising → Vacancy: units whose current lease is expiring within its
+  // renewal-intent lead window (NR 45d / UC 30d / else 20d), soonest first.
+  getVacancies: () => api.get('/api/advertising/vacancies'),
+};
+
 export const salesAgent = {
   list: () => api.get('/api/sales-agent'),
   create: (data) => api.post('/api/sales-agent', data),
