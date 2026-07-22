@@ -830,15 +830,17 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
         invoice_id: (p.match_kind === 'invoice_payment' && invoiceId) ? String(invoiceId) : null,
       }];
       // Resolve each line's invoice: code + amount + current paid (org-scoped).
-      const invoiceMeta = new Map(); // invoice_id → { code, amount, paid }
+      const invoiceMeta = new Map(); // invoice_id → { code, amount, paid, property_id, unit_id, lease_id, tenant_id }
       for (const l of rawLines) {
         if (l.invoice_id && !invoiceMeta.has(l.invoice_id)) {
           const [[invRow]] = await conn.execute(
-            'SELECT invoice_code, amount FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1',
+            `SELECT invoice_code, amount, property_id, unit_id, leasing_id, tenant_id
+               FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
             [l.invoice_id, orgId]
           );
           if (!invRow || !invRow.invoice_code) {
-            invoiceMeta.set(l.invoice_id, { code: null, amount: 0, paid: 0 });
+            invoiceMeta.set(l.invoice_id, { code: null, amount: 0, paid: 0,
+              property_id: null, unit_id: null, lease_id: null, tenant_id: null });
           } else {
             const [[paidRow]] = await conn.execute(
               `SELECT COALESCE(SUM(al.amount),0) AS paid FROM accounting_line al
@@ -850,6 +852,12 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
               code: invRow.invoice_code,
               amount: Number(invRow.amount) || 0,
               paid: Number(paidRow.paid) || 0,
+              // Carry the invoice's property/unit/lease/tenant onto the payment so the
+              // reconciled accounting row shows Contact/Property/Unit like a manual entry.
+              property_id: invRow.property_id ? String(invRow.property_id) : null,
+              unit_id: invRow.unit_id ? String(invRow.unit_id) : null,
+              lease_id: invRow.leasing_id ? String(invRow.leasing_id) : null,
+              tenant_id: invRow.tenant_id ? String(invRow.tenant_id) : null,
             });
           }
         }
@@ -879,11 +887,18 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
         }
       }
 
-      const lineRows = rawLines.map(l => ({
-        amount: l.amount,
-        category_id: l.category_id,
-        invoice_code: l.invoice_id ? (invoiceMeta.get(l.invoice_id)?.code || null) : null,
-      }));
+      const lineRows = rawLines.map(l => {
+        const m = l.invoice_id ? invoiceMeta.get(l.invoice_id) : null;
+        return {
+          amount: l.amount,
+          category_id: l.category_id,
+          invoice_code: m?.code || null,
+          property_id: m?.property_id || null,
+          unit_id: m?.unit_id || null,
+          lease_id: m?.lease_id || null,
+          tenant_id: m?.tenant_id || null,
+        };
+      });
 
       // Header category: single category, or null ("Multiple") when split.
       const headerCategory = splitLines
@@ -892,24 +907,41 @@ async function commitPendingRow(pool, orgId, userId, pendingId, overrides = {}) 
       // Header invoice_code: shared code if all lines point at one invoice, else null.
       const headerInvoiceCode = resolveHeaderInvoiceCode(lineRows);
 
+      // Header property/unit/lease/tenant: use the value when ALL contributing
+      // lines agree, else null. The accounting list still renders Property/Unit
+      // from the first line, so a genuinely mixed split leaves the header null but
+      // the columns still resolve. Tenant prefers an explicit override/proposed
+      // tenant, then falls back to line agreement (a combined payment from one
+      // tenant then shows Contact instead of the raw bank description).
+      const agree = (key) => {
+        const vals = lineRows.map(r => r[key]).filter(v => v != null);
+        if (!vals.length) return null;
+        return vals.every(v => v === vals[0]) ? vals[0] : null;
+      };
+      const headerProperty = agree('property_id');
+      const headerUnit = agree('unit_id');
+      const headerLease = agree('lease_id');
+      const headerTenant = tenantId || agree('tenant_id');
+
       const transactionCode = await generateSequenceCode(conn, orgId, 'transaction_code');
       await conn.execute(
         `INSERT INTO accounting
-            (id, org_id, tenant_id, lease_id, category, account_setting_id,
+            (id, org_id, tenant_id, property_id, unit_id, lease_id, category, account_setting_id,
              currency_id, currency_type,
              amount, note, type, payment_date, invoice_code,
              transaction_code, xero_transaction_id, reconciliation_status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
-        [newAcctId, orgId, tenantId || null, null, headerCategory, accountId,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reconciled', NOW())`,
+        [newAcctId, orgId, headerTenant || null, headerProperty, headerUnit, headerLease, headerCategory, accountId,
          currencyId, currencyType,
          amount, note, isOutflow, p.transaction_date, headerInvoiceCode, transactionCode, p.xero_transaction_id]
       );
       for (const l of lineRows) {
         const lineId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
         await conn.execute(
-          `INSERT INTO accounting_line (id, accounting_id, amount, category, invoice_code, created_at)
-           VALUES (?, ?, ?, ?, ?, NOW())`,
-          [lineId, newAcctId, l.amount, l.category_id, l.invoice_code]
+          `INSERT INTO accounting_line
+             (id, accounting_id, amount, category, invoice_code, property_id, unit_id, lease_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [lineId, newAcctId, l.amount, l.category_id, l.invoice_code, l.property_id, l.unit_id, l.lease_id]
         );
       }
       resultingId = newAcctId;
