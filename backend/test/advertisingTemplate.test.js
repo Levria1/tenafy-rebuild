@@ -61,6 +61,28 @@ test('resolveUnitValues builds a full token map (rent range + available date)', 
   for (const tok of PLACEHOLDER_TOKENS) assert.ok(tok in values, `missing ${tok}`);
 });
 
+test('resolveUnitValues: occupied unit on an OPEN-ENDED lease → blank AvailableDate, no past-lease fallback', async () => {
+  let pastQueried = false;
+  const pool = {
+    execute: async (sql) => {
+      if (/FROM unit u JOIN property p/.test(sql)) {
+        return [[{ unit_name: '3A', property_name: 'Mercer', beds: 1, baths: 1,
+                   rent_price_min: 10000, rent_price_max: 10000, deposit_price: 20000 }]];
+      }
+      // current lease EXISTS but end_date is NULL (month-to-month) → d: null
+      if (/start_date <= CURDATE\(\) AND \(end_date IS NULL OR end_date >= CURDATE\(\)\)/.test(sql)) {
+        return [[{ d: null }]];
+      }
+      // past-lease fallback — must NOT be reached
+      if (/MAX\(end_date\)/.test(sql)) { pastQueried = true; return [[{ d: '2020-01-01' }]]; }
+      return [[]];
+    },
+  };
+  const values = await resolveUnitValues(pool, 'org', '1', {});
+  assert.equal(values['%AvailableDate%'], '', 'open-ended occupied → blank, not a past date');
+  assert.equal(pastQueried, false, 'must not fall back to the last-ended lease when currently occupied');
+});
+
 test('resolveUnitValues returns null when the unit is not found', async () => {
   const pool = { execute: async () => [[]] };
   const values = await resolveUnitValues(pool, 'org', 'missing', {});

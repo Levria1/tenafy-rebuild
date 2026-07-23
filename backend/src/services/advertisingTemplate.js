@@ -98,8 +98,14 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
       ORDER BY end_date DESC LIMIT 1`,
     [String(unitId)]
   );
-  let availableDate = cur ? cur.d : null;
-  if (!availableDate) {
+  let availableDate;
+  if (cur) {
+    // Occupied. cur.d may be NULL (open-ended / month-to-month lease) → available
+    // date is genuinely unknown, so leave it blank rather than falling back to a
+    // long-past date. Only look up the last ended lease when there is NO current
+    // lease at all (the unit is actually vacant now).
+    availableDate = cur.d || null;
+  } else {
     const [[past]] = await pool.execute(
       `SELECT DATE_FORMAT(MAX(end_date), '%Y-%m-%d') AS d FROM leasing
         WHERE unit_id = ? AND deleted_at IS NULL AND end_date IS NOT NULL AND end_date < CURDATE()`,

@@ -8,6 +8,19 @@ function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
 
+// Column length caps (match migrations-org/015). Returns an error string when a
+// field is too long, so we can 400 instead of letting MySQL 500 on truncation.
+const FIELD_LIMITS = { name: 160, title: 255, webpage_link: 500 };
+function lengthError(body) {
+  for (const [field, max] of Object.entries(FIELD_LIMITS)) {
+    const v = body[field];
+    if (v != null && String(v).length > max) {
+      return `${field} must be ${max} characters or fewer`;
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Advertising → Vacancy
 // Units that need advertising, in two categories:
@@ -46,11 +59,6 @@ const NO_UPCOMING_LEASE = `NOT EXISTS (
 // catches "Test Unit 1", "6A Test", "Test Property 2".
 const NOT_TEST = `LOWER(u.name) NOT LIKE '%test%' AND LOWER(p.display_name) NOT LIKE '%test%'`;
 
-function daysBetween(fromStr, toDate) {
-  const from = new Date(fromStr + 'T00:00:00.000Z');
-  return Math.round((toDate - from) / 86400000);
-}
-
 router.get('/vacancies', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
@@ -77,9 +85,12 @@ router.get('/vacancies', authenticate, async (req, res) => {
          AND DATEDIFF(l.end_date, CURDATE()) <= ${LEAD_SQL}
          AND ${NOT_TEST}
          AND NOT EXISTS (
+           -- a replacement/continuation lease that keeps the unit occupied past
+           -- this one's end. Uses end_date (not start>end) so a same-day rollover
+           -- or overlapping renewal is correctly treated as "already re-let".
            SELECT 1 FROM leasing l2
             WHERE l2.unit_id = l.unit_id AND l2.deleted_at IS NULL
-              AND l2.id <> l.id AND l2.start_date > l.end_date)
+              AND l2.id <> l.id AND (l2.end_date IS NULL OR l2.end_date > l.end_date))
        ORDER BY days_left ASC`,
       [orgId]
     );
@@ -92,6 +103,7 @@ router.get('/vacancies', authenticate, async (req, res) => {
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
           p.id AS property_id, p.display_name AS property_name, p.street_address,
           DATE_FORMAT(ll.end_date, '%Y-%m-%d') AS vacant_since,
+          DATEDIFF(CURDATE(), ll.end_date) AS days_vacant,
           ll.amount AS rent, ll.deposit, ll.contract_type,
           t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name
        FROM unit u
@@ -109,8 +121,6 @@ router.get('/vacancies', authenticate, async (req, res) => {
          AND ${NO_UPCOMING_LEASE}`,
       [orgId]
     );
-
-    const now = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z');
 
     const expiringRows = expiring.map(r => ({
       status: 'expiring',
@@ -132,7 +142,9 @@ router.get('/vacancies', authenticate, async (req, res) => {
     }));
 
     const vacantRows = vacant.map(r => {
-      const daysVacant = r.vacant_since ? daysBetween(r.vacant_since, now) : null;
+      // days_vacant computed by the DB (DATEDIFF) so it agrees with CURDATE()/
+      // end_date and can't drift a day from server-vs-DB timezone.
+      const daysVacant = r.days_vacant != null ? Number(r.days_vacant) : null;
       return {
         status: 'vacant',
         lease_id: null,
@@ -297,6 +309,8 @@ router.post('/templates', authenticate, async (req, res) => {
     if (!name || !String(name).trim()) {
       return res.status(400).json({ code: 400, message: 'Template name is required' });
     }
+    const lenErr = lengthError({ name, title, webpage_link });
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     const id = newId();
     await req.pool.execute(
       `INSERT INTO advertising_template (id, org_id, name, title, body, webpage_link, status, created_at)
@@ -320,6 +334,9 @@ router.put('/templates/:id', authenticate, async (req, res) => {
       [req.params.id, orgId]
     );
     if (!exists) return res.status(404).json({ code: 404, message: 'Template not found' });
+
+    const lenErr = lengthError({ name, title, webpage_link });
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
 
     const fields = [];
     const params = [];
@@ -354,14 +371,26 @@ router.delete('/templates/:id', authenticate, async (req, res) => {
       [req.params.id, orgId]
     );
     if (!exists) return res.status(404).json({ code: 404, message: 'Template not found' });
-    await req.pool.execute(
-      `UPDATE unit SET advertising_template_id = NULL WHERE advertising_template_id = ?`,
-      [req.params.id]
-    );
-    await req.pool.execute(
-      `UPDATE advertising_template SET deleted_at = NOW() WHERE id = ? AND org_id = ?`,
-      [req.params.id, orgId]
-    );
+    // Atomic: unassign the units AND soft-delete the template together, so a
+    // mid-failure can't leave units unassigned while the template stays live.
+    const conn = await req.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.execute(
+        `UPDATE unit SET advertising_template_id = NULL WHERE advertising_template_id = ?`,
+        [req.params.id]
+      );
+      await conn.execute(
+        `UPDATE advertising_template SET deleted_at = NOW() WHERE id = ? AND org_id = ?`,
+        [req.params.id, orgId]
+      );
+      await conn.commit();
+    } catch (e) {
+      try { await conn.rollback(); } catch { /* already rolled back */ }
+      throw e;
+    } finally {
+      conn.release();
+    }
     res.json({ code: 200, data: { id: String(req.params.id) } });
   } catch (err) {
     console.error('[advertising/templates delete] error:', err);
@@ -384,22 +413,35 @@ router.post('/templates/:id/assign', authenticate, async (req, res) => {
     );
     if (!t) return res.status(404).json({ code: 404, message: 'Template not found' });
 
-    // Clear this template's current units, then set the new set (org-scoped via
-    // the property join so a caller can't touch another org's units).
-    await req.pool.execute(
-      `UPDATE unit SET advertising_template_id = NULL WHERE advertising_template_id = ?`,
-      [templateId]
-    );
-    if (unitIds.length) {
-      const placeholders = unitIds.map(() => '?').join(',');
-      await req.pool.execute(
-        `UPDATE unit u JOIN property p ON u.property_id = p.id
-            SET u.advertising_template_id = ?
-          WHERE p.org_id = ? AND u.id IN (${placeholders})`,
-        [templateId, orgId, ...unitIds]
+    // Atomic clear-then-set so a mid-failure can't leave the template's units
+    // cleared but not reassigned. Org-scoped via the property join so a caller
+    // can't touch another org's units.
+    const conn = await req.pool.getConnection();
+    let assigned = 0;
+    try {
+      await conn.beginTransaction();
+      await conn.execute(
+        `UPDATE unit SET advertising_template_id = NULL WHERE advertising_template_id = ?`,
+        [templateId]
       );
+      if (unitIds.length) {
+        const placeholders = unitIds.map(() => '?').join(',');
+        const [result] = await conn.execute(
+          `UPDATE unit u JOIN property p ON u.property_id = p.id
+              SET u.advertising_template_id = ?
+            WHERE p.org_id = ? AND u.id IN (${placeholders})`,
+          [templateId, orgId, ...unitIds]
+        );
+        assigned = result.affectedRows || 0;   // rows actually assigned (invalid/foreign ids dropped)
+      }
+      await conn.commit();
+    } catch (e) {
+      try { await conn.rollback(); } catch { /* already rolled back */ }
+      throw e;
+    } finally {
+      conn.release();
     }
-    res.json({ code: 200, data: { template_id: String(templateId), assigned: unitIds.length } });
+    res.json({ code: 200, data: { template_id: String(templateId), assigned, requested: unitIds.length } });
   } catch (err) {
     console.error('[advertising/templates assign] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to assign units' });
