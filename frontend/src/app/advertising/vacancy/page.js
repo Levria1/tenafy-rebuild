@@ -18,7 +18,7 @@ const INTENT_META = {
   Unset: { color: 'default', label: 'Unset' },
 };
 
-// Days-left urgency colour.
+// Days-left urgency colour (positive = days until vacant).
 function daysColor(d) {
   if (d == null) return 'default';
   if (d <= 7) return 'red';
@@ -30,16 +30,19 @@ export default function VacancyPage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [leadDays, setLeadDays] = useState({ NR: 45, UC: 30, DEFAULT: 20 });
+  const [counts, setCounts] = useState({ vacant: 0, expiring: 0 });
   const [search, setSearch] = useState('');
-  const [intentFilter, setIntentFilter] = useState(null);
+  const [statusFilter, setStatusFilter] = useState(null);
 
   const load = async () => {
     setLoading(true);
     try {
       const res = await advertisingApi.getVacancies();
       if (res.data.code === 200) {
-        setRows(res.data.data.vacancies || []);
-        if (res.data.data.lead_days) setLeadDays(res.data.data.lead_days);
+        const d = res.data.data;
+        setRows(d.vacancies || []);
+        if (d.lead_days) setLeadDays(d.lead_days);
+        setCounts({ vacant: d.vacant_count || 0, expiring: d.expiring_count || 0 });
       } else {
         message.error(res.data.message || 'Failed to load vacancies');
       }
@@ -53,7 +56,7 @@ export default function VacancyPage() {
   useEffect(() => { load(); }, []);
 
   const filtered = rows.filter(r => {
-    if (intentFilter && r.intent !== intentFilter) return false;
+    if (statusFilter && r.status !== statusFilter) return false;
     if (search) {
       const q = search.toLowerCase();
       return (
@@ -67,13 +70,18 @@ export default function VacancyPage() {
 
   const columns = [
     {
-      title: 'Days Left',
-      dataIndex: 'days_left',
-      key: 'days_left',
-      width: 110,
-      defaultSortOrder: 'ascend',
-      sorter: (a, b) => (a.days_left ?? 9999) - (b.days_left ?? 9999),
-      render: (d) => <Tag color={daysColor(d)} style={{ fontWeight: 600 }}>{d} days</Tag>,
+      title: 'Status',
+      key: 'status',
+      width: 150,
+      render: (_, r) => {
+        if (r.status === 'vacant') {
+          if (r.days_vacant == null) {
+            return <Tag color="volcano">Vacant · never leased</Tag>;
+          }
+          return <Tag color="red" style={{ fontWeight: 600 }}>Vacant {r.days_vacant}d</Tag>;
+        }
+        return <Tag color={daysColor(r.days_left)} style={{ fontWeight: 600 }}>Expiring · {r.days_left}d</Tag>;
+      },
     },
     {
       title: 'Property / Unit',
@@ -84,32 +92,43 @@ export default function VacancyPage() {
           <div><Text type="secondary" style={{ fontSize: 12 }}>Unit {r.unit_name}{r.unit_type ? ` · ${r.unit_type}` : ''}</Text></div>
         </div>
       ),
-      sorter: (a, b) => (a.property_name || '').localeCompare(b.property_name || ''),
     },
     {
-      title: 'Current Tenant',
-      dataIndex: 'tenant_name',
+      title: 'Tenant',
       key: 'tenant_name',
-      render: (v, r) => r.tenant_id
-        ? <Link href={`/contacts/tenants/${r.tenant_id}`}>{v}</Link>
-        : <Text type="secondary">{v}</Text>,
+      render: (_, r) => {
+        if (!r.tenant_name) return <Text type="secondary">—</Text>;
+        const inner = r.tenant_id
+          ? <Link href={`/contacts/tenants/${r.tenant_id}`}>{r.tenant_name}</Link>
+          : <Text type="secondary">{r.tenant_name}</Text>;
+        return r.status === 'vacant'
+          ? <Tooltip title="Previous tenant"><Text type="secondary" style={{ fontSize: 12 }}>Last: </Text>{inner}</Tooltip>
+          : inner;
+      },
     },
     {
       title: 'Renewal Intent',
       dataIndex: 'intent',
       key: 'intent',
-      width: 150,
+      width: 140,
       render: (v) => {
+        if (!v) return <Text type="secondary">—</Text>;
         const m = INTENT_META[v] || INTENT_META.Unset;
         return <Tooltip title={m.label}><Tag color={m.color}>{v}</Tag></Tooltip>;
       },
     },
     {
-      title: 'Lease Ends',
-      dataIndex: 'end_date',
-      key: 'end_date',
-      width: 120,
-      render: (v) => v || '—',
+      title: 'Ends / Vacant Since',
+      key: 'date',
+      width: 150,
+      render: (_, r) => {
+        if (r.status === 'vacant') {
+          return r.vacant_since
+            ? <Tooltip title="Vacant since"><Text type="secondary">since {r.vacant_since}</Text></Tooltip>
+            : <Text type="secondary">—</Text>;
+        }
+        return r.end_date || '—';
+      },
     },
     {
       title: 'Rent',
@@ -117,8 +136,13 @@ export default function VacancyPage() {
       key: 'rent',
       width: 120,
       align: 'right',
-      sorter: (a, b) => (a.rent ?? 0) - (b.rent ?? 0),
-      render: (v) => v != null ? `HK$${Number(v).toLocaleString()}` : '—',
+      render: (v, r) => {
+        if (v == null) return '—';
+        const label = `HK$${Number(v).toLocaleString()}`;
+        return r.status === 'vacant'
+          ? <Tooltip title="Last lease rent"><Text type="secondary">{label}</Text></Tooltip>
+          : label;
+      },
     },
     {
       title: 'Beds / Baths / Size',
@@ -143,18 +167,16 @@ export default function VacancyPage() {
         </Space>
         <div style={{ marginBottom: 16 }}>
           <Text type="secondary">
-            Units whose current lease is expiring and needs advertising, soonest first.
-            Shown once inside the lead window: <Tag color="red">NR {leadDays.NR}d</Tag>
+            Units to advertise — <Tag color="red">Vacant now</Tag> (empty, no upcoming lease) first,
+            then <Tag color="green">Expiring</Tag> within the lead window:
+            <Tag color="red">NR {leadDays.NR}d</Tag>
             <Tag color="orange">UC {leadDays.UC}d</Tag>
             <Tag color="blue">MR / MTM / Unset {leadDays.DEFAULT}d</Tag>
-            before the lease ends. Units already re-let are excluded.
+            before the lease ends. Units already re-let or with a tenant lined up are excluded.
           </Text>
         </div>
 
-        <Card
-          styles={{ body: { padding: 16 } }}
-          style={{ borderColor: '#e8e8e8' }}
-        >
+        <Card styles={{ body: { padding: 16 } }} style={{ borderColor: '#e8e8e8' }}>
           <Space style={{ marginBottom: 16 }} wrap>
             <Input
               placeholder="Search property, unit or tenant"
@@ -165,25 +187,25 @@ export default function VacancyPage() {
               style={{ width: 280 }}
             />
             <Select
-              placeholder="All intents"
+              placeholder="All"
               allowClear
-              value={intentFilter}
-              onChange={setIntentFilter}
-              style={{ width: 180 }}
+              value={statusFilter}
+              onChange={setStatusFilter}
+              style={{ width: 170 }}
               options={[
-                { value: 'NR', label: 'NR · Not Renewing' },
-                { value: 'UC', label: 'UC · Unconfirmed' },
-                { value: 'MR', label: 'MR · May Renew' },
-                { value: 'MTM', label: 'MTM · Month-to-Month' },
-                { value: 'Unset', label: 'Unset' },
+                { value: 'vacant', label: `Vacant now (${counts.vacant})` },
+                { value: 'expiring', label: `Expiring soon (${counts.expiring})` },
               ]}
             />
             <a onClick={load}><ReloadOutlined /> Refresh</a>
-            <Text type="secondary">{filtered.length} unit{filtered.length === 1 ? '' : 's'}</Text>
+            <Text type="secondary">
+              {filtered.length} unit{filtered.length === 1 ? '' : 's'}
+              {' '}({counts.vacant} vacant · {counts.expiring} expiring)
+            </Text>
           </Space>
 
           <Table
-            rowKey="lease_id"
+            rowKey={(r) => r.lease_id || `unit-${r.unit_id}`}
             columns={columns}
             dataSource={filtered}
             loading={loading}
