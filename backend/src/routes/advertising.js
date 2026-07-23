@@ -5,12 +5,12 @@ const { authenticate } = require('../middleware/auth');
 // ---------------------------------------------------------------------------
 // Advertising → Vacancy
 // Units that need advertising, in two categories:
-//   1. VACANT NOW  — active unit that was PREVIOUSLY leased, has no current lease
-//      AND no upcoming lease (a tenant left and nothing is lined up). The MOST
-//      urgent. Requires a prior ended lease so never-leased/placeholder units
-//      (often test data) don't pollute the list.
+//   1. VACANT NOW  — active unit with no current lease AND no upcoming lease
+//      (a tenant left, or a brand-new unit never leased). The MOST urgent.
 //   2. EXPIRING    — a current lease is ending within its renewal-intent lead
 //      window and no replacement is lined up.
+//
+// Units whose name/property contains "test" are excluded (placeholder data).
 //
 // Keyed off DATE-COMPUTED lease status (start_date/end_date/CURDATE()), NOT the
 // stored `leasing.status` column — that column is not maintained on expiry.
@@ -35,6 +35,10 @@ const NO_CURRENT_LEASE = `NOT EXISTS (
 const NO_UPCOMING_LEASE = `NOT EXISTS (
   SELECT 1 FROM leasing lu
    WHERE lu.unit_id = u.id AND lu.deleted_at IS NULL AND lu.start_date > CURDATE())`;
+
+// Exclude placeholder/test units by name (unit or property). Substring match —
+// catches "Test Unit 1", "6A Test", "Test Property 2".
+const NOT_TEST = `LOWER(u.name) NOT LIKE '%test%' AND LOWER(p.display_name) NOT LIKE '%test%'`;
 
 function daysBetween(fromStr, toDate) {
   const from = new Date(fromStr + 'T00:00:00.000Z');
@@ -65,6 +69,7 @@ router.get('/vacancies', authenticate, async (req, res) => {
          AND l.end_date IS NOT NULL
          AND l.end_date >= CURDATE()
          AND DATEDIFF(l.end_date, CURDATE()) <= ${LEAD_SQL}
+         AND ${NOT_TEST}
          AND NOT EXISTS (
            SELECT 1 FROM leasing l2
             WHERE l2.unit_id = l.unit_id AND l2.deleted_at IS NULL
@@ -93,12 +98,9 @@ router.get('/vacancies', authenticate, async (req, res) => {
        LEFT JOIN tenant t ON t.id = ll.tenant_id
        WHERE p.org_id = ?
          AND u.active_status = 1
+         AND ${NOT_TEST}
          AND ${NO_CURRENT_LEASE}
-         AND ${NO_UPCOMING_LEASE}
-         AND EXISTS (
-           SELECT 1 FROM leasing le
-            WHERE le.unit_id = u.id AND le.deleted_at IS NULL
-              AND le.end_date IS NOT NULL AND le.end_date < CURDATE())`,
+         AND ${NO_UPCOMING_LEASE}`,
       [orgId]
     );
 
