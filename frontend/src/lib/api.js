@@ -637,6 +637,12 @@ export const advertisingApi = {
   deleteTemplate: (id) => api.delete(`/api/advertising/templates/${id}`),
   assignTemplate: (id, unit_ids) => api.post(`/api/advertising/templates/${id}/assign`, { unit_ids }),
   previewTemplate: (id, unitId) => api.get(`/api/advertising/templates/${id}/preview`, { params: { unit_id: unitId } }),
+
+  // Advertising → Scheduler: rolling auto-20 property roster + manual urgent list.
+  getScheduler: () => api.get('/api/advertising/scheduler'),
+  addUrgent: (data) => api.post('/api/advertising/scheduler/urgent', data),
+  updateUrgent: (id, data) => api.put(`/api/advertising/scheduler/urgent/${id}`, data),
+  deleteUrgent: (id) => api.delete(`/api/advertising/scheduler/urgent/${id}`),
 };
 
 export const salesAgent = {

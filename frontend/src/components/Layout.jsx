@@ -101,6 +101,7 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
       label: 'Advertising',
       children: [
         { key: '/advertising/vacancy', label: <Link href="/advertising/vacancy">Vacancy</Link> },
+        { key: '/advertising/scheduler', label: <Link href="/advertising/scheduler">Scheduler</Link> },
         { key: '/advertising/templates', label: <Link href="/advertising/templates">Templates</Link> },
       ],
     });

@@ -59,12 +59,11 @@ const NO_UPCOMING_LEASE = `NOT EXISTS (
 // catches "Test Unit 1", "6A Test", "Test Property 2".
 const NOT_TEST = `LOWER(u.name) NOT LIKE '%test%' AND LOWER(p.display_name) NOT LIKE '%test%'`;
 
-router.get('/vacancies', authenticate, async (req, res) => {
-  try {
-    const orgId = req.user.orgId;
-
+// Shared vacancy computation — used by BOTH /vacancies and /scheduler so they can
+// never diverge. Returns the unified, urgency-sorted list plus per-category counts.
+async function computeVacancies(pool, orgId) {
     // 1. EXPIRING — current lease ending within its lead window, not re-let.
-    const [expiring] = await req.pool.execute(
+    const [expiring] = await pool.execute(
       `SELECT
           l.id AS lease_id, l.contract_type, l.amount AS rent, l.deposit,
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
@@ -98,7 +97,7 @@ router.get('/vacancies', authenticate, async (req, res) => {
     // 2. VACANT NOW — active unit with no current AND no upcoming lease. Pull the
     // most-recent ended lease (for "vacant since" + last tenant/rent reference);
     // NULL for a never-leased unit.
-    const [vacant] = await req.pool.execute(
+    const [vacant] = await pool.execute(
       `SELECT
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
           p.id AS property_id, p.display_name AS property_name, p.street_address,
@@ -177,14 +176,20 @@ router.get('/vacancies', authenticate, async (req, res) => {
       return (a.property_name || '').localeCompare(b.property_name || '');
     });
 
+    return { vacancies, vacant_count: vacantRows.length, expiring_count: expiringRows.length };
+}
+
+router.get('/vacancies', authenticate, async (req, res) => {
+  try {
+    const { vacancies, vacant_count, expiring_count } = await computeVacancies(req.pool, req.user.orgId);
     res.json({
       code: 200,
       data: {
         as_of: new Date().toISOString().slice(0, 10),
         lead_days: LEAD_DAYS,
         count: vacancies.length,
-        vacant_count: vacantRows.length,
-        expiring_count: expiringRows.length,
+        vacant_count,
+        expiring_count,
         vacancies,
       },
     });
@@ -474,6 +479,173 @@ router.get('/templates/:id/preview', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[advertising/templates preview] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to render preview' });
+  }
+});
+
+// ===========================================================================
+// Advertising → Scheduler
+// A rolling, auto-ranked roster of FIXED 20 slots. Each slot is a PROPERTY,
+// bundling its vacant/expiring units, ordered by urgency (longest-vacant first).
+// Recomputed live from vacancy data. Below it sits the manual URGENT list, whose
+// entries carry their own forum rule (added by hand for extra postings).
+// ===========================================================================
+
+const SCHEDULER_SLOTS = 20;
+
+function parseUnitIds(raw) {
+  if (!raw) return [];
+  try { const a = JSON.parse(raw); return Array.isArray(a) ? a.map(String) : []; }
+  catch { return []; }
+}
+
+router.get('/scheduler', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { vacancies } = await computeVacancies(req.pool, orgId);
+
+    // Group by property, PRESERVING the urgency order (vacancies is already sorted
+    // most-urgent first, so first-seen property order = most-urgent property first).
+    const byProp = new Map();
+    for (const v of vacancies) {
+      if (!byProp.has(v.property_id)) {
+        byProp.set(v.property_id, { property_id: v.property_id, property_name: v.property_name, units: [] });
+      }
+      const availableDate = v.status === 'vacant' ? v.vacant_since : v.end_date;
+      byProp.get(v.property_id).units.push({
+        unit_id: v.unit_id, unit_name: v.unit_name, status: v.status,
+        days_left: v.days_left, available_date: availableDate,
+      });
+    }
+
+    const props = [...byProp.values()];
+    const slots = [];
+    for (let i = 0; i < SCHEDULER_SLOTS; i++) {
+      const p = props[i];
+      if (!p) { slots.push({ position: i + 1, property_id: null, property_name: null, unit_names: null, units: [], vacant_date: null }); continue; }
+      const dates = p.units.map(u => u.available_date).filter(Boolean).sort();
+      slots.push({
+        position: i + 1,
+        property_id: p.property_id,
+        property_name: p.property_name,
+        unit_names: p.units.map(u => u.unit_name).join(', '),
+        units: p.units,
+        vacant_date: dates[0] || null,   // earliest availability among the bundle
+      });
+    }
+
+    // Manual urgent entries (resolve property name, parse bundled unit ids).
+    const [urgentRows] = await req.pool.execute(
+      `SELECT a.id, a.property_id, a.unit_ids, a.label, a.forum_rule, a.note, a.position,
+              p.display_name AS property_name
+         FROM advertising_urgent a
+         LEFT JOIN property p ON p.id = a.property_id AND p.org_id = a.org_id
+        WHERE a.org_id = ? AND a.deleted_at IS NULL
+        ORDER BY a.position ASC, a.created_at ASC`,
+      [orgId]
+    );
+    const urgent = urgentRows.map(r => ({
+      id: String(r.id),
+      property_id: r.property_id ? String(r.property_id) : null,
+      property_name: r.property_name || null,
+      unit_ids: parseUnitIds(r.unit_ids),
+      label: r.label,
+      forum_rule: r.forum_rule,
+      note: r.note,
+      position: Number(r.position) || 0,
+    }));
+
+    res.json({
+      code: 200,
+      data: {
+        as_of: new Date().toISOString().slice(0, 10),
+        slot_count: SCHEDULER_SLOTS,
+        filled: Math.min(props.length, SCHEDULER_SLOTS),
+        overflow: Math.max(props.length - SCHEDULER_SLOTS, 0),  // vacancies beyond the 20 slots
+        slots,
+        urgent,
+      },
+    });
+  } catch (err) {
+    console.error('[advertising/scheduler] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load scheduler' });
+  }
+});
+
+// Add a manual urgent entry.
+router.post('/scheduler/urgent', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { property_id, unit_ids, label, forum_rule, note, position } = req.body || {};
+    if (!property_id && !label && !(Array.isArray(unit_ids) && unit_ids.length)) {
+      return res.status(400).json({ code: 400, message: 'Provide a property, units, or a label' });
+    }
+    // If a property is given, verify it belongs to this org.
+    if (property_id) {
+      const [[p]] = await req.pool.execute(
+        `SELECT id FROM property WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [String(property_id), orgId]
+      );
+      if (!p) return res.status(400).json({ code: 400, message: 'Unknown property' });
+    }
+    const id = newId();
+    await req.pool.execute(
+      `INSERT INTO advertising_urgent (id, org_id, property_id, unit_ids, label, forum_rule, note, position, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+      [id, orgId, property_id ? String(property_id) : null,
+       Array.isArray(unit_ids) && unit_ids.length ? JSON.stringify(unit_ids.map(String)) : null,
+       label || null, forum_rule || null, note || null, Number.isInteger(position) ? position : 0]
+    );
+    res.json({ code: 200, data: { id } });
+  } catch (err) {
+    console.error('[advertising/scheduler urgent create] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to add urgent entry' });
+  }
+});
+
+// Update a manual urgent entry.
+router.put('/scheduler/urgent/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[exists]] = await req.pool.execute(
+      `SELECT id FROM advertising_urgent WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!exists) return res.status(404).json({ code: 404, message: 'Urgent entry not found' });
+    const { property_id, unit_ids, label, forum_rule, note, position } = req.body || {};
+    const fields = [];
+    const params = [];
+    if (property_id !== undefined) { fields.push('property_id = ?'); params.push(property_id ? String(property_id) : null); }
+    if (unit_ids !== undefined) { fields.push('unit_ids = ?'); params.push(Array.isArray(unit_ids) && unit_ids.length ? JSON.stringify(unit_ids.map(String)) : null); }
+    if (label !== undefined) { fields.push('label = ?'); params.push(label || null); }
+    if (forum_rule !== undefined) { fields.push('forum_rule = ?'); params.push(forum_rule || null); }
+    if (note !== undefined) { fields.push('note = ?'); params.push(note || null); }
+    if (position !== undefined) { fields.push('position = ?'); params.push(Number.isInteger(position) ? position : 0); }
+    if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
+    params.push(req.params.id, orgId);
+    await req.pool.execute(
+      `UPDATE advertising_urgent SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`,
+      params
+    );
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/scheduler urgent update] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to update urgent entry' });
+  }
+});
+
+// Remove a manual urgent entry.
+router.delete('/scheduler/urgent/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [result] = await req.pool.execute(
+      `UPDATE advertising_urgent SET deleted_at = NOW() WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+      [req.params.id, orgId]
+    );
+    if (!result.affectedRows) return res.status(404).json({ code: 404, message: 'Urgent entry not found' });
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/scheduler urgent delete] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to remove urgent entry' });
   }
 });
 
