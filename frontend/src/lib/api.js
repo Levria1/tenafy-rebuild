@@ -626,6 +626,17 @@ export const advertisingApi = {
   // Advertising → Vacancy: units whose current lease is expiring within its
   // renewal-intent lead window (NR 45d / UC 30d / else 20d), soonest first.
   getVacancies: () => api.get('/api/advertising/vacancies'),
+
+  // Advertising → Templates: reusable ad copy (with %placeholders%) per unit.
+  getPlaceholders: () => api.get('/api/advertising/templates/placeholders'),
+  getAssignableUnits: () => api.get('/api/advertising/templates/assignable-units'),
+  listTemplates: () => api.get('/api/advertising/templates'),
+  getTemplate: (id) => api.get(`/api/advertising/templates/${id}`),
+  createTemplate: (data) => api.post('/api/advertising/templates', data),
+  updateTemplate: (id, data) => api.put(`/api/advertising/templates/${id}`, data),
+  deleteTemplate: (id) => api.delete(`/api/advertising/templates/${id}`),
+  assignTemplate: (id, unit_ids) => api.post(`/api/advertising/templates/${id}/assign`, { unit_ids }),
+  previewTemplate: (id, unitId) => api.get(`/api/advertising/templates/${id}/preview`, { params: { unit_id: unitId } }),
 };
 
 export const salesAgent = {

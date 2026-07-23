@@ -1,6 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
+const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues } = require('../services/advertisingTemplate');
+
+// Snowflake id (same pattern used across the app).
+function newId() {
+  return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+}
 
 // ---------------------------------------------------------------------------
 // Advertising → Vacancy
@@ -173,6 +179,259 @@ router.get('/vacancies', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[advertising/vacancies] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to load vacancies' });
+  }
+});
+
+// ===========================================================================
+// Advertising → Templates
+// "What to post" for a unit's listing: ad copy (with %placeholders%) + webpage
+// link. Reusable across many units; each unit references at most one template.
+// (Forum / Facebook account / schedule live in the Scheduler — not here.)
+// ===========================================================================
+
+// List available placeholder tokens (for the editor).
+router.get('/templates/placeholders', authenticate, (req, res) => {
+  res.json({ code: 200, data: PLACEHOLDERS });
+});
+
+// Active units (grouped-friendly) with their currently-assigned template — for
+// the assignment picker. `assigned_template_id` lets the UI show/keep existing
+// assignments and warn when reassigning a unit that already has a template.
+router.get('/templates/assignable-units', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [rows] = await req.pool.execute(
+      `SELECT u.id AS unit_id, u.name AS unit_name,
+              p.id AS property_id, p.display_name AS property_name,
+              u.advertising_template_id
+         FROM unit u JOIN property p ON u.property_id = p.id
+        WHERE p.org_id = ? AND u.active_status = 1
+        ORDER BY p.display_name, u.name`,
+      [orgId]
+    );
+    res.json({
+      code: 200,
+      data: rows.map(r => ({
+        unit_id: String(r.unit_id),
+        unit_name: r.unit_name,
+        property_id: String(r.property_id),
+        property_name: r.property_name,
+        assigned_template_id: r.advertising_template_id ? String(r.advertising_template_id) : null,
+      })),
+    });
+  } catch (err) {
+    console.error('[advertising/assignable-units] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load units' });
+  }
+});
+
+// List templates with their assigned-unit count.
+router.get('/templates', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [rows] = await req.pool.execute(
+      `SELECT a.id, a.name, a.title, a.body, a.webpage_link, a.status,
+              a.created_at, a.updated_at,
+              (SELECT COUNT(*) FROM unit u WHERE u.advertising_template_id = a.id AND u.active_status = 1) AS unit_count
+         FROM advertising_template a
+        WHERE a.org_id = ? AND a.deleted_at IS NULL
+        ORDER BY a.name ASC`,
+      [orgId]
+    );
+    res.json({
+      code: 200,
+      data: rows.map(r => ({
+        id: String(r.id),
+        name: r.name,
+        title: r.title,
+        body: r.body,
+        webpage_link: r.webpage_link,
+        status: r.status,
+        unit_count: Number(r.unit_count) || 0,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      })),
+    });
+  } catch (err) {
+    console.error('[advertising/templates list] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load templates' });
+  }
+});
+
+// One template + its assigned units.
+router.get('/templates/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[t]] = await req.pool.execute(
+      `SELECT id, name, title, body, webpage_link, status FROM advertising_template
+        WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!t) return res.status(404).json({ code: 404, message: 'Template not found' });
+    const [units] = await req.pool.execute(
+      `SELECT u.id, u.name AS unit_name, p.display_name AS property_name
+         FROM unit u JOIN property p ON u.property_id = p.id
+        WHERE u.advertising_template_id = ? AND p.org_id = ? AND u.active_status = 1
+        ORDER BY p.display_name, u.name`,
+      [req.params.id, orgId]
+    );
+    res.json({
+      code: 200,
+      data: {
+        id: String(t.id), name: t.name, title: t.title, body: t.body,
+        webpage_link: t.webpage_link, status: t.status,
+        units: units.map(u => ({ id: String(u.id), unit_name: u.unit_name, property_name: u.property_name })),
+      },
+    });
+  } catch (err) {
+    console.error('[advertising/templates get] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load template' });
+  }
+});
+
+// Create.
+router.post('/templates', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { name, title, body, webpage_link } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ code: 400, message: 'Template name is required' });
+    }
+    const id = newId();
+    await req.pool.execute(
+      `INSERT INTO advertising_template (id, org_id, name, title, body, webpage_link, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, NOW())`,
+      [id, orgId, String(name).trim(), title || null, body || null, webpage_link || null]
+    );
+    res.json({ code: 200, data: { id } });
+  } catch (err) {
+    console.error('[advertising/templates create] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to create template' });
+  }
+});
+
+// Update.
+router.put('/templates/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { name, title, body, webpage_link, status } = req.body || {};
+    const [[exists]] = await req.pool.execute(
+      `SELECT id FROM advertising_template WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!exists) return res.status(404).json({ code: 404, message: 'Template not found' });
+
+    const fields = [];
+    const params = [];
+    if (name !== undefined) {
+      if (!String(name).trim()) return res.status(400).json({ code: 400, message: 'Template name is required' });
+      fields.push('name = ?'); params.push(String(name).trim());
+    }
+    if (title !== undefined) { fields.push('title = ?'); params.push(title || null); }
+    if (body !== undefined) { fields.push('body = ?'); params.push(body || null); }
+    if (webpage_link !== undefined) { fields.push('webpage_link = ?'); params.push(webpage_link || null); }
+    if (status !== undefined) { fields.push('status = ?'); params.push(Number(status) ? 1 : 0); }
+    if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
+
+    params.push(req.params.id, orgId);
+    await req.pool.execute(
+      `UPDATE advertising_template SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`,
+      params
+    );
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/templates update] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to update template' });
+  }
+});
+
+// Soft-delete + unassign its units.
+router.delete('/templates/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[exists]] = await req.pool.execute(
+      `SELECT id FROM advertising_template WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!exists) return res.status(404).json({ code: 404, message: 'Template not found' });
+    await req.pool.execute(
+      `UPDATE unit SET advertising_template_id = NULL WHERE advertising_template_id = ?`,
+      [req.params.id]
+    );
+    await req.pool.execute(
+      `UPDATE advertising_template SET deleted_at = NOW() WHERE id = ? AND org_id = ?`,
+      [req.params.id, orgId]
+    );
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/templates delete] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to delete template' });
+  }
+});
+
+// Replace the set of units assigned to this template. Each unit → one template,
+// so assigning here first clears these units from any other template.
+router.post('/templates/:id/assign', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const templateId = req.params.id;
+    const unitIds = Array.isArray(req.body && req.body.unit_ids)
+      ? req.body.unit_ids.map(String) : [];
+
+    const [[t]] = await req.pool.execute(
+      `SELECT id FROM advertising_template WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [templateId, orgId]
+    );
+    if (!t) return res.status(404).json({ code: 404, message: 'Template not found' });
+
+    // Clear this template's current units, then set the new set (org-scoped via
+    // the property join so a caller can't touch another org's units).
+    await req.pool.execute(
+      `UPDATE unit SET advertising_template_id = NULL WHERE advertising_template_id = ?`,
+      [templateId]
+    );
+    if (unitIds.length) {
+      const placeholders = unitIds.map(() => '?').join(',');
+      await req.pool.execute(
+        `UPDATE unit u JOIN property p ON u.property_id = p.id
+            SET u.advertising_template_id = ?
+          WHERE p.org_id = ? AND u.id IN (${placeholders})`,
+        [templateId, orgId, ...unitIds]
+      );
+    }
+    res.json({ code: 200, data: { template_id: String(templateId), assigned: unitIds.length } });
+  } catch (err) {
+    console.error('[advertising/templates assign] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to assign units' });
+  }
+});
+
+// Render a template for a unit (placeholders filled) — preview.
+router.get('/templates/:id/preview', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const unitId = req.query.unit_id;
+    if (!unitId) return res.status(400).json({ code: 400, message: 'unit_id is required' });
+    const [[t]] = await req.pool.execute(
+      `SELECT id, name, title, body, webpage_link FROM advertising_template
+        WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!t) return res.status(404).json({ code: 404, message: 'Template not found' });
+    const values = await resolveUnitValues(req.pool, orgId, unitId, t);
+    if (!values) return res.status(404).json({ code: 404, message: 'Unit not found' });
+    res.json({
+      code: 200,
+      data: {
+        title: applyPlaceholders(t.title, values),
+        body: applyPlaceholders(t.body, values),
+        webpage_link: t.webpage_link || null,
+        values,
+      },
+    });
+  } catch (err) {
+    console.error('[advertising/templates preview] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to render preview' });
   }
 });
 
