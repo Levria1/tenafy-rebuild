@@ -10,7 +10,7 @@ function newId() {
 
 // Column length caps (match migrations-org/015). Returns an error string when a
 // field is too long, so we can 400 instead of letting MySQL 500 on truncation.
-const FIELD_LIMITS = { name: 160, title: 255, webpage_link: 500 };
+const FIELD_LIMITS = { name: 160, title: 255, webpage_link: 500, label: 255, forum_rule: 500 };
 function lengthError(body) {
   for (const [field, max] of Object.entries(FIELD_LIMITS)) {
     const v = body[field];
@@ -579,6 +579,8 @@ router.post('/scheduler/urgent', authenticate, async (req, res) => {
     if (!property_id && !label && !(Array.isArray(unit_ids) && unit_ids.length)) {
       return res.status(400).json({ code: 400, message: 'Provide a property, units, or a label' });
     }
+    const lenErr = lengthError({ label, forum_rule });
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     // If a property is given, verify it belongs to this org.
     if (property_id) {
       const [[p]] = await req.pool.execute(
@@ -612,6 +614,22 @@ router.put('/scheduler/urgent/:id', authenticate, async (req, res) => {
     );
     if (!exists) return res.status(404).json({ code: 404, message: 'Urgent entry not found' });
     const { property_id, unit_ids, label, forum_rule, note, position } = req.body || {};
+
+    const lenErr = lengthError({ label, forum_rule });
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    // Same property-exists check as POST — don't let PUT point at a foreign/unknown property.
+    if (property_id != null && property_id !== '') {
+      const [[p]] = await req.pool.execute(
+        `SELECT id FROM property WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [String(property_id), orgId]
+      );
+      if (!p) return res.status(400).json({ code: 400, message: 'Unknown property' });
+    }
+    // A malformed position must not silently overwrite the stored value with 0.
+    if (position !== undefined && position !== null && !Number.isInteger(position)) {
+      return res.status(400).json({ code: 400, message: 'position must be an integer' });
+    }
+
     const fields = [];
     const params = [];
     if (property_id !== undefined) { fields.push('property_id = ?'); params.push(property_id ? String(property_id) : null); }
@@ -619,7 +637,7 @@ router.put('/scheduler/urgent/:id', authenticate, async (req, res) => {
     if (label !== undefined) { fields.push('label = ?'); params.push(label || null); }
     if (forum_rule !== undefined) { fields.push('forum_rule = ?'); params.push(forum_rule || null); }
     if (note !== undefined) { fields.push('note = ?'); params.push(note || null); }
-    if (position !== undefined) { fields.push('position = ?'); params.push(Number.isInteger(position) ? position : 0); }
+    if (Number.isInteger(position)) { fields.push('position = ?'); params.push(position); }
     if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
     params.push(req.params.id, orgId);
     await req.pool.execute(
