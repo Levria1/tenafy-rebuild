@@ -26,20 +26,18 @@ const PLACEHOLDERS = [
 
 const PLACEHOLDER_TOKENS = PLACEHOLDERS.map(p => p.token);
 
-// Pure: replace every %Token% in `text` with values[token]. Unknown tokens are
-// left as-is (so a typo is visible rather than silently blanked). A null/empty
-// value replaces with ''. Only known tokens are substituted.
+// Pure: replace every KNOWN %Token% in `text` with values[token]. Unknown tokens
+// are left as-is (so a typo is visible rather than silently blanked). A null/empty
+// value replaces with ''. SINGLE PASS — a substituted value that happens to
+// contain a %Token%-looking string is NOT re-processed.
+const TOKEN_SET = new Set(PLACEHOLDER_TOKENS);
 function applyPlaceholders(text, values = {}) {
   if (text == null) return '';
-  let out = String(text);
-  for (const token of PLACEHOLDER_TOKENS) {
-    if (!out.includes(token)) continue;
-    const v = values[token];
-    const replacement = v == null ? '' : String(v);
-    // Escape the token's regex metachars (%, parens are literal here anyway).
-    out = out.split(token).join(replacement);
-  }
-  return out;
+  return String(text).replace(/%[A-Za-z]+%/g, (m) => {
+    if (!TOKEN_SET.has(m)) return m;          // unknown token → leave visible
+    const v = values[m];
+    return v == null ? '' : String(v);
+  });
 }
 
 function fmtMoney(n) {
