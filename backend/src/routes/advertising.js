@@ -499,6 +499,7 @@ router.get('/templates/:id/preview', authenticate, async (req, res) => {
 // ===========================================================================
 
 const SCHEDULER_SLOTS = 20;
+const MAX_BUNDLE_UNITS = 3;   // at most 3 units per post (same property + template)
 
 function parseUnitIds(raw) {
   if (!raw) return [];
@@ -534,7 +535,27 @@ router.get('/scheduler', authenticate, async (req, res) => {
       });
     }
 
-    const bundles = [...groups.values()];
+    // Cap each post at MAX_BUNDLE_UNITS units — a property+template group with more
+    // than that splits into several posts (units already urgency-ordered, so the
+    // first post gets the most-urgent 3, etc.). Then order all bundles by their
+    // most-urgent unit so the split posts still slot in by urgency.
+    const bundles = [];
+    for (const g of groups.values()) {
+      for (let i = 0; i < g.units.length; i += MAX_BUNDLE_UNITS) {
+        bundles.push({
+          property_id: g.property_id, property_name: g.property_name,
+          template_id: g.template_id, template_name: g.template_name,
+          units: g.units.slice(i, i + MAX_BUNDLE_UNITS),
+        });
+      }
+    }
+    const bundleUrgency = (b) => Math.min(...b.units.map(u => (u.days_left == null ? Number.POSITIVE_INFINITY : u.days_left)));
+    bundles.sort((a, b) => {
+      const ka = bundleUrgency(a), kb = bundleUrgency(b);
+      if (ka !== kb) return ka - kb;
+      return (a.property_name || '').localeCompare(b.property_name || '');
+    });
+
     const slots = [];
     for (let i = 0; i < SCHEDULER_SLOTS; i++) {
       const g = bundles[i];
