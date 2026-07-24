@@ -92,6 +92,17 @@ export default function SchedulerPage() {
         : <Text type="secondary">—</Text>,
     },
     {
+      title: 'Template',
+      key: 'template',
+      width: 180,
+      render: (_, r) => {
+        if (!r.property_id) return <Text type="secondary">—</Text>;
+        return r.template_id
+          ? <Tag color="geekblue">{r.template_name}</Tag>
+          : <Tooltip title="Unit isn't assigned a template — it can't be bundled or posted yet"><Tag color="orange">needs template</Tag></Tooltip>;
+      },
+    },
+    {
       title: 'Vacant Date',
       dataIndex: 'vacant_date',
       key: 'vacant_date',

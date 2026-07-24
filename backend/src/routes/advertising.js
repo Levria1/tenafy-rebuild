@@ -69,11 +69,13 @@ async function computeVacancies(pool, orgId) {
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
           DATEDIFF(l.end_date, CURDATE()) AS days_left,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
+          u.advertising_template_id AS template_id, at.name AS template_name,
           p.id AS property_id, p.display_name AS property_name, p.street_address,
           t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name
        FROM leasing l
        JOIN unit u ON l.unit_id = u.id
        JOIN property p ON u.property_id = p.id
+       LEFT JOIN advertising_template at ON at.id = u.advertising_template_id AND at.deleted_at IS NULL
        LEFT JOIN tenant t ON l.tenant_id = t.id
        WHERE p.org_id = ?
          AND l.deleted_at IS NULL
@@ -100,6 +102,7 @@ async function computeVacancies(pool, orgId) {
     const [vacant] = await pool.execute(
       `SELECT
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
+          u.advertising_template_id AS template_id, at.name AS template_name,
           p.id AS property_id, p.display_name AS property_name, p.street_address,
           DATE_FORMAT(ll.end_date, '%Y-%m-%d') AS vacant_since,
           DATEDIFF(CURDATE(), ll.end_date) AS days_vacant,
@@ -107,6 +110,7 @@ async function computeVacancies(pool, orgId) {
           t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name
        FROM unit u
        JOIN property p ON u.property_id = p.id
+       LEFT JOIN advertising_template at ON at.id = u.advertising_template_id AND at.deleted_at IS NULL
        LEFT JOIN leasing ll ON ll.id = (
           SELECT le.id FROM leasing le
            WHERE le.unit_id = u.id AND le.deleted_at IS NULL
@@ -135,6 +139,8 @@ async function computeVacancies(pool, orgId) {
       beds: r.beds != null ? Number(r.beds) : null,
       baths: r.baths != null ? Number(r.baths) : null,
       size: r.size != null ? Number(r.size) : null,
+      template_id: r.template_id ? String(r.template_id) : null,
+      template_name: r.template_name || null,
       property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
       tenant_id: r.tenant_id ? String(r.tenant_id) : null,
       tenant_name: (r.tenant_name || '').trim() || '(no tenant)',
@@ -160,6 +166,8 @@ async function computeVacancies(pool, orgId) {
         beds: r.beds != null ? Number(r.beds) : null,
         baths: r.baths != null ? Number(r.baths) : null,
         size: r.size != null ? Number(r.size) : null,
+        template_id: r.template_id ? String(r.template_id) : null,
+        template_name: r.template_name || null,
         property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
         tenant_id: r.tenant_id ? String(r.tenant_id) : null,   // last tenant
         tenant_name: (r.tenant_name || '').trim() || null,
@@ -503,33 +511,47 @@ router.get('/scheduler', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { vacancies } = await computeVacancies(req.pool, orgId);
 
-    // Group by property, PRESERVING the urgency order (vacancies is already sorted
-    // most-urgent first, so first-seen property order = most-urgent property first).
-    const byProp = new Map();
+    // Bundle by (property AND template) — units post together ONLY when they share
+    // both. A unit with no template can't bundle, so it gets its own slot (keyed by
+    // unit id) flagged as needing a template. PRESERVES urgency order (vacancies is
+    // already sorted most-urgent first → first-seen group = most-urgent group).
+    const groups = new Map();
     for (const v of vacancies) {
-      if (!byProp.has(v.property_id)) {
-        byProp.set(v.property_id, { property_id: v.property_id, property_name: v.property_name, units: [] });
+      // templated units bundle by property+template; un-templated stand alone.
+      const key = v.template_id
+        ? `p:${v.property_id}|t:${v.template_id}`
+        : `p:${v.property_id}|u:${v.unit_id}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          property_id: v.property_id, property_name: v.property_name,
+          template_id: v.template_id, template_name: v.template_name, units: [],
+        });
       }
       const availableDate = v.status === 'vacant' ? v.vacant_since : v.end_date;
-      byProp.get(v.property_id).units.push({
+      groups.get(key).units.push({
         unit_id: v.unit_id, unit_name: v.unit_name, status: v.status,
         days_left: v.days_left, available_date: availableDate,
       });
     }
 
-    const props = [...byProp.values()];
+    const bundles = [...groups.values()];
     const slots = [];
     for (let i = 0; i < SCHEDULER_SLOTS; i++) {
-      const p = props[i];
-      if (!p) { slots.push({ position: i + 1, property_id: null, property_name: null, unit_names: null, units: [], vacant_date: null }); continue; }
-      const dates = p.units.map(u => u.available_date).filter(Boolean).sort();
+      const g = bundles[i];
+      if (!g) {
+        slots.push({ position: i + 1, property_id: null, property_name: null, template_id: null, template_name: null, unit_names: null, units: [], vacant_date: null });
+        continue;
+      }
+      const dates = g.units.map(u => u.available_date).filter(Boolean).sort();
       slots.push({
         position: i + 1,
-        property_id: p.property_id,
-        property_name: p.property_name,
-        unit_names: p.units.map(u => u.unit_name).join(', '),
-        units: p.units,
-        vacant_date: dates[0] || null,   // earliest availability among the bundle
+        property_id: g.property_id,
+        property_name: g.property_name,
+        template_id: g.template_id,
+        template_name: g.template_name,       // null → "needs template"
+        unit_names: g.units.map(u => u.unit_name).join(', '),
+        units: g.units,
+        vacant_date: dates[0] || null,        // earliest availability among the bundle
       });
     }
 
@@ -559,8 +581,8 @@ router.get('/scheduler', authenticate, async (req, res) => {
       data: {
         as_of: new Date().toISOString().slice(0, 10),
         slot_count: SCHEDULER_SLOTS,
-        filled: Math.min(props.length, SCHEDULER_SLOTS),
-        overflow: Math.max(props.length - SCHEDULER_SLOTS, 0),  // vacancies beyond the 20 slots
+        filled: Math.min(bundles.length, SCHEDULER_SLOTS),
+        overflow: Math.max(bundles.length - SCHEDULER_SLOTS, 0),  // bundles beyond the 20 slots
         slots,
         urgent,
       },
