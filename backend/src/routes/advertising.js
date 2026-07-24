@@ -720,6 +720,17 @@ router.delete('/scheduler/urgent/:id', authenticate, async (req, res) => {
 const FORUM_LIMITS = { name: 255, url: 500 };
 const ACCOUNT_LIMITS = { name: 160, email: 255 };
 
+// Guard: a provided text field must be a string (a JSON object/array would slip
+// past a truthiness check and make mysql2 emit invalid SQL → 500). Returns the
+// offending field name, or null.
+function nonStringField(body, keys) {
+  for (const k of keys) {
+    const v = body[k];
+    if (v != null && typeof v !== 'string') return k;
+  }
+  return null;
+}
+
 // ---- Accounts ----
 router.get('/accounts', authenticate, async (req, res) => {
   try {
@@ -740,9 +751,19 @@ router.get('/accounts', authenticate, async (req, res) => {
 router.post('/accounts', authenticate, async (req, res) => {
   try {
     const { name, email, notes } = req.body || {};
+    const bt = nonStringField(req.body || {}, ['name', 'email', 'notes']);
+    if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     if (!name && !email) return res.status(400).json({ code: 400, message: 'Provide a name or email' });
     const lenErr = lengthError({ name, email }, ACCOUNT_LIMITS);
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    // Reject a duplicate email (an email identifies one FB account).
+    if (email) {
+      const [[dup]] = await req.pool.execute(
+        `SELECT id FROM advertising_account WHERE org_id = ? AND email = ? AND deleted_at IS NULL LIMIT 1`,
+        [req.user.orgId, email]
+      );
+      if (dup) return res.status(409).json({ code: 409, message: 'An account with that email already exists' });
+    }
     const id = newId();
     await req.pool.execute(
       `INSERT INTO advertising_account (id, org_id, name, email, notes, status, created_at)
@@ -839,6 +860,8 @@ router.get('/forums', authenticate, async (req, res) => {
 router.post('/forums', authenticate, async (req, res) => {
   try {
     const { name, url, notes } = req.body || {};
+    const bt = nonStringField(req.body || {}, ['name', 'url', 'notes']);
+    if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     if (!name || !String(name).trim()) return res.status(400).json({ code: 400, message: 'Forum name is required' });
     const lenErr = lengthError({ name, url }, FORUM_LIMITS);
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
@@ -940,7 +963,8 @@ router.post('/forums/:id/members', authenticate, async (req, res) => {
       }
       await conn.commit();
     } catch (e) { try { await conn.rollback(); } catch {} throw e; } finally { conn.release(); }
-    res.json({ code: 200, data: { forum_id: String(forumId), members: valid.length } });
+    const rejected = accountIds.filter(id => !valid.includes(id));
+    res.json({ code: 200, data: { forum_id: String(forumId), members: valid.length, rejected } });
   } catch (err) {
     console.error('[advertising/forums members] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to set members' });
