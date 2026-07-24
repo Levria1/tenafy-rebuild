@@ -11,8 +11,8 @@ function newId() {
 // Column length caps (match migrations-org/015). Returns an error string when a
 // field is too long, so we can 400 instead of letting MySQL 500 on truncation.
 const FIELD_LIMITS = { name: 160, title: 255, webpage_link: 500, label: 255, forum_rule: 500 };
-function lengthError(body) {
-  for (const [field, max] of Object.entries(FIELD_LIMITS)) {
+function lengthError(body, limits = FIELD_LIMITS) {
+  for (const [field, max] of Object.entries(limits)) {
     const v = body[field];
     if (v != null && String(v).length > max) {
       return `${field} must be ${max} characters or fewer`;
@@ -707,6 +707,243 @@ router.delete('/scheduler/urgent/:id', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[advertising/scheduler urgent delete] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to remove urgent entry' });
+  }
+});
+
+// ===========================================================================
+// Advertising → Forums & Accounts
+// Facebook groups (forums) + posting accounts + membership (which accounts can
+// post to which forum). Feeds the Scheduler's posting-plan so it only ever pairs
+// a forum with an account that is a member of it.
+// ===========================================================================
+
+const FORUM_LIMITS = { name: 255, url: 500 };
+const ACCOUNT_LIMITS = { name: 160, email: 255 };
+
+// ---- Accounts ----
+router.get('/accounts', authenticate, async (req, res) => {
+  try {
+    const [rows] = await req.pool.execute(
+      `SELECT id, name, email, notes, status FROM advertising_account
+        WHERE org_id = ? AND deleted_at IS NULL ORDER BY name, email`,
+      [req.user.orgId]
+    );
+    res.json({ code: 200, data: rows.map(r => ({
+      id: String(r.id), name: r.name, email: r.email, notes: r.notes, status: r.status,
+    })) });
+  } catch (err) {
+    console.error('[advertising/accounts list] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load accounts' });
+  }
+});
+
+router.post('/accounts', authenticate, async (req, res) => {
+  try {
+    const { name, email, notes } = req.body || {};
+    if (!name && !email) return res.status(400).json({ code: 400, message: 'Provide a name or email' });
+    const lenErr = lengthError({ name, email }, ACCOUNT_LIMITS);
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    const id = newId();
+    await req.pool.execute(
+      `INSERT INTO advertising_account (id, org_id, name, email, notes, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 1, NOW())`,
+      [id, req.user.orgId, name || null, email || null, notes || null]
+    );
+    res.json({ code: 200, data: { id } });
+  } catch (err) {
+    console.error('[advertising/accounts create] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to create account' });
+  }
+});
+
+router.put('/accounts/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[exists]] = await req.pool.execute(
+      `SELECT id FROM advertising_account WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!exists) return res.status(404).json({ code: 404, message: 'Account not found' });
+    const { name, email, notes, status } = req.body || {};
+    const lenErr = lengthError({ name, email }, ACCOUNT_LIMITS);
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    const fields = [], params = [];
+    if (name !== undefined) { fields.push('name = ?'); params.push(name || null); }
+    if (email !== undefined) { fields.push('email = ?'); params.push(email || null); }
+    if (notes !== undefined) { fields.push('notes = ?'); params.push(notes || null); }
+    if (status !== undefined) { fields.push('status = ?'); params.push(Number(status) ? 1 : 0); }
+    if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
+    params.push(req.params.id, orgId);
+    await req.pool.execute(`UPDATE advertising_account SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`, params);
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/accounts update] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to update account' });
+  }
+});
+
+router.delete('/accounts/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const conn = await req.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [result] = await conn.execute(
+        `UPDATE advertising_account SET deleted_at = NOW() WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+        [req.params.id, orgId]
+      );
+      if (!result.affectedRows) { await conn.rollback(); return res.status(404).json({ code: 404, message: 'Account not found' }); }
+      // Drop its memberships so no forum lists a dead account.
+      await conn.execute(`DELETE FROM advertising_forum_account WHERE account_id = ? AND org_id = ?`, [req.params.id, orgId]);
+      await conn.commit();
+    } catch (e) { try { await conn.rollback(); } catch {} throw e; } finally { conn.release(); }
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/accounts delete] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to delete account' });
+  }
+});
+
+// ---- Forums ---- (list includes member account ids for the membership editor)
+router.get('/forums', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [forums] = await req.pool.execute(
+      `SELECT id, name, url, notes, status FROM advertising_forum
+        WHERE org_id = ? AND deleted_at IS NULL ORDER BY name`,
+      [orgId]
+    );
+    const [members] = await req.pool.execute(
+      `SELECT fa.forum_id, fa.account_id, a.name AS account_name, a.email AS account_email
+         FROM advertising_forum_account fa
+         JOIN advertising_account a ON a.id = fa.account_id AND a.deleted_at IS NULL
+        WHERE fa.org_id = ?`,
+      [orgId]
+    );
+    const byForum = new Map();
+    for (const m of members) {
+      const k = String(m.forum_id);
+      if (!byForum.has(k)) byForum.set(k, []);
+      byForum.get(k).push({ id: String(m.account_id), name: m.account_name, email: m.account_email });
+    }
+    res.json({ code: 200, data: forums.map(f => ({
+      id: String(f.id), name: f.name, url: f.url, notes: f.notes, status: f.status,
+      accounts: byForum.get(String(f.id)) || [],
+    })) });
+  } catch (err) {
+    console.error('[advertising/forums list] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load forums' });
+  }
+});
+
+router.post('/forums', authenticate, async (req, res) => {
+  try {
+    const { name, url, notes } = req.body || {};
+    if (!name || !String(name).trim()) return res.status(400).json({ code: 400, message: 'Forum name is required' });
+    const lenErr = lengthError({ name, url }, FORUM_LIMITS);
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    const id = newId();
+    await req.pool.execute(
+      `INSERT INTO advertising_forum (id, org_id, name, url, notes, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 1, NOW())`,
+      [id, req.user.orgId, String(name).trim(), url || null, notes || null]
+    );
+    res.json({ code: 200, data: { id } });
+  } catch (err) {
+    console.error('[advertising/forums create] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to create forum' });
+  }
+});
+
+router.put('/forums/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[exists]] = await req.pool.execute(
+      `SELECT id FROM advertising_forum WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!exists) return res.status(404).json({ code: 404, message: 'Forum not found' });
+    const { name, url, notes, status } = req.body || {};
+    if (name !== undefined && !String(name).trim()) return res.status(400).json({ code: 400, message: 'Forum name is required' });
+    const lenErr = lengthError({ name, url }, FORUM_LIMITS);
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    const fields = [], params = [];
+    if (name !== undefined) { fields.push('name = ?'); params.push(String(name).trim()); }
+    if (url !== undefined) { fields.push('url = ?'); params.push(url || null); }
+    if (notes !== undefined) { fields.push('notes = ?'); params.push(notes || null); }
+    if (status !== undefined) { fields.push('status = ?'); params.push(Number(status) ? 1 : 0); }
+    if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
+    params.push(req.params.id, orgId);
+    await req.pool.execute(`UPDATE advertising_forum SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`, params);
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/forums update] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to update forum' });
+  }
+});
+
+router.delete('/forums/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const conn = await req.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [result] = await conn.execute(
+        `UPDATE advertising_forum SET deleted_at = NOW() WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+        [req.params.id, orgId]
+      );
+      if (!result.affectedRows) { await conn.rollback(); return res.status(404).json({ code: 404, message: 'Forum not found' }); }
+      await conn.execute(`DELETE FROM advertising_forum_account WHERE forum_id = ? AND org_id = ?`, [req.params.id, orgId]);
+      await conn.commit();
+    } catch (e) { try { await conn.rollback(); } catch {} throw e; } finally { conn.release(); }
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/forums delete] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to delete forum' });
+  }
+});
+
+// Set a forum's member accounts (replace the whole set). Only accounts that
+// belong to this org are accepted, so a caller can't link a foreign account.
+router.post('/forums/:id/members', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const forumId = req.params.id;
+    const accountIds = Array.isArray(req.body && req.body.account_ids) ? req.body.account_ids.map(String) : [];
+    const [[f]] = await req.pool.execute(
+      `SELECT id FROM advertising_forum WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [forumId, orgId]
+    );
+    if (!f) return res.status(404).json({ code: 404, message: 'Forum not found' });
+
+    // Keep only ids that are real, non-deleted accounts in THIS org.
+    let valid = [];
+    if (accountIds.length) {
+      const ph = accountIds.map(() => '?').join(',');
+      const [rows] = await req.pool.execute(
+        `SELECT id FROM advertising_account WHERE org_id = ? AND deleted_at IS NULL AND id IN (${ph})`,
+        [orgId, ...accountIds]
+      );
+      valid = rows.map(r => String(r.id));
+    }
+
+    const conn = await req.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.execute(`DELETE FROM advertising_forum_account WHERE forum_id = ? AND org_id = ?`, [forumId, orgId]);
+      for (const accId of valid) {
+        await conn.execute(
+          `INSERT INTO advertising_forum_account (id, org_id, forum_id, account_id, created_at)
+           VALUES (?, ?, ?, ?, NOW())`,
+          [newId(), orgId, forumId, accId]
+        );
+      }
+      await conn.commit();
+    } catch (e) { try { await conn.rollback(); } catch {} throw e; } finally { conn.release(); }
+    res.json({ code: 200, data: { forum_id: String(forumId), members: valid.length } });
+  } catch (err) {
+    console.error('[advertising/forums members] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to set members' });
   }
 });
 

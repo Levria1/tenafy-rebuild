@@ -643,6 +643,17 @@ export const advertisingApi = {
   addUrgent: (data) => api.post('/api/advertising/scheduler/urgent', data),
   updateUrgent: (id, data) => api.put(`/api/advertising/scheduler/urgent/${id}`, data),
   deleteUrgent: (id) => api.delete(`/api/advertising/scheduler/urgent/${id}`),
+
+  // Advertising → Forums: Facebook groups + accounts + membership.
+  listForums: () => api.get('/api/advertising/forums'),
+  createForum: (data) => api.post('/api/advertising/forums', data),
+  updateForum: (id, data) => api.put(`/api/advertising/forums/${id}`, data),
+  deleteForum: (id) => api.delete(`/api/advertising/forums/${id}`),
+  setForumMembers: (id, account_ids) => api.post(`/api/advertising/forums/${id}/members`, { account_ids }),
+  listAccounts: () => api.get('/api/advertising/accounts'),
+  createAccount: (data) => api.post('/api/advertising/accounts', data),
+  updateAccount: (id, data) => api.put(`/api/advertising/accounts/${id}`, data),
+  deleteAccount: (id) => api.delete(`/api/advertising/accounts/${id}`),
 };
 
 export const salesAgent = {
