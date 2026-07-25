@@ -72,6 +72,19 @@ function applyPlaceholders(text, values = {}) {
   });
 }
 
+// Facebook posts are plain text — no real bold. `**text**` markers are converted
+// to Unicode Mathematical Bold characters (𝐭𝐞𝐱𝐭) as a visual approximation.
+function boldChar(ch) {
+  const c = ch.codePointAt(0);
+  if (c >= 0x41 && c <= 0x5A) return String.fromCodePoint(0x1D400 + (c - 0x41)); // A–Z
+  if (c >= 0x61 && c <= 0x7A) return String.fromCodePoint(0x1D41A + (c - 0x61)); // a–z
+  if (c >= 0x30 && c <= 0x39) return String.fromCodePoint(0x1D7CE + (c - 0x30)); // 0–9
+  return ch;
+}
+function convertBold(text) {
+  return String(text == null ? '' : text).replace(/\*\*([^*]+)\*\*/g, (_, inner) => [...inner].map(boldChar).join(''));
+}
+
 function fmtMoney(n) {
   if (n == null || n === '' || Number.isNaN(Number(n))) return '';
   return `HK$${Number(n).toLocaleString('en-US')}`;
@@ -176,4 +189,4 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
   };
 }
 
-module.exports = { PLACEHOLDERS, PLACEHOLDER_TOKENS, applyPlaceholders, resolveUnitValues, computePostingRent };
+module.exports = { PLACEHOLDERS, PLACEHOLDER_TOKENS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold };

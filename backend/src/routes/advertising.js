@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent } = require('../services/advertisingTemplate');
+const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold } = require('../services/advertisingTemplate');
 
 // Snowflake id (same pattern used across the app).
 function newId() {
@@ -486,9 +486,9 @@ router.get('/templates/:id/preview', authenticate, async (req, res) => {
     res.json({
       code: 200,
       data: {
-        title: applyPlaceholders(t.title, values),
-        body: applyPlaceholders(t.body, values),
-        per_unit_line: applyPlaceholders(t.per_unit_line, values),
+        title: convertBold(applyPlaceholders(t.title, values)),
+        body: convertBold(applyPlaceholders(t.body, values)),
+        per_unit_line: convertBold(applyPlaceholders(t.per_unit_line, values)),
         webpage_link: t.webpage_link || null,
         values,
       },
@@ -755,9 +755,10 @@ async function renderBundle(pool, orgId, bundle, template, footer) {
   const unitLines = template.per_unit_line ? resolved.map(v => applyPlaceholders(template.per_unit_line, v)) : [];
   const title = sharedValues ? applyPlaceholders(template.title, sharedValues) : (template.title || '');
   const body = sharedValues ? applyPlaceholders(template.body, sharedValues) : (template.body || '');
-  const text = [title, body, ...unitLines, template.webpage_link || '', footer || '']
-    .map(s => (s || '').trim()).filter(Boolean).join('\n');
-  return { title, body, unit_lines: unitLines, webpage_link: template.webpage_link || null, footer: footer || null, text };
+  const text = convertBold([title, body, ...unitLines, template.webpage_link || '', footer || '']
+    .map(s => (s || '').trim()).filter(Boolean).join('\n'));
+  return { title: convertBold(title), body: convertBold(body), unit_lines: unitLines.map(convertBold),
+           webpage_link: template.webpage_link || null, footer: footer || null, text };
 }
 
 // Org-wide advertising settings (shared footer + photo root).

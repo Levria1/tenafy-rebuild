@@ -1,6 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { applyPlaceholders, resolveUnitValues, PLACEHOLDER_TOKENS, computePostingRent } = require('../src/services/advertisingTemplate');
+const { applyPlaceholders, resolveUnitValues, PLACEHOLDER_TOKENS, computePostingRent, convertBold } = require('../src/services/advertisingTemplate');
+
+test('convertBold: **marked** segments become Unicode bold, rest untouched', () => {
+  assert.equal(convertBold('Unit: **2K**'), 'Unit: \u{1D7D0}\u{1D40A}');   // 𝟐𝐊
+  assert.equal(convertBold('no marks here'), 'no marks here');
+  assert.equal(convertBold('**a** and **B**'), '\u{1D41A} and \u{1D401}'); // 𝐚 and 𝐁
+  assert.equal(convertBold(null), '');
+  assert.equal(convertBold('keep (punct) **A!**'), 'keep (punct) \u{1D400}!'); // punctuation inside stays literal
+});
 
 test('computePostingRent: tiers step down as availability nears', () => {
   const min = 5000, max = 8000;
