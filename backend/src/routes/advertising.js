@@ -755,8 +755,11 @@ async function renderBundle(pool, orgId, bundle, template, footer) {
   const unitLines = template.per_unit_line ? resolved.map(v => applyPlaceholders(template.per_unit_line, v)) : [];
   const title = sharedValues ? applyPlaceholders(template.title, sharedValues) : (template.title || '');
   const body = sharedValues ? applyPlaceholders(template.body, sharedValues) : (template.body || '');
-  const text = convertBold([title, body, ...unitLines, template.webpage_link || '', footer || '']
-    .map(s => (s || '').trim()).filter(Boolean).join('\n'));
+  // Blank line between each unit block, and between the major sections (first
+  // line / body / units / link / footer) for a clean, readable post.
+  const parts = [title, body, unitLines.join('\n\n'), template.webpage_link || '', footer || '']
+    .map(s => (s || '').trim()).filter(Boolean);
+  const text = convertBold(parts.join('\n\n'));
   return { title: convertBold(title), body: convertBold(body), unit_lines: unitLines.map(convertBold),
            webpage_link: template.webpage_link || null, footer: footer || null, text };
 }
