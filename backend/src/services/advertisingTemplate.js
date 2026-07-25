@@ -42,8 +42,10 @@ function computePostingRent(rentMin, rentMax, daysToAvailable) {
   const max = (rentMax == null || rentMax === '') ? NaN : Number(rentMax);
   const hasMin = Number.isFinite(min), hasMax = Number.isFinite(max);
   if (!hasMin && !hasMax) return null;
-  const lo = hasMin ? min : max;
-  const hi = hasMax ? max : min;
+  // Order-safe: if both bounds exist but were entered reversed, low is still the
+  // smaller so the step-down doesn't invert.
+  const lo = (hasMin && hasMax) ? Math.min(min, max) : (hasMin ? min : max);
+  const hi = (hasMin && hasMax) ? Math.max(min, max) : (hasMax ? max : min);
   const mid = Math.round((lo + hi) / 2);
   const d = daysToAvailable;
   if (d == null)     return { amount: lo, tier: 'low' };                     // unknown → conservative
@@ -152,7 +154,7 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
   const postingAmount = posting ? posting.amount : (rent != null ? Number(rent) : null);
 
   const sizeStr = u.size != null ? `${u.size}${u.size_unit ? ' ' + u.size_unit : ''}` : '';
-  const rawNum = (n) => (n == null || n === '' || Number.isNaN(Number(n))) ? '' : Number(n).toLocaleString('en-US');
+  const rawNum = (n) => (n == null || n === '' || Number.isNaN(Number(n))) ? '' : Math.round(Number(n)).toLocaleString('en-US');
 
   return {
     '%PropertyName%':    u.property_name || '',
