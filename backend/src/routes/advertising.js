@@ -745,8 +745,9 @@ async function renderBundle(pool, orgId, bundle, template, footer) {
     if (values) resolved.push(values);
   }
   const amt = (v) => {
-    const n = Number(String(v['%PostingRentAmount%'] || '').replace(/,/g, ''));
-    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+    // Strip anything non-numeric ($, HKD, spaces) defensively, not just commas.
+    const n = Number(String(v['%PostingRentAmount%'] || '').replace(/[^0-9.]/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : Number.POSITIVE_INFINITY;
   };
   const sharedValues = resolved.length
     ? resolved.reduce((lo, v) => (amt(v) < amt(lo) ? v : lo), resolved[0])
@@ -782,6 +783,8 @@ router.put('/settings', authenticate, async (req, res) => {
     const { footer, photo_root } = req.body || {};
     const bt = nonStringField(req.body || {}, ['footer', 'photo_root']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
+    const lenErr = lengthError({ photo_root }, { photo_root: 255 });   // column is VARCHAR(255)
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     // Upsert the single per-org row.
     await req.pool.execute(
       `INSERT INTO advertising_setting (org_id, footer, photo_root, created_at)
