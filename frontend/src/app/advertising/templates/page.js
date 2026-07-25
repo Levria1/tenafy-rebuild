@@ -64,8 +64,8 @@ export default function TemplatesPage() {
   const openEditor = (tpl) => {
     setEditing(tpl || null);
     form.setFieldsValue(tpl
-      ? { name: tpl.name, title: tpl.title, body: tpl.body, webpage_link: tpl.webpage_link }
-      : { name: '', title: '', body: '', webpage_link: '' });
+      ? { name: tpl.name, title: tpl.title, body: tpl.body, per_unit_line: tpl.per_unit_line, webpage_link: tpl.webpage_link }
+      : { name: '', title: '', body: '', per_unit_line: '', webpage_link: '' });
     setEditorOpen(true);
   };
 
@@ -259,8 +259,11 @@ export default function TemplatesPage() {
           <Form.Item name="title" label="Post title (optional)">
             <Input placeholder="e.g. %UnitName% at %PropertyName% — available %AvailableDate%" />
           </Form.Item>
-          <Form.Item name="body" label="Body">
-            <TextArea rows={7} placeholder="Describe the unit/building. Use %Placeholders% below to auto-fill unit details." />
+          <Form.Item name="body" label="Body (shared)" tooltip="Posted once per bundle — the building/area copy shared by all its units.">
+            <TextArea rows={6} placeholder="Describe the unit/building. Use %Placeholders% below to auto-fill unit details." />
+          </Form.Item>
+          <Form.Item name="per_unit_line" label="Per-unit line" tooltip="Repeated once for EACH unit in a bundled post (the line that differs). e.g. Unit %UnitName% — available %AvailableDate%, %Rent%/mo">
+            <Input placeholder="Unit %UnitName% — available %AvailableDate%, %Rent%/mo" />
           </Form.Item>
           <div style={{ marginBottom: 12 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>Insert placeholder:</Text>

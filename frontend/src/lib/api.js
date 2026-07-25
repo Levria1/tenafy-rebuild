@@ -644,6 +644,10 @@ export const advertisingApi = {
   updateUrgent: (id, data) => api.put(`/api/advertising/scheduler/urgent/${id}`, data),
   deleteUrgent: (id) => api.delete(`/api/advertising/scheduler/urgent/${id}`),
 
+  // Advertising → Posting plan (consumed by the PC agent).
+  getPostingPlan: (date) => api.get('/api/advertising/posting-plan', { params: date ? { date } : {} }),
+  markPosted: (data) => api.post('/api/advertising/posting-plan/mark', data),
+
   // Advertising → Forums: Facebook groups + accounts + membership.
   listForums: () => api.get('/api/advertising/forums'),
   createForum: (data) => api.post('/api/advertising/forums', data),

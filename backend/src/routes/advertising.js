@@ -255,7 +255,7 @@ router.get('/templates', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [rows] = await req.pool.execute(
-      `SELECT a.id, a.name, a.title, a.body, a.webpage_link, a.status,
+      `SELECT a.id, a.name, a.title, a.body, a.per_unit_line, a.webpage_link, a.status,
               a.created_at, a.updated_at,
               (SELECT COUNT(*) FROM unit u WHERE u.advertising_template_id = a.id AND u.active_status = 1) AS unit_count
          FROM advertising_template a
@@ -270,6 +270,7 @@ router.get('/templates', authenticate, async (req, res) => {
         name: r.name,
         title: r.title,
         body: r.body,
+        per_unit_line: r.per_unit_line,
         webpage_link: r.webpage_link,
         status: r.status,
         unit_count: Number(r.unit_count) || 0,
@@ -288,7 +289,7 @@ router.get('/templates/:id', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [[t]] = await req.pool.execute(
-      `SELECT id, name, title, body, webpage_link, status FROM advertising_template
+      `SELECT id, name, title, body, per_unit_line, webpage_link, status FROM advertising_template
         WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
       [req.params.id, orgId]
     );
@@ -304,7 +305,7 @@ router.get('/templates/:id', authenticate, async (req, res) => {
       code: 200,
       data: {
         id: String(t.id), name: t.name, title: t.title, body: t.body,
-        webpage_link: t.webpage_link, status: t.status,
+        per_unit_line: t.per_unit_line, webpage_link: t.webpage_link, status: t.status,
         units: units.map(u => ({ id: String(u.id), unit_name: u.unit_name, property_name: u.property_name })),
       },
     });
@@ -318,7 +319,7 @@ router.get('/templates/:id', authenticate, async (req, res) => {
 router.post('/templates', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { name, title, body, webpage_link } = req.body || {};
+    const { name, title, body, per_unit_line, webpage_link } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ code: 400, message: 'Template name is required' });
     }
@@ -326,9 +327,9 @@ router.post('/templates', authenticate, async (req, res) => {
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     const id = newId();
     await req.pool.execute(
-      `INSERT INTO advertising_template (id, org_id, name, title, body, webpage_link, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, NOW())`,
-      [id, orgId, String(name).trim(), title || null, body || null, webpage_link || null]
+      `INSERT INTO advertising_template (id, org_id, name, title, body, per_unit_line, webpage_link, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+      [id, orgId, String(name).trim(), title || null, body || null, per_unit_line || null, webpage_link || null]
     );
     res.json({ code: 200, data: { id } });
   } catch (err) {
@@ -341,7 +342,7 @@ router.post('/templates', authenticate, async (req, res) => {
 router.put('/templates/:id', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { name, title, body, webpage_link, status } = req.body || {};
+    const { name, title, body, per_unit_line, webpage_link, status } = req.body || {};
     const [[exists]] = await req.pool.execute(
       `SELECT id FROM advertising_template WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
       [req.params.id, orgId]
@@ -359,6 +360,7 @@ router.put('/templates/:id', authenticate, async (req, res) => {
     }
     if (title !== undefined) { fields.push('title = ?'); params.push(title || null); }
     if (body !== undefined) { fields.push('body = ?'); params.push(body || null); }
+    if (per_unit_line !== undefined) { fields.push('per_unit_line = ?'); params.push(per_unit_line || null); }
     if (webpage_link !== undefined) { fields.push('webpage_link = ?'); params.push(webpage_link || null); }
     if (status !== undefined) { fields.push('status = ?'); params.push(Number(status) ? 1 : 0); }
     if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
@@ -468,7 +470,7 @@ router.get('/templates/:id/preview', authenticate, async (req, res) => {
     const unitId = req.query.unit_id;
     if (!unitId) return res.status(400).json({ code: 400, message: 'unit_id is required' });
     const [[t]] = await req.pool.execute(
-      `SELECT id, name, title, body, webpage_link FROM advertising_template
+      `SELECT id, name, title, body, per_unit_line, webpage_link FROM advertising_template
         WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
       [req.params.id, orgId]
     );
@@ -480,6 +482,7 @@ router.get('/templates/:id/preview', authenticate, async (req, res) => {
       data: {
         title: applyPlaceholders(t.title, values),
         body: applyPlaceholders(t.body, values),
+        per_unit_line: applyPlaceholders(t.per_unit_line, values),
         webpage_link: t.webpage_link || null,
         values,
       },
@@ -507,54 +510,51 @@ function parseUnitIds(raw) {
   catch { return []; }
 }
 
+// Group vacancy units into posts: bundle by (property AND template), cap each at
+// MAX_BUNDLE_UNITS (splitting bigger groups), order by most-urgent unit. Shared by
+// /scheduler and the posting plan. Un-templated units stand alone (keyed by unit).
+function buildBundles(vacancies) {
+  const groups = new Map();
+  for (const v of vacancies) {
+    const key = v.template_id
+      ? `p:${v.property_id}|t:${v.template_id}`
+      : `p:${v.property_id}|u:${v.unit_id}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        property_id: v.property_id, property_name: v.property_name,
+        template_id: v.template_id, template_name: v.template_name, units: [],
+      });
+    }
+    const availableDate = v.status === 'vacant' ? v.vacant_since : v.end_date;
+    groups.get(key).units.push({
+      unit_id: v.unit_id, unit_name: v.unit_name, status: v.status,
+      days_left: v.days_left, available_date: availableDate,
+    });
+  }
+  const bundles = [];
+  for (const g of groups.values()) {
+    for (let i = 0; i < g.units.length; i += MAX_BUNDLE_UNITS) {
+      bundles.push({
+        property_id: g.property_id, property_name: g.property_name,
+        template_id: g.template_id, template_name: g.template_name,
+        units: g.units.slice(i, i + MAX_BUNDLE_UNITS),
+      });
+    }
+  }
+  const urgency = (b) => Math.min(...b.units.map(u => (u.days_left == null ? Number.POSITIVE_INFINITY : u.days_left)));
+  bundles.sort((a, b) => {
+    const ka = urgency(a), kb = urgency(b);
+    if (ka !== kb) return ka - kb;
+    return (a.property_name || '').localeCompare(b.property_name || '');
+  });
+  return bundles;
+}
+
 router.get('/scheduler', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { vacancies } = await computeVacancies(req.pool, orgId);
-
-    // Bundle by (property AND template) — units post together ONLY when they share
-    // both. A unit with no template can't bundle, so it gets its own slot (keyed by
-    // unit id) flagged as needing a template. PRESERVES urgency order (vacancies is
-    // already sorted most-urgent first → first-seen group = most-urgent group).
-    const groups = new Map();
-    for (const v of vacancies) {
-      // templated units bundle by property+template; un-templated stand alone.
-      const key = v.template_id
-        ? `p:${v.property_id}|t:${v.template_id}`
-        : `p:${v.property_id}|u:${v.unit_id}`;
-      if (!groups.has(key)) {
-        groups.set(key, {
-          property_id: v.property_id, property_name: v.property_name,
-          template_id: v.template_id, template_name: v.template_name, units: [],
-        });
-      }
-      const availableDate = v.status === 'vacant' ? v.vacant_since : v.end_date;
-      groups.get(key).units.push({
-        unit_id: v.unit_id, unit_name: v.unit_name, status: v.status,
-        days_left: v.days_left, available_date: availableDate,
-      });
-    }
-
-    // Cap each post at MAX_BUNDLE_UNITS units — a property+template group with more
-    // than that splits into several posts (units already urgency-ordered, so the
-    // first post gets the most-urgent 3, etc.). Then order all bundles by their
-    // most-urgent unit so the split posts still slot in by urgency.
-    const bundles = [];
-    for (const g of groups.values()) {
-      for (let i = 0; i < g.units.length; i += MAX_BUNDLE_UNITS) {
-        bundles.push({
-          property_id: g.property_id, property_name: g.property_name,
-          template_id: g.template_id, template_name: g.template_name,
-          units: g.units.slice(i, i + MAX_BUNDLE_UNITS),
-        });
-      }
-    }
-    const bundleUrgency = (b) => Math.min(...b.units.map(u => (u.days_left == null ? Number.POSITIVE_INFINITY : u.days_left)));
-    bundles.sort((a, b) => {
-      const ka = bundleUrgency(a), kb = bundleUrgency(b);
-      if (ka !== kb) return ka - kb;
-      return (a.property_name || '').localeCompare(b.property_name || '');
-    });
+    const bundles = buildBundles(vacancies);
 
     const slots = [];
     for (let i = 0; i < SCHEDULER_SLOTS; i++) {
@@ -707,6 +707,178 @@ router.delete('/scheduler/urgent/:id', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[advertising/scheduler urgent delete] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to remove urgent entry' });
+  }
+});
+
+// ===========================================================================
+// Advertising → Posting plan
+// The daily instructions the PC agent calls: each bundle rendered (shared body +
+// a per-unit line for each unit) and paired with a forum + a member account,
+// rotated so a property doesn't reuse a forum within the week and no forum is
+// used twice in the same plan. Reads/writes advertising_post_log.
+// ===========================================================================
+
+const ROTATION_WINDOW_DAYS = 7;   // don't reuse a forum for a property within a week
+const PHOTO_ROOT = process.env.ADVERTISING_PHOTO_ROOT || '~/tenafy-photos';
+
+// Render a bundle's post text: the shared template body (rendered once, from the
+// first unit's values so common placeholders resolve) + one per-unit line per unit.
+async function renderBundle(pool, orgId, bundle, template) {
+  const unitLines = [];
+  let firstValues = null;
+  for (const u of bundle.units) {
+    const values = await resolveUnitValues(pool, orgId, u.unit_id, template);
+    if (!values) continue;
+    if (!firstValues) firstValues = values;
+    if (template.per_unit_line) unitLines.push(applyPlaceholders(template.per_unit_line, values));
+  }
+  const title = firstValues ? applyPlaceholders(template.title, firstValues) : (template.title || '');
+  const body = firstValues ? applyPlaceholders(template.body, firstValues) : (template.body || '');
+  const text = [title, body, ...unitLines, template.webpage_link || '']
+    .map(s => (s || '').trim()).filter(Boolean).join('\n');
+  return { title, body, unit_lines: unitLines, webpage_link: template.webpage_link || null, text };
+}
+
+router.get('/posting-plan', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : null;
+
+    const { vacancies } = await computeVacancies(req.pool, orgId);
+    const bundles = buildBundles(vacancies);
+
+    // Forums + their member accounts (only forums that HAVE a member are usable).
+    const [forumRows] = await req.pool.execute(
+      `SELECT f.id AS forum_id, f.name AS forum_name, f.url,
+              a.id AS account_id, a.name AS account_name, a.email AS account_email
+         FROM advertising_forum f
+         JOIN advertising_forum_account fa ON fa.forum_id = f.id AND fa.org_id = f.org_id
+         JOIN advertising_account a ON a.id = fa.account_id AND a.deleted_at IS NULL AND a.status = 1
+        WHERE f.org_id = ? AND f.deleted_at IS NULL AND f.status = 1`,
+      [orgId]
+    );
+    const forums = new Map(); // forum_id → { forum_id, forum_name, url, accounts: [] }
+    for (const r of forumRows) {
+      const k = String(r.forum_id);
+      if (!forums.has(k)) forums.set(k, { forum_id: k, forum_name: r.forum_name, url: r.url, accounts: [] });
+      forums.get(k).accounts.push({ id: String(r.account_id), name: r.account_name, email: r.account_email });
+    }
+
+    // Forums each property used in the rotation window (avoid reusing them).
+    const [recent] = await req.pool.execute(
+      `SELECT DISTINCT property_id, forum_id FROM advertising_post_log
+        WHERE org_id = ? AND status = 'posted' AND forum_id IS NOT NULL
+          AND post_date >= DATE_SUB(CURDATE(), INTERVAL ${ROTATION_WINDOW_DAYS} DAY)`,
+      [orgId]
+    );
+    const usedByProperty = new Map(); // property_id → Set(forum_id)
+    for (const r of recent) {
+      const k = String(r.property_id);
+      if (!usedByProperty.has(k)) usedByProperty.set(k, new Set());
+      usedByProperty.get(k).add(String(r.forum_id));
+    }
+
+    const allForumIds = [...forums.keys()];
+    const usedTodayForums = new Set();      // don't use a forum twice in this plan
+    const accountUseCount = new Map();      // balance account load across the plan
+    const posts = [];
+
+    for (const b of bundles) {
+      if (!b.template_id) {
+        posts.push({ ...bundleSummary(b), status: 'needs_template',
+          reason: 'Assign a template before this can be posted', forum: null, account: null });
+        continue;
+      }
+      const [[tpl]] = await req.pool.execute(
+        `SELECT id, name, title, body, per_unit_line, webpage_link FROM advertising_template
+          WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [b.template_id, orgId]
+      );
+      const rendered = tpl ? await renderBundle(req.pool, orgId, b, tpl) : null;
+
+      // Candidate forums: this property hasn't used in the window AND not used yet
+      // in this plan. Fall back to any-unused-today if the window rules out all.
+      const used = usedByProperty.get(String(b.property_id)) || new Set();
+      let candidates = allForumIds.filter(fid => !used.has(fid) && !usedTodayForums.has(fid));
+      if (!candidates.length) candidates = allForumIds.filter(fid => !usedTodayForums.has(fid));
+
+      let forum = null, account = null;
+      if (candidates.length) {
+        const chosenId = candidates[0];
+        const f = forums.get(chosenId);
+        forum = { forum_id: f.forum_id, forum_name: f.forum_name, url: f.url };
+        // Least-used member account, for balance.
+        account = [...f.accounts].sort((x, y) =>
+          (accountUseCount.get(x.id) || 0) - (accountUseCount.get(y.id) || 0))[0] || null;
+        if (account) accountUseCount.set(account.id, (accountUseCount.get(account.id) || 0) + 1);
+        usedTodayForums.add(chosenId);
+      }
+
+      posts.push({
+        ...bundleSummary(b),
+        status: forum ? 'ready' : 'no_forum',
+        template_id: String(b.template_id), template_name: b.template_name,
+        post_text: rendered ? rendered.text : null,
+        rendered,
+        forum, account,
+        image_hint: b.units.map(u => `${b.property_name}/${u.unit_name}`),
+        // Other forums the human/agent could swap to (every usable forum except
+        // the chosen one), each with its member accounts.
+        alternatives: allForumIds
+          .filter(fid => !forum || fid !== forum.forum_id)
+          .map(fid => { const f = forums.get(fid); return { forum_id: f.forum_id, forum_name: f.forum_name, url: f.url, accounts: f.accounts }; }),
+      });
+    }
+
+    res.json({
+      code: 200,
+      data: {
+        date: date || new Date().toISOString().slice(0, 10),
+        photo_root: PHOTO_ROOT,
+        forum_count: forums.size,
+        posts,
+      },
+    });
+  } catch (err) {
+    console.error('[advertising/posting-plan] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to build posting plan' });
+  }
+});
+
+function bundleSummary(b) {
+  return {
+    property_id: b.property_id ? String(b.property_id) : null,
+    property_name: b.property_name,
+    unit_ids: b.units.map(u => String(u.unit_id)),
+    unit_names: b.units.map(u => u.unit_name),
+  };
+}
+
+// Log a post (or skip) — idempotency + rotation history. The agent calls this
+// after it (or the human) posts, so the next plan won't reuse that forum.
+router.post('/posting-plan/mark', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const b = req.body || {};
+    const status = b.status === 'skipped' ? 'skipped' : 'posted';
+    const source = b.source === 'urgent' ? 'urgent' : 'roster';
+    const post_date = /^\d{4}-\d{2}-\d{2}$/.test(b.post_date || '') ? b.post_date : new Date().toISOString().slice(0, 10);
+    const unit_ids = Array.isArray(b.unit_ids) && b.unit_ids.length ? JSON.stringify(b.unit_ids.map(String)) : null;
+    const id = newId();
+    await req.pool.execute(
+      `INSERT INTO advertising_post_log (id, org_id, post_date, property_id, template_id, forum_id, account_id, unit_ids, source, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [id, orgId, post_date,
+       b.property_id ? String(b.property_id) : null,
+       b.template_id ? String(b.template_id) : null,
+       b.forum_id ? String(b.forum_id) : null,
+       b.account_id ? String(b.account_id) : null,
+       unit_ids, source, status]
+    );
+    res.json({ code: 200, data: { id } });
+  } catch (err) {
+    console.error('[advertising/posting-plan mark] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to log post' });
   }
 });
 
