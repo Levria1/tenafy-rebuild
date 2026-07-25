@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues } = require('../services/advertisingTemplate');
+const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent } = require('../services/advertisingTemplate');
 
 // Snowflake id (same pattern used across the app).
 function newId() {
@@ -34,12 +34,12 @@ function lengthError(body, limits = FIELD_LIMITS) {
 // Keyed off DATE-COMPUTED lease status (start_date/end_date/CURDATE()), NOT the
 // stored `leasing.status` column — that column is not maintained on expiry.
 //
-// Lead windows (contract_type): NR(3)=45d, UC(4)=30d, MR/MTM/unset=20d.
+// Lead windows (contract_type): NR(3)=60d (2mo), UC(4)=30d, MR/MTM/unset=20d.
 // Sorted by urgency: longest-vacant first, then soonest-to-expire, then
 // never-leased units last.
 // ---------------------------------------------------------------------------
 
-const LEAD_DAYS = { NR: 45, UC: 30, DEFAULT: 20 };
+const LEAD_DAYS = { NR: 60, UC: 30, DEFAULT: 20 };   // NR = 2 months (per request 2026-07-25)
 const LEAD_SQL = `CASE l.contract_type WHEN 3 THEN ${LEAD_DAYS.NR} WHEN 4 THEN ${LEAD_DAYS.UC} ELSE ${LEAD_DAYS.DEFAULT} END`;
 const INTENT = { 1: 'MR', 2: 'MTM', 3: 'NR', 4: 'UC' };
 
@@ -69,6 +69,7 @@ async function computeVacancies(pool, orgId) {
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
           DATEDIFF(l.end_date, CURDATE()) AS days_left,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
+          u.rent_price_min, u.rent_price_max,
           at.id AS template_id, at.name AS template_name,
           p.id AS property_id, p.display_name AS property_name, p.street_address,
           t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name
@@ -102,6 +103,7 @@ async function computeVacancies(pool, orgId) {
     const [vacant] = await pool.execute(
       `SELECT
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
+          u.rent_price_min, u.rent_price_max,
           at.id AS template_id, at.name AS template_name,
           p.id AS property_id, p.display_name AS property_name, p.street_address,
           DATE_FORMAT(ll.end_date, '%Y-%m-%d') AS vacant_since,
@@ -139,6 +141,8 @@ async function computeVacancies(pool, orgId) {
       beds: r.beds != null ? Number(r.beds) : null,
       baths: r.baths != null ? Number(r.baths) : null,
       size: r.size != null ? Number(r.size) : null,
+      rent_price_min: r.rent_price_min != null ? Number(r.rent_price_min) : null,
+      rent_price_max: r.rent_price_max != null ? Number(r.rent_price_max) : null,
       template_id: r.template_id ? String(r.template_id) : null,
       template_name: r.template_name || null,
       property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
@@ -166,6 +170,8 @@ async function computeVacancies(pool, orgId) {
         beds: r.beds != null ? Number(r.beds) : null,
         baths: r.baths != null ? Number(r.baths) : null,
         size: r.size != null ? Number(r.size) : null,
+        rent_price_min: r.rent_price_min != null ? Number(r.rent_price_min) : null,
+        rent_price_max: r.rent_price_max != null ? Number(r.rent_price_max) : null,
         template_id: r.template_id ? String(r.template_id) : null,
         template_name: r.template_name || null,
         property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
@@ -529,6 +535,7 @@ function buildBundles(vacancies) {
     groups.get(key).units.push({
       unit_id: v.unit_id, unit_name: v.unit_name, status: v.status,
       days_left: v.days_left, available_date: availableDate,
+      rent_price_min: v.rent_price_min, rent_price_max: v.rent_price_max,
     });
   }
   const bundles = [];
@@ -564,6 +571,12 @@ router.get('/scheduler', authenticate, async (req, res) => {
         continue;
       }
       const dates = g.units.map(u => u.available_date).filter(Boolean).sort();
+      // Posting rent per unit — the rate to advertise at right now, from its range
+      // and time-to-availability (steps down as it nears / discount once vacant).
+      const units = g.units.map(u => {
+        const pr = computePostingRent(u.rent_price_min, u.rent_price_max, u.days_left);
+        return { ...u, posting_rent: pr ? pr.amount : null, posting_tier: pr ? pr.tier : null };
+      });
       slots.push({
         position: i + 1,
         property_id: g.property_id,
@@ -571,7 +584,7 @@ router.get('/scheduler', authenticate, async (req, res) => {
         template_id: g.template_id,
         template_name: g.template_name,       // null → "needs template"
         unit_names: g.units.map(u => u.unit_name).join(', '),
-        units: g.units,
+        units,
         vacant_date: dates[0] || null,        // earliest availability among the bundle
       });
     }

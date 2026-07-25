@@ -18,11 +18,41 @@ const PLACEHOLDERS = [
   { token: '%Beds%',            description: 'Number of bedrooms' },
   { token: '%Baths%',           description: 'Number of bathrooms' },
   { token: '%Size%',            description: 'Floor size (with unit, e.g. 500 ft²)' },
-  { token: '%Rent%',            description: 'Asking monthly rent (HK$)' },
+  { token: '%Rent%',            description: 'Asking monthly rent (HK$), or the range' },
+  { token: '%RentAmount%',      description: 'Rent as a plain number (e.g. 5,500), no currency' },
+  { token: '%PostingRent%',     description: 'Rent to advertise now (steps down as availability nears), HK$' },
+  { token: '%PostingRentAmount%', description: 'Posting rent as a plain number, no currency' },
   { token: '%Deposit%',         description: 'Deposit (HK$)' },
-  { token: '%AvailableDate%',   description: 'Date the unit is / becomes available' },
+  { token: '%AvailableDate%',   description: 'Available date, or "Now" if already vacant' },
   { token: '%WebpageLink%',     description: "The template's webpage link" },
 ];
+
+// Posting rent — the rate to advertise at, stepping DOWN as availability nears,
+// across the unit's rent_price_min..max range:
+//   >= 8 weeks (56d)  → high (top of range)
+//   6–8 weeks (42d)   → mid  (midpoint)
+//   < 6 weeks upcoming→ low  (bottom of range)
+//   vacant > 1 day    → low − 10%
+// `daysToAvailable`: positive = days until vacant; negative = days already vacant;
+// null = unknown. Pure + testable. Returns { amount, tier } or null.
+function computePostingRent(rentMin, rentMax, daysToAvailable) {
+  // Guard null/'' explicitly — Number(null) is 0 (finite), which would masquerade
+  // as a real HK$0 bound.
+  const min = (rentMin == null || rentMin === '') ? NaN : Number(rentMin);
+  const max = (rentMax == null || rentMax === '') ? NaN : Number(rentMax);
+  const hasMin = Number.isFinite(min), hasMax = Number.isFinite(max);
+  if (!hasMin && !hasMax) return null;
+  const lo = hasMin ? min : max;
+  const hi = hasMax ? max : min;
+  const mid = Math.round((lo + hi) / 2);
+  const d = daysToAvailable;
+  if (d == null)     return { amount: lo, tier: 'low' };                     // unknown → conservative
+  if (d >= 56)       return { amount: hi, tier: 'high' };                    // >= 8 weeks
+  if (d >= 42)       return { amount: mid, tier: 'mid' };                    // 6–8 weeks
+  if (d >= 0)        return { amount: lo, tier: 'low' };                     // < 6 weeks, upcoming
+  if (d < -1)        return { amount: Math.round(lo * 0.9), tier: 'discount' }; // vacant > 1 day
+  return { amount: lo, tier: 'low' };                                        // vacant 0–1 day
+}
 
 const PLACEHOLDER_TOKENS = PLACEHOLDERS.map(p => p.token);
 
@@ -89,32 +119,40 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
     rentStr = `${fmtMoney(u.rent_price_min)} - ${fmtMoney(u.rent_price_max)}`;
   }
 
-  // Available date: current lease's end (becomes available then), else the last
-  // ended lease's end (already available since). Null if never leased.
+  // Available date + days-to-available. Current lease → becomes available at its
+  // end (days_to_end); else the last ended lease → already vacant (negative days).
   const [[cur]] = await pool.execute(
-    `SELECT DATE_FORMAT(end_date, '%Y-%m-%d') AS d FROM leasing
+    `SELECT DATE_FORMAT(end_date, '%Y-%m-%d') AS d, DATEDIFF(end_date, CURDATE()) AS days_to_end
+       FROM leasing
       WHERE unit_id = ? AND deleted_at IS NULL
         AND start_date <= CURDATE() AND (end_date IS NULL OR end_date >= CURDATE())
       ORDER BY end_date DESC LIMIT 1`,
     [String(unitId)]
   );
-  let availableDate;
+  let availableDate;      // date string, null if unknown
+  let daysToAvailable;    // +days until vacant, -days already vacant, null unknown
   if (cur) {
-    // Occupied. cur.d may be NULL (open-ended / month-to-month lease) → available
-    // date is genuinely unknown, so leave it blank rather than falling back to a
-    // long-past date. Only look up the last ended lease when there is NO current
-    // lease at all (the unit is actually vacant now).
-    availableDate = cur.d || null;
+    availableDate = cur.d || null;            // may be NULL for an open-ended lease
+    daysToAvailable = cur.days_to_end != null ? Number(cur.days_to_end) : null;
   } else {
     const [[past]] = await pool.execute(
-      `SELECT DATE_FORMAT(MAX(end_date), '%Y-%m-%d') AS d FROM leasing
+      `SELECT DATE_FORMAT(MAX(end_date), '%Y-%m-%d') AS d, DATEDIFF(CURDATE(), MAX(end_date)) AS days_vacant
+         FROM leasing
         WHERE unit_id = ? AND deleted_at IS NULL AND end_date IS NOT NULL AND end_date < CURDATE()`,
       [String(unitId)]
     );
-    availableDate = past ? past.d : null;
+    availableDate = past && past.d ? past.d : null;
+    daysToAvailable = past && past.days_vacant != null ? -Number(past.days_vacant) : null;
   }
 
+  // "Now" reads better than a past date for an already-vacant unit.
+  const availableLabel = (daysToAvailable != null && daysToAvailable <= 0) ? 'Now' : fmtDate(availableDate);
+
+  const posting = computePostingRent(u.rent_price_min, u.rent_price_max, daysToAvailable);
+  const postingAmount = posting ? posting.amount : (rent != null ? Number(rent) : null);
+
   const sizeStr = u.size != null ? `${u.size}${u.size_unit ? ' ' + u.size_unit : ''}` : '';
+  const rawNum = (n) => (n == null || n === '' || Number.isNaN(Number(n))) ? '' : Number(n).toLocaleString('en-US');
 
   return {
     '%PropertyName%':    u.property_name || '',
@@ -127,10 +165,13 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
     '%Baths%':           u.baths != null ? String(u.baths) : '',
     '%Size%':            sizeStr,
     '%Rent%':            rentStr,
+    '%RentAmount%':      rawNum(rent),
+    '%PostingRent%':     fmtMoney(postingAmount),
+    '%PostingRentAmount%': rawNum(postingAmount),
     '%Deposit%':         fmtMoney(deposit),
-    '%AvailableDate%':   fmtDate(availableDate),
+    '%AvailableDate%':   availableLabel,
     '%WebpageLink%':     template.webpage_link || '',
   };
 }
 
-module.exports = { PLACEHOLDERS, PLACEHOLDER_TOKENS, applyPlaceholders, resolveUnitValues };
+module.exports = { PLACEHOLDERS, PLACEHOLDER_TOKENS, applyPlaceholders, resolveUnitValues, computePostingRent };

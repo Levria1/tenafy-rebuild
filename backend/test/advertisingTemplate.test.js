@@ -1,6 +1,27 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { applyPlaceholders, resolveUnitValues, PLACEHOLDER_TOKENS } = require('../src/services/advertisingTemplate');
+const { applyPlaceholders, resolveUnitValues, PLACEHOLDER_TOKENS, computePostingRent } = require('../src/services/advertisingTemplate');
+
+test('computePostingRent: tiers step down as availability nears', () => {
+  const min = 5000, max = 8000;
+  assert.deepEqual(computePostingRent(min, max, 70), { amount: 8000, tier: 'high' });    // >8wk → high
+  assert.deepEqual(computePostingRent(min, max, 56), { amount: 8000, tier: 'high' });    // exactly 8wk
+  assert.deepEqual(computePostingRent(min, max, 50), { amount: 6500, tier: 'mid' });     // 6–8wk → mid (midpoint)
+  assert.deepEqual(computePostingRent(min, max, 42), { amount: 6500, tier: 'mid' });     // exactly 6wk
+  assert.deepEqual(computePostingRent(min, max, 30), { amount: 5000, tier: 'low' });     // <6wk → low
+  assert.deepEqual(computePostingRent(min, max, 21), { amount: 5000, tier: 'low' });     // 3wk → low
+  assert.deepEqual(computePostingRent(min, max, 0),  { amount: 5000, tier: 'low' });     // due today
+  assert.deepEqual(computePostingRent(min, max, -1), { amount: 5000, tier: 'low' });     // vacant ≤1 day → no discount
+  assert.deepEqual(computePostingRent(min, max, -5), { amount: 4500, tier: 'discount' });// vacant >1 day → low−10%
+});
+
+test('computePostingRent: single value (min==max) and missing bounds', () => {
+  assert.deepEqual(computePostingRent(5500, 5500, 70), { amount: 5500, tier: 'high' });
+  assert.deepEqual(computePostingRent(5500, null, 70), { amount: 5500, tier: 'high' }); // only min
+  assert.deepEqual(computePostingRent(null, 6000, 30), { amount: 6000, tier: 'low' });  // only max → lo=max
+  assert.equal(computePostingRent(null, null, 30), null);                                // no range
+  assert.deepEqual(computePostingRent(5000, 8000, null), { amount: 5000, tier: 'low' }); // unknown days → conservative
+});
 
 test('applyPlaceholders substitutes known tokens', () => {
   const out = applyPlaceholders('%UnitName% at %PropertyName% — %Rent%', {
