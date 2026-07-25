@@ -789,12 +789,17 @@ router.put('/settings', authenticate, async (req, res) => {
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     const lenErr = lengthError({ photo_root }, { photo_root: 255 });   // column is VARCHAR(255)
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
-    // Upsert the single per-org row.
+    // PARTIAL upsert — only touch the fields actually sent, so the footer editor
+    // (Templates) and photo-root (Forums) can't overwrite each other.
+    const setClauses = [];
+    if (footer !== undefined) setClauses.push('footer = VALUES(footer)');
+    if (photo_root !== undefined) setClauses.push('photo_root = VALUES(photo_root)');
+    if (!setClauses.length) return res.json({ code: 200, data: { ok: true } });
     await req.pool.execute(
       `INSERT INTO advertising_setting (org_id, footer, photo_root, created_at)
        VALUES (?, ?, ?, NOW())
-       ON DUPLICATE KEY UPDATE footer = VALUES(footer), photo_root = VALUES(photo_root)`,
-      [orgId, footer || null, photo_root || null]
+       ON DUPLICATE KEY UPDATE ${setClauses.join(', ')}`,
+      [orgId, footer !== undefined ? (footer || null) : null, photo_root !== undefined ? (photo_root || null) : null]
     );
     res.json({ code: 200, data: { ok: true } });
   } catch (err) {

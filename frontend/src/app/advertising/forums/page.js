@@ -26,7 +26,6 @@ export default function ForumsPage() {
   const [acctForm] = Form.useForm();
   const [saving, setSaving] = useState(false);
 
-  const [footer, setFooter] = useState('');
   const [photoRoot, setPhotoRoot] = useState('');
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -36,7 +35,7 @@ export default function ForumsPage() {
       const [f, a, s] = await Promise.all([advertisingApi.listForums(), advertisingApi.listAccounts(), advertisingApi.getAdSettings()]);
       if (f.data.code === 200) setForums(f.data.data || []);
       if (a.data.code === 200) setAccounts(a.data.data || []);
-      if (s.data.code === 200) { setFooter(s.data.data.footer || ''); setPhotoRoot(s.data.data.photo_root || ''); }
+      if (s.data.code === 200) { setPhotoRoot(s.data.data.photo_root || ''); }
     } catch (e) {
       message.error('Failed to load forums');
     } finally {
@@ -48,7 +47,7 @@ export default function ForumsPage() {
   const saveSettings = async () => {
     setSavingSettings(true);
     try {
-      await advertisingApi.updateAdSettings({ footer, photo_root: photoRoot });
+      await advertisingApi.updateAdSettings({ photo_root: photoRoot });
       message.success('Settings saved');
     } catch (e) { message.error('Failed to save settings'); }
     finally { setSavingSettings(false); }
@@ -186,10 +185,7 @@ export default function ForumsPage() {
                 children: (
                   <div style={{ maxWidth: 640 }}>
                     <div style={{ marginBottom: 16 }}>
-                      <Text strong>Shared footer</Text>
-                      <div><Text type="secondary" style={{ fontSize: 12 }}>Appended to the end of every post (contact info, minimum rental, etc.).</Text></div>
-                      <Input.TextArea rows={4} value={footer} onChange={(e) => setFooter(e.target.value)}
-                        style={{ marginTop: 8 }} placeholder="If you're interested, please contact +852 …  Minimum one month rental." />
+                      <Text type="secondary" style={{ fontSize: 12 }}>The shared post footer now lives under <b>Templates → Shared Footer</b>.</Text>
                     </div>
                     <div style={{ marginBottom: 16 }}>
                       <Text strong>Photo root</Text>

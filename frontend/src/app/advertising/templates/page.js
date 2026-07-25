@@ -7,7 +7,7 @@ import {
 } from 'antd';
 import {
   SoundOutlined, PlusOutlined, EditOutlined, DeleteOutlined,
-  TeamOutlined, EyeOutlined,
+  ApartmentOutlined, EyeOutlined, FileTextOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
 import { advertisingApi } from '../../../lib/api';
@@ -40,17 +40,24 @@ export default function TemplatesPage() {
   const [previewData, setPreviewData] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  // Shared footer (org-wide, appended to every post)
+  const [footerOpen, setFooterOpen] = useState(false);
+  const [footer, setFooter] = useState('');
+  const [footerSaving, setFooterSaving] = useState(false);
+
   const load = async () => {
     setLoading(true);
     try {
-      const [tRes, pRes, uRes] = await Promise.all([
+      const [tRes, pRes, uRes, sRes] = await Promise.all([
         advertisingApi.listTemplates(),
         advertisingApi.getPlaceholders(),
         advertisingApi.getAssignableUnits(),
+        advertisingApi.getAdSettings(),
       ]);
       if (tRes.data.code === 200) setTemplates(tRes.data.data || []);
       if (pRes.data.code === 200) setPlaceholders(pRes.data.data || []);
       if (uRes.data.code === 200) setUnits(uRes.data.data || []);
+      if (sRes.data.code === 200) setFooter(sRes.data.data.footer || '');
     } catch (e) {
       message.error('Failed to load templates');
     } finally {
@@ -131,13 +138,23 @@ export default function TemplatesPage() {
         const otherTpl = u.assigned_template_id && assignTarget && u.assigned_template_id !== assignTarget.id;
         return {
           value: u.unit_id,
-          label: `${u.unit_name}${otherTpl ? ' · (on another template)' : ''}`,
+          label: `${u.property_name} ${u.unit_name}${otherTpl ? ' · (on another template)' : ''}`,
         };
       }),
     }));
   }, [units, assignTarget]);
 
   // --- Preview --------------------------------------------------------------
+  const saveFooter = async () => {
+    setFooterSaving(true);
+    try {
+      await advertisingApi.updateAdSettings({ footer });
+      message.success('Footer saved');
+      setFooterOpen(false);
+    } catch (e) { message.error('Failed to save footer'); }
+    finally { setFooterSaving(false); }
+  };
+
   const openPreview = async (tpl) => {
     setPreviewTemplate(tpl);
     const assigned = units.filter(u => u.assigned_template_id === tpl.id);
@@ -179,7 +196,7 @@ export default function TemplatesPage() {
       dataIndex: 'unit_count',
       key: 'unit_count',
       width: 140,
-      render: (v) => <Tag color={v > 0 ? 'blue' : 'default'} icon={<TeamOutlined />}>{v} unit{v === 1 ? '' : 's'}</Tag>,
+      render: (v) => <Tag color={v > 0 ? 'blue' : 'default'} icon={<ApartmentOutlined />}>{v} unit{v === 1 ? '' : 's'}</Tag>,
     },
     {
       title: 'Webpage',
@@ -197,7 +214,7 @@ export default function TemplatesPage() {
       render: (_, r) => (
         <Space size="small">
           <Button size="small" icon={<EyeOutlined />} onClick={() => openPreview(r)}>Preview</Button>
-          <Button size="small" icon={<TeamOutlined />} onClick={() => openAssign(r)}>Assign</Button>
+          <Button size="small" icon={<ApartmentOutlined />} onClick={() => openAssign(r)}>Assign</Button>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEditor(r)} />
           <Popconfirm
             title="Delete this template?"
@@ -229,7 +246,10 @@ export default function TemplatesPage() {
 
         <Card styles={{ body: { padding: 16 } }} style={{ borderColor: '#e8e8e8' }}>
           <div style={{ marginBottom: 16 }}>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => openEditor(null)}>New Template</Button>
+            <Space>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => openEditor(null)}>New Template</Button>
+              <Button icon={<FileTextOutlined />} onClick={() => setFooterOpen(true)}>Shared Footer</Button>
+            </Space>
           </div>
           <Table
             rowKey="id"
@@ -283,6 +303,16 @@ export default function TemplatesPage() {
         </Form>
       </Modal>
 
+      {/* Shared footer modal */}
+      <Modal title="Shared Footer" open={footerOpen} onCancel={() => setFooterOpen(false)}
+        onOk={saveFooter} confirmLoading={footerSaving} okText="Save">
+        <Paragraph type="secondary" style={{ fontSize: 13 }}>
+          Appended to the end of <b>every</b> post (contact info, minimum rental, etc.) — one shared footer across all templates.
+        </Paragraph>
+        <TextArea rows={4} value={footer} onChange={(e) => setFooter(e.target.value)}
+          placeholder="If you're interested, please contact +852 …  Minimum one month rental." />
+      </Modal>
+
       {/* Assignment modal */}
       <Modal
         title={`Assign units — ${assignTarget?.name || ''}`}
@@ -307,6 +337,24 @@ export default function TemplatesPage() {
           optionFilterProp="label"
           maxTagCount="responsive"
         />
+        {/* Readable summary of what's chosen, grouped by property. */}
+        {assignUnitIds.length > 0 && (() => {
+          const chosen = units.filter(u => assignUnitIds.includes(u.unit_id));
+          const byProp = {};
+          for (const u of chosen) (byProp[u.property_name] ||= []).push(u.unit_name);
+          return (
+            <div style={{ marginTop: 12 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>Selected ({chosen.length}):</Text>
+              <div style={{ marginTop: 6 }}>
+                {Object.entries(byProp).map(([prop, us]) => (
+                  <div key={prop} style={{ marginBottom: 4 }}>
+                    <Text strong>{prop}</Text>: <Text>{us.join(', ')}</Text>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
       </Modal>
 
       {/* Preview modal */}
