@@ -256,8 +256,8 @@ export default function TemplatesPage() {
           <Form.Item name="name" label="Template name" rules={[{ required: true, message: 'Name is required' }]}>
             <Input placeholder="e.g. Poplar — standard listing" />
           </Form.Item>
-          <Form.Item name="title" label="Post title (optional)">
-            <Input placeholder="e.g. %UnitName% at %PropertyName% — available %AvailableDate%" />
+          <Form.Item name="title" label="First line" tooltip="Facebook posts have no title — this is just the opening line of the post. For a bundle it's rendered from the lowest-priced unit.">
+            <Input placeholder="e.g. %PropertyName% Serviced Studios - $%PostingRentAmount% HKD and Up" />
           </Form.Item>
           <Form.Item name="body" label="Body (shared)" tooltip="Posted once per bundle — the building/area copy shared by all its units.">
             <TextArea rows={6} placeholder="Describe the unit/building. Use %Placeholders% below to auto-fill unit details." />

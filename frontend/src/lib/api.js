@@ -648,6 +648,10 @@ export const advertisingApi = {
   getPostingPlan: (date) => api.get('/api/advertising/posting-plan', { params: date ? { date } : {} }),
   markPosted: (data) => api.post('/api/advertising/posting-plan/mark', data),
 
+  // Advertising → org-wide settings (shared footer + photo root).
+  getAdSettings: () => api.get('/api/advertising/settings'),
+  updateAdSettings: (data) => api.put('/api/advertising/settings', data),
+
   // Advertising → Forums: Facebook groups + accounts + membership.
   listForums: () => api.get('/api/advertising/forums'),
   createForum: (data) => api.post('/api/advertising/forums', data),

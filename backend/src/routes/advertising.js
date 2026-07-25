@@ -734,28 +734,73 @@ router.delete('/scheduler/urgent/:id', authenticate, async (req, res) => {
 const ROTATION_WINDOW_DAYS = 7;   // don't reuse a forum for a property within a week
 const PHOTO_ROOT = process.env.ADVERTISING_PHOTO_ROOT || '~/tenafy-photos';
 
-// Render a bundle's post text: the shared template body (rendered once, from the
-// first unit's values so common placeholders resolve) + one per-unit line per unit.
-async function renderBundle(pool, orgId, bundle, template) {
-  const unitLines = [];
-  let firstValues = null;
+// Render a bundle's post text. The shared first line + body are rendered from the
+// LOWEST-priced unit's values (so "…and Up" quotes the cheapest of a bundle), then
+// one per-unit line per unit (in bundle order), then the webpage link, then the
+// org-wide footer. `footer` comes from advertising_setting.
+async function renderBundle(pool, orgId, bundle, template, footer) {
+  const resolved = [];
   for (const u of bundle.units) {
     const values = await resolveUnitValues(pool, orgId, u.unit_id, template);
-    if (!values) continue;
-    if (!firstValues) firstValues = values;
-    if (template.per_unit_line) unitLines.push(applyPlaceholders(template.per_unit_line, values));
+    if (values) resolved.push(values);
   }
-  const title = firstValues ? applyPlaceholders(template.title, firstValues) : (template.title || '');
-  const body = firstValues ? applyPlaceholders(template.body, firstValues) : (template.body || '');
-  const text = [title, body, ...unitLines, template.webpage_link || '']
+  const amt = (v) => {
+    const n = Number(String(v['%PostingRentAmount%'] || '').replace(/,/g, ''));
+    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+  };
+  const sharedValues = resolved.length
+    ? resolved.reduce((lo, v) => (amt(v) < amt(lo) ? v : lo), resolved[0])
+    : null;
+  const unitLines = template.per_unit_line ? resolved.map(v => applyPlaceholders(template.per_unit_line, v)) : [];
+  const title = sharedValues ? applyPlaceholders(template.title, sharedValues) : (template.title || '');
+  const body = sharedValues ? applyPlaceholders(template.body, sharedValues) : (template.body || '');
+  const text = [title, body, ...unitLines, template.webpage_link || '', footer || '']
     .map(s => (s || '').trim()).filter(Boolean).join('\n');
-  return { title, body, unit_lines: unitLines, webpage_link: template.webpage_link || null, text };
+  return { title, body, unit_lines: unitLines, webpage_link: template.webpage_link || null, footer: footer || null, text };
 }
+
+// Org-wide advertising settings (shared footer + photo root).
+async function loadSettings(pool, orgId) {
+  const [[row]] = await pool.execute(
+    `SELECT footer, photo_root FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+  return { footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT };
+}
+
+router.get('/settings', authenticate, async (req, res) => {
+  try {
+    const s = await loadSettings(req.pool, req.user.orgId);
+    res.json({ code: 200, data: s });
+  } catch (err) {
+    console.error('[advertising/settings get] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load settings' });
+  }
+});
+
+router.put('/settings', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { footer, photo_root } = req.body || {};
+    const bt = nonStringField(req.body || {}, ['footer', 'photo_root']);
+    if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
+    // Upsert the single per-org row.
+    await req.pool.execute(
+      `INSERT INTO advertising_setting (org_id, footer, photo_root, created_at)
+       VALUES (?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE footer = VALUES(footer), photo_root = VALUES(photo_root)`,
+      [orgId, footer || null, photo_root || null]
+    );
+    res.json({ code: 200, data: { ok: true } });
+  } catch (err) {
+    console.error('[advertising/settings put] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to save settings' });
+  }
+});
 
 router.get('/posting-plan', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     // The plan is always "now" — the rotation window is relative to CURDATE().
+    const settings = await loadSettings(req.pool, orgId);
     const { vacancies } = await computeVacancies(req.pool, orgId);
     const bundles = buildBundles(vacancies);
 
@@ -818,7 +863,7 @@ router.get('/posting-plan', authenticate, async (req, res) => {
           reason: 'Template was deleted', forum: null, account: null });
         continue;
       }
-      const rendered = await renderBundle(req.pool, orgId, b, tpl);
+      const rendered = await renderBundle(req.pool, orgId, b, tpl, settings.footer);
 
       // Candidate forums: this property hasn't used in the window AND not used yet
       // in this plan. Fall back to any-unused-today if the window rules out all.
@@ -858,7 +903,7 @@ router.get('/posting-plan', authenticate, async (req, res) => {
       code: 200,
       data: {
         date: new Date().toISOString().slice(0, 10),
-        photo_root: PHOTO_ROOT,
+        photo_root: settings.photo_root,
         forum_count: forums.size,
         posts,
       },

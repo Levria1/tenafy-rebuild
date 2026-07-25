@@ -26,12 +26,17 @@ export default function ForumsPage() {
   const [acctForm] = Form.useForm();
   const [saving, setSaving] = useState(false);
 
+  const [footer, setFooter] = useState('');
+  const [photoRoot, setPhotoRoot] = useState('');
+  const [savingSettings, setSavingSettings] = useState(false);
+
   const load = async () => {
     setLoading(true);
     try {
-      const [f, a] = await Promise.all([advertisingApi.listForums(), advertisingApi.listAccounts()]);
+      const [f, a, s] = await Promise.all([advertisingApi.listForums(), advertisingApi.listAccounts(), advertisingApi.getAdSettings()]);
       if (f.data.code === 200) setForums(f.data.data || []);
       if (a.data.code === 200) setAccounts(a.data.data || []);
+      if (s.data.code === 200) { setFooter(s.data.data.footer || ''); setPhotoRoot(s.data.data.photo_root || ''); }
     } catch (e) {
       message.error('Failed to load forums');
     } finally {
@@ -39,6 +44,15 @@ export default function ForumsPage() {
     }
   };
   useEffect(() => { load(); }, []);
+
+  const saveSettings = async () => {
+    setSavingSettings(true);
+    try {
+      await advertisingApi.updateAdSettings({ footer, photo_root: photoRoot });
+      message.success('Settings saved');
+    } catch (e) { message.error('Failed to save settings'); }
+    finally { setSavingSettings(false); }
+  };
 
   // ---- Forum create/edit ----
   const openForum = (row) => {
@@ -165,6 +179,25 @@ export default function ForumsPage() {
                     <Table rowKey="id" columns={acctColumns} dataSource={accounts} loading={loading} pagination={false}
                       locale={{ emptyText: <Empty description="No accounts yet" /> }} />
                   </>
+                ),
+              },
+              {
+                key: 'settings', label: 'Settings',
+                children: (
+                  <div style={{ maxWidth: 640 }}>
+                    <div style={{ marginBottom: 16 }}>
+                      <Text strong>Shared footer</Text>
+                      <div><Text type="secondary" style={{ fontSize: 12 }}>Appended to the end of every post (contact info, minimum rental, etc.).</Text></div>
+                      <Input.TextArea rows={4} value={footer} onChange={(e) => setFooter(e.target.value)}
+                        style={{ marginTop: 8 }} placeholder="If you're interested, please contact +852 …  Minimum one month rental." />
+                    </div>
+                    <div style={{ marginBottom: 16 }}>
+                      <Text strong>Photo root</Text>
+                      <div><Text type="secondary" style={{ fontSize: 12 }}>Local folder on the posting PC where images live; the plan returns hints like <code>Property/Unit</code> under this.</Text></div>
+                      <Input value={photoRoot} onChange={(e) => setPhotoRoot(e.target.value)} style={{ marginTop: 8 }} placeholder="~/tenafy-photos" />
+                    </div>
+                    <Button type="primary" loading={savingSettings} onClick={saveSettings}>Save Settings</Button>
+                  </div>
                 ),
               },
             ]}
