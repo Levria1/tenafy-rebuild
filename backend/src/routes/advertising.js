@@ -742,8 +742,7 @@ async function renderBundle(pool, orgId, bundle, template) {
 router.get('/posting-plan', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : null;
-
+    // The plan is always "now" — the rotation window is relative to CURDATE().
     const { vacancies } = await computeVacancies(req.pool, orgId);
     const bundles = buildBundles(vacancies);
 
@@ -753,7 +752,7 @@ router.get('/posting-plan', authenticate, async (req, res) => {
               a.id AS account_id, a.name AS account_name, a.email AS account_email
          FROM advertising_forum f
          JOIN advertising_forum_account fa ON fa.forum_id = f.id AND fa.org_id = f.org_id
-         JOIN advertising_account a ON a.id = fa.account_id AND a.deleted_at IS NULL AND a.status = 1
+         JOIN advertising_account a ON a.id = fa.account_id AND a.org_id = f.org_id AND a.deleted_at IS NULL AND a.status = 1
         WHERE f.org_id = ? AND f.deleted_at IS NULL AND f.status = 1`,
       [orgId]
     );
@@ -781,6 +780,7 @@ router.get('/posting-plan', authenticate, async (req, res) => {
     const allForumIds = [...forums.keys()];
     const usedTodayForums = new Set();      // don't use a forum twice in this plan
     const accountUseCount = new Map();      // balance account load across the plan
+    const templateCache = new Map();        // template_id → row (many bundles share one)
     const posts = [];
 
     for (const b of bundles) {
@@ -789,12 +789,23 @@ router.get('/posting-plan', authenticate, async (req, res) => {
           reason: 'Assign a template before this can be posted', forum: null, account: null });
         continue;
       }
-      const [[tpl]] = await req.pool.execute(
-        `SELECT id, name, title, body, per_unit_line, webpage_link FROM advertising_template
-          WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
-        [b.template_id, orgId]
-      );
-      const rendered = tpl ? await renderBundle(req.pool, orgId, b, tpl) : null;
+      let tpl = templateCache.get(b.template_id);
+      if (tpl === undefined) {
+        const [[row]] = await req.pool.execute(
+          `SELECT id, name, title, body, per_unit_line, webpage_link FROM advertising_template
+            WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+          [b.template_id, orgId]
+        );
+        tpl = row || null;
+        templateCache.set(b.template_id, tpl);
+      }
+      // Template vanished between vacancy-compute and now → don't emit an empty post.
+      if (!tpl) {
+        posts.push({ ...bundleSummary(b), status: 'needs_template',
+          reason: 'Template was deleted', forum: null, account: null });
+        continue;
+      }
+      const rendered = await renderBundle(req.pool, orgId, b, tpl);
 
       // Candidate forums: this property hasn't used in the window AND not used yet
       // in this plan. Fall back to any-unused-today if the window rules out all.
@@ -833,7 +844,7 @@ router.get('/posting-plan', authenticate, async (req, res) => {
     res.json({
       code: 200,
       data: {
-        date: date || new Date().toISOString().slice(0, 10),
+        date: new Date().toISOString().slice(0, 10),
         photo_root: PHOTO_ROOT,
         forum_count: forums.size,
         posts,
@@ -862,21 +873,36 @@ router.post('/posting-plan/mark', authenticate, async (req, res) => {
     const b = req.body || {};
     const status = b.status === 'skipped' ? 'skipped' : 'posted';
     const source = b.source === 'urgent' ? 'urgent' : 'roster';
-    const post_date = /^\d{4}-\d{2}-\d{2}$/.test(b.post_date || '') ? b.post_date : new Date().toISOString().slice(0, 10);
+    // A given post_date is honoured only if valid; otherwise defaulted from the DB
+    // (CURDATE()) below so it agrees with the CURDATE()-relative rotation window.
+    const post_date = /^\d{4}-\d{2}-\d{2}$/.test(b.post_date || '') ? b.post_date : null;
     const unit_ids = Array.isArray(b.unit_ids) && b.unit_ids.length ? JSON.stringify(b.unit_ids.map(String)) : null;
+
+    // Referenced ids must belong to THIS org — a bad/foreign id would poison the
+    // rotation history (mark a property as having used a forum it never did).
+    const check = async (table, id) => {
+      if (!id) return null;
+      const [[row]] = await req.pool.execute(
+        `SELECT id FROM ${table} WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [String(id), orgId]
+      );
+      if (!row) { const e = new Error(`Unknown ${table} id`); e.httpStatus = 400; throw e; }
+      return String(id);
+    };
+    const propertyId = await check('property', b.property_id);
+    const templateId = await check('advertising_template', b.template_id);
+    const forumId = await check('advertising_forum', b.forum_id);
+    const accountId = await check('advertising_account', b.account_id);
+
     const id = newId();
     await req.pool.execute(
       `INSERT INTO advertising_post_log (id, org_id, post_date, property_id, template_id, forum_id, account_id, unit_ids, source, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [id, orgId, post_date,
-       b.property_id ? String(b.property_id) : null,
-       b.template_id ? String(b.template_id) : null,
-       b.forum_id ? String(b.forum_id) : null,
-       b.account_id ? String(b.account_id) : null,
-       unit_ids, source, status]
+       VALUES (?, ?, COALESCE(?, CURDATE()), ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [id, orgId, post_date, propertyId, templateId, forumId, accountId, unit_ids, source, status]
     );
     res.json({ code: 200, data: { id } });
   } catch (err) {
+    if (err.httpStatus === 400) return res.status(400).json({ code: 400, message: err.message });
     console.error('[advertising/posting-plan mark] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to log post' });
   }
