@@ -18,6 +18,7 @@ const {
   resolvePaymentOptionsTemplate,
 } = require('../services/emailService');
 const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCalendarWebhook');
+const { loadResolutionData, resolveWithData, resolveLeaseTemplateId, derivePdfStatus, hasTemplateSql } = require('../services/leaseTemplateResolver');
 const { sendViewingAvailabilityRequest } = require('../services/viewingRequest');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
@@ -66,7 +67,7 @@ END`;
 router.post('/list', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { search, status, startDate, endDate, type, tenantStatus, propertyId, unitId, bookingPlatformId, leaseState, sortField, sortOrder } = req.body || {};
+    const { search, status, startDate, endDate, type, tenantStatus, propertyId, unitId, bookingPlatformId, leaseState, signStatus, sortField, sortOrder } = req.body || {};
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
@@ -111,6 +112,23 @@ router.post('/list', authenticate, async (req, res) => {
       whereClause += ' AND l.lease_state = ?';
       params.push(leaseState);
     }
+    // Sign-status filter. Both 'unsigned' and 'basic' mean "never sent for
+    // e-signature" (signature_status none/null); they differ only on whether a
+    // real template resolves — that split is done via hasTemplateSql (the SQL
+    // mirror of the resolver) so it stays correct across pagination.
+    const NOT_SENT = "(l.signature_status = 'none' OR l.signature_status IS NULL)";
+    if (signStatus === 'unsigned' || signStatus === 'basic') {
+      const ht = hasTemplateSql(orgId);
+      const neg = signStatus === 'basic' ? 'NOT ' : '';
+      whereClause += ` AND ${NOT_SENT} AND ${neg}${ht.sql}`;
+      params.push(...ht.params);
+    } else if (signStatus === 'pending') {
+      whereClause += " AND l.signature_status = 'pending'";
+    } else if (signStatus === 'signed') {
+      whereClause += " AND (l.signed_file_id IS NOT NULL OR l.signature_status = 'signed')";
+    } else if (signStatus === 'declined') {
+      whereClause += " AND l.signature_status = 'declined'";
+    }
     if (startDate) {
       whereClause += ' AND l.start_date >= ?';
       params.push(startDate);
@@ -139,6 +157,7 @@ router.post('/list', authenticate, async (req, res) => {
 
     const [leases] = await req.pool.execute(
       `SELECT l.*, u.name as unit_name, p.display_name as property_name,
+              p.id as property_id,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               t.phone as tenant_phone, t.status as tenant_status,
               bp.name as booking_platform_name, sa.name as sales_agent_name
@@ -154,9 +173,13 @@ router.post('/list', authenticate, async (req, res) => {
       params
     );
 
-    // Attach computed lease_status to each row
+    // Attach computed lease_status + sign-status to each row. Template
+    // resolution inputs are loaded ONCE (2 queries) and resolved in memory
+    // per row, so this stays cheap regardless of page size.
+    const resolutionData = await loadResolutionData(req.pool, orgId);
     for (const lease of leases) {
       lease.lease_status = computeLeaseStatus(lease);
+      lease.pdf_status = derivePdfStatus(lease, resolveWithData(lease, resolutionData));
     }
 
     const [[{ total }]] = await req.pool.execute(
@@ -345,6 +368,9 @@ router.get('/:id', authenticate, async (req, res) => {
       // Table may not exist yet on un-migrated org DBs — fail open (no restriction).
       lease.allowed_template_ids = [];
     }
+
+    // Sign-status for the "View Lease" button tag (see leaseTemplateResolver).
+    lease.pdf_status = derivePdfStatus(lease, await resolveLeaseTemplateId(req.pool, orgId, lease));
 
     res.json({ code: 200, data: lease });
   } catch (error) {

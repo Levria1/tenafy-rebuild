@@ -11,6 +11,7 @@ import { leasing, property as propertyApi, bookingPlatform as bookingPlatformApi
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
 import TypedDeleteModal from '../../components/TypedDeleteModal';
+import SignStatusTag from '../../components/SignStatusTag';
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
@@ -39,6 +40,7 @@ export default function LeasingPage() {
   const [filterProperty, setFilterProperty] = useState(null);
   const [filterUnit, setFilterUnit] = useState(null);
   const [filterBookingPlatform, setFilterBookingPlatform] = useState(null);
+  const [filterSignStatus, setFilterSignStatus] = useState(null);
   const [units, setUnits] = useState([]);
   const [unitsLoading, setUnitsLoading] = useState(false);
   const [bookingPlatforms, setBookingPlatforms] = useState([]);
@@ -134,7 +136,7 @@ export default function LeasingPage() {
   };
 
   // Filter
-  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterProperty, filterUnit, filterBookingPlatform].filter(v => v !== null).length;
+  const activeFilterCount = [filterStatus, filterType, filterTenantStatus, filterProperty, filterUnit, filterBookingPlatform, filterSignStatus].filter(v => v !== null).length;
 
   const applyFilters = () => {
     const f = {};
@@ -148,6 +150,7 @@ export default function LeasingPage() {
     if (filterProperty !== null) f.propertyId = filterProperty;
     if (filterUnit !== null) f.unitId = filterUnit;
     if (filterBookingPlatform !== null) f.bookingPlatformId = filterBookingPlatform;
+    if (filterSignStatus !== null) f.signStatus = filterSignStatus;
     setFilters(f);
     setPagination(p => ({ ...p, current: 1 }));
     setFilterOpen(false);
@@ -160,6 +163,7 @@ export default function LeasingPage() {
     setFilterProperty(null);
     setFilterUnit(null);
     setFilterBookingPlatform(null);
+    setFilterSignStatus(null);
     setUnits([]);
     setFilters({});
     setPagination(p => ({ ...p, current: 1 }));
@@ -180,6 +184,23 @@ export default function LeasingPage() {
             <Radio value={2}>Upcoming</Radio>
             <Radio value={0}>Inactive</Radio>
             <Radio value="pending">Pending</Radio>
+          </Space>
+        </Radio.Group>
+      </div>
+
+      {/* Sign Status — filters on e-signature progress. "Unsigned" = a template
+          is ready but it was never sent; "Basic only" = never sent AND no
+          template configured (only the generic Basic PDF is available). */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Sign Status</div>
+        <Radio.Group value={filterSignStatus} onChange={(e) => setFilterSignStatus(e.target.value)}>
+          <Space wrap>
+            <Radio value={null}>All</Radio>
+            <Radio value="unsigned">Unsigned</Radio>
+            <Radio value="basic">Basic only</Radio>
+            <Radio value="pending">Awaiting</Radio>
+            <Radio value="signed">Signed</Radio>
+            <Radio value="declined">Declined</Radio>
           </Space>
         </Radio.Group>
       </div>
@@ -320,9 +341,10 @@ export default function LeasingPage() {
           <Text type="secondary" style={{ fontSize: 12 }}>{propertyUnit}</Text>
         </div>
 
-        {/* Dates */}
+        {/* Dates + sign status */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>{startDate} &rarr; {endDate}</Text>
+          {record.pdf_status && <SignStatusTag status={record.pdf_status} showTip={false} />}
         </div>
 
         {/* Amount + actions */}
@@ -390,6 +412,10 @@ export default function LeasingPage() {
       title: 'Phone', key: 'phone', width: 160,
       sorter: true,
       render: (_, r) => r.contact_phone || r.tenant_phone || '-',
+    },
+    {
+      title: 'Sign Status', dataIndex: 'pdf_status', key: 'pdf_status', width: 150,
+      render: (s) => s ? <SignStatusTag status={s} /> : '-',
     },
     {
       title: 'Action', key: 'actions', width: 180,

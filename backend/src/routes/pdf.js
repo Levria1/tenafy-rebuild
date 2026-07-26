@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const PDFDocument = require('pdfkit');
 const { authenticate } = require('../middleware/auth');
+const { renderFromTemplate } = require('../services/leasePdfRenderer');
+const { resolveLeaseTemplateId } = require('../services/leaseTemplateResolver');
 
 
 // Helper: draw a horizontal line
@@ -246,6 +248,7 @@ router.get('/lease/:id', authenticate, async (req, res) => {
               t.first_name as tenant_first_name, t.last_name as tenant_last_name,
               t.email as tenant_email, t.phone as tenant_phone, t.id_card,
               u.name as unit_name, u.beds, u.baths, u.size,
+              p.id as property_id,
               p.display_name as property_name, p.street_address as property_address
        FROM leasing l
        LEFT JOIN tenant t ON l.tenant_id = t.id
@@ -259,8 +262,29 @@ router.get('/lease/:id', authenticate, async (req, res) => {
       return res.status(404).json({ code: 404, message: 'Lease not found' });
     }
 
-    const [orgRows] = await req.pool.execute('SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]).catch(() => [[]]);
     const lease = leases[0];
+
+    // ── "View Lease": render the real lease template filled with this lease's ──
+    // data (same document the e-sign flow produces). No e-signature required —
+    // this is a read-only, on-the-fly render (nothing stored, lease not stamped).
+    // Falls through to the hand-drawn Basic PDF below when no template resolves
+    // or the HTML→PDF render fails, so this endpoint never errors out.
+    try {
+      const templateId = await resolveLeaseTemplateId(req.pool, orgId, lease);
+      if (templateId) {
+        const { pdfBuffer } = await renderFromTemplate({
+          pool: req.pool, orgId, leaseId: id, templateId, stamp: false,
+        });
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="lease-${id}.pdf"`);
+        return res.end(pdfBuffer);
+      }
+    } catch (err) {
+      console.error('View Lease template render failed — falling back to Basic PDF:', err.message);
+    }
+
+    // ── Fallback: generic hand-drawn Basic PDF (org has no lease template) ─────
+    const [orgRows] = await req.pool.execute('SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]).catch(() => [[]]);
     const org = orgRows?.[0] || {};
     const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';
     const fmtCurr = (v) => `$${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;

@@ -8,6 +8,7 @@ import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../components/mobile/MobileCardList';
+import SignStatusTag from '../../../../components/SignStatusTag';
 import { leasing, pdf, utility, signature } from '../../../../lib/api';
 
 const LEASE_TYPE_MAP = { 0: 'Fixed', 1: 'Month-to-Month' };
@@ -688,7 +689,8 @@ export default function LeasingDetailPage() {
         <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 8 : 0 }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/leasing')}>Back to Leases</Button>
           <Space wrap>
-            <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.leaseUrl(leaseId), '_blank')}>View Basic PDF</Button>
+            <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.leaseUrl(leaseId), '_blank')}>View Lease</Button>
+            {lease?.pdf_status && <SignStatusTag status={lease.pdf_status} />}
             <Button
               icon={<FilePdfOutlined />}
               onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}

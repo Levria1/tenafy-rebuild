@@ -92,7 +92,7 @@ function wrapHeaderFooter(html, kind) {
 // ───────────────────────────────────────────────────────────────────────────
 // Real-data renderer
 // ───────────────────────────────────────────────────────────────────────────
-async function renderFromTemplate({ pool, orgId, leaseId, templateId }) {
+async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = true }) {
   // Fetch the template
   const [[tpl]] = await pool.execute(
     `SELECT id, body_html, header_html, footer_html, page_size, version
@@ -116,11 +116,15 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId }) {
 
   const pdfBuffer = await renderHtmlToPdf({ body, header, footer, pageSize: tpl.page_size });
 
-  // Stamp which template + version was used onto the lease for audit.
-  await pool.execute(
-    `UPDATE leasing SET template_id = ?, template_version_used = ? WHERE id = ?`,
-    [tpl.id, tpl.version, leaseId]
-  );
+  // Stamp which template + version was used onto the lease for audit. Skipped
+  // for read-only renders (e.g. the "View Lease" button) — merely viewing a
+  // lease shouldn't rewrite its audit trail; only the e-sign send flow does.
+  if (stamp) {
+    await pool.execute(
+      `UPDATE leasing SET template_id = ?, template_version_used = ? WHERE id = ?`,
+      [tpl.id, tpl.version, leaseId]
+    );
+  }
 
   return { pdfBuffer, templateId: tpl.id, version: tpl.version };
 }
