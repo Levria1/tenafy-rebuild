@@ -517,12 +517,18 @@ export default function TemplatesPage() {
           </div>
           <Divider style={{ margin: '12px 0' }} />
           {previewLoading ? <Text type="secondary">Rendering…</Text> : previewData ? (
-            <div style={{ background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6, padding: 16 }}>
-              {previewData.title ? <Title level={5} style={{ marginTop: 0 }}>{previewData.title}</Title> : null}
-              <Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: previewData.webpage_link ? 12 : 0 }}>
-                {previewData.body || <Text type="secondary">(empty body)</Text>}
-              </Paragraph>
-              {previewData.webpage_link ? <a href={previewData.webpage_link} target="_blank" rel="noreferrer">{previewData.webpage_link}</a> : null}
+            <div>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Full post — exactly as it will appear (bold shows as Unicode, like on Facebook):
+              </Text>
+              <div style={{ background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6, padding: 16,
+                            marginTop: 6, whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.55 }}>
+                {previewData.post_text || <Text type="secondary">(empty — add copy to this template)</Text>}
+              </div>
+              <Text type="secondary" style={{ fontSize: 11, marginTop: 6, display: 'block' }}>
+                Single-unit preview. A real post bundles up to 3 units of the same property, each with its own line.
+                First line / price reflect this unit; in a bundle they come from the lowest-priced unit.
+              </Text>
             </div>
           ) : <Text type="secondary">Pick a unit to preview.</Text>}
         </Space>

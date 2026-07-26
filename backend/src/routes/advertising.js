@@ -488,6 +488,17 @@ router.get('/templates/:id/preview', authenticate, async (req, res) => {
     const values = await resolveUnitValues(req.pool, orgId, unitId, t);
     if (!values) return res.status(404).json({ code: 404, message: 'Unit not found' });
     const perUnitLine = await resolveUnitLine(req.pool, orgId, t);
+    const settings = await loadSettings(req.pool, orgId);
+    // Assemble the FULL post exactly like renderBundle (single unit): first line,
+    // body, per-unit line, webpage link, footer — blank-line joined, bolded once.
+    const rawParts = [
+      applyPlaceholders(t.title, values),
+      applyPlaceholders(t.body, values),
+      applyPlaceholders(perUnitLine, values),
+      t.webpage_link || '',
+      settings.footer || '',
+    ].map(s => (s || '').trim()).filter(Boolean);
+    const post_text = convertBold(rawParts.join('\n\n'));
     res.json({
       code: 200,
       data: {
@@ -495,6 +506,8 @@ router.get('/templates/:id/preview', authenticate, async (req, res) => {
         body: convertBold(applyPlaceholders(t.body, values)),
         per_unit_line: convertBold(applyPlaceholders(perUnitLine, values)),
         webpage_link: t.webpage_link || null,
+        footer: settings.footer ? convertBold(settings.footer) : null,
+        post_text,
         values,
       },
     });
