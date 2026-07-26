@@ -1,6 +1,34 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { applyPlaceholders, resolveUnitValues, PLACEHOLDER_TOKENS, computePostingRent, convertBold } = require('../src/services/advertisingTemplate');
+const { applyPlaceholders, resolveUnitValues, PLACEHOLDER_TOKENS, computePostingRent, convertBold, parseBedSize } = require('../src/services/advertisingTemplate');
+
+test('parseBedSize: extracts size class + width from the Mattress amenity name', () => {
+  assert.equal(parseBedSize('Mattress (Double Size 1.2m)'), 'Double (1.2m)');
+  assert.equal(parseBedSize('Mattress (Twin Size 0.9m)'), 'Twin (0.9m)');
+  assert.equal(parseBedSize('Mattress (Queen Size 1.5m)'), 'Queen (1.5m)');
+  assert.equal(parseBedSize('Mattress (King Size 2.0m)'), 'King (2.0m)');
+  assert.equal(parseBedSize(''), '');            // none selected
+  assert.equal(parseBedSize(null), '');
+  assert.equal(parseBedSize(undefined), '');
+  assert.equal(parseBedSize('Weird custom mattress'), 'Weird custom mattress'); // unparseable → as-is
+});
+
+test('resolveUnitValues: %BedSize% comes from the unit\'s Mattress amenity', async () => {
+  const pool = {
+    execute: async (sql) => {
+      if (/FROM unit u JOIN property p/.test(sql)) {
+        return [[{ unit_name: '105', property_name: 'Lai Yuen', beds: 0, baths: 1,
+                   size: 150, size_unit: 'sqft', rent_price_min: 11000, rent_price_max: 13000 }]];
+      }
+      if (/unit_amenity ua JOIN amenity a/.test(sql)) {
+        return [[{ name: 'Mattress (Double Size 1.2m)' }]];
+      }
+      return [[]];
+    },
+  };
+  const values = await resolveUnitValues(pool, 'org', '105', {});
+  assert.equal(values['%BedSize%'], 'Double (1.2m)');
+});
 
 test('convertBold: **marked** segments become Unicode bold, rest untouched', () => {
   assert.equal(convertBold('Unit: **2K**'), 'Unit: \u{1D7D0}\u{1D40A}');   // 𝟐𝐊

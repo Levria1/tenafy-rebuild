@@ -16,6 +16,7 @@ const PLACEHOLDERS = [
   { token: '%UnitName%',        description: 'Unit name / number' },
   { token: '%UnitType%',        description: 'Unit type (e.g. apartment)' },
   { token: '%Beds%',            description: 'Number of bedrooms' },
+  { token: '%BedSize%',         description: 'Bed size from the unit\'s Mattress amenity (e.g. "Double (1.2m)")' },
   { token: '%Baths%',           description: 'Number of bathrooms' },
   { token: '%Size%',            description: 'Floor size (with unit, e.g. 500 ft²)' },
   { token: '%Rent%',            description: 'Asking monthly rent (HK$), or the range' },
@@ -85,6 +86,18 @@ function convertBold(text) {
   return String(text == null ? '' : text).replace(/\*\*([^*]+)\*\*/g, (_, inner) => [...inner].map(boldChar).join(''));
 }
 
+// Bed size is modeled as an on/off "Mattress (X Size Ym)" interior amenity, not a
+// unit column. Parse the width class out of the amenity's display_name:
+//   "Mattress (Double Size 1.2m)" → "Double (1.2m)"  ;  "" for none/unparseable.
+// Pure + testable. (Mirrors frontend lib/format.js bedSizeFromAmenities.)
+function parseBedSize(mattressName) {
+  if (!mattressName) return '';
+  const m = /(twin|full|double|queen|king)\b[^0-9]*([0-9.]+\s*m)/i.exec(mattressName);
+  if (!m) return String(mattressName); // unrecognised naming — show as-is
+  const name = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+  return `${name} (${m[2].replace(/\s+/g, '')})`;
+}
+
 function fmtMoney(n) {
   if (n == null || n === '' || Number.isNaN(Number(n))) return '';
   return `HK$${Number(n).toLocaleString('en-US')}`;
@@ -111,6 +124,18 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
     [String(unitId), orgId]
   );
   if (!u) return null;
+
+  // Bed size — from the unit's selected "Mattress (…)" interior amenity (bed size
+  // isn't a unit column). First matching amenity wins.
+  const [[bedRow]] = await pool.execute(
+    `SELECT a.display_name AS name
+       FROM unit_amenity ua JOIN amenity a ON a.id = ua.amenity_id
+      WHERE ua.unit_id = ? AND a.org_id = ? AND a.category = 1
+        AND a.display_name LIKE 'Mattress%'
+      ORDER BY a.order_id, a.id LIMIT 1`,
+    [String(unitId), orgId]
+  );
+  const bedSize = parseBedSize(bedRow && bedRow.name);
 
   // Asking rent: prefer the unit's advertised range, else the most recent lease.
   let rent = u.rent_price_min != null ? u.rent_price_min : u.rent_price_max;
@@ -177,6 +202,7 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
     '%UnitName%':        u.unit_name || '',
     '%UnitType%':        u.unit_type || '',
     '%Beds%':            u.beds != null ? String(u.beds) : '',
+    '%BedSize%':         bedSize,
     '%Baths%':           u.baths != null ? String(u.baths) : '',
     '%Size%':            sizeStr,
     '%Rent%':            rentStr,
@@ -189,4 +215,4 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
   };
 }
 
-module.exports = { PLACEHOLDERS, PLACEHOLDER_TOKENS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold };
+module.exports = { PLACEHOLDERS, PLACEHOLDER_TOKENS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold, parseBedSize };
