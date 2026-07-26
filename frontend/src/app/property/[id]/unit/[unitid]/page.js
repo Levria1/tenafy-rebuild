@@ -16,7 +16,7 @@ import useIsMobile from '../../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../../components/mobile/MobileCardList';
 import UnitViewingsTab from '../../../../../components/viewings/UnitViewingsTab';
 import { property as propertyApi, service as serviceApi } from '../../../../../lib/api';
-import { formatBeds, formatUnitType } from '../../../../../lib/format';
+import { formatBeds, formatUnitType, bedSizeFromAmenities } from '../../../../../lib/format';
 
 const { Text, Title } = Typography;
 
@@ -63,6 +63,7 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
           </Descriptions.Item>
           <Descriptions.Item label="Bedrooms">{formatBeds(unit?.beds)}</Descriptions.Item>
           <Descriptions.Item label="Bathrooms">{unit?.baths ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Bed Size">{bedSizeFromAmenities(amenities) || '-'}</Descriptions.Item>
           <Descriptions.Item label="Occupancy">
             {Number(unit?.status) === 1 ? 'Occupied' : 'Vacant'}
           </Descriptions.Item>

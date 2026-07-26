@@ -65,6 +65,27 @@ export function unitTypeOptions(currentValue) {
   return standard;
 }
 
+// Bed size is NOT a unit column — it's modeled as an on/off interior amenity
+// named like "Mattress (Twin Size 0.9m)". Given a unit's amenities array (each
+// item {display_name, selected}), return the selected mattress size(s) as a
+// label, e.g. "Twin (mattress size)" (the metre width is intentionally dropped).
+// Multiple selected → joined. None → null.
+export function bedSizeFromAmenities(amenities) {
+  if (!Array.isArray(amenities)) return null;
+  const picked = amenities
+    .filter(a => Number(a.selected) === 1 && /mattress/i.test(a.display_name || ''))
+    .map(a => {
+      // "Mattress (Twin Size 0.9m)" → "Twin (mattress size)"
+      const m = /(twin|full|double|queen|king)\b/i.exec(a.display_name || '');
+      if (m) {
+        const name = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+        return `${name} (mattress size)`;
+      }
+      return a.display_name; // unrecognised mattress naming — show as-is
+    });
+  return picked.length ? picked.join(', ') : null;
+}
+
 // Standard bedroom dropdown options. Studio maps to 0.
 // Call with a current value to ensure it's represented even if it falls
 // outside the default range (e.g. legacy data with beds=7).
