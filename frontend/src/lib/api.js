@@ -638,6 +638,13 @@ export const advertisingApi = {
   assignTemplate: (id, unit_ids) => api.post(`/api/advertising/templates/${id}/assign`, { unit_ids }),
   previewTemplate: (id, unitId) => api.get(`/api/advertising/templates/${id}/preview`, { params: { unit_id: unitId } }),
 
+  // Advertising → Unit-line presets: reusable per-unit lines a template selects.
+  listUnitLines: () => api.get('/api/advertising/unit-lines'),
+  createUnitLine: (data) => api.post('/api/advertising/unit-lines', data),
+  updateUnitLine: (id, data) => api.put(`/api/advertising/unit-lines/${id}`, data),
+  deleteUnitLine: (id) => api.delete(`/api/advertising/unit-lines/${id}`),
+  setDefaultUnitLine: (id) => api.post(`/api/advertising/unit-lines/${id}/set-default`),
+
   // Advertising → Scheduler: rolling auto-20 property roster + manual urgent list.
   getScheduler: () => api.get('/api/advertising/scheduler'),
   addUrgent: (data) => api.post('/api/advertising/scheduler/urgent', data),

@@ -1,12 +1,22 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { applyPlaceholders, resolveUnitValues, PLACEHOLDER_TOKENS, computePostingRent, convertBold, parseBedSize } = require('../src/services/advertisingTemplate');
+const { applyPlaceholders, resolveUnitValues, PLACEHOLDER_TOKENS, computePostingRent, convertBold, parseBedSize, bedsLabel } = require('../src/services/advertisingTemplate');
+
+test('bedsLabel: 0 → Studio, n → "n Bedroom", unknown → ""', () => {
+  assert.equal(bedsLabel(0), 'Studio');
+  assert.equal(bedsLabel(1), '1 Bedroom');
+  assert.equal(bedsLabel(2), '2 Bedroom');
+  assert.equal(bedsLabel('3'), '3 Bedroom');
+  assert.equal(bedsLabel(null), '');
+  assert.equal(bedsLabel(undefined), '');
+  assert.equal(bedsLabel(''), '');
+});
 
 test('parseBedSize: extracts size class + width from the Mattress amenity name', () => {
-  assert.equal(parseBedSize('Mattress (Double Size 1.2m)'), 'Double (1.2m)');
-  assert.equal(parseBedSize('Mattress (Twin Size 0.9m)'), 'Twin (0.9m)');
-  assert.equal(parseBedSize('Mattress (Queen Size 1.5m)'), 'Queen (1.5m)');
-  assert.equal(parseBedSize('Mattress (King Size 2.0m)'), 'King (2.0m)');
+  assert.equal(parseBedSize('Mattress (Double Size 1.2m)'), 'Double (mattress size)');
+  assert.equal(parseBedSize('Mattress (Twin Size 0.9m)'), 'Twin (mattress size)');
+  assert.equal(parseBedSize('Mattress (Queen Size 1.5m)'), 'Queen (mattress size)');
+  assert.equal(parseBedSize('Mattress (King Size 2.0m)'), 'King (mattress size)');
   assert.equal(parseBedSize(''), '');            // none selected
   assert.equal(parseBedSize(null), '');
   assert.equal(parseBedSize(undefined), '');
@@ -27,7 +37,7 @@ test('resolveUnitValues: %BedSize% comes from the unit\'s Mattress amenity', asy
     },
   };
   const values = await resolveUnitValues(pool, 'org', '105', {});
-  assert.equal(values['%BedSize%'], 'Double (1.2m)');
+  assert.equal(values['%BedSize%'], 'Double (mattress size)');
 });
 
 test('convertBold: **marked** segments become Unicode bold, rest untouched', () => {

@@ -11,6 +11,7 @@ function newId() {
 // Column length caps (match migrations-org/015). Returns an error string when a
 // field is too long, so we can 400 instead of letting MySQL 500 on truncation.
 const FIELD_LIMITS = { name: 160, title: 255, webpage_link: 500, label: 255, forum_rule: 500 };
+const UNIT_LINE_LIMITS = { name: 160, line_text: 500 };
 function lengthError(body, limits = FIELD_LIMITS) {
   for (const [field, max] of Object.entries(limits)) {
     const v = body[field];
@@ -261,7 +262,7 @@ router.get('/templates', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [rows] = await req.pool.execute(
-      `SELECT a.id, a.name, a.title, a.body, a.per_unit_line, a.webpage_link, a.status,
+      `SELECT a.id, a.name, a.title, a.body, a.per_unit_line, a.unit_line_id, a.webpage_link, a.status,
               a.created_at, a.updated_at,
               (SELECT COUNT(*) FROM unit u WHERE u.advertising_template_id = a.id AND u.active_status = 1) AS unit_count
          FROM advertising_template a
@@ -277,6 +278,7 @@ router.get('/templates', authenticate, async (req, res) => {
         title: r.title,
         body: r.body,
         per_unit_line: r.per_unit_line,
+        unit_line_id: r.unit_line_id != null ? String(r.unit_line_id) : null,
         webpage_link: r.webpage_link,
         status: r.status,
         unit_count: Number(r.unit_count) || 0,
@@ -295,7 +297,7 @@ router.get('/templates/:id', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [[t]] = await req.pool.execute(
-      `SELECT id, name, title, body, per_unit_line, webpage_link, status FROM advertising_template
+      `SELECT id, name, title, body, per_unit_line, unit_line_id, webpage_link, status FROM advertising_template
         WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
       [req.params.id, orgId]
     );
@@ -311,7 +313,8 @@ router.get('/templates/:id', authenticate, async (req, res) => {
       code: 200,
       data: {
         id: String(t.id), name: t.name, title: t.title, body: t.body,
-        per_unit_line: t.per_unit_line, webpage_link: t.webpage_link, status: t.status,
+        per_unit_line: t.per_unit_line, unit_line_id: t.unit_line_id != null ? String(t.unit_line_id) : null,
+        webpage_link: t.webpage_link, status: t.status,
         units: units.map(u => ({ id: String(u.id), unit_name: u.unit_name, property_name: u.property_name })),
       },
     });
@@ -325,7 +328,7 @@ router.get('/templates/:id', authenticate, async (req, res) => {
 router.post('/templates', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { name, title, body, per_unit_line, webpage_link } = req.body || {};
+    const { name, title, body, per_unit_line, unit_line_id, webpage_link } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ code: 400, message: 'Template name is required' });
     }
@@ -333,9 +336,9 @@ router.post('/templates', authenticate, async (req, res) => {
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     const id = newId();
     await req.pool.execute(
-      `INSERT INTO advertising_template (id, org_id, name, title, body, per_unit_line, webpage_link, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
-      [id, orgId, String(name).trim(), title || null, body || null, per_unit_line || null, webpage_link || null]
+      `INSERT INTO advertising_template (id, org_id, name, title, body, per_unit_line, unit_line_id, webpage_link, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+      [id, orgId, String(name).trim(), title || null, body || null, per_unit_line || null, unit_line_id || null, webpage_link || null]
     );
     res.json({ code: 200, data: { id } });
   } catch (err) {
@@ -348,7 +351,7 @@ router.post('/templates', authenticate, async (req, res) => {
 router.put('/templates/:id', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { name, title, body, per_unit_line, webpage_link, status } = req.body || {};
+    const { name, title, body, per_unit_line, unit_line_id, webpage_link, status } = req.body || {};
     const [[exists]] = await req.pool.execute(
       `SELECT id FROM advertising_template WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
       [req.params.id, orgId]
@@ -367,6 +370,7 @@ router.put('/templates/:id', authenticate, async (req, res) => {
     if (title !== undefined) { fields.push('title = ?'); params.push(title || null); }
     if (body !== undefined) { fields.push('body = ?'); params.push(body || null); }
     if (per_unit_line !== undefined) { fields.push('per_unit_line = ?'); params.push(per_unit_line || null); }
+    if (unit_line_id !== undefined) { fields.push('unit_line_id = ?'); params.push(unit_line_id || null); }
     if (webpage_link !== undefined) { fields.push('webpage_link = ?'); params.push(webpage_link || null); }
     if (status !== undefined) { fields.push('status = ?'); params.push(Number(status) ? 1 : 0); }
     if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
@@ -476,19 +480,20 @@ router.get('/templates/:id/preview', authenticate, async (req, res) => {
     const unitId = req.query.unit_id;
     if (!unitId) return res.status(400).json({ code: 400, message: 'unit_id is required' });
     const [[t]] = await req.pool.execute(
-      `SELECT id, name, title, body, per_unit_line, webpage_link FROM advertising_template
+      `SELECT id, name, title, body, per_unit_line, unit_line_id, webpage_link FROM advertising_template
         WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
       [req.params.id, orgId]
     );
     if (!t) return res.status(404).json({ code: 404, message: 'Template not found' });
     const values = await resolveUnitValues(req.pool, orgId, unitId, t);
     if (!values) return res.status(404).json({ code: 404, message: 'Unit not found' });
+    const perUnitLine = await resolveUnitLine(req.pool, orgId, t);
     res.json({
       code: 200,
       data: {
         title: convertBold(applyPlaceholders(t.title, values)),
         body: convertBold(applyPlaceholders(t.body, values)),
-        per_unit_line: convertBold(applyPlaceholders(t.per_unit_line, values)),
+        per_unit_line: convertBold(applyPlaceholders(perUnitLine, values)),
         webpage_link: t.webpage_link || null,
         values,
       },
@@ -738,6 +743,32 @@ const PHOTO_ROOT = process.env.ADVERTISING_PHOTO_ROOT || '~/tenafy-photos';
 // LOWEST-priced unit's values (so "…and Up" quotes the cheapest of a bundle), then
 // one per-unit line per unit (in bundle order), then the webpage link, then the
 // org-wide footer. `footer` comes from advertising_setting.
+// Resolve a template's effective per-unit line: the preset it points at
+// (unit_line_id) → the org's is_default preset → the template's own legacy
+// per_unit_line column. Guarded so an un-migrated org DB (no advertising_unit_line
+// table yet) simply falls back to the legacy column instead of 500-ing.
+async function resolveUnitLine(pool, orgId, template) {
+  try {
+    if (template && template.unit_line_id) {
+      const [[p]] = await pool.execute(
+        `SELECT line_text FROM advertising_unit_line
+          WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [template.unit_line_id, orgId]);
+      if (p && p.line_text) return p.line_text;
+    }
+    // ORDER BY id makes the pick deterministic even if two rows are is_default=1
+    // (e.g. a rare concurrent first-create race).
+    const [[d]] = await pool.execute(
+      `SELECT line_text FROM advertising_unit_line
+        WHERE org_id = ? AND is_default = 1 AND deleted_at IS NULL ORDER BY id LIMIT 1`,
+      [orgId]);
+    if (d && d.line_text) return d.line_text;
+  } catch (e) {
+    // advertising_unit_line not migrated on this org DB — use the legacy column.
+  }
+  return (template && template.per_unit_line) || null;
+}
+
 async function renderBundle(pool, orgId, bundle, template, footer) {
   const resolved = [];
   for (const u of bundle.units) {
@@ -752,7 +783,8 @@ async function renderBundle(pool, orgId, bundle, template, footer) {
   const sharedValues = resolved.length
     ? resolved.reduce((lo, v) => (amt(v) < amt(lo) ? v : lo), resolved[0])
     : null;
-  const unitLines = template.per_unit_line ? resolved.map(v => applyPlaceholders(template.per_unit_line, v)) : [];
+  const perUnitLine = await resolveUnitLine(pool, orgId, template);
+  const unitLines = perUnitLine ? resolved.map(v => applyPlaceholders(perUnitLine, v)) : [];
   const title = sharedValues ? applyPlaceholders(template.title, sharedValues) : (template.title || '');
   const body = sharedValues ? applyPlaceholders(template.body, sharedValues) : (template.body || '');
   // Blank line between each unit block, and between the major sections (first
@@ -862,7 +894,7 @@ router.get('/posting-plan', authenticate, async (req, res) => {
       let tpl = templateCache.get(b.template_id);
       if (tpl === undefined) {
         const [[row]] = await req.pool.execute(
-          `SELECT id, name, title, body, per_unit_line, webpage_link FROM advertising_template
+          `SELECT id, name, title, body, per_unit_line, unit_line_id, webpage_link FROM advertising_template
             WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
           [b.template_id, orgId]
         );
@@ -998,6 +1030,139 @@ function nonStringField(body, keys) {
   }
   return null;
 }
+
+// ---- Unit-line presets ----
+// Named, reusable per-unit lines. A template points at one via unit_line_id;
+// NULL uses the org's is_default preset (see resolveUnitLine).
+router.get('/unit-lines', authenticate, async (req, res) => {
+  try {
+    const [rows] = await req.pool.execute(
+      `SELECT id, name, line_text, is_default, status FROM advertising_unit_line
+        WHERE org_id = ? AND deleted_at IS NULL ORDER BY is_default DESC, name ASC`,
+      [req.user.orgId]
+    );
+    res.json({ code: 200, data: rows.map(r => ({
+      id: String(r.id), name: r.name, line_text: r.line_text,
+      is_default: !!r.is_default, status: r.status,
+    })) });
+  } catch (err) {
+    console.error('[advertising/unit-lines list] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load unit lines' });
+  }
+});
+
+router.post('/unit-lines', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { name, line_text } = req.body || {};
+    const bt = nonStringField(req.body || {}, ['name', 'line_text']);
+    if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
+    if (!name || !String(name).trim()) return res.status(400).json({ code: 400, message: 'Name is required' });
+    const lenErr = lengthError({ name, line_text }, UNIT_LINE_LIMITS);
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    // The first preset for an org becomes the default automatically.
+    const [[{ cnt }]] = await req.pool.execute(
+      `SELECT COUNT(*) AS cnt FROM advertising_unit_line WHERE org_id = ? AND deleted_at IS NULL`, [orgId]);
+    const isDefault = Number(cnt) === 0 ? 1 : 0;
+    const id = newId();
+    await req.pool.execute(
+      `INSERT INTO advertising_unit_line (id, org_id, name, line_text, is_default, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 1, NOW())`,
+      [id, orgId, String(name).trim(), line_text || null, isDefault]
+    );
+    res.json({ code: 200, data: { id, is_default: !!isDefault } });
+  } catch (err) {
+    console.error('[advertising/unit-lines create] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to create unit line' });
+  }
+});
+
+router.put('/unit-lines/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[exists]] = await req.pool.execute(
+      `SELECT id FROM advertising_unit_line WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!exists) return res.status(404).json({ code: 404, message: 'Unit line not found' });
+    const { name, line_text, status } = req.body || {};
+    const bt = nonStringField(req.body || {}, ['name', 'line_text']);
+    if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
+    const lenErr = lengthError({ name, line_text }, UNIT_LINE_LIMITS);
+    if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    const fields = [], params = [];
+    if (name !== undefined) {
+      if (!String(name).trim()) return res.status(400).json({ code: 400, message: 'Name is required' });
+      fields.push('name = ?'); params.push(String(name).trim());
+    }
+    if (line_text !== undefined) { fields.push('line_text = ?'); params.push(line_text || null); }
+    if (status !== undefined) { fields.push('status = ?'); params.push(Number(status) ? 1 : 0); }
+    if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
+    params.push(req.params.id, orgId);
+    await req.pool.execute(`UPDATE advertising_unit_line SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`, params);
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/unit-lines update] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to update unit line' });
+  }
+});
+
+// Make this preset the org default (unset the others). NULL-referencing templates use it.
+router.post('/unit-lines/:id/set-default', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const conn = await req.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [[exists]] = await conn.execute(
+        `SELECT id FROM advertising_unit_line WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [req.params.id, orgId]);
+      if (!exists) { await conn.rollback(); return res.status(404).json({ code: 404, message: 'Unit line not found' }); }
+      await conn.execute(`UPDATE advertising_unit_line SET is_default = 0 WHERE org_id = ?`, [orgId]);
+      await conn.execute(`UPDATE advertising_unit_line SET is_default = 1 WHERE id = ? AND org_id = ?`, [req.params.id, orgId]);
+      await conn.commit();
+    } catch (e) { try { await conn.rollback(); } catch {} throw e; } finally { conn.release(); }
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/unit-lines set-default] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to set default unit line' });
+  }
+});
+
+router.delete('/unit-lines/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const conn = await req.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [[row]] = await conn.execute(
+        `SELECT is_default FROM advertising_unit_line WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [req.params.id, orgId]);
+      if (!row) { await conn.rollback(); return res.status(404).json({ code: 404, message: 'Unit line not found' }); }
+      await conn.execute(
+        `UPDATE advertising_unit_line SET deleted_at = NOW() WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+        [req.params.id, orgId]);
+      // Templates pointing at it fall back to the org default.
+      await conn.execute(
+        `UPDATE advertising_template SET unit_line_id = NULL WHERE unit_line_id = ? AND org_id = ?`,
+        [req.params.id, orgId]);
+      // If we just removed the default, promote another preset so NULL-referencing
+      // templates keep resolving a line.
+      if (row.is_default) {
+        const [[next]] = await conn.execute(
+          `SELECT id FROM advertising_unit_line WHERE org_id = ? AND deleted_at IS NULL ORDER BY id LIMIT 1`,
+          [orgId]);
+        if (next) await conn.execute(
+          `UPDATE advertising_unit_line SET is_default = 1 WHERE id = ? AND org_id = ?`, [next.id, orgId]);
+      }
+      await conn.commit();
+    } catch (e) { try { await conn.rollback(); } catch {} throw e; } finally { conn.release(); }
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/unit-lines delete] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to delete unit line' });
+  }
+});
 
 // ---- Accounts ----
 router.get('/accounts', authenticate, async (req, res) => {

@@ -16,7 +16,8 @@ const PLACEHOLDERS = [
   { token: '%UnitName%',        description: 'Unit name / number' },
   { token: '%UnitType%',        description: 'Unit type (e.g. apartment)' },
   { token: '%Beds%',            description: 'Number of bedrooms' },
-  { token: '%BedSize%',         description: 'Bed size from the unit\'s Mattress amenity (e.g. "Double (1.2m)")' },
+  { token: '%Layout%',          description: 'Bedroom layout label — "Studio", "1 Bedroom", "2 Bedroom", …' },
+  { token: '%BedSize%',         description: 'Bed size from the unit\'s Mattress amenity (e.g. "Double (mattress size)")' },
   { token: '%Baths%',           description: 'Number of bathrooms' },
   { token: '%Size%',            description: 'Floor size (with unit, e.g. 500 ft²)' },
   { token: '%Rent%',            description: 'Asking monthly rent (HK$), or the range' },
@@ -87,15 +88,25 @@ function convertBold(text) {
 }
 
 // Bed size is modeled as an on/off "Mattress (X Size Ym)" interior amenity, not a
-// unit column. Parse the width class out of the amenity's display_name:
-//   "Mattress (Double Size 1.2m)" → "Double (1.2m)"  ;  "" for none/unparseable.
+// unit column. Show just the size-class word + a literal "(mattress size)" label
+// (the metre width is intentionally dropped):
+//   "Mattress (Double Size 1.2m)" → "Double (mattress size)"  ;  "" for none.
 // Pure + testable. (Mirrors frontend lib/format.js bedSizeFromAmenities.)
 function parseBedSize(mattressName) {
   if (!mattressName) return '';
-  const m = /(twin|full|double|queen|king)\b[^0-9]*([0-9.]+\s*m)/i.exec(mattressName);
+  const m = /(twin|full|double|queen|king)\b/i.exec(mattressName);
   if (!m) return String(mattressName); // unrecognised naming — show as-is
   const name = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
-  return `${name} (${m[2].replace(/\s+/g, '')})`;
+  return `${name} (mattress size)`;
+}
+
+// Bedroom layout label for ads: 0 (or none) → "Studio", n → "n Bedroom" (singular
+// adjectival form; templates typically append " unit", e.g. "%Layout% unit" →
+// "Studio unit" / "2 Bedroom unit"). Empty string when beds is unknown.
+function bedsLabel(beds) {
+  const n = (beds == null || beds === '') ? NaN : Number(beds);
+  if (Number.isNaN(n)) return '';
+  return n <= 0 ? 'Studio' : `${n} Bedroom`;
 }
 
 function fmtMoney(n) {
@@ -202,6 +213,7 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
     '%UnitName%':        u.unit_name || '',
     '%UnitType%':        u.unit_type || '',
     '%Beds%':            u.beds != null ? String(u.beds) : '',
+    '%Layout%':          bedsLabel(u.beds),
     '%BedSize%':         bedSize,
     '%Baths%':           u.baths != null ? String(u.baths) : '',
     '%Size%':            sizeStr,
@@ -215,4 +227,4 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
   };
 }
 
-module.exports = { PLACEHOLDERS, PLACEHOLDER_TOKENS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold, parseBedSize };
+module.exports = { PLACEHOLDERS, PLACEHOLDER_TOKENS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold, parseBedSize, bedsLabel };

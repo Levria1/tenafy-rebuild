@@ -7,7 +7,7 @@ import {
 } from 'antd';
 import {
   SoundOutlined, PlusOutlined, EditOutlined, DeleteOutlined,
-  ApartmentOutlined, EyeOutlined, FileTextOutlined,
+  ApartmentOutlined, EyeOutlined, FileTextOutlined, UnorderedListOutlined, StarOutlined, StarFilled,
 } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
 import { advertisingApi } from '../../../lib/api';
@@ -45,19 +45,31 @@ export default function TemplatesPage() {
   const [footer, setFooter] = useState('');
   const [footerSaving, setFooterSaving] = useState(false);
 
+  // Unit-line presets (reusable per-unit lines a template selects)
+  const [unitLines, setUnitLines] = useState([]);
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const [presetEditing, setPresetEditing] = useState(null); // preset id being edited (null = new)
+  const [presetName, setPresetName] = useState('');
+  const [presetText, setPresetText] = useState('');
+  const [presetSaving, setPresetSaving] = useState(false);
+
   const load = async () => {
     setLoading(true);
     try {
-      const [tRes, pRes, uRes, sRes] = await Promise.all([
+      const [tRes, pRes, uRes, sRes, lRes] = await Promise.all([
         advertisingApi.listTemplates(),
         advertisingApi.getPlaceholders(),
         advertisingApi.getAssignableUnits(),
         advertisingApi.getAdSettings(),
+        // Degrade gracefully if an org DB hasn't migrated the presets table yet —
+        // don't let it fail the whole page.
+        advertisingApi.listUnitLines().catch(() => ({ data: { code: 0, data: [] } })),
       ]);
       if (tRes.data.code === 200) setTemplates(tRes.data.data || []);
       if (pRes.data.code === 200) setPlaceholders(pRes.data.data || []);
       if (uRes.data.code === 200) setUnits(uRes.data.data || []);
       if (sRes.data.code === 200) setFooter(sRes.data.data.footer || '');
+      if (lRes.data.code === 200) setUnitLines(lRes.data.data || []);
     } catch (e) {
       message.error('Failed to load templates');
     } finally {
@@ -71,14 +83,18 @@ export default function TemplatesPage() {
   const openEditor = (tpl) => {
     setEditing(tpl || null);
     form.setFieldsValue(tpl
-      ? { name: tpl.name, title: tpl.title, body: tpl.body, per_unit_line: tpl.per_unit_line, webpage_link: tpl.webpage_link }
-      : { name: '', title: '', body: '', per_unit_line: '', webpage_link: '' });
+      ? { name: tpl.name, title: tpl.title, body: tpl.body, unit_line_id: tpl.unit_line_id || null, webpage_link: tpl.webpage_link }
+      : { name: '', title: '', body: '', unit_line_id: null, webpage_link: '' });
     setEditorOpen(true);
   };
 
   const saveTemplate = async () => {
     try {
       const vals = await form.validateFields();
+      // Clearing the Unit line select yields `undefined`, which Axios omits from the
+      // JSON body — so the backend would never set it back to NULL. Send an explicit
+      // null so "clear → follow org default" actually persists.
+      vals.unit_line_id = vals.unit_line_id ?? null;
       setSaving(true);
       if (editing) {
         await advertisingApi.updateTemplate(editing.id, vals);
@@ -153,6 +169,49 @@ export default function TemplatesPage() {
       setFooterOpen(false);
     } catch (e) { message.error('Failed to save footer'); }
     finally { setFooterSaving(false); }
+  };
+
+  // --- Unit-line presets ----------------------------------------------------
+  const resetPresetForm = () => { setPresetEditing(null); setPresetName(''); setPresetText(''); };
+  const editPreset = (p) => { setPresetEditing(p.id); setPresetName(p.name); setPresetText(p.line_text || ''); };
+  const insertPresetPlaceholder = (token) => setPresetText((t) => (t || '') + token);
+
+  const savePreset = async () => {
+    if (!presetName.trim()) { message.error('Preset name is required'); return; }
+    setPresetSaving(true);
+    try {
+      if (presetEditing) {
+        await advertisingApi.updateUnitLine(presetEditing, { name: presetName.trim(), line_text: presetText });
+        message.success('Preset updated');
+      } else {
+        await advertisingApi.createUnitLine({ name: presetName.trim(), line_text: presetText });
+        message.success('Preset added');
+      }
+      resetPresetForm();
+      const lRes = await advertisingApi.listUnitLines();
+      if (lRes.data.code === 200) setUnitLines(lRes.data.data || []);
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to save preset');
+    } finally { setPresetSaving(false); }
+  };
+
+  const setDefaultPreset = async (id) => {
+    try {
+      await advertisingApi.setDefaultUnitLine(id);
+      const lRes = await advertisingApi.listUnitLines();
+      if (lRes.data.code === 200) setUnitLines(lRes.data.data || []);
+    } catch (e) { message.error('Failed to set default'); }
+  };
+
+  const deletePreset = async (id) => {
+    try {
+      await advertisingApi.deleteUnitLine(id);
+      message.success('Preset deleted');
+      if (presetEditing === id) resetPresetForm();
+      const [lRes, tRes] = await Promise.all([advertisingApi.listUnitLines(), advertisingApi.listTemplates()]);
+      if (lRes.data.code === 200) setUnitLines(lRes.data.data || []);
+      if (tRes.data.code === 200) setTemplates(tRes.data.data || []);
+    } catch (e) { message.error('Failed to delete preset'); }
   };
 
   const openPreview = async (tpl) => {
@@ -249,6 +308,7 @@ export default function TemplatesPage() {
             <Space>
               <Button type="primary" icon={<PlusOutlined />} onClick={() => openEditor(null)}>New Template</Button>
               <Button icon={<FileTextOutlined />} onClick={() => setFooterOpen(true)}>Shared Footer</Button>
+              <Button icon={<UnorderedListOutlined />} onClick={() => { resetPresetForm(); setPresetsOpen(true); }}>Unit Line Presets</Button>
             </Space>
           </div>
           <Table
@@ -282,8 +342,21 @@ export default function TemplatesPage() {
           <Form.Item name="body" label="Body (shared)" tooltip="Posted once per bundle — the building/area copy shared by all its units.">
             <TextArea rows={6} placeholder="Describe the unit/building. Use %Placeholders% below to auto-fill unit details." />
           </Form.Item>
-          <Form.Item name="per_unit_line" label="Per-unit line" tooltip="Repeated once for EACH unit in a bundled post (the line that differs). e.g. Unit %UnitName% — available %AvailableDate%, %Rent%/mo">
-            <Input placeholder="Unit %UnitName% — available %AvailableDate%, %Rent%/mo" />
+          <Form.Item name="unit_line_id" label="Unit line" tooltip="The per-unit line repeated for EACH unit in a bundle. Shared presets live in “Unit Line Presets”; leave as Default to follow the org default.">
+            <Select
+              allowClear
+              placeholder="Default preset (org default)"
+              options={unitLines.map(l => ({ value: l.id, label: `${l.name}${l.is_default ? ' (default)' : ''}` }))}
+              dropdownRender={(menu) => (
+                <>
+                  {menu}
+                  <Divider style={{ margin: '4px 0' }} />
+                  <Button type="link" size="small" onClick={() => { setEditorOpen(false); setPresetsOpen(true); }}>
+                    Manage presets…
+                  </Button>
+                </>
+              )}
+            />
           </Form.Item>
           <div style={{ marginBottom: 12 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>Insert placeholder:</Text>
@@ -311,6 +384,70 @@ export default function TemplatesPage() {
         </Paragraph>
         <TextArea rows={4} value={footer} onChange={(e) => setFooter(e.target.value)}
           placeholder="If you're interested, please contact +852 …  Minimum one month rental." />
+      </Modal>
+
+      {/* Unit-line presets manager */}
+      <Modal title="Unit Line Presets" open={presetsOpen} onCancel={() => setPresetsOpen(false)}
+        footer={null} width={720}>
+        <Paragraph type="secondary" style={{ fontSize: 13 }}>
+          Reusable per-unit lines shared across templates. A template picks one; the <b>default</b> is used
+          when a template has none selected. Edit here once instead of in every template.
+        </Paragraph>
+        <Table
+          rowKey="id"
+          size="small"
+          pagination={false}
+          dataSource={unitLines}
+          locale={{ emptyText: <Empty description="No presets yet — add one below." /> }}
+          columns={[
+            {
+              title: 'Name', dataIndex: 'name', key: 'name', width: 160,
+              render: (v, r) => (<span><Text strong>{v}</Text>{r.is_default && <Tag color="gold" style={{ marginLeft: 6 }}>Default</Tag>}</span>),
+            },
+            {
+              title: 'Line', dataIndex: 'line_text', key: 'line_text',
+              render: (v) => <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{v || '—'}</Text>,
+            },
+            {
+              title: '', key: 'actions', width: 120,
+              render: (_, r) => (
+                <Space size={2}>
+                  <Tooltip title={r.is_default ? 'Default' : 'Make default'}>
+                    <Button size="small" type="text" icon={r.is_default ? <StarFilled style={{ color: '#faad14' }} /> : <StarOutlined />}
+                      disabled={r.is_default} onClick={() => setDefaultPreset(r.id)} />
+                  </Tooltip>
+                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => editPreset(r)} />
+                  <Popconfirm title="Delete this preset?" description="Templates using it fall back to the default."
+                    onConfirm={() => deletePreset(r.id)} okText="Delete" okButtonProps={{ danger: true }}>
+                    <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </Space>
+              ),
+            },
+          ]}
+        />
+        <Divider style={{ margin: '16px 0 12px' }} />
+        <Text strong style={{ fontSize: 13 }}>{presetEditing ? 'Edit preset' : 'Add preset'}</Text>
+        <Input style={{ marginTop: 8 }} placeholder="Preset name (e.g. Default)" value={presetName}
+          onChange={(e) => setPresetName(e.target.value)} />
+        <TextArea style={{ marginTop: 8 }} rows={3} value={presetText} onChange={(e) => setPresetText(e.target.value)}
+          placeholder="%UnitName% (%Layout% unit - %Size%): Unit has a %BedSize% bed, Available from %AvailableDate%, and price is HKD$%PostingRentAmount% per month." />
+        <div style={{ marginTop: 6 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Insert placeholder:</Text>
+          <div style={{ marginTop: 6 }}>
+            <Space wrap size={[4, 4]}>
+              {placeholders.map(p => (
+                <Tooltip key={p.token} title={p.description}>
+                  <Tag style={{ cursor: 'pointer' }} onClick={() => insertPresetPlaceholder(p.token)}>{p.token}</Tag>
+                </Tooltip>
+              ))}
+            </Space>
+          </div>
+        </div>
+        <Space style={{ marginTop: 12 }}>
+          <Button type="primary" loading={presetSaving} onClick={savePreset}>{presetEditing ? 'Update preset' : 'Add preset'}</Button>
+          {presetEditing && <Button onClick={resetPresetForm}>Cancel edit</Button>}
+        </Space>
       </Modal>
 
       {/* Assignment modal */}
