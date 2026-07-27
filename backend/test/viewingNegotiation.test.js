@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, nextStep,
+  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, nextStep, buildRouting,
 } = require('../src/services/viewingNegotiationLogic');
 
 // A fixed far-future weekday base so "in the past" never trips these tests.
@@ -115,4 +115,22 @@ test('nextStep: replies in the wrong state are ignored, not acted on', () => {
 
 test('nextStep: prospect declines relay without a counter → reprompt for a day', () => {
   assert.deepEqual(NS('RELAY_TO_PROSPECT', 'prospect', { accepted: false }), { type: 'reprompt_day' });
+});
+
+// ── buildRouting (TaneChat pre-seed block) ────────────────────────────────────
+test('buildRouting: awaiting prospect → awaiting_phone is the prospect phone', () => {
+  const r = buildRouting({ prospect_phone: '+85261234567', awaiting: 'prospect' }, '+85269998888');
+  assert.deepEqual(r.parties, { prospect: { phone: '+85261234567' }, tenant: { phone: '+85269998888' } });
+  assert.equal(r.awaiting_phone, '+85261234567');
+});
+
+test('buildRouting: awaiting tenant → awaiting_phone is the tenant phone', () => {
+  const r = buildRouting({ prospect_phone: '+85261234567', awaiting: 'tenant' }, '+85269998888');
+  assert.equal(r.awaiting_phone, '+85269998888');
+});
+
+test('buildRouting: vacant unit (no tenant phone) → tenant phone null, no crash', () => {
+  const r = buildRouting({ prospect_phone: '+85261234567', awaiting: 'staff' }, null);
+  assert.equal(r.parties.tenant.phone, null);
+  assert.equal(r.awaiting_phone, null); // awaiting=staff → nobody to route to
 });

@@ -382,17 +382,21 @@ async function handleNegotiationReply(req, res, party) {
     const negId = req.params.id;
     const intent = (req.body && req.body.intent) || {};
     const text = (req.body && req.body.text) || null;
+    const messageId = (req.body && (req.body.message_id || req.body.messageId)) || null;
     const neg = await viewingNegotiation.loadNegotiation(req.pool, negId);
     if (!neg) return fail(res, 'Negotiation not found', 404);
     if (['CONFIRMED', 'CANCELLED', 'NEEDS_STAFF'].includes(neg.state)) {
-      return ok(res, { closed: true, state: neg.state,
+      return ok(res, { closed: true, negotiation_id: negId, state: neg.state,
         message: 'This viewing request is no longer active — our team will follow up.' });
     }
-    const out = await viewingNegotiation.handleReply(req.pool, orgId, neg, party, intent, text);
+    const out = await viewingNegotiation.handleReply(req.pool, orgId, neg, party, intent, text, messageId);
     return ok(res, {
       negotiation_id: negId,
       state: out.negotiation ? out.negotiation.state : null,
       awaiting: out.negotiation ? out.negotiation.awaiting : null,
+      parties: out.parties,
+      awaiting_phone: out.awaiting_phone,
+      duplicate: out.duplicate || undefined,
       events: out.events,
     });
   } catch (err) {
@@ -407,9 +411,11 @@ router.post('/viewing-negotiation/:id/prospect-reply', (req, res) => handleNegot
 router.post('/viewing-negotiation/:id/tenant-reply', (req, res) => handleNegotiationReply(req, res, 'tenant'));
 
 // GET /api/public/viewing-negotiation/active?phone=...
-// Routing helper: given an inbound WhatsApp phone, find the open negotiation it
-// belongs to and whether it's the prospect or the tenant, so TaneChat can tag
-// the reply. → { active:true, negotiation_id, party, state, awaiting } | { active:false }
+// Routing helper: given an inbound WhatsApp phone, find EVERY open negotiation it
+// belongs to (as prospect and/or tenant), so TaneChat can tag the reply — and
+// disambiguate when a number is in more than one active negotiation (multi-unit).
+// → { active:bool, negotiations:[{ negotiation_id, party, state, awaiting }, ...] }
+//   ordered newest-first, with the negotiation actually awaiting that party first.
 router.get('/viewing-negotiation/active', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
@@ -436,12 +442,10 @@ router.get('/viewing-negotiation/active', async (req, res) => {
         matches.push({ negotiation_id: String(r.id), party: 'tenant', state: r.state, awaiting: r.awaiting });
       }
     }
-    if (!matches.length) return ok(res, { active: false });
-    const best = matches.find(m => m.awaiting === m.party) || matches[0];
-    return ok(res, {
-      active: true, ...best,
-      ambiguous: matches.length > 1 ? matches.length : undefined,
-    });
+    if (!matches.length) return ok(res, { active: false, negotiations: [] });
+    // Put the negotiation actually awaiting this party first (rows already newest-first).
+    matches.sort((a, b) => (b.awaiting === b.party ? 1 : 0) - (a.awaiting === a.party ? 1 : 0));
+    return ok(res, { active: true, negotiations: matches });
   } catch (err) {
     console.error('Public viewing-negotiation/active error:', err);
     fail(res, 'Failed to look up negotiation');

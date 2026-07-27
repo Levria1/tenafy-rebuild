@@ -28,7 +28,7 @@ const { sendViewingConfirmation } = require('./viewingNotify');
 const { loadTemplate, substituteVariables } = require('./emailService');
 const { KIND_ACTION, KIND_MANAGE } = require('../middleware/viewingTokenAuth');
 const {
-  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, nextStep,
+  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, nextStep, buildRouting,
 } = require('./viewingNegotiationLogic');
 
 // ── small helpers ──────────────────────────────────────────────────────────
@@ -63,6 +63,8 @@ function stripToText(html) {
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
     .replace(/\n{3,}/g, '\n\n').trim();
 }
+
+// buildRouting is imported from ./viewingNegotiationLogic (pure).
 
 // ── settings ────────────────────────────────────────────────────────────────
 async function getSetting(pool, orgId) {
@@ -215,12 +217,25 @@ async function dispatchOutbounds(pool, orgId, negId, setting, outbounds) {
   return events;
 }
 
-async function logInbound(pool, negId, party, intent, body) {
-  await pool.execute(
-    `INSERT INTO viewing_negotiation_event (id, negotiation_id, direction, party, body, intent, status)
-     VALUES (?, ?, 'in', ?, ?, ?, 'sent')`,
-    [newId(), negId, party, body || null, intent ? JSON.stringify(intent) : null]
-  );
+async function logInbound(pool, negId, party, intent, body, messageId = null) {
+  const id = newId();
+  const intentJson = intent ? JSON.stringify(intent) : null;
+  try {
+    await pool.execute(
+      `INSERT INTO viewing_negotiation_event (id, negotiation_id, direction, party, body, intent, status, client_message_id)
+       VALUES (?, ?, 'in', ?, ?, ?, 'sent', ?)`,
+      [id, negId, party, body || null, intentJson, messageId ? String(messageId) : null]
+    );
+  } catch (e) {
+    if (/Unknown column/i.test(e.message)) {
+      // pre-migration org — insert without the idempotency column
+      await pool.execute(
+        `INSERT INTO viewing_negotiation_event (id, negotiation_id, direction, party, body, intent, status)
+         VALUES (?, ?, 'in', ?, ?, ?, 'sent')`,
+        [id, negId, party, body || null, intentJson]
+      );
+    } else { throw e; }
+  }
 }
 
 // ── notifications ──────────────────────────────────────────────────────────────
@@ -308,18 +323,28 @@ async function confirmNegotiation(pool, orgId, neg, whenIso, staff) {
 // (resolveMarketedUnit). Creates the row + first prospect prompt.
 async function startNegotiation(pool, orgId, { unit, lease, prospect }) {
   const setting = await getSetting(pool, orgId);
+  // Tenant phone (for the routing block + later tenant leg). Looked up once here.
+  let tenantPhone = null;
+  const tenantId = lease ? (lease.tenant_id || null) : null;
+  if (tenantId) {
+    const [[t]] = await pool.execute('SELECT phone FROM tenant WHERE id = ? LIMIT 1', [tenantId]);
+    tenantPhone = t ? t.phone : null;
+  }
   // Idempotent on a double button-press: reuse an already-open negotiation for
   // the same unit + prospect phone instead of spawning a second relay.
   if (prospect.phone) {
     const [[existing]] = await pool.execute(
-      `SELECT id, state, awaiting FROM viewing_negotiation
+      `SELECT id, state, awaiting, prospect_phone FROM viewing_negotiation
         WHERE unit_id = ? AND prospect_phone = ?
           AND state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')
         ORDER BY created_at DESC LIMIT 1`,
       [unit.id, prospect.phone]
     );
     if (existing) {
-      return { negotiation_id: String(existing.id), state: existing.state, awaiting: existing.awaiting, events: [], reused: true };
+      return {
+        negotiation_id: String(existing.id), state: existing.state, awaiting: existing.awaiting,
+        events: [], reused: true, ...buildRouting(existing, tenantPhone),
+      };
     }
   }
   const negId = newId();
@@ -328,14 +353,17 @@ async function startNegotiation(pool, orgId, { unit, lease, prospect }) {
        (id, unit_id, property_id, lease_id, tenant_id, prospect_name, prospect_phone, prospect_email,
         state, awaiting)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ASK_PROSPECT_DAY', 'prospect')`,
-    [negId, unit.id, unit.property_id, lease ? lease.id : null, lease ? (lease.tenant_id || null) : null,
+    [negId, unit.id, unit.property_id, lease ? lease.id : null, tenantId,
      prospect.name || null, prospect.phone || null, prospect.email || null]
   );
   const vars = { '%Unit Name%': unit.unit_name, '%Property Name%': unit.property_name };
   const events = await dispatchOutbounds(pool, orgId, negId, setting, [
     { party: 'prospect', to_phone: prospect.phone, templateType: 'Viewing-Prospect-Day-Ask', vars },
   ]);
-  return { negotiation_id: negId, state: 'ASK_PROSPECT_DAY', awaiting: 'prospect', events };
+  return {
+    negotiation_id: negId, state: 'ASK_PROSPECT_DAY', awaiting: 'prospect', events,
+    ...buildRouting({ prospect_phone: prospect.phone || null, awaiting: 'prospect' }, tenantPhone),
+  };
 }
 
 async function loadNegotiation(pool, negId) {
@@ -344,10 +372,25 @@ async function loadNegotiation(pool, negId) {
 }
 
 // Apply a parsed inbound reply from `party` ('prospect'|'tenant').
-async function handleReply(pool, orgId, neg, party, rawIntent, rawText) {
+// `messageId` (optional) is TaneChat's WhatsApp message id — if we've already
+// processed it for this negotiation we no-op (idempotent), so a duplicate/echo
+// inbound or a retried POST can't double-advance the state machine.
+async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageId = null) {
   const setting = await getSetting(pool, orgId);
   const ctx = await loadContext(pool, neg);
   const hasTenant = Boolean(neg.tenant_id);
+
+  if (messageId) {
+    try {
+      const [[dup]] = await pool.execute(
+        `SELECT 1 FROM viewing_negotiation_event WHERE negotiation_id = ? AND client_message_id = ? LIMIT 1`,
+        [neg.id, String(messageId)]
+      );
+      if (dup) {
+        return { negotiation: neg, events: [], duplicate: true, ...buildRouting(neg, ctx.tenant_phone) };
+      }
+    } catch { /* column missing pre-migration — skip dedup */ }
+  }
 
   // Normalize the intent.
   const when = combineDateTime(rawIntent);
@@ -359,7 +402,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText) {
     cancel: Boolean(rawIntent && rawIntent.cancel),
     currentWhen: dateToWallClock(neg.current_proposed_datetime),
   };
-  await logInbound(pool, neg.id, party, rawIntent, rawText);
+  await logInbound(pool, neg.id, party, rawIntent, rawText, messageId);
 
   const baseVars = {
     '%Unit Name%': ctx.unit_name || '', '%Property Name%': ctx.property_name || '',
@@ -379,14 +422,14 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText) {
       notifyStaff(pool, orgId, 'Viewing needs staff',
         `${neg.prospect_name || 'A prospect'} — ${ctx.unit_name || 'unit'} at ${ctx.property_name || ''} (window_no_phone)`);
       const fresh = await loadNegotiation(pool, neg.id);
-      return { negotiation: fresh, events: [] };
+      return { negotiation: fresh, events: [], ...buildRouting(fresh, ctx.tenant_phone) };
     }
     const events = await dispatchOutbounds(pool, orgId, neg.id, setting, [
       { party, to_phone: toPhone, templateType: 'Viewing-Outside-Hours',
         vars: { ...baseVars, '%Proposed Time%': formatWhen(when) } },
     ]);
     const fresh = await loadNegotiation(pool, neg.id);
-    return { negotiation: fresh, events };
+    return { negotiation: fresh, events, ...buildRouting(fresh, ctx.tenant_phone) };
   }
 
   const plan = nextStep({
@@ -531,7 +574,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText) {
   }
   const events = await dispatchOutbounds(pool, orgId, neg.id, setting, outbounds);
   const fresh = await loadNegotiation(pool, neg.id);
-  return { negotiation: fresh, events };
+  return { negotiation: fresh, events, ...buildRouting(fresh, ctx.tenant_phone) };
 }
 
 // Staff releases a queued draft outbound (manual mode) → send + mark sent.

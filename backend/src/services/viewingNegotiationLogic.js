@@ -90,4 +90,16 @@ function nextStep({ state, party, intent, roundCount, maxRounds }) {
   return { type: 'ignore' };
 }
 
-module.exports = { DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, nextStep };
+// Routing block TaneChat pre-seeds its local phone→negotiation map from, so it
+// can avoid a per-message /active call. `negRow` needs prospect_phone + awaiting;
+// tenantPhone is looked up by the caller.
+function buildRouting(negRow, tenantPhone) {
+  const prospectPhone = (negRow && negRow.prospect_phone) || null;
+  const parties = { prospect: { phone: prospectPhone }, tenant: { phone: tenantPhone || null } };
+  const awaiting = (negRow && negRow.awaiting) || null;
+  const awaiting_phone = awaiting === 'prospect' ? prospectPhone
+    : awaiting === 'tenant' ? (tenantPhone || null) : null;
+  return { parties, awaiting_phone };
+}
+
+module.exports = { DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, nextStep, buildRouting };
