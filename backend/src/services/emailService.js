@@ -80,6 +80,17 @@ const TEMPLATE_TYPES = [
   // asks them for their preferred viewing windows. Built-in fallback in
   // services/viewingRequest.js if the org hasn't customised it.
   { value: 'Viewing-Availability-Request', label: 'Viewing Availability Request (Tenant)' },
+  // Viewing Relay Scheduler — the conversational WhatsApp relay steps. Each has a
+  // built-in fallback in services/viewingNegotiation.js; customise the wording here.
+  { value: 'Viewing-Prospect-Day-Ask', label: 'Viewing Relay — Ask Prospect for Day' },
+  { value: 'Viewing-Slot-Taken', label: 'Viewing Relay — Slot Taken (Prospect)' },
+  { value: 'Viewing-Checking', label: 'Viewing Relay — Checking (Prospect)' },
+  { value: 'Viewing-Tenant-Ask', label: 'Viewing Relay — Ask Tenant if Time Works' },
+  { value: 'Viewing-Tenant-Alt-Ask', label: 'Viewing Relay — Ask Tenant for Alternative' },
+  { value: 'Viewing-Relay-Prospect', label: 'Viewing Relay — Relay New Time to Prospect' },
+  { value: 'Viewing-Outside-Hours', label: 'Viewing Relay — Time Outside Hours' },
+  { value: 'Viewing-Relay-Confirmed', label: 'Viewing Relay — Confirmed (Both)' },
+  { value: 'Viewing-Relay-Escalated', label: 'Viewing Relay — Needs Staff (Both)' },
   // Inquiry follow-up reminder (sent to staff who created the inquiry)
   { value: 'Inquiry-Reminder', label: 'Inquiry Reminder (Staff)' },
 ];

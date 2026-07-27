@@ -971,6 +971,9 @@ function startScheduler() {
   cron.schedule('15 * * * *', () => {
     console.log('[Scheduler] Auto-declining stale viewing bookings...');
     runForAllOrgs('viewingAutoDecline', autoDeclineStaleViewingsForOrg);
+    // Also escalate stale relay-scheduler negotiations (no activity for 24h).
+    const { autoEscalateStaleNegotiationsForOrg } = require('./viewingNegotiation');
+    runForAllOrgs('viewingNegotiationReap', autoEscalateStaleNegotiationsForOrg);
   });
 
   // Daily at 08:30 - inquiry reminders (Inquiry-Reminder template to creator)

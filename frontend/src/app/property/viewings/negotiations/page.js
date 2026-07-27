@@ -1,0 +1,461 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Card, Table, Tag, Space, Button, Input, Select, Typography, message,
+  Drawer, Segmented, InputNumber, TimePicker, Checkbox, Empty, Popconfirm,
+} from 'antd';
+import {
+  ReloadOutlined, SearchOutlined, SettingOutlined, SendOutlined,
+  CheckOutlined, StopOutlined, CommentOutlined,
+} from '@ant-design/icons';
+import dayjs from 'dayjs';
+import MainLayout from '../../../../components/Layout';
+import { viewingApi } from '../../../../lib/api';
+
+const { Text, Title } = Typography;
+
+// state → { label, color }
+const STATE_META = {
+  ASK_PROSPECT_DAY: { label: 'Asking prospect', color: 'blue' },
+  CHECK_STAFF: { label: 'Checking calendar', color: 'geekblue' },
+  AWAIT_TENANT: { label: 'Awaiting tenant', color: 'orange' },
+  ASK_TENANT_ALT: { label: 'Asking tenant', color: 'orange' },
+  RELAY_TO_PROSPECT: { label: 'Relaying to prospect', color: 'purple' },
+  CONFIRMED: { label: 'Confirmed', color: 'green' },
+  NEEDS_STAFF: { label: 'Needs staff', color: 'red' },
+  CANCELLED: { label: 'Cancelled', color: 'default' },
+};
+const AWAITING_META = {
+  prospect: { label: 'Waiting on prospect', color: 'blue' },
+  tenant: { label: 'Waiting on tenant', color: 'orange' },
+  staff: { label: 'Waiting on staff', color: 'red' },
+};
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function stateTag(s) {
+  const m = STATE_META[s] || { label: s, color: 'default' };
+  return <Tag color={m.color}>{m.label}</Tag>;
+}
+function fmt(dt) {
+  return dt ? dayjs(dt).format('ddd, MMM D, h:mm A') : '';
+}
+
+export default function ViewingNegotiationsPage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [stateFilter, setStateFilter] = useState('');
+  const [awaitingFilter, setAwaitingFilter] = useState('');
+
+  // Detail drawer
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detail, setDetail] = useState(null); // { negotiation, events }
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [msgParty, setMsgParty] = useState('prospect');
+  const [msgText, setMsgText] = useState('');
+  const [sending, setSending] = useState(false);
+
+  // Setup drawer (relay settings + roster)
+  const [setupOpen, setSetupOpen] = useState(false);
+
+  const reload = useCallback(() => {
+    setLoading(true);
+    const params = {};
+    if (stateFilter) params.state = stateFilter;
+    if (awaitingFilter) params.awaiting = awaitingFilter;
+    if (search.trim()) params.q = search.trim();
+    viewingApi.listNegotiations(params)
+      .then((r) => setRows(r.data.data || []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [stateFilter, awaitingFilter, search]);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  const openDetail = useCallback((id) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetail(null);
+    viewingApi.getNegotiation(id)
+      .then((r) => setDetail(r.data.data))
+      .catch(() => message.error('Failed to load negotiation'))
+      .finally(() => setDetailLoading(false));
+  }, []);
+
+  const refreshDetail = useCallback(() => {
+    if (detail?.negotiation?.id) openDetail(detail.negotiation.id);
+    reload();
+  }, [detail, openDetail, reload]);
+
+  const approveMsg = async (eventId) => {
+    try {
+      await viewingApi.approveNegotiationMessage(detail.negotiation.id, eventId);
+      message.success('Message sent');
+      refreshDetail();
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to send');
+    }
+  };
+
+  const sendStaffMsg = async () => {
+    if (!msgText.trim()) return;
+    setSending(true);
+    try {
+      const r = await viewingApi.sendNegotiationMessage(detail.negotiation.id, msgParty, msgText.trim());
+      if (r.data.data?.status === 'sent') message.success('Sent');
+      else message.warning('Queued (WhatsApp not configured for this recipient)');
+      setMsgText('');
+      refreshDetail();
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to send');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const cancelNeg = async () => {
+    try {
+      await viewingApi.cancelNegotiation(detail.negotiation.id);
+      message.success('Cancelled');
+      refreshDetail();
+    } catch (e) {
+      message.error('Failed to cancel');
+    }
+  };
+
+  const columns = [
+    {
+      title: 'Prospect', dataIndex: 'prospect_name', key: 'prospect',
+      render: (v, r) => (
+        <Space direction="vertical" size={0}>
+          <Text strong>{v || 'Prospect'}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{r.prospect_phone || ''}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Unit', key: 'unit',
+      render: (_, r) => (
+        <Space direction="vertical" size={0}>
+          <Text>{r.unit_name}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{r.property_name}</Text>
+        </Space>
+      ),
+    },
+    { title: 'Status', dataIndex: 'state', key: 'state', render: (s) => stateTag(s) },
+    {
+      title: 'Waiting on', dataIndex: 'awaiting', key: 'awaiting',
+      render: (a) => a && AWAITING_META[a] ? <Tag color={AWAITING_META[a].color}>{AWAITING_META[a].label}</Tag> : '-',
+    },
+    {
+      title: 'Proposed', dataIndex: 'current_proposed_datetime', key: 'proposed',
+      render: (v) => v ? <Text>{fmt(v)}</Text> : <Text type="secondary">—</Text>,
+    },
+    { title: 'Rounds', dataIndex: 'round_count', key: 'rounds', align: 'center', width: 80 },
+    {
+      title: 'Updated', dataIndex: 'updated_at', key: 'updated',
+      render: (v) => <Text type="secondary" style={{ fontSize: 12 }}>{dayjs(v).format('MMM D, h:mm A')}</Text>,
+    },
+  ];
+
+  return (
+    <MainLayout>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div>
+            <Title level={3} style={{ margin: 0 }}>Viewing Requests</Title>
+            <Text type="secondary">Live viewing negotiations relayed between prospects and tenants over WhatsApp.</Text>
+          </div>
+          <Space>
+            <Button icon={<SettingOutlined />} onClick={() => setSetupOpen(true)}>Setup</Button>
+            <Button icon={<ReloadOutlined />} onClick={reload}>Refresh</Button>
+          </Space>
+        </div>
+
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Space wrap>
+            <Input
+              allowClear prefix={<SearchOutlined />} placeholder="Search prospect / unit / property"
+              value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 260 }}
+            />
+            <Select
+              allowClear placeholder="All statuses" style={{ width: 190 }}
+              value={stateFilter || undefined} onChange={(v) => setStateFilter(v || '')}
+              options={Object.entries(STATE_META).map(([k, v]) => ({ value: k, label: v.label }))}
+            />
+            <Select
+              allowClear placeholder="Waiting on anyone" style={{ width: 190 }}
+              value={awaitingFilter || undefined} onChange={(v) => setAwaitingFilter(v || '')}
+              options={Object.entries(AWAITING_META).map(([k, v]) => ({ value: k, label: v.label }))}
+            />
+          </Space>
+        </Card>
+
+        <Card size="small">
+          <Table
+            rowKey="id" size="middle" loading={loading} columns={columns} dataSource={rows}
+            pagination={{ pageSize: 20, showSizeChanger: false }}
+            onRow={(r) => ({ onClick: () => openDetail(r.id), style: { cursor: 'pointer' } })}
+            locale={{ emptyText: <Empty description="No viewing requests yet" /> }}
+          />
+        </Card>
+      </div>
+
+      <NegotiationDrawer
+        open={detailOpen} onClose={() => setDetailOpen(false)}
+        detail={detail} loading={detailLoading}
+        onApprove={approveMsg} onCancel={cancelNeg}
+        msgParty={msgParty} setMsgParty={setMsgParty}
+        msgText={msgText} setMsgText={setMsgText} sending={sending} onSend={sendStaffMsg}
+      />
+
+      <SetupDrawer open={setupOpen} onClose={() => setSetupOpen(false)} />
+    </MainLayout>
+  );
+}
+
+// ── Detail drawer: event log + approve drafts + staff message + cancel ────────
+function NegotiationDrawer({
+  open, onClose, detail, loading, onApprove, onCancel,
+  msgParty, setMsgParty, msgText, setMsgText, sending, onSend,
+}) {
+  const neg = detail?.negotiation;
+  const events = detail?.events || [];
+  const closed = neg && ['CONFIRMED', 'CANCELLED'].includes(neg.state);
+
+  return (
+    <Drawer
+      title={neg ? `${neg.prospect_name || 'Prospect'} — ${neg.unit_name}` : 'Viewing request'}
+      width={560} open={open} onClose={onClose}
+      extra={neg && !closed ? (
+        <Popconfirm title="Cancel this viewing request?" onConfirm={onCancel} okText="Cancel it" cancelText="No">
+          <Button danger size="small" icon={<StopOutlined />}>Cancel request</Button>
+        </Popconfirm>
+      ) : null}
+    >
+      {loading || !neg ? <Text type="secondary">Loading…</Text> : (
+        <>
+          <Space wrap style={{ marginBottom: 12 }}>
+            {stateTag(neg.state)}
+            {neg.awaiting && AWAITING_META[neg.awaiting] &&
+              <Tag color={AWAITING_META[neg.awaiting].color}>{AWAITING_META[neg.awaiting].label}</Tag>}
+            <Tag>Round {neg.round_count}</Tag>
+            {!neg.has_tenant && <Tag color="gold">Vacant (host)</Tag>}
+          </Space>
+          <div style={{ marginBottom: 8 }}>
+            <Text type="secondary">Property: </Text><Text>{neg.property_name}</Text><br />
+            {neg.current_proposed_datetime && (<><Text type="secondary">Proposed: </Text><Text>{fmt(neg.current_proposed_datetime)}</Text></>)}
+          </div>
+
+          <Title level={5} style={{ marginTop: 16 }}><CommentOutlined /> Conversation</Title>
+          <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 6, padding: 12 }}>
+            {events.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No messages yet" /> :
+              events.map((e) => <EventBubble key={e.id} e={e} onApprove={onApprove} />)}
+          </div>
+
+          {!closed && (
+            <div style={{ marginTop: 16 }}>
+              <Text strong>Send a message (staff takeover)</Text>
+              <Space.Compact style={{ display: 'flex', marginTop: 8 }}>
+                <Select value={msgParty} onChange={setMsgParty} style={{ width: 130 }}
+                  options={[{ value: 'prospect', label: 'To prospect' }, { value: 'tenant', label: 'To tenant' }]} />
+                <Input
+                  placeholder="Type a message…" value={msgText}
+                  onChange={(e) => setMsgText(e.target.value)} onPressEnter={onSend}
+                />
+                <Button type="primary" icon={<SendOutlined />} loading={sending} onClick={onSend}>Send</Button>
+              </Space.Compact>
+            </div>
+          )}
+        </>
+      )}
+    </Drawer>
+  );
+}
+
+function EventBubble({ e, onApprove }) {
+  const inbound = e.direction === 'in';
+  const isDraft = e.status === 'draft';
+  const who = e.party === 'prospect' ? 'Prospect' : e.party === 'tenant' ? 'Tenant' : e.party === 'staff' ? 'Staff' : 'System';
+  const align = inbound ? 'flex-start' : 'flex-end';
+  const bg = inbound ? '#f5f5f5' : (isDraft ? '#fffbe6' : '#e6f4ff');
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: align, marginBottom: 10 }}>
+      <div style={{ maxWidth: '85%', background: bg, borderRadius: 8, padding: '8px 12px', border: isDraft ? '1px solid #ffe58f' : 'none' }}>
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {inbound ? `${who} →` : `→ ${who}`} · {dayjs(e.created_at).format('MMM D, h:mm A')}
+          {isDraft && <Tag color="warning" style={{ marginLeft: 6 }}>Draft</Tag>}
+        </Text>
+        <div style={{ whiteSpace: 'pre-wrap', marginTop: 2 }}>{e.body}</div>
+        {isDraft && (
+          <Button type="primary" size="small" icon={<CheckOutlined />} style={{ marginTop: 6 }}
+            onClick={() => onApprove(e.id)}>Approve &amp; Send</Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Setup drawer: relay settings + property × weekday roster ───────────────────
+function SetupDrawer({ open, onClose }) {
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [settings, setSettings] = useState(null);
+  const [roster, setRoster] = useState({ entries: [], properties: [], staff: [] });
+  // grid[property_id][weekday] = employee_id
+  const [grid, setGrid] = useState({});
+
+  const load = useCallback(() => {
+    setLoading(true);
+    Promise.all([
+      viewingApi.getViewingSettings().catch(() => ({ data: { data: null } })),
+      viewingApi.getRoster().catch(() => ({ data: { data: { entries: [], properties: [], staff: [] } } })),
+    ]).then(([s, r]) => {
+      setSettings(s.data.data || { relay_mode: 'manual', max_rounds: 3, viewing_days: '1,2,3,4,5,6', viewing_start: '11:00:00', viewing_end: '19:00:00' });
+      const rd = r.data.data || { entries: [], properties: [], staff: [] };
+      setRoster(rd);
+      const g = {};
+      (rd.entries || []).forEach((e) => {
+        g[e.property_id] = g[e.property_id] || {};
+        g[e.property_id][e.weekday] = e.employee_id;
+      });
+      setGrid(g);
+    }).finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { if (open) load(); }, [open, load]);
+
+  const setCell = (propId, weekday, empId) => {
+    setGrid((prev) => {
+      const next = { ...prev, [propId]: { ...(prev[propId] || {}) } };
+      if (empId) next[propId][weekday] = empId; else delete next[propId][weekday];
+      return next;
+    });
+  };
+
+  const daysArr = (settings?.viewing_days || '1,2,3,4,5,6').split(',').map((n) => Number(n)).filter((n) => !isNaN(n));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await viewingApi.updateViewingSettings({
+        relay_mode: settings.relay_mode,
+        max_rounds: settings.max_rounds,
+        viewing_days: settings.viewing_days,
+        viewing_start: settings.viewing_start,
+        viewing_end: settings.viewing_end,
+      });
+      const entries = [];
+      Object.entries(grid).forEach(([propId, days]) => {
+        Object.entries(days).forEach(([wd, empId]) => {
+          if (empId) entries.push({ property_id: propId, weekday: Number(wd), employee_id: empId });
+        });
+      });
+      await viewingApi.updateRoster(entries);
+      message.success('Saved');
+      onClose();
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Drawer
+      title="Viewing Relay Setup" width={720} open={open} onClose={onClose}
+      extra={<Button type="primary" loading={saving} onClick={save} disabled={!settings}>Save</Button>}
+    >
+      {loading || !settings ? <Text type="secondary">Loading…</Text> : (
+        <>
+          <Title level={5}>Relay mode</Title>
+          <Segmented
+            value={settings.relay_mode}
+            onChange={(v) => setSettings({ ...settings, relay_mode: v })}
+            options={[
+              { label: 'Staff approves each message', value: 'manual' },
+              { label: 'Fully automatic', value: 'auto' },
+            ]}
+          />
+          <div style={{ marginTop: 6 }}>
+            <Text type="secondary">
+              {settings.relay_mode === 'manual'
+                ? 'Every outbound message waits for your approval on this dashboard before it is sent.'
+                : 'The bot sends every message immediately. You can still watch and step in here.'}
+            </Text>
+          </div>
+
+          <Title level={5} style={{ marginTop: 20 }}>Rules</Title>
+          <Space size="large" wrap>
+            <div>
+              <div><Text type="secondary">Escalate to staff after</Text></div>
+              <InputNumber min={1} max={10} value={settings.max_rounds}
+                onChange={(v) => setSettings({ ...settings, max_rounds: v })} addonAfter="counter-offers" />
+            </div>
+            <div>
+              <div><Text type="secondary">Viewing hours</Text></div>
+              <Space>
+                <TimePicker
+                  format="HH:mm" minuteStep={15} allowClear={false}
+                  value={dayjs(settings.viewing_start, 'HH:mm:ss')}
+                  onChange={(t) => setSettings({ ...settings, viewing_start: t.format('HH:mm:00') })}
+                />
+                <span>to</span>
+                <TimePicker
+                  format="HH:mm" minuteStep={15} allowClear={false}
+                  value={dayjs(settings.viewing_end, 'HH:mm:ss')}
+                  onChange={(t) => setSettings({ ...settings, viewing_end: t.format('HH:mm:00') })}
+                />
+              </Space>
+            </div>
+          </Space>
+          <div style={{ marginTop: 12 }}>
+            <div><Text type="secondary">Viewing days</Text></div>
+            <Checkbox.Group
+              value={daysArr}
+              onChange={(vals) => setSettings({ ...settings, viewing_days: [...vals].sort((a, b) => a - b).join(',') })}
+              options={WEEKDAYS.map((d, i) => ({ label: d, value: i }))}
+            />
+          </div>
+
+          <Title level={5} style={{ marginTop: 24 }}>Responsible staff (property × day)</Title>
+          <Text type="secondary">The person on duty for a property that weekday is whose Google calendar is checked.</Text>
+          {roster.properties.length === 0 ? (
+            <Empty style={{ marginTop: 16 }} description="No properties" />
+          ) : (
+            <div style={{ overflowX: 'auto', marginTop: 12 }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid #f0f0f0' }}>Property</th>
+                    {WEEKDAYS.map((d) => (
+                      <th key={d} style={{ padding: '6px 4px', borderBottom: '1px solid #f0f0f0', fontWeight: 500 }}>{d}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {roster.properties.map((p) => (
+                    <tr key={p.id}>
+                      <td style={{ padding: '4px 8px', borderBottom: '1px solid #fafafa', whiteSpace: 'nowrap' }}>{p.name}</td>
+                      {WEEKDAYS.map((d, wd) => (
+                        <td key={wd} style={{ padding: '2px 3px', borderBottom: '1px solid #fafafa' }}>
+                          <Select
+                            allowClear size="small" style={{ width: 110 }} placeholder="—"
+                            value={grid[p.id]?.[wd] || undefined}
+                            onChange={(v) => setCell(p.id, wd, v || null)}
+                            options={roster.staff.map((s) => ({ value: s.id, label: s.name }))}
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </Drawer>
+  );
+}

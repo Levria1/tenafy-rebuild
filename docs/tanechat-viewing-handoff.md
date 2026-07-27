@@ -131,3 +131,32 @@ The bot doesn't need to know which case applies — `viewing-request` handles it
 - **What Tenafy sends (not the bot):** the tenant "which time works?" prompt,
   all confirmations, cancellations, and reschedule links. The bot never messages
   the tenant.
+
+---
+
+## Relay Scheduler (2026-07-26) — the NEW conversational flow
+
+Supersedes the link-based invite flow for staff-initiated viewings. Tenafy owns
+the whole negotiation state machine + all outbound WhatsApp; the bot only (a)
+triggers `start` when staff press "Schedule Viewing", and (b) forwards each
+PARSED reply as a structured `intent`. See the design doc:
+`docs/superpowers/specs/2026-07-26-viewing-relay-scheduler-design.md`.
+
+**Endpoints (all `/api/public`, API-key):**
+- `POST /viewing-negotiation/start` `{ unit_id, prospect:{name,phone,email} }`
+  → `{ negotiation_id, state, events }`. (Idempotent per open unit+phone.)
+- `POST /viewing-negotiation/:id/prospect-reply` `{ intent, text }`
+- `POST /viewing-negotiation/:id/tenant-reply` `{ intent, text }`
+- `GET  /viewing-negotiation/active?phone=` → `{ active, negotiation_id, party, state, awaiting }`
+  — call this on ANY inbound WhatsApp to route it to the right negotiation/party.
+
+**`intent` shapes (what the bot parses the reply into):**
+- Propose a time: `{ date:"YYYY-MM-DD", time:"HH:mm" }` (or `{ datetime:"YYYY-MM-DDTHH:mm" }`)
+- Accept the offered time: `{ accepted:true }`
+- Decline + counter: `{ accepted:false, counter:{ date, time } }` (send as `date`/`time` on the intent)
+- Decline, no time: `{ accepted:false }`
+- Not interested / stop: `{ cancel:true }`
+
+Tenafy decides the next message and (in auto mode) sends it; in manual mode it
+queues a draft for staff to approve on the dashboard. The bot does NOT send the
+tenant anything — Tenafy relays both sides. Times are Hong Kong wall-clock.

@@ -620,6 +620,18 @@ export const viewingApi = {
   cancelBooking: (id) => api.patch(`/api/viewing/bookings/${id}/cancel`),
   rescheduleBooking: (id) => api.post(`/api/viewing/bookings/${id}/reschedule`),
   createManualBooking: (data) => api.post('/api/viewing/bookings/manual', data),
+
+  // Viewing Relay Scheduler — conversational negotiations dashboard.
+  listNegotiations: (params) => api.get('/api/viewing/negotiations', { params }),
+  getNegotiation: (id) => api.get(`/api/viewing/negotiations/${id}`),
+  approveNegotiationMessage: (id, event_id) => api.post(`/api/viewing/negotiations/${id}/approve`, { event_id }),
+  sendNegotiationMessage: (id, party, text) => api.post(`/api/viewing/negotiations/${id}/message`, { party, text }),
+  cancelNegotiation: (id) => api.post(`/api/viewing/negotiations/${id}/cancel`),
+  // Relay settings + property × weekday staff roster.
+  getViewingSettings: () => api.get('/api/viewing/settings'),
+  updateViewingSettings: (data) => api.put('/api/viewing/settings', data),
+  getRoster: () => api.get('/api/viewing/roster'),
+  updateRoster: (entries) => api.put('/api/viewing/roster', { entries }),
 };
 
 export const advertisingApi = {

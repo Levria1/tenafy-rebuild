@@ -60,6 +60,7 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
       children: [
         { key: '/property/list', label: <Link href="/property">All Properties</Link> },
         { key: '/property/viewings', label: <Link href="/property/viewings">Viewings</Link> },
+        { key: '/property/viewings/negotiations', label: <Link href="/property/viewings/negotiations">Viewing Requests</Link> },
       ],
     });
   }

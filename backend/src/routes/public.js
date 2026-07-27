@@ -7,7 +7,8 @@ const { searchUnits } = require('../services/unitSearch');
 const { getMasterPool } = require('../config/poolRegistry');
 const { KIND_INVITE } = require('../middleware/viewingTokenAuth');
 const { mintInvite } = require('../services/viewingInvite');
-const { createCandidateBooking } = require('../services/viewingBooking');
+const { createCandidateBooking, findActiveLeaseForUnit } = require('../services/viewingBooking');
+const viewingNegotiation = require('../services/viewingNegotiation');
 const { loadTemplate, substituteVariables } = require('../services/emailService');
 const { validateBookingSlot } = require('../utils/viewingWindow');
 const config = require('../config');
@@ -326,6 +327,124 @@ router.post('/viewing-request', async (req, res) => {
   } catch (err) {
     console.error('Public viewing-request error:', err);
     fail(res, 'Failed to create viewing request');
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// VIEWING RELAY SCHEDULER (conversational, Tenafy-owned state machine)
+// TaneChat triggers `start` and forwards each PARSED reply; Tenafy owns state,
+// calendar checks, templates and all outbound sending. See
+// docs/superpowers/specs/2026-07-26-viewing-relay-scheduler-design.md
+// ────────────────────────────────────────────────────────────────
+
+function normPhoneDigits(p) {
+  const d = String(p || '').replace(/\D/g, '');
+  return d.length > 8 ? d.slice(-8) : d; // compare on the local subscriber part
+}
+
+// POST /api/public/viewing-negotiation/start
+// Body: { unit_id, prospect:{name,phone,email} }
+// Staff pressed "Schedule Viewing". Creates the negotiation + first prospect prompt.
+router.post('/viewing-negotiation/start', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const { unit_id } = req.body || {};
+    const prospect = (req.body && req.body.prospect) || {};
+    if (!unit_id) return fail(res, 'unit_id is required', 400);
+    if (!prospect.phone) return fail(res, 'prospect.phone is required', 400);
+
+    const resolved = await resolveMarketedUnit(req.pool, orgId, unit_id);
+    if (resolved.reason) {
+      return ok(res, { available: false, reason: resolved.reason,
+        message: resolved.reason === 'not_marketing'
+          ? 'This unit is not open for viewings right now.' : 'Unit not found.' });
+    }
+    // resolveMarketedUnit's lease only carries {id, viewing_enabled}; fetch tenant_id.
+    let lease = null;
+    if (resolved.lease) {
+      const active = await findActiveLeaseForUnit(req.pool, unit_id);
+      lease = { id: resolved.lease.id, tenant_id: active ? active.tenant_id : null };
+    }
+    const out = await viewingNegotiation.startNegotiation(req.pool, orgId, {
+      unit: resolved.unit, lease, prospect,
+    });
+    return ok(res, { available: true, ...out });
+  } catch (err) {
+    console.error('Public viewing-negotiation/start error:', err);
+    fail(res, 'Failed to start viewing negotiation');
+  }
+});
+
+// Shared handler for a parsed reply from either side.
+async function handleNegotiationReply(req, res, party) {
+  try {
+    const orgId = req.apiKey.orgId;
+    const negId = req.params.id;
+    const intent = (req.body && req.body.intent) || {};
+    const text = (req.body && req.body.text) || null;
+    const neg = await viewingNegotiation.loadNegotiation(req.pool, negId);
+    if (!neg) return fail(res, 'Negotiation not found', 404);
+    if (['CONFIRMED', 'CANCELLED', 'NEEDS_STAFF'].includes(neg.state)) {
+      return ok(res, { closed: true, state: neg.state,
+        message: 'This viewing request is no longer active — our team will follow up.' });
+    }
+    const out = await viewingNegotiation.handleReply(req.pool, orgId, neg, party, intent, text);
+    return ok(res, {
+      negotiation_id: negId,
+      state: out.negotiation ? out.negotiation.state : null,
+      awaiting: out.negotiation ? out.negotiation.awaiting : null,
+      events: out.events,
+    });
+  } catch (err) {
+    console.error(`Public viewing-negotiation ${party}-reply error:`, err);
+    fail(res, 'Failed to process reply');
+  }
+}
+
+// POST /api/public/viewing-negotiation/:id/prospect-reply  Body: { intent, text }
+router.post('/viewing-negotiation/:id/prospect-reply', (req, res) => handleNegotiationReply(req, res, 'prospect'));
+// POST /api/public/viewing-negotiation/:id/tenant-reply    Body: { intent, text }
+router.post('/viewing-negotiation/:id/tenant-reply', (req, res) => handleNegotiationReply(req, res, 'tenant'));
+
+// GET /api/public/viewing-negotiation/active?phone=...
+// Routing helper: given an inbound WhatsApp phone, find the open negotiation it
+// belongs to and whether it's the prospect or the tenant, so TaneChat can tag
+// the reply. → { active:true, negotiation_id, party, state, awaiting } | { active:false }
+router.get('/viewing-negotiation/active', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const target = normPhoneDigits(req.query.phone);
+    if (!target) return ok(res, { active: false });
+    const [rows] = await req.pool.execute(
+      `SELECT n.id, n.state, n.awaiting, n.prospect_phone, t.phone AS tenant_phone
+         FROM viewing_negotiation n
+         LEFT JOIN tenant t ON t.id = n.tenant_id
+        WHERE n.state NOT IN ('CONFIRMED','CANCELLED','NEEDS_STAFF')
+        ORDER BY n.updated_at DESC LIMIT 200`,
+      []
+    );
+    // Collect every negotiation this phone appears in (as prospect and/or tenant).
+    // Rows are newest-first; prefer the one actually WAITING on that party so a
+    // phone reused across negotiations (or that is both a tenant and a prospect)
+    // routes to the negotiation expecting its reply.
+    const matches = [];
+    for (const r of rows) {
+      if (normPhoneDigits(r.prospect_phone) === target) {
+        matches.push({ negotiation_id: String(r.id), party: 'prospect', state: r.state, awaiting: r.awaiting });
+      }
+      if (r.tenant_phone && normPhoneDigits(r.tenant_phone) === target) {
+        matches.push({ negotiation_id: String(r.id), party: 'tenant', state: r.state, awaiting: r.awaiting });
+      }
+    }
+    if (!matches.length) return ok(res, { active: false });
+    const best = matches.find(m => m.awaiting === m.party) || matches[0];
+    return ok(res, {
+      active: true, ...best,
+      ambiguous: matches.length > 1 ? matches.length : undefined,
+    });
+  } catch (err) {
+    console.error('Public viewing-negotiation/active error:', err);
+    fail(res, 'Failed to look up negotiation');
   }
 });
 

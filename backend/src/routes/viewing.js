@@ -20,6 +20,7 @@ const { deleteViewingEvent } = require('../services/googleCalendar');
 const { sendWhatsApp } = require('../services/whatsappService');
 const { sendViewingMail } = require('../services/viewingNotify');
 const { mintInvite } = require('../services/viewingInvite');
+const viewingNegotiation = require('../services/viewingNegotiation');
 
 router.use(authenticate);
 
@@ -833,6 +834,252 @@ router.post('/bookings/manual', async (req, res) => {
   } catch (err) {
     console.error('[viewing] manual booking error:', err);
     fail(res, 'Failed to create booking');
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VIEWING RELAY SCHEDULER — staff dashboard, roster, settings
+// (org-scoped via property.org_id — viewing_negotiation has no org_id column)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Load a negotiation and confirm it belongs to the caller's org.
+async function loadNegotiationOrg(pool, orgId, id) {
+  const [[row]] = await pool.execute(
+    `SELECT n.* FROM viewing_negotiation n
+       JOIN property p ON p.id = n.property_id
+      WHERE n.id = ? AND p.org_id = ? LIMIT 1`,
+    [id, orgId]
+  );
+  return row || null;
+}
+
+// GET /api/viewing/negotiations?state=&awaiting=&q=
+router.get('/negotiations', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const where = ['p.org_id = ?'];
+    const params = [orgId];
+    if (req.query.state) { where.push('n.state = ?'); params.push(req.query.state); }
+    if (req.query.awaiting) { where.push('n.awaiting = ?'); params.push(req.query.awaiting); }
+    if (req.query.q) {
+      where.push('(n.prospect_name LIKE ? OR u.name LIKE ? OR p.display_name LIKE ?)');
+      const like = `%${req.query.q}%`;
+      params.push(like, like, like);
+    }
+    const [rows] = await req.pool.execute(
+      `SELECT n.id, n.state, n.awaiting, n.round_count, n.current_proposed_datetime,
+              n.prospect_name, n.prospect_phone, n.created_at, n.updated_at,
+              u.name AS unit_name, p.display_name AS property_name
+         FROM viewing_negotiation n
+         JOIN unit u ON u.id = n.unit_id
+         JOIN property p ON p.id = n.property_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY n.updated_at DESC LIMIT 300`,
+      params
+    );
+    ok(res, rows.map(r => ({ ...r, id: String(r.id) })));
+  } catch (err) {
+    console.error('[viewing] list negotiations error:', err);
+    fail(res, 'Failed to load negotiations');
+  }
+});
+
+// GET /api/viewing/negotiations/:id  → negotiation + full event log
+router.get('/negotiations/:id', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const neg = await loadNegotiationOrg(req.pool, orgId, req.params.id);
+    if (!neg) return fail(res, 'Negotiation not found', 404);
+    const ctx = await viewingNegotiation.loadContext(req.pool, neg);
+    const [events] = await req.pool.execute(
+      `SELECT id, direction, party, to_phone, template_type, body, status, created_at, sent_at
+         FROM viewing_negotiation_event WHERE negotiation_id = ? ORDER BY created_at ASC, id ASC`,
+      [req.params.id]
+    );
+    ok(res, {
+      negotiation: { ...neg, id: String(neg.id),
+        unit_name: ctx.unit_name, property_name: ctx.property_name,
+        tenant_phone: ctx.tenant_phone, has_tenant: ctx.hasTenant },
+      events: events.map(e => ({ ...e, id: String(e.id) })),
+    });
+  } catch (err) {
+    console.error('[viewing] get negotiation error:', err);
+    fail(res, 'Failed to load negotiation');
+  }
+});
+
+// POST /api/viewing/negotiations/:id/approve  Body: { event_id }
+// Release a queued draft outbound (manual mode) — sends it via WhatsApp.
+router.post('/negotiations/:id/approve', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { event_id } = req.body || {};
+    if (!event_id) return fail(res, 'event_id is required', 400);
+    const neg = await loadNegotiationOrg(req.pool, orgId, req.params.id);
+    if (!neg) return fail(res, 'Negotiation not found', 404);
+    // Ensure the draft belongs to this negotiation.
+    const [[ev]] = await req.pool.execute(
+      `SELECT id FROM viewing_negotiation_event WHERE id = ? AND negotiation_id = ? LIMIT 1`,
+      [event_id, req.params.id]
+    );
+    if (!ev) return fail(res, 'Draft not found', 404);
+    const r = await viewingNegotiation.approveDraft(req.pool, orgId, event_id);
+    if (!r.ok) return fail(res, r.error || 'Failed to send', 400);
+    ok(res, { sent: true });
+  } catch (err) {
+    console.error('[viewing] approve draft error:', err);
+    fail(res, 'Failed to approve message');
+  }
+});
+
+// POST /api/viewing/negotiations/:id/message  Body: { party:'prospect'|'tenant', text }
+// Staff takeover — send a free-form message into either chat.
+router.post('/negotiations/:id/message', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { party, text } = req.body || {};
+    if (!['prospect', 'tenant'].includes(party)) return fail(res, "party must be 'prospect' or 'tenant'", 400);
+    if (!text || !String(text).trim()) return fail(res, 'text is required', 400);
+    const neg = await loadNegotiationOrg(req.pool, orgId, req.params.id);
+    if (!neg) return fail(res, 'Negotiation not found', 404);
+    const r = await viewingNegotiation.staffMessage(req.pool, orgId, neg, party, String(text).trim());
+    ok(res, r);
+  } catch (err) {
+    console.error('[viewing] staff message error:', err);
+    fail(res, 'Failed to send message');
+  }
+});
+
+// POST /api/viewing/negotiations/:id/cancel
+router.post('/negotiations/:id/cancel', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const neg = await loadNegotiationOrg(req.pool, orgId, req.params.id);
+    if (!neg) return fail(res, 'Negotiation not found', 404);
+    await viewingNegotiation.cancelNegotiation(req.pool, orgId, neg);
+    ok(res, { cancelled: true });
+  } catch (err) {
+    console.error('[viewing] cancel negotiation error:', err);
+    fail(res, 'Failed to cancel negotiation');
+  }
+});
+
+// GET /api/viewing/roster  → property × weekday assignments (+ properties + staff for the editor)
+router.get('/roster', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    let entries = [];
+    try {
+      const [rows] = await req.pool.execute(
+        `SELECT r.id, r.property_id, r.weekday, r.employee_id
+           FROM viewing_staff_roster r
+           JOIN property p ON p.id = r.property_id
+          WHERE p.org_id = ? AND r.active = 1`,
+        [orgId]
+      );
+      entries = rows.map(r => ({ ...r, id: String(r.id), property_id: String(r.property_id), employee_id: String(r.employee_id) }));
+    } catch { entries = []; } // table not migrated yet
+    const [props] = await req.pool.execute(
+      `SELECT id, display_name FROM property WHERE org_id = ? AND (status IS NULL OR status != 0) ORDER BY display_name`,
+      [orgId]
+    );
+    const [staff] = await req.pool.execute(
+      `SELECT id, first_name, last_name, email FROM user WHERE org_id = ? AND (status IS NULL OR status = 1) ORDER BY first_name, last_name`,
+      [orgId]
+    );
+    ok(res, {
+      entries,
+      properties: props.map(p => ({ id: String(p.id), name: p.display_name })),
+      staff: staff.map(s => ({ id: String(s.id), name: [s.first_name, s.last_name].filter(Boolean).join(' ') || s.email })),
+    });
+  } catch (err) {
+    console.error('[viewing] get roster error:', err);
+    fail(res, 'Failed to load roster');
+  }
+});
+
+// PUT /api/viewing/roster  Body: { entries:[{property_id, weekday, employee_id}] }  — full rebuild
+router.put('/roster', async (req, res) => {
+  const conn = await req.pool.getConnection();
+  try {
+    const orgId = req.user.orgId;
+    const entries = Array.isArray(req.body && req.body.entries) ? req.body.entries : [];
+    // Validate every property belongs to the org.
+    const [props] = await conn.execute('SELECT id FROM property WHERE org_id = ?', [orgId]);
+    const orgProps = new Set(props.map(p => String(p.id)));
+    const clean = entries.filter(e =>
+      e && orgProps.has(String(e.property_id)) && e.employee_id != null &&
+      Number(e.weekday) >= 0 && Number(e.weekday) <= 6);
+
+    await conn.beginTransaction();
+    // Rebuild only this org's rows.
+    await conn.execute(
+      `DELETE r FROM viewing_staff_roster r JOIN property p ON p.id = r.property_id WHERE p.org_id = ?`,
+      [orgId]
+    );
+    for (const e of clean) {
+      await conn.execute(
+        `INSERT INTO viewing_staff_roster (id, property_id, weekday, employee_id, active)
+         VALUES (?, ?, ?, ?, 1)`,
+        [newId(), String(e.property_id), Number(e.weekday), String(e.employee_id)]
+      );
+    }
+    await conn.commit();
+    ok(res, { saved: clean.length });
+  } catch (err) {
+    try { await conn.rollback(); } catch {}
+    console.error('[viewing] put roster error:', err);
+    fail(res, 'Failed to save roster');
+  } finally {
+    conn.release();
+  }
+});
+
+// GET /api/viewing/settings
+router.get('/settings', async (req, res) => {
+  try {
+    const s = await viewingNegotiation.getSetting(req.pool, req.user.orgId);
+    ok(res, s);
+  } catch (err) {
+    console.error('[viewing] get settings error:', err);
+    fail(res, 'Failed to load settings');
+  }
+});
+
+// PUT /api/viewing/settings  — partial upsert
+router.put('/settings', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const b = req.body || {};
+    const fields = [];
+    const params = [];
+    if (b.relay_mode !== undefined) {
+      if (!['manual', 'auto'].includes(b.relay_mode)) return fail(res, 'relay_mode must be manual or auto', 400);
+      fields.push('relay_mode'); params.push(b.relay_mode);
+    }
+    if (b.max_rounds !== undefined) {
+      const n = Number(b.max_rounds);
+      if (!Number.isInteger(n) || n < 1 || n > 10) return fail(res, 'max_rounds must be 1–10', 400);
+      fields.push('max_rounds'); params.push(n);
+    }
+    if (b.viewing_days !== undefined) { fields.push('viewing_days'); params.push(String(b.viewing_days)); }
+    if (b.viewing_start !== undefined) { fields.push('viewing_start'); params.push(String(b.viewing_start)); }
+    if (b.viewing_end !== undefined) { fields.push('viewing_end'); params.push(String(b.viewing_end)); }
+    if (!fields.length) return ok(res, await viewingNegotiation.getSetting(req.pool, orgId));
+
+    // Upsert the single row for this org.
+    const cols = ['org_id', ...fields];
+    const placeholders = cols.map(() => '?').join(', ');
+    const updates = fields.map(f => `${f} = VALUES(${f})`).join(', ');
+    await req.pool.execute(
+      `INSERT INTO viewing_setting (${cols.join(', ')}) VALUES (${placeholders})
+       ON DUPLICATE KEY UPDATE ${updates}`,
+      [orgId, ...params]
+    );
+    ok(res, await viewingNegotiation.getSetting(req.pool, orgId));
+  } catch (err) {
+    console.error('[viewing] put settings error:', err);
+    fail(res, 'Failed to save settings');
   }
 });
 
