@@ -49,13 +49,21 @@ function stripDataUrl(s) {
   return String(s).replace(/^data:image\/\w+;base64,/, '');
 }
 
-async function embedPngSafe(pdfDoc, dataUrlOrB64) {
+// Embed a signature image whether it's a PNG or a JPEG. Signatures captured in
+// the browser are PNG, but an uploaded landlord signature can be a JPEG — and
+// pdf-lib's embedPng throws on JPEG bytes, which is why such signatures came out
+// blank. Detect the format (magic bytes / data-URL mime) and use the right
+// embedder, falling back to the other on error.
+async function embedImageSafe(pdfDoc, dataUrlOrB64) {
+  const raw = String(dataUrlOrB64 || '');
+  const bytes = Buffer.from(stripDataUrl(raw), 'base64');
+  if (!bytes.length) return null;
+  const isJpg = (bytes[0] === 0xFF && bytes[1] === 0xD8) || /^data:image\/jpe?g/i.test(raw);
   try {
-    const bytes = Buffer.from(stripDataUrl(dataUrlOrB64), 'base64');
-    if (!bytes.length) return null;
-    return await pdfDoc.embedPng(bytes);
+    return isJpg ? await pdfDoc.embedJpg(bytes) : await pdfDoc.embedPng(bytes);
   } catch {
-    return null;
+    try { return isJpg ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes); }
+    catch { return null; }
   }
 }
 
@@ -106,7 +114,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   let landlordPlacedAtAnchor = false;
 
   async function drawSigAtAnchor(anchor, pngData) {
-    const png = await embedPngSafe(pdfDoc, pngData);
+    const png = await embedImageSafe(pdfDoc, pngData);
     if (!png) return false;
     const page = contentPages[anchor.page];
     if (!page) return false;
@@ -144,12 +152,12 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     if (p.status !== 2) continue;
     const src = p.initials_png || null;   // dedicated initials, if captured
     if (!src) continue;
-    const png = await embedPngSafe(pdfDoc, src);
+    const png = await embedImageSafe(pdfDoc, src);
     if (png) initialImgs.push(png);
   }
   // Landlord initials — reuse its signature image scaled into the small box.
   if (landlordSig && landlordSig.signature_png) {
-    const png = await embedPngSafe(pdfDoc, landlordSig.signature_png);
+    const png = await embedImageSafe(pdfDoc, landlordSig.signature_png);
     if (png) initialImgs.push(png);
   }
 
@@ -192,7 +200,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     for (const party of unplacedTenants) {
       sigPage.drawText('TENANT SIGNATURE', { x: PAGE_PADDING, y, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
       y -= 8;
-      const png = await embedPngSafe(pdfDoc, party.signature_png);
+      const png = await embedImageSafe(pdfDoc, party.signature_png);
       if (png) {
         const dims = png.scaleToFit(SIG_WIDTH, SIG_HEIGHT);
         sigPage.drawImage(png, { x: PAGE_PADDING, y: y - dims.height, width: dims.width, height: dims.height });
@@ -218,7 +226,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     if (landlordNeedsAppend) {
       sigPage.drawText('LANDLORD SIGNATURE', { x: PAGE_PADDING, y, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
       y -= 8;
-      const png = await embedPngSafe(pdfDoc, landlordSig.signature_png);
+      const png = await embedImageSafe(pdfDoc, landlordSig.signature_png);
       if (png) {
         const dims = png.scaleToFit(SIG_WIDTH, SIG_HEIGHT);
         sigPage.drawImage(png, { x: PAGE_PADDING, y: y - dims.height, width: dims.width, height: dims.height });
@@ -229,7 +237,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
       y -= 14;
       sigPage.drawText(`Name:  ${landlordSig.label}`, { x: PAGE_PADDING, y, size: 10, font: helv });
       y -= 14;
-      sigPage.drawText(`Signed: ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC (auto)`, {
+      sigPage.drawText(`Signed: ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`, {
         x: PAGE_PADDING, y, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4),
       });
     }
@@ -283,7 +291,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     cy -= 6;
   }
   if (landlordSig && landlordSig.signature_png) {
-    cert.drawText(`• ${landlordSig.label} (Landlord, auto-signed)`, { x: PAGE_PADDING, y: cy, size: 10, font: helvBold });
+    cert.drawText(`• ${landlordSig.label} (Landlord)`, { x: PAGE_PADDING, y: cy, size: 10, font: helvBold });
     cy -= 16;
   }
 
