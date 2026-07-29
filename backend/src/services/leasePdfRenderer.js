@@ -44,6 +44,21 @@ async function getBrowser() {
 // Wrap the template's body in a full HTML document with sensible defaults.
 // Header / footer are rendered separately by Puppeteer via headerTemplate /
 // footerTemplate options (so they repeat on every page).
+// Quill often stores text with a `&nbsp;` between every word (from pasted copy).
+// `&nbsp;` is NON-breaking, so long lines can't wrap and overflow the page (text
+// gets clipped on the right). Convert a LONE `&nbsp;` (a word separator) back to
+// a normal space so lines wrap, but KEEP runs of 2+ `&nbsp;` — those are
+// intentional layout spacing (signature-line gaps, column indents) that must
+// stay non-breaking.
+function softenNbsp(html) {
+  const s = String(html || '');
+  return s.replace(/&nbsp;/g, (m, off) => {
+    const prev = s.slice(off - 6, off) === '&nbsp;';
+    const next = s.slice(off + 6, off + 12) === '&nbsp;';
+    return (prev || next) ? '&nbsp;' : ' ';
+  });
+}
+
 function wrapBody(bodyHtml) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -238,7 +253,7 @@ async function renderHtmlToPdf({ body, header, footer, pageSize }) {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
-    await page.setContent(wrapBody(body), { waitUntil: 'networkidle0' });
+    await page.setContent(wrapBody(softenNbsp(body)), { waitUntil: 'networkidle0' });
     const hasHeaderOrFooter = (header && header.trim()) || (footer && footer.trim());
     const pdf = await page.pdf({
       format: pageSize || 'A4',
