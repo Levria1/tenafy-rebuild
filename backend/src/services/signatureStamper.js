@@ -46,7 +46,7 @@ const ANCHOR_LIFT = 2;
 
 function stripDataUrl(s) {
   if (!s) return '';
-  return String(s).replace(/^data:image\/\w+;base64,/, '');
+  return String(s).replace(/^data:image\/[\w.+-]+;base64,/i, '');
 }
 
 // Embed a signature image whether it's a PNG or a JPEG. Signatures captured in
@@ -63,7 +63,13 @@ async function embedImageSafe(pdfDoc, dataUrlOrB64) {
     return isJpg ? await pdfDoc.embedJpg(bytes) : await pdfDoc.embedPng(bytes);
   } catch {
     try { return isJpg ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes); }
-    catch { return null; }
+    catch {
+      // Unsupported format (GIF/WebP/HEIC/…) — log so the next gap is diagnosable
+      // in logs rather than by a blank signature.
+      console.warn('[stamper] could not embed signature image (%d bytes, magic %s) — leaving blank',
+        bytes.length, bytes.slice(0, 4).toString('hex'));
+      return null;
+    }
   }
 }
 

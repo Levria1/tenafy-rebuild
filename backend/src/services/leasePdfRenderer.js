@@ -55,10 +55,14 @@ async function getBrowser() {
 //     landlord/tenant signature layout wraps and breaks).
 function softenNbsp(html) {
   const s = String(html || '');
-  const alnum = (ch) => ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z';
+  // A neighbour is "content" (letter, digit, punctuation, accented char, …) as
+  // long as it isn't a marker of intentional/structural nbsp: `_` (signature
+  // underscore line), `<`/`>` (tag boundary) or `&` (adjacent entity). Convert a
+  // lone nbsp with content on BOTH sides (a real word separator) to a space.
+  const content = (ch) => !!ch && !'<>&_'.includes(ch);
   return s.replace(/&nbsp;/g, (m, off) => {
     if (s.slice(off - 6, off) === '&nbsp;' || s.slice(off + 6, off + 12) === '&nbsp;') return '&nbsp;';
-    return (alnum(s[off - 1] || '') && alnum(s[off + 6] || '')) ? ' ' : '&nbsp;';
+    return (content(s[off - 1]) && content(s[off + 6])) ? ' ' : '&nbsp;';
   });
 }
 
