@@ -89,6 +89,7 @@ const TEMPLATE_TYPES = [
   { value: 'Viewing-Tenant-Alt-Ask', label: 'Viewing Relay — Ask Tenant for Alternative' },
   { value: 'Viewing-Relay-Prospect', label: 'Viewing Relay — Relay New Time to Prospect' },
   { value: 'Viewing-Outside-Hours', label: 'Viewing Relay — Time Outside Hours' },
+  { value: 'Viewing-Confirm-Time', label: 'Viewing Relay — Read-back Confirm (Proposer)' },
   { value: 'Viewing-Relay-Confirmed', label: 'Viewing Relay — Confirmed (Both)' },
   { value: 'Viewing-Relay-Escalated', label: 'Viewing Relay — Needs Staff (Both)' },
   // Inquiry follow-up reminder (sent to staff who created the inquiry)

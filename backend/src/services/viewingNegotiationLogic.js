@@ -7,7 +7,7 @@
  */
 
 const DEFAULT_SETTING = {
-  relay_mode: 'manual', max_rounds: 3,
+  relay_mode: 'manual', max_rounds: 3, read_back: 1,
   viewing_days: '1,2,3,4,5,6', viewing_start: '11:00:00', viewing_end: '19:00:00',
 };
 
@@ -53,13 +53,20 @@ function withinWindow(whenIso, setting) {
  * roundCount escalates BEFORE incrementing: once roundCount >= maxRounds, the
  * next counter-offer escalates to staff (so up to maxRounds counters happen).
  */
-function nextStep({ state, party, intent, roundCount, maxRounds }) {
+// When `readBack` is on, a fresh time PROPOSAL returns { type:'read_back', ... }
+// instead of acting immediately — the orchestrator echoes the parsed time+unit to
+// the proposer and moves to CONFIRM_TIME. On confirmation, `nextStep` returns
+// { type:'confirmed_proceed', proposedBy, ... } and the orchestrator runs the
+// deferred action (staff_check for a prospect time, relay for a tenant counter).
+// `proposedBy` is the negotiation's stored proposer (only meaningful in CONFIRM_TIME).
+function nextStep({ state, party, intent, roundCount, maxRounds, readBack = false, proposedBy = null }) {
   intent = intent || {};
   if (intent.cancel) return { type: 'cancel' };
 
   if (party === 'prospect') {
     if (state === 'ASK_PROSPECT_DAY') {
       if (!intent.when) return { type: 'reprompt_day' };
+      if (readBack) return { type: 'read_back', when: intent.when, proposedBy: 'prospect', roundDelta: 0 };
       return { type: 'staff_check', when: intent.when, proposedBy: 'prospect', confirmOnFree: false, roundDelta: 0 };
     }
     if (state === 'RELAY_TO_PROSPECT') {
@@ -68,9 +75,16 @@ function nextStep({ state, party, intent, roundCount, maxRounds }) {
       }
       if (intent.when) {
         if (roundCount >= maxRounds) return { type: 'escalate', reason: 'max_rounds' };
+        if (readBack) return { type: 'read_back', when: intent.when, proposedBy: 'prospect', roundDelta: 1 };
         return { type: 'staff_check', when: intent.when, proposedBy: 'prospect', confirmOnFree: false, roundDelta: 1 };
       }
       return { type: 'reprompt_day' }; // declined without a counter
+    }
+    if (state === 'CONFIRM_TIME') {
+      if (proposedBy !== 'prospect') return { type: 'ignore' }; // only the proposer confirms their own time
+      if (intent.when) return { type: 'read_back', when: intent.when, proposedBy: 'prospect', roundDelta: 0 }; // corrected → re-confirm
+      if (intent.accepted === true) return { type: 'confirmed_proceed', proposedBy: 'prospect', when: intent.pendingWhen };
+      return { type: 'reprompt_day' }; // "no" → ask for another time
     }
     return { type: 'ignore' };
   }
@@ -80,10 +94,17 @@ function nextStep({ state, party, intent, roundCount, maxRounds }) {
       if (state === 'AWAIT_TENANT' && intent.accepted === true) return { type: 'confirm' };
       if (intent.when) {
         if (roundCount >= maxRounds) return { type: 'escalate', reason: 'max_rounds' };
+        if (readBack) return { type: 'read_back', when: intent.when, proposedBy: 'tenant', roundDelta: 1 };
         return { type: 'relay_to_prospect', when: intent.when, proposedBy: 'tenant', roundDelta: 1 };
       }
       if (state === 'AWAIT_TENANT') return { type: 'ask_tenant_alt' }; // declined, no time yet
       return { type: 'ignore' };
+    }
+    if (state === 'CONFIRM_TIME') {
+      if (proposedBy !== 'tenant') return { type: 'ignore' };
+      if (intent.when) return { type: 'read_back', when: intent.when, proposedBy: 'tenant', roundDelta: 0 };
+      if (intent.accepted === true) return { type: 'confirmed_proceed', proposedBy: 'tenant', when: intent.pendingWhen };
+      return { type: 'ask_tenant_alt' }; // "no" → ask the tenant for another time
     }
     return { type: 'ignore' };
   }

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Card, Table, Tag, Space, Button, Input, Select, Typography, message,
-  Drawer, Segmented, InputNumber, TimePicker, Checkbox, Empty, Popconfirm,
+  Drawer, Segmented, InputNumber, TimePicker, Checkbox, Empty, Popconfirm, Switch,
 } from 'antd';
 import {
   ReloadOutlined, SearchOutlined, SettingOutlined, SendOutlined,
@@ -312,7 +312,7 @@ function SetupDrawer({ open, onClose }) {
       viewingApi.getViewingSettings().catch(() => ({ data: { data: null } })),
       viewingApi.getRoster().catch(() => ({ data: { data: { entries: [], properties: [], staff: [] } } })),
     ]).then(([s, r]) => {
-      setSettings(s.data.data || { relay_mode: 'manual', max_rounds: 3, viewing_days: '1,2,3,4,5,6', viewing_start: '11:00:00', viewing_end: '19:00:00' });
+      setSettings(s.data.data || { relay_mode: 'manual', max_rounds: 3, read_back: 1, viewing_days: '1,2,3,4,5,6', viewing_start: '11:00:00', viewing_end: '19:00:00' });
       const rd = r.data.data || { entries: [], properties: [], staff: [] };
       setRoster(rd);
       const g = {};
@@ -342,6 +342,7 @@ function SetupDrawer({ open, onClose }) {
       await viewingApi.updateViewingSettings({
         relay_mode: settings.relay_mode,
         max_rounds: settings.max_rounds,
+        read_back: settings.read_back ? 1 : 0,
         viewing_days: settings.viewing_days,
         viewing_start: settings.viewing_start,
         viewing_end: settings.viewing_end,
@@ -387,6 +388,17 @@ function SetupDrawer({ open, onClose }) {
           </div>
 
           <Title level={5} style={{ marginTop: 20 }}>Rules</Title>
+          <div style={{ marginBottom: 12 }}>
+            <Space>
+              <Switch checked={!!settings.read_back}
+                onChange={(v) => setSettings({ ...settings, read_back: v ? 1 : 0 })} />
+              <Text>Read-back confirmation</Text>
+            </Space>
+            <div><Text type="secondary" style={{ fontSize: 12 }}>
+              When someone proposes a time, echo it back (“view %Unit% on %Time%? reply YES”) and wait for
+              confirmation before checking the calendar / messaging the other party. Catches mis-parsed times.
+            </Text></div>
+          </div>
           <Space size="large" wrap>
             <div>
               <div><Text type="secondary">Escalate to staff after</Text></div>

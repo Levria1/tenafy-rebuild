@@ -117,6 +117,61 @@ test('nextStep: prospect declines relay without a counter → reprompt for a day
   assert.deepEqual(NS('RELAY_TO_PROSPECT', 'prospect', { accepted: false }), { type: 'reprompt_day' });
 });
 
+// ── read-back reconfirmation ──────────────────────────────────────────────────
+test('read-back ON: prospect propose → read_back (not straight to staff_check)', () => {
+  assert.deepEqual(
+    nextStep({ state: 'ASK_PROSPECT_DAY', party: 'prospect', intent: { when: '2099-01-06T17:00:00' }, roundCount: 0, maxRounds: 3, readBack: true }),
+    { type: 'read_back', when: '2099-01-06T17:00:00', proposedBy: 'prospect', roundDelta: 0 }
+  );
+});
+
+test('read-back OFF: prospect propose → staff_check (unchanged)', () => {
+  assert.deepEqual(
+    nextStep({ state: 'ASK_PROSPECT_DAY', party: 'prospect', intent: { when: '2099-01-06T17:00:00' }, roundCount: 0, maxRounds: 3, readBack: false }),
+    { type: 'staff_check', when: '2099-01-06T17:00:00', proposedBy: 'prospect', confirmOnFree: false, roundDelta: 0 }
+  );
+});
+
+test('read-back ON: tenant counter → read_back (roundDelta 1)', () => {
+  assert.deepEqual(
+    nextStep({ state: 'AWAIT_TENANT', party: 'tenant', intent: { accepted: false, when: '2099-01-07T15:00:00' }, roundCount: 0, maxRounds: 3, readBack: true }),
+    { type: 'read_back', when: '2099-01-07T15:00:00', proposedBy: 'tenant', roundDelta: 1 }
+  );
+});
+
+test('CONFIRM_TIME + yes (prospect) → confirmed_proceed with the pending time', () => {
+  assert.deepEqual(
+    nextStep({ state: 'CONFIRM_TIME', party: 'prospect', intent: { accepted: true, pendingWhen: '2099-01-06T17:00:00' }, roundCount: 0, maxRounds: 3, proposedBy: 'prospect' }),
+    { type: 'confirmed_proceed', proposedBy: 'prospect', when: '2099-01-06T17:00:00' }
+  );
+});
+
+test('CONFIRM_TIME + yes (tenant) → confirmed_proceed (tenant)', () => {
+  assert.deepEqual(
+    nextStep({ state: 'CONFIRM_TIME', party: 'tenant', intent: { accepted: true, pendingWhen: '2099-01-07T15:00:00' }, roundCount: 0, maxRounds: 3, proposedBy: 'tenant' }),
+    { type: 'confirmed_proceed', proposedBy: 'tenant', when: '2099-01-07T15:00:00' }
+  );
+});
+
+test('CONFIRM_TIME + corrected time → re-read_back (no round bump)', () => {
+  assert.deepEqual(
+    nextStep({ state: 'CONFIRM_TIME', party: 'prospect', intent: { when: '2099-01-08T16:00:00' }, roundCount: 1, maxRounds: 3, proposedBy: 'prospect' }),
+    { type: 'read_back', when: '2099-01-08T16:00:00', proposedBy: 'prospect', roundDelta: 0 }
+  );
+});
+
+test('CONFIRM_TIME + no → ask again (reprompt for prospect, alt for tenant)', () => {
+  assert.deepEqual(nextStep({ state: 'CONFIRM_TIME', party: 'prospect', intent: { accepted: false }, roundCount: 0, maxRounds: 3, proposedBy: 'prospect' }), { type: 'reprompt_day' });
+  assert.deepEqual(nextStep({ state: 'CONFIRM_TIME', party: 'tenant', intent: { accepted: false }, roundCount: 0, maxRounds: 3, proposedBy: 'tenant' }), { type: 'ask_tenant_alt' });
+});
+
+test('CONFIRM_TIME: reply from the WRONG party is ignored', () => {
+  assert.deepEqual(
+    nextStep({ state: 'CONFIRM_TIME', party: 'tenant', intent: { accepted: true, pendingWhen: 'x' }, roundCount: 0, maxRounds: 3, proposedBy: 'prospect' }),
+    { type: 'ignore' }
+  );
+});
+
 // ── buildRouting (TaneChat pre-seed block) ────────────────────────────────────
 test('buildRouting: awaiting prospect → awaiting_phone is the prospect phone', () => {
   const r = buildRouting({ prospect_phone: '+85261234567', awaiting: 'prospect' }, '+85269998888');

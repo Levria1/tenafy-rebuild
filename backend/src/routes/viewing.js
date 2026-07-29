@@ -1062,6 +1062,7 @@ router.put('/settings', async (req, res) => {
       if (!Number.isInteger(n) || n < 1 || n > 10) return fail(res, 'max_rounds must be 1–10', 400);
       fields.push('max_rounds'); params.push(n);
     }
+    if (b.read_back !== undefined) { fields.push('read_back'); params.push(b.read_back ? 1 : 0); }
     if (b.viewing_days !== undefined) { fields.push('viewing_days'); params.push(String(b.viewing_days)); }
     if (b.viewing_start !== undefined) { fields.push('viewing_start'); params.push(String(b.viewing_start)); }
     if (b.viewing_end !== undefined) { fields.push('viewing_end'); params.push(String(b.viewing_end)); }

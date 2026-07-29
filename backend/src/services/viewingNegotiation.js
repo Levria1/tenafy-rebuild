@@ -74,6 +74,7 @@ async function getSetting(pool, orgId) {
     return {
       relay_mode: row.relay_mode || 'manual',
       max_rounds: Number(row.max_rounds) || 3,
+      read_back: row.read_back == null ? 1 : Number(row.read_back),
       viewing_days: row.viewing_days || DEFAULT_SETTING.viewing_days,
       viewing_start: row.viewing_start || DEFAULT_SETTING.viewing_start,
       viewing_end: row.viewing_end || DEFAULT_SETTING.viewing_end,
@@ -175,6 +176,7 @@ const FALLBACKS = {
   'Viewing-Tenant-Alt-Ask': `Got it, no problem. May I ask which day and time would work best for you?`,
   'Viewing-Relay-Prospect': `Sorry, %Old Time% doesn't work for the occupant. Would %Proposed Time% work for you instead?`,
   'Viewing-Outside-Hours': `Sorry, %Proposed Time% is outside our viewing hours. Could you suggest another day and time? (Viewings run Mon–Sat, 11am–7pm.)`,
+  'Viewing-Confirm-Time': `Just to confirm — a viewing of %Unit Name% at %Property Name% on %Proposed Time%? Reply YES to confirm, or send a different day and time.`,
   'Viewing-Relay-Confirmed': `Great news — your viewing of %Unit Name% is confirmed for %Proposed Time%. See you then!`,
   'Viewing-Relay-Escalated': `Thanks for your patience — our team will follow up with you shortly to finalise the viewing.`,
 };
@@ -401,6 +403,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
       : (rawIntent && rawIntent.accepted === false ? false : undefined),
     cancel: Boolean(rawIntent && rawIntent.cancel),
     currentWhen: dateToWallClock(neg.current_proposed_datetime),
+    pendingWhen: dateToWallClock(neg.pending_datetime),
   };
   await logInbound(pool, neg.id, party, rawIntent, rawText, messageId);
 
@@ -435,6 +438,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
   const plan = nextStep({
     state: neg.state, party, intent,
     roundCount: neg.round_count, maxRounds: setting.max_rounds,
+    readBack: !!setting.read_back, proposedBy: neg.proposed_by,
   });
 
   const outbounds = [];
@@ -495,6 +499,31 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
       `${neg.prospect_name || 'A prospect'} — ${ctx.unit_name || 'unit'} at ${ctx.property_name || ''} (${reason})`);
   }
 
+  // Relay a tenant's (confirmed) counter to the prospect, after staff-validating it.
+  async function doRelayToProspect(whenIso, oldWhen, roundDelta) {
+    const staff = await resolveStaffOfDay(pool, neg.property_id, whenIso);
+    if (!staff) { escalatePlan('no_roster', whenIso); return; }
+    const { free } = await checkStaffFree(pool, {
+      employeeId: staff.employee_id, unitId: neg.unit_id, whenIso,
+      buffer: staff.buffer, calendarId: staff.google_calendar_id,
+    });
+    if (!free) {
+      // No staff that day → ask the tenant for another time (not a relayed round).
+      set.state = 'ASK_TENANT_ALT'; set.awaiting = 'tenant';
+      outbounds.push({ party: 'tenant', to_phone: tenantPhone, templateType: 'Viewing-Tenant-Alt-Ask', vars: baseVars });
+      return;
+    }
+    set.round_count = neg.round_count + (roundDelta || 0);
+    set.current_proposed_datetime = whenIso.slice(0, 19).replace('T', ' ');
+    set.proposed_by = 'tenant';
+    set.staff_employee_id = staff.employee_id;
+    set.state = 'RELAY_TO_PROSPECT'; set.awaiting = 'prospect';
+    outbounds.push({
+      party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Relay-Prospect',
+      vars: { ...baseVars, '%Proposed Time%': formatWhen(whenIso), '%Old Time%': formatWhen(oldWhen) },
+    });
+  }
+
   switch (plan.type) {
     case 'reprompt_day':
       set.state = 'ASK_PROSPECT_DAY'; set.awaiting = 'prospect';
@@ -517,35 +546,29 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
       await confirmAndClose(whenIso, staff, { ...baseVars, '%Proposed Time%': formatWhen(whenIso) });
       break;
     }
-    case 'relay_to_prospect': {
-      const oldWhen = neg.current_proposed_datetime;
-      // Validate the tenant's counter against the staffer on duty THAT day before
-      // promising it to the prospect (weekday — and staffer — may differ).
-      const staff = await resolveStaffOfDay(pool, neg.property_id, plan.when);
-      if (!staff) { escalatePlan('no_roster', plan.when); break; }
-      const { free } = await checkStaffFree(pool, {
-        employeeId: staff.employee_id, unitId: neg.unit_id, whenIso: plan.when,
-        buffer: staff.buffer, calendarId: staff.google_calendar_id,
-      });
-      if (!free) {
-        // No staff available that day → ask the tenant for another time instead
-        // of relaying a slot the prospect could accept but we can't honour. Not
-        // counted as a round: nothing was relayed to the prospect.
-        set.state = 'ASK_TENANT_ALT'; set.awaiting = 'tenant';
-        outbounds.push({ party: 'tenant', to_phone: tenantPhone, templateType: 'Viewing-Tenant-Alt-Ask', vars: baseVars });
-        break;
-      }
-      set.round_count = neg.round_count + (plan.roundDelta || 0); // count only relayed counters
-      set.current_proposed_datetime = plan.when.slice(0, 19).replace('T', ' ');
-      set.proposed_by = 'tenant';
-      set.staff_employee_id = staff.employee_id;
-      set.state = 'RELAY_TO_PROSPECT'; set.awaiting = 'prospect';
+    case 'relay_to_prospect':
+      await doRelayToProspect(plan.when, neg.current_proposed_datetime, plan.roundDelta);
+      break;
+    case 'read_back': {
+      // Echo the parsed time+unit back to the proposer and wait for a YES before
+      // touching the calendar / messaging the other party. Store it in
+      // pending_datetime so the current agreed time (and the tenant-counter "old
+      // time") is preserved until confirmation.
+      set.pending_datetime = plan.when.slice(0, 19).replace('T', ' ');
+      set.proposed_by = plan.proposedBy;
+      set.round_count = neg.round_count + (plan.roundDelta || 0);
+      set.state = 'CONFIRM_TIME'; set.awaiting = plan.proposedBy;
+      const toPhone = plan.proposedBy === 'tenant' ? tenantPhone : prospectPhone;
       outbounds.push({
-        party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Relay-Prospect',
-        vars: { ...baseVars, '%Proposed Time%': formatWhen(plan.when), '%Old Time%': formatWhen(oldWhen) },
+        party: plan.proposedBy, to_phone: toPhone, templateType: 'Viewing-Confirm-Time',
+        vars: { ...baseVars, '%Proposed Time%': formatWhen(plan.when) },
       });
       break;
     }
+    case 'confirmed_proceed':
+      if (plan.proposedBy === 'prospect') await doStaffCheck(plan.when, 'prospect', false, 0);
+      else await doRelayToProspect(plan.when, neg.current_proposed_datetime, 0);
+      break;
     case 'ask_tenant_alt':
       set.state = 'ASK_TENANT_ALT'; set.awaiting = 'tenant';
       outbounds.push({ party: 'tenant', to_phone: tenantPhone, templateType: 'Viewing-Tenant-Alt-Ask', vars: baseVars });
@@ -559,6 +582,11 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     case 'ignore':
     default:
       break; // logged inbound, nothing else
+  }
+
+  // Clear a stale pending read-back time whenever we transition OUT of CONFIRM_TIME.
+  if (set.state && set.state !== 'CONFIRM_TIME' && !('pending_datetime' in set)) {
+    set.pending_datetime = null;
   }
 
   // Persist negotiation changes with OPTIMISTIC concurrency: only write if the
