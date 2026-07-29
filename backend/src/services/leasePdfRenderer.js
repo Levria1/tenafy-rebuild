@@ -46,16 +46,19 @@ async function getBrowser() {
 // footerTemplate options (so they repeat on every page).
 // Quill often stores text with a `&nbsp;` between every word (from pasted copy).
 // `&nbsp;` is NON-breaking, so long lines can't wrap and overflow the page (text
-// gets clipped on the right). Convert a LONE `&nbsp;` (a word separator) back to
-// a normal space so lines wrap, but KEEP runs of 2+ `&nbsp;` — those are
-// intentional layout spacing (signature-line gaps, column indents) that must
-// stay non-breaking.
+// gets clipped on the right). Convert only a GENUINE word-separator `&nbsp;`
+// (a lone one with an alphanumeric character on BOTH sides) back to a normal
+// space so prose wraps. Everything else stays non-breaking:
+//   - runs of 2+ `&nbsp;` (intentional column/indent spacing), and
+//   - a `&nbsp;` next to underscores or a tag boundary (the signature LINE —
+//     `____&nbsp;</u>` — which must stay on one line or the two-column
+//     landlord/tenant signature layout wraps and breaks).
 function softenNbsp(html) {
   const s = String(html || '');
+  const alnum = (ch) => ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z';
   return s.replace(/&nbsp;/g, (m, off) => {
-    const prev = s.slice(off - 6, off) === '&nbsp;';
-    const next = s.slice(off + 6, off + 12) === '&nbsp;';
-    return (prev || next) ? '&nbsp;' : ' ';
+    if (s.slice(off - 6, off) === '&nbsp;' || s.slice(off + 6, off + 12) === '&nbsp;') return '&nbsp;';
+    return (alnum(s[off - 1] || '') && alnum(s[off + 6] || '')) ? ' ' : '&nbsp;';
   });
 }
 
