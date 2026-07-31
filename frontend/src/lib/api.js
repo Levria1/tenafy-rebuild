@@ -627,6 +627,7 @@ export const viewingApi = {
   approveNegotiationMessage: (id, event_id) => api.post(`/api/viewing/negotiations/${id}/approve`, { event_id }),
   sendNegotiationMessage: (id, party, text) => api.post(`/api/viewing/negotiations/${id}/message`, { party, text }),
   cancelNegotiation: (id) => api.post(`/api/viewing/negotiations/${id}/cancel`),
+  proceedNegotiation: (id) => api.post(`/api/viewing/negotiations/${id}/proceed`),
   // Relay settings + property × weekday staff roster.
   getViewingSettings: () => api.get('/api/viewing/settings'),
   updateViewingSettings: (data) => api.put('/api/viewing/settings', data),

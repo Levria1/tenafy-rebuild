@@ -42,7 +42,6 @@ const FLabel = ({ children, required }) => (
 
 export default function LeasingEditPage() {
   const [form] = Form.useForm();
-  const watchedContractType = Form.useWatch('contract_type', form);
   const [loading, setLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [properties, setProperties] = useState([]);
@@ -281,8 +280,9 @@ export default function LeasingEditPage() {
         invoicing: makeRecurring ? (values.invoicing || null) : null,
         first_invoice_date: makeRecurring ? (values.first_invoice_date?.format('YYYY-MM-DD') || null) : null,
         contract_type: values.contract_type ?? 0,
-        // Only meaningful when Tenant Status = NR; harmless otherwise.
-        viewing_enabled: (values.contract_type === 3 && values.viewing_enabled) ? 1 : 0,
+        // Marketable unless the unit is explicitly opted out here. Tenant contact
+        // is handled on demand by the relay, inside the per-status lead window.
+        viewing_enabled: values.viewing_enabled ? 1 : 0,
         notice_period_days: (values.notice_period_days != null && values.notice_period_days !== '')
           ? Number(values.notice_period_days) : null,
         unit_information: values.unit_information || null,
@@ -472,15 +472,13 @@ export default function LeasingEditPage() {
                 <Select options={CONTRACT_TYPES} placeholder="Select status" />
               </Form.Item>
             </Col>
-            {watchedContractType === 3 && (
-              <Col span={12} style={{ display: 'flex', alignItems: 'flex-end' }}>
-                <Form.Item name="viewing_enabled" valuePropName="checked" noStyle>
-                  <Checkbox>
-                    Request viewings — notify the tenant to share their availability and open this unit for viewing requests
-                  </Checkbox>
-                </Form.Item>
-              </Col>
-            )}
+            <Col span={12} style={{ display: 'flex', alignItems: 'flex-end' }}>
+              <Form.Item name="viewing_enabled" valuePropName="checked" noStyle>
+                <Checkbox>
+                  Open this unit for viewing requests. The current tenant is only contacted when the lease is ending soon.
+                </Checkbox>
+              </Form.Item>
+            </Col>
           </Row>
         </div>
 

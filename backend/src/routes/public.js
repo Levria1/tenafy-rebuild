@@ -363,7 +363,15 @@ router.post('/viewing-negotiation/start', async (req, res) => {
     let lease = null;
     if (resolved.lease) {
       const active = await findActiveLeaseForUnit(req.pool, unit_id);
-      lease = { id: resolved.lease.id, tenant_id: active ? active.tenant_id : null };
+      // id + dates come from the SAME active-lease row so the gate never evaluates
+      // one lease's dates against another's id (both queries match the same current
+      // lease, but keep them coupled defensively).
+      lease = {
+        id: active ? active.leasing_id : resolved.lease.id,
+        tenant_id: active ? active.tenant_id : null,
+        contract_type: active ? active.contract_type : null,
+        end_date: active ? active.end_date : null,
+      };
     }
     const out = await viewingNegotiation.startNegotiation(req.pool, orgId, {
       unit: resolved.unit, lease, prospect,

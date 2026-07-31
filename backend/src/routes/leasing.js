@@ -19,7 +19,6 @@ const {
 } = require('../services/emailService');
 const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCalendarWebhook');
 const { loadResolutionData, resolveWithData, resolveLeaseTemplateId, derivePdfStatus, hasTemplateSql } = require('../services/leaseTemplateResolver');
-const { sendViewingAvailabilityRequest } = require('../services/viewingRequest');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
@@ -1093,16 +1092,15 @@ router.post('/', authenticate, async (req, res) => {
       notifyLeaseBlocked(req.pool, orgId, leaseId.toString());
     }
 
-    // "Request viewings" ticked at creation → flag the lease + message the tenant
-    // for their availability (once). Fire-and-forget.
-    if (viewing_enabled) {
-      await req.pool.execute(
-        'UPDATE leasing SET viewing_enabled = 1, viewing_requested_at = NOW() WHERE id = ?',
-        [leaseId.toString()]
-      );
-      sendViewingAvailabilityRequest(req.pool, orgId, leaseId.toString())
-        .catch(err => console.error('[leasing] viewing availability request failed:', err.message));
-    }
+    // Marketability defaults ON (units are viewable by default); staff opt a unit
+    // OUT by sending viewing_enabled:false. Enabling no longer messages the tenant
+    // — the relay contacts them on demand, only inside the per-status lead window
+    // (see viewingNegotiation.startNegotiation). Decoupled 2026-07-31.
+    const marketable = (viewing_enabled === false || viewing_enabled === 0 || viewing_enabled === '0') ? 0 : 1;
+    await req.pool.execute(
+      'UPDATE leasing SET viewing_enabled = ? WHERE id = ?',
+      [marketable, leaseId.toString()]
+    );
 
     if (req.body.send_payment_options) { maybeSendPaymentOptions(req.pool, req.user.orgId, leaseId.toString()); }
 
@@ -1143,13 +1141,9 @@ router.put('/:id', authenticate, async (req, res) => {
     // Same missing-email guard as create (see blockIfUnreachable).
     if (await blockIfUnreachable(req, res, tenant_id, additionalTenantIds)) return;
 
-    // Detect the 0 → 1 transition on "Request viewings" so we message the tenant
-    // exactly once (not on every later save).
-    let fireViewingRequest = false;
-    if (viewing_enabled) {
-      const [[cur]] = await req.pool.execute('SELECT viewing_enabled FROM leasing WHERE id = ?', [id]);
-      if (cur && !Number(cur.viewing_enabled)) fireViewingRequest = true;
-    }
+    // Note: toggling viewing_enabled no longer messages the tenant. Marketability
+    // is decoupled from tenant contact — the relay reaches out on demand, inside
+    // the per-status lead window only (viewingNegotiation.startNegotiation).
 
     // Server-side overlap check on edit — check if new dates/unit conflict with other leases
     const checkUnit = unit_id || null;
@@ -1234,7 +1228,6 @@ router.put('/:id', authenticate, async (req, res) => {
     if (all_past !== undefined) { fields.push('all_past = ?'); params.push(all_past ? 1 : 0); }
     if (viewing_enabled !== undefined) {
       fields.push('viewing_enabled = ?'); params.push(viewing_enabled ? 1 : 0);
-      if (fireViewingRequest) fields.push('viewing_requested_at = NOW()');
     }
     // Allow direct edit of lease_state via PUT for back-fill / corrections —
     // BUT do NOT fire deferred invoices here. Use POST /:id/confirm for the
@@ -1267,12 +1260,6 @@ router.put('/:id', authenticate, async (req, res) => {
         'UPDATE invoice SET status = 1 WHERE leasing_id = ? AND org_id = ? AND status = 0 AND due_on <= ? AND deleted_at IS NULL',
         [id, orgId, today]
       );
-    }
-
-    // "Request viewings" just turned on → message the tenant for availability (once).
-    if (fireViewingRequest) {
-      sendViewingAvailabilityRequest(req.pool, orgId, id)
-        .catch(err => console.error('[leasing] viewing availability request failed:', err.message));
     }
 
     if (req.body.send_payment_options) { maybeSendPaymentOptions(req.pool, req.user.orgId, id); }

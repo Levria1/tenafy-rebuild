@@ -9,7 +9,31 @@
 const DEFAULT_SETTING = {
   relay_mode: 'manual', max_rounds: 3, read_back: 1,
   viewing_days: '1,2,3,4,5,6', viewing_start: '11:00:00', viewing_end: '19:00:00',
+  lead_days_nr: 60, lead_days_other: 45,
 };
+
+// The current tenant is only contacted when their lease ends within a lead
+// window that depends on renewal status: Not Renewing (contract_type 3) gets
+// the longer `lead_days_nr`, everything else (MTM/MR/UC/unset) `lead_days_other`.
+// `endDate`/`today` are 'YYYY-MM-DD' (dates only — the day the lease ends is what
+// matters, not the hour). Returns { inWindow, leadDays, reason }.
+//   reason: 'ok' | 'beyond_window' | 'no_end_date' | 'bad_date'
+function viewingWindow({ endDate, contractType, leadDaysNr, leadDaysOther, today }) {
+  const nr = Number(leadDaysNr); const other = Number(leadDaysOther);
+  const leadDays = Number(contractType) === 3
+    ? (Number.isFinite(nr) ? nr : DEFAULT_SETTING.lead_days_nr)
+    : (Number.isFinite(other) ? other : DEFAULT_SETTING.lead_days_other);
+  if (!endDate) return { inWindow: false, leadDays, reason: 'no_end_date' };
+  const em = String(endDate).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const tm = String(today).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!em || !tm) return { inWindow: false, leadDays, reason: 'bad_date' };
+  const end = Date.UTC(+em[1], +em[2] - 1, +em[3]);
+  const now = Date.UTC(+tm[1], +tm[2] - 1, +tm[3]);
+  const daysToEnd = Math.round((end - now) / 86400000);
+  // Inside the window when the lease ends within leadDays from today. A lease
+  // that already ended (holdover) still counts as in-window (daysToEnd <= leadDays).
+  return { inWindow: daysToEnd <= leadDays, leadDays, reason: daysToEnd <= leadDays ? 'ok' : 'beyond_window' };
+}
 
 // Combine assorted intent time shapes into canonical 'YYYY-MM-DDTHH:mm:00'.
 function combineDateTime(intent) {
@@ -123,4 +147,4 @@ function buildRouting(negRow, tenantPhone) {
   return { parties, awaiting_phone };
 }
 
-module.exports = { DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, nextStep, buildRouting };
+module.exports = { DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting };

@@ -964,6 +964,22 @@ router.post('/negotiations/:id/cancel', async (req, res) => {
   }
 });
 
+// POST /api/viewing/negotiations/:id/proceed — "Start viewing anyway" on a
+// NEEDS_STAFF request (e.g. an off-window hold): resume the prospect day-ask.
+router.post('/negotiations/:id/proceed', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const neg = await loadNegotiationOrg(req.pool, orgId, req.params.id);
+    if (!neg) return fail(res, 'Negotiation not found', 404);
+    const out = await viewingNegotiation.proceedNegotiation(req.pool, orgId, neg);
+    if (!out.ok) return fail(res, out.message || 'Cannot start this request', 409);
+    ok(res, out);
+  } catch (err) {
+    console.error('[viewing] proceed negotiation error:', err);
+    fail(res, 'Failed to start viewing');
+  }
+});
+
 // GET /api/viewing/roster  → property × weekday assignments (+ properties + staff for the editor)
 router.get('/roster', async (req, res) => {
   try {
@@ -1063,6 +1079,13 @@ router.put('/settings', async (req, res) => {
       fields.push('max_rounds'); params.push(n);
     }
     if (b.read_back !== undefined) { fields.push('read_back'); params.push(b.read_back ? 1 : 0); }
+    for (const key of ['lead_days_nr', 'lead_days_other']) {
+      if (b[key] !== undefined) {
+        const n = Number(b[key]);
+        if (!Number.isInteger(n) || n < 1 || n > 365) return fail(res, `${key} must be 1–365 days`, 400);
+        fields.push(key); params.push(n);
+      }
+    }
     if (b.viewing_days !== undefined) { fields.push('viewing_days'); params.push(String(b.viewing_days)); }
     if (b.viewing_start !== undefined) { fields.push('viewing_start'); params.push(String(b.viewing_start)); }
     if (b.viewing_end !== undefined) { fields.push('viewing_end'); params.push(String(b.viewing_end)); }

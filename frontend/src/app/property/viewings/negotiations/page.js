@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Card, Table, Tag, Space, Button, Input, Select, Typography, message,
-  Drawer, Segmented, InputNumber, TimePicker, Checkbox, Empty, Popconfirm, Switch,
+  Drawer, Segmented, InputNumber, TimePicker, Checkbox, Empty, Popconfirm, Switch, Alert,
 } from 'antd';
 import {
   ReloadOutlined, SearchOutlined, SettingOutlined, SendOutlined,
-  CheckOutlined, StopOutlined, CommentOutlined,
+  CheckOutlined, StopOutlined, CommentOutlined, PlayCircleOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
@@ -124,6 +124,16 @@ export default function ViewingNegotiationsPage() {
     }
   };
 
+  const proceedNeg = async () => {
+    try {
+      const r = await viewingApi.proceedNegotiation(detail.negotiation.id);
+      message.success(r.data.data?.events?.[0]?.status === 'sent' ? 'Viewing started — prospect asked for a day' : 'Viewing started (message queued for approval)');
+      refreshDetail();
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to start viewing');
+    }
+  };
+
   const columns = [
     {
       title: 'Prospect', dataIndex: 'prospect_name', key: 'prospect',
@@ -205,7 +215,7 @@ export default function ViewingNegotiationsPage() {
       <NegotiationDrawer
         open={detailOpen} onClose={() => setDetailOpen(false)}
         detail={detail} loading={detailLoading}
-        onApprove={approveMsg} onCancel={cancelNeg}
+        onApprove={approveMsg} onCancel={cancelNeg} onProceed={proceedNeg}
         msgParty={msgParty} setMsgParty={setMsgParty}
         msgText={msgText} setMsgText={setMsgText} sending={sending} onSend={sendStaffMsg}
       />
@@ -217,12 +227,13 @@ export default function ViewingNegotiationsPage() {
 
 // ── Detail drawer: event log + approve drafts + staff message + cancel ────────
 function NegotiationDrawer({
-  open, onClose, detail, loading, onApprove, onCancel,
+  open, onClose, detail, loading, onApprove, onCancel, onProceed,
   msgParty, setMsgParty, msgText, setMsgText, sending, onSend,
 }) {
   const neg = detail?.negotiation;
   const events = detail?.events || [];
   const closed = neg && ['CONFIRMED', 'CANCELLED'].includes(neg.state);
+  const offWindow = neg && neg.state === 'NEEDS_STAFF' && neg.needs_staff_reason === 'off_window';
 
   return (
     <Drawer
@@ -243,6 +254,19 @@ function NegotiationDrawer({
             <Tag>Round {neg.round_count}</Tag>
             {!neg.has_tenant && <Tag color="gold">Vacant (host)</Tag>}
           </Space>
+
+          {offWindow && (
+            <Alert
+              type="warning" showIcon style={{ marginBottom: 12 }}
+              message="Held — outside the tenant-contact window"
+              description="This unit's current lease doesn't end soon enough to contact the tenant yet. Start the viewing anyway to ask the prospect for a day and reach out to the tenant now."
+              action={
+                <Button type="primary" size="small" icon={<PlayCircleOutlined />} onClick={onProceed}>
+                  Start viewing anyway
+                </Button>
+              }
+            />
+          )}
           <div style={{ marginBottom: 8 }}>
             <Text type="secondary">Property: </Text><Text>{neg.property_name}</Text><br />
             {neg.current_proposed_datetime && (<><Text type="secondary">Proposed: </Text><Text>{fmt(neg.current_proposed_datetime)}</Text></>)}
@@ -312,7 +336,7 @@ function SetupDrawer({ open, onClose }) {
       viewingApi.getViewingSettings().catch(() => ({ data: { data: null } })),
       viewingApi.getRoster().catch(() => ({ data: { data: { entries: [], properties: [], staff: [] } } })),
     ]).then(([s, r]) => {
-      setSettings(s.data.data || { relay_mode: 'manual', max_rounds: 3, read_back: 1, viewing_days: '1,2,3,4,5,6', viewing_start: '11:00:00', viewing_end: '19:00:00' });
+      setSettings(s.data.data || { relay_mode: 'manual', max_rounds: 3, read_back: 1, viewing_days: '1,2,3,4,5,6', viewing_start: '11:00:00', viewing_end: '19:00:00', lead_days_nr: 60, lead_days_other: 45 });
       const rd = r.data.data || { entries: [], properties: [], staff: [] };
       setRoster(rd);
       const g = {};
@@ -346,6 +370,8 @@ function SetupDrawer({ open, onClose }) {
         viewing_days: settings.viewing_days,
         viewing_start: settings.viewing_start,
         viewing_end: settings.viewing_end,
+        lead_days_nr: settings.lead_days_nr,
+        lead_days_other: settings.lead_days_other,
       });
       const entries = [];
       Object.entries(grid).forEach(([propId, days]) => {
@@ -430,6 +456,24 @@ function SetupDrawer({ open, onClose }) {
               options={WEEKDAYS.map((d, i) => ({ label: d, value: i }))}
             />
           </div>
+
+          <Title level={5} style={{ marginTop: 20 }}>Contact the tenant only within</Title>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Every unit is viewable, but we only message the current tenant when their lease is ending soon.
+            A request that arrives earlier is held for staff (“Start viewing anyway” on the request).
+          </Text>
+          <Space size="large" wrap style={{ marginTop: 8 }}>
+            <div>
+              <div><Text type="secondary">Not Renewing leases</Text></div>
+              <InputNumber min={1} max={365} value={settings.lead_days_nr}
+                onChange={(v) => setSettings({ ...settings, lead_days_nr: v })} addonAfter="days before end" />
+            </div>
+            <div>
+              <div><Text type="secondary">All other statuses</Text></div>
+              <InputNumber min={1} max={365} value={settings.lead_days_other}
+                onChange={(v) => setSettings({ ...settings, lead_days_other: v })} addonAfter="days before end" />
+            </div>
+          </Space>
 
           <Title level={5} style={{ marginTop: 24 }}>Responsible staff (property × day)</Title>
           <Text type="secondary">The person on duty for a property that weekday is whose Google calendar is checked.</Text>

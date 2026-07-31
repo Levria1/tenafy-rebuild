@@ -28,8 +28,16 @@ const { sendViewingConfirmation } = require('./viewingNotify');
 const { loadTemplate, substituteVariables } = require('./emailService');
 const { KIND_ACTION, KIND_MANAGE } = require('../middleware/viewingTokenAuth');
 const {
-  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, nextStep, buildRouting,
+  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting,
 } = require('./viewingNegotiationLogic');
+
+// Today as 'YYYY-MM-DD' in the server's local wall-clock (prod is UTC). Isolated
+// so the pure viewingWindow() stays deterministic/testable (takes `today` as arg).
+function todayYmd() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 
 // ── small helpers ──────────────────────────────────────────────────────────
 function newId() {
@@ -78,6 +86,8 @@ async function getSetting(pool, orgId) {
       viewing_days: row.viewing_days || DEFAULT_SETTING.viewing_days,
       viewing_start: row.viewing_start || DEFAULT_SETTING.viewing_start,
       viewing_end: row.viewing_end || DEFAULT_SETTING.viewing_end,
+      lead_days_nr: row.lead_days_nr == null ? DEFAULT_SETTING.lead_days_nr : Number(row.lead_days_nr),
+      lead_days_other: row.lead_days_other == null ? DEFAULT_SETTING.lead_days_other : Number(row.lead_days_other),
     };
   } catch {
     return { ...DEFAULT_SETTING }; // table not migrated yet
@@ -179,6 +189,7 @@ const FALLBACKS = {
   'Viewing-Confirm-Time': `Just to confirm — a viewing of %Unit Name% at %Property Name% on %Proposed Time%? Reply YES to confirm, or send a different day and time.`,
   'Viewing-Relay-Confirmed': `Great news — your viewing of %Unit Name% is confirmed for %Proposed Time%. See you then!`,
   'Viewing-Relay-Escalated': `Thanks for your patience — our team will follow up with you shortly to finalise the viewing.`,
+  'Viewing-Hold-OffWindow': `Thanks for your interest in %Unit Name%! Let me check with our team and get back to you about arranging a viewing.`,
 };
 
 async function renderMessage(pool, orgId, templateType, vars) {
@@ -346,6 +357,55 @@ async function startNegotiation(pool, orgId, { unit, lease, prospect }) {
       return {
         negotiation_id: String(existing.id), state: existing.state, awaiting: existing.awaiting,
         events: [], reused: true, ...buildRouting(existing, tenantPhone),
+      };
+    }
+  }
+  // Window gate: an OCCUPIED unit only engages the current tenant when their
+  // lease ends within the per-status lead window (NR=lead_days_nr, else
+  // lead_days_other). Outside it we DON'T reject the prospect — we park the
+  // request as NEEDS_STAFF, soft-hold the prospect, and notify staff, who can
+  // "Start viewing anyway" from the dashboard. Vacant units (no lease) skip this.
+  if (lease && lease.id) {
+    const win = viewingWindow({
+      endDate: lease.end_date, contractType: lease.contract_type,
+      leadDaysNr: setting.lead_days_nr, leadDaysOther: setting.lead_days_other, today: todayYmd(),
+    });
+    if (!win.inWindow) {
+      // Idempotent: reuse an existing open off-window hold for this unit+prospect.
+      if (prospect.phone) {
+        const [[held]] = await pool.execute(
+          `SELECT id, state, awaiting, prospect_phone FROM viewing_negotiation
+            WHERE unit_id = ? AND prospect_phone = ? AND state = 'NEEDS_STAFF'
+              AND needs_staff_reason = 'off_window'
+            ORDER BY created_at DESC LIMIT 1`,
+          [unit.id, prospect.phone]
+        );
+        if (held) {
+          return {
+            negotiation_id: String(held.id), state: held.state, awaiting: held.awaiting,
+            events: [], reused: true, off_window: true, ...buildRouting(held, tenantPhone),
+          };
+        }
+      }
+      const heldId = newId();
+      await pool.execute(
+        `INSERT INTO viewing_negotiation
+           (id, unit_id, property_id, lease_id, tenant_id, prospect_name, prospect_phone, prospect_email,
+            state, awaiting, needs_staff_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'NEEDS_STAFF', 'staff', 'off_window')`,
+        [heldId, unit.id, unit.property_id, lease.id, tenantId,
+         prospect.name || null, prospect.phone || null, prospect.email || null]
+      );
+      const holdVars = { '%Unit Name%': unit.unit_name, '%Property Name%': unit.property_name };
+      const events = await dispatchOutbounds(pool, orgId, heldId, setting, [
+        { party: 'prospect', to_phone: prospect.phone, templateType: 'Viewing-Hold-OffWindow', vars: holdVars },
+      ]);
+      const endLabel = lease.end_date || 'no end date';
+      await notifyStaff(pool, orgId, 'Viewing request needs review',
+        `${prospect.name || prospect.phone || 'A prospect'} asked to view ${unit.unit_name} at ${unit.property_name}, but the current lease ends ${endLabel} (outside the ${win.leadDays}-day window). Open Viewing Requests to Start viewing anyway.`);
+      return {
+        negotiation_id: heldId, state: 'NEEDS_STAFF', awaiting: 'staff', off_window: true, events,
+        ...buildRouting({ prospect_phone: prospect.phone || null, awaiting: 'staff' }, tenantPhone),
       };
     }
   }
@@ -653,6 +713,34 @@ async function cancelNegotiation(pool, orgId, neg) {
   return { ok: true };
 }
 
+// Staff "Start viewing anyway" on a NEEDS_STAFF request (typically an off-window
+// hold): atomically claim it back into ASK_PROSPECT_DAY and send the prospect the
+// day-ask, honouring relay_mode (manual → draft). No-op if it isn't NEEDS_STAFF
+// or already has a booking.
+async function proceedNegotiation(pool, orgId, neg) {
+  const setting = await getSetting(pool, orgId);
+  // Only an off-window HOLD can be resumed this way. Other NEEDS_STAFF causes
+  // (max_rounds, the stale reaper, no tenant phone) carry live conversation
+  // progress — restarting the day-ask would abandon it — so they're excluded.
+  const [r] = await pool.execute(
+    `UPDATE viewing_negotiation
+        SET state = 'ASK_PROSPECT_DAY', awaiting = 'prospect', needs_staff_reason = NULL, updated_at = NOW()
+      WHERE id = ? AND state = 'NEEDS_STAFF' AND needs_staff_reason = 'off_window' AND booking_id IS NULL`,
+    [neg.id]
+  );
+  if (!r.affectedRows) return { ok: false, message: 'Only an on-hold (off-window) request can be started this way.' };
+  const [[u]] = await pool.execute(
+    `SELECT u.name AS unit_name, p.display_name AS property_name
+       FROM unit u JOIN property p ON u.property_id = p.id WHERE u.id = ? LIMIT 1`,
+    [neg.unit_id]
+  );
+  const vars = { '%Unit Name%': u ? u.unit_name : '', '%Property Name%': u ? u.property_name : '' };
+  const events = await dispatchOutbounds(pool, orgId, neg.id, setting, [
+    { party: 'prospect', to_phone: neg.prospect_phone, templateType: 'Viewing-Prospect-Day-Ask', vars },
+  ]);
+  return { ok: true, state: 'ASK_PROSPECT_DAY', awaiting: 'prospect', events };
+}
+
 // Reaper (hourly cron): open negotiations with no activity for STALE_HOURS are
 // escalated to NEEDS_STAFF so an abandoned/looping conversation doesn't sit open
 // forever or pollute the /active phone routing. Guarded for pre-migration orgs.
@@ -678,10 +766,10 @@ async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
 
 module.exports = {
   // pure / helpers (tested)
-  nextStep, combineDateTime, withinWindow, minutesOf,
+  nextStep, combineDateTime, withinWindow, viewingWindow, minutesOf,
   // orchestration
   getSetting, startNegotiation, handleReply, loadNegotiation,
   resolveStaffOfDay, loadStaffById, checkStaffFree, confirmNegotiation,
-  approveDraft, staffMessage, cancelNegotiation, loadContext,
+  approveDraft, staffMessage, cancelNegotiation, proceedNegotiation, loadContext,
   autoEscalateStaleNegotiationsForOrg,
 };

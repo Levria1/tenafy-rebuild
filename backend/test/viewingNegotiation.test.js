@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, nextStep, buildRouting,
+  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting,
 } = require('../src/services/viewingNegotiationLogic');
 
 // A fixed far-future weekday base so "in the past" never trips these tests.
@@ -170,6 +170,38 @@ test('CONFIRM_TIME: reply from the WRONG party is ignored', () => {
     nextStep({ state: 'CONFIRM_TIME', party: 'tenant', intent: { accepted: true, pendingWhen: 'x' }, roundCount: 0, maxRounds: 3, proposedBy: 'prospect' }),
     { type: 'ignore' }
   );
+});
+
+// ── viewingWindow (per-status lead gate) ──────────────────────────────────────
+// today 2099-01-06: +45 days = 2099-02-20, +46 = 2099-02-21, +60 = 2099-03-07, +61 = 2099-03-08.
+const VW = (endDate, contractType) => viewingWindow({
+  endDate, contractType, leadDaysNr: 60, leadDaysOther: 45, today: '2099-01-06',
+});
+
+test('viewingWindow: NR (3) uses the 60-day window', () => {
+  assert.deepEqual(VW('2099-03-07', 3), { inWindow: true, leadDays: 60, reason: 'ok' });        // exactly +60
+  assert.deepEqual(VW('2099-03-08', 3), { inWindow: false, leadDays: 60, reason: 'beyond_window' }); // +61
+  assert.equal(VW('2099-02-21', 3).inWindow, true); // +46: inside 60 for NR
+});
+
+test('viewingWindow: MTM/MR/UC/unset use the 45-day window', () => {
+  for (const ct of [2, 1, 4, 0, null]) {
+    assert.deepEqual(VW('2099-02-20', ct), { inWindow: true, leadDays: 45, reason: 'ok' });        // exactly +45
+    assert.deepEqual(VW('2099-02-21', ct), { inWindow: false, leadDays: 45, reason: 'beyond_window' }); // +46
+  }
+});
+
+test('viewingWindow: no end date → out of window (staff decides)', () => {
+  assert.deepEqual(VW(null, 3), { inWindow: false, leadDays: 60, reason: 'no_end_date' });
+  assert.deepEqual(VW('', 2), { inWindow: false, leadDays: 45, reason: 'no_end_date' });
+});
+
+test('viewingWindow: a lease already ended (holdover) is in-window', () => {
+  assert.equal(VW('2098-12-01', 2).inWindow, true); // negative daysToEnd
+});
+
+test('viewingWindow: well inside the window → in', () => {
+  assert.equal(VW('2099-01-20', 0).inWindow, true);
 });
 
 // ── buildRouting (TaneChat pre-seed block) ────────────────────────────────────

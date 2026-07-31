@@ -55,7 +55,6 @@ export default function LeaseCreatePage() {
   // platform's `requires_signature` flag. Airbnb / short-term platforms should
   // be configured with requires_signature=0 in Settings → Booking Platforms.
   const watchedPlatformId = Form.useWatch('booking_platform_id', form);
-  const watchedContractType = Form.useWatch('contract_type', form);
   useEffect(() => {
     if (!watchedPlatformId) return;
     const p = platforms.find(x => String(x.id) === String(watchedPlatformId));
@@ -357,7 +356,9 @@ export default function LeaseCreatePage() {
       first_invoice_date: makeRecurring ? (values.first_invoice_date?.format('YYYY-MM-DD') || null) : null,
       share_lease: makeRecurring ? 1 : 0,
       contract_type: values.contract_type ?? 0,
-      viewing_enabled: (values.contract_type === 3 && values.viewing_enabled) ? 1 : 0,
+      // Marketable by default; only opt out when explicitly unchecked. The tenant
+      // is contacted on demand by the relay, inside the per-status lead window.
+      viewing_enabled: values.viewing_enabled === false ? 0 : 1,
       notice_period_days: (values.notice_period_days != null && values.notice_period_days !== '')
         ? Number(values.notice_period_days) : null,
       unit_information: values.unit_information || null,
@@ -616,15 +617,13 @@ export default function LeaseCreatePage() {
             </Select>
           </Form.Item>
         </div>
-        {watchedContractType === 3 && (
-          <div style={{ marginTop: 16 }}>
-            <Form.Item name="viewing_enabled" valuePropName="checked" noStyle>
-              <Checkbox>
-                Request viewings — notify the tenant to share their availability and open this unit for viewing requests
-              </Checkbox>
-            </Form.Item>
-          </div>
-        )}
+        <div style={{ marginTop: 16 }}>
+          <Form.Item name="viewing_enabled" valuePropName="checked" initialValue={true} noStyle>
+            <Checkbox>
+              Open this unit for viewing requests (recommended). The current tenant is only contacted when the lease is ending soon.
+            </Checkbox>
+          </Form.Item>
+        </div>
       </div>
 
       {/* Recurring Invoice */}
