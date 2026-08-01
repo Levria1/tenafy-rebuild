@@ -348,10 +348,17 @@ function normPhoneDigits(p) {
 router.post('/viewing-negotiation/start', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
-    const { unit_id } = req.body || {};
+    const { unit_id, unit_text } = req.body || {};
     const prospect = (req.body && req.body.prospect) || {};
-    if (!unit_id) return fail(res, 'unit_id is required', 400);
+    if (!unit_id && !unit_text) return fail(res, 'unit_id or unit_text is required', 400);
     if (!prospect.phone) return fail(res, 'prospect.phone is required', 400);
+
+    // Text path: Tenafy resolves the unit from the raw phrase and reconfirms /
+    // disambiguates in-relay before the day-ask (handles "mongkok 6a", "mk 6a", etc.).
+    if (!unit_id && unit_text) {
+      const out = await viewingNegotiation.startNegotiationFromText(req.pool, orgId, { unitText: unit_text, prospect });
+      return ok(res, { available: true, ...out });
+    }
 
     const resolved = await resolveMarketedUnit(req.pool, orgId, unit_id);
     if (resolved.reason) {

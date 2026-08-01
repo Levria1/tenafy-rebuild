@@ -30,6 +30,40 @@ const { KIND_ACTION, KIND_MANAGE } = require('../middleware/viewingTokenAuth');
 const {
   DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting,
 } = require('./viewingNegotiationLogic');
+const { findActiveLeaseForUnit } = require('./viewingBooking');
+const { resolveUnit, optionsText } = require('./unitResolver');
+
+function safeParseCandidates(s) {
+  try { const a = JSON.parse(s || '[]'); return Array.isArray(a) ? a : []; } catch { return []; }
+}
+
+// Turn a resolver outcome into the row updates + first outbound for the unit
+// resolution phase. Shared by startNegotiationFromText (new row) and handleReply
+// (a 're-resolve' on a fresh name). Returns { set, outbounds }.
+async function computeResolutionPlan(pool, orgId, text, prospectPhone) {
+  const r = await resolveUnit(pool, orgId, text);
+  const set = { pending_unit_text: text ? String(text).slice(0, 255) : null };
+  const outbounds = [];
+  if (r.status === 'confident') {
+    set.pending_unit_id = r.match.unit_id;
+    set.unit_candidates = null;
+    set.state = 'CONFIRM_UNIT'; set.awaiting = 'prospect';
+    outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Confirm-Unit',
+      vars: { '%Unit Full Name%': r.match.label, '%Property Name%': r.match.property_name, '%Unit Name%': r.match.unit_name } });
+  } else if (r.status === 'ambiguous' || r.status === 'property_only') {
+    set.pending_unit_id = null;
+    set.unit_candidates = JSON.stringify(r.candidates.map(c => ({ unit_id: c.unit_id, label: c.label })));
+    set.state = 'RESOLVE_UNIT'; set.awaiting = 'prospect';
+    outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Choose-Unit',
+      vars: { '%Unit Options%': optionsText(r.candidates), '%Property Name%': (r.candidates[0] && r.candidates[0].property_name) || '' } });
+  } else { // none
+    set.pending_unit_id = null;
+    set.unit_candidates = null;
+    set.state = 'RESOLVE_UNIT'; set.awaiting = 'prospect';
+    outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Unit-NotFound', vars: {} });
+  }
+  return { set, outbounds };
+}
 
 // Today as 'YYYY-MM-DD' in the server's local wall-clock (prod is UTC). Isolated
 // so the pure viewingWindow() stays deterministic/testable (takes `today` as arg).
@@ -190,6 +224,9 @@ const FALLBACKS = {
   'Viewing-Relay-Confirmed': `Great news — your viewing of %Unit Name% is confirmed for %Proposed Time%. See you then!`,
   'Viewing-Relay-Escalated': `Thanks for your patience — our team will follow up with you shortly to finalise the viewing.`,
   'Viewing-Hold-OffWindow': `Thanks for your interest in %Unit Name%! Let me check with our team and get back to you about arranging a viewing.`,
+  'Viewing-Confirm-Unit': `Just to confirm — you'd like to view %Unit Full Name%? Reply YES, or tell me the correct unit.`,
+  'Viewing-Choose-Unit': `Which unit would you like to view?\n%Unit Options%\n\nReply with the number or the unit name.`,
+  'Viewing-Unit-NotFound': `Sorry, I couldn't find that unit. Which property and unit would you like to view?`,
 };
 
 async function renderMessage(pool, orgId, templateType, vars) {
@@ -390,10 +427,10 @@ async function startNegotiation(pool, orgId, { unit, lease, prospect }) {
       const heldId = newId();
       await pool.execute(
         `INSERT INTO viewing_negotiation
-           (id, unit_id, property_id, lease_id, tenant_id, prospect_name, prospect_phone, prospect_email,
+           (id, org_id, unit_id, property_id, lease_id, tenant_id, prospect_name, prospect_phone, prospect_email,
             state, awaiting, needs_staff_reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'NEEDS_STAFF', 'staff', 'off_window')`,
-        [heldId, unit.id, unit.property_id, lease.id, tenantId,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEEDS_STAFF', 'staff', 'off_window')`,
+        [heldId, orgId, unit.id, unit.property_id, lease.id, tenantId,
          prospect.name || null, prospect.phone || null, prospect.email || null]
       );
       const holdVars = { '%Unit Name%': unit.unit_name, '%Property Name%': unit.property_name };
@@ -412,10 +449,10 @@ async function startNegotiation(pool, orgId, { unit, lease, prospect }) {
   const negId = newId();
   await pool.execute(
     `INSERT INTO viewing_negotiation
-       (id, unit_id, property_id, lease_id, tenant_id, prospect_name, prospect_phone, prospect_email,
+       (id, org_id, unit_id, property_id, lease_id, tenant_id, prospect_name, prospect_phone, prospect_email,
         state, awaiting)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ASK_PROSPECT_DAY', 'prospect')`,
-    [negId, unit.id, unit.property_id, lease ? lease.id : null, tenantId,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ASK_PROSPECT_DAY', 'prospect')`,
+    [negId, orgId, unit.id, unit.property_id, lease ? lease.id : null, tenantId,
      prospect.name || null, prospect.phone || null, prospect.email || null]
   );
   const vars = { '%Unit Name%': unit.unit_name, '%Property Name%': unit.property_name };
@@ -425,6 +462,53 @@ async function startNegotiation(pool, orgId, { unit, lease, prospect }) {
   return {
     negotiation_id: negId, state: 'ASK_PROSPECT_DAY', awaiting: 'prospect', events,
     ...buildRouting({ prospect_phone: prospect.phone || null, awaiting: 'prospect' }, tenantPhone),
+  };
+}
+
+// Start a negotiation from raw TEXT ("mongkok 6a") instead of a known unit_id.
+// Tenafy resolves it; if it isn't a confident single match, the first message
+// reconfirms/disambiguates (CONFIRM_UNIT / RESOLVE_UNIT) before the day-ask. Once
+// the prospect confirms/picks, pinUnitAndProceed runs the normal marketable+window
+// gate. The unit/property are NULL on the row until then.
+async function startNegotiationFromText(pool, orgId, { unitText, prospect }) {
+  const setting = await getSetting(pool, orgId);
+  // Dedupe a double button-press: reuse an open (non-terminal) negotiation for
+  // this prospect phone rather than spawning a second resolving thread.
+  if (prospect.phone) {
+    const [[existing]] = await pool.execute(
+      `SELECT id, state, awaiting, prospect_phone FROM viewing_negotiation
+        WHERE prospect_phone = ? AND state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')
+        ORDER BY created_at DESC LIMIT 1`,
+      [prospect.phone]
+    );
+    if (existing) {
+      return {
+        negotiation_id: String(existing.id), state: existing.state, awaiting: existing.awaiting,
+        events: [], reused: true, ...buildRouting(existing, null),
+      };
+    }
+  }
+  const negId = newId();
+  await pool.execute(
+    `INSERT INTO viewing_negotiation
+       (id, org_id, prospect_name, prospect_phone, prospect_email, state, awaiting, pending_unit_text)
+     VALUES (?, ?, ?, ?, ?, 'RESOLVE_UNIT', 'prospect', ?)`,
+    [negId, orgId, prospect.name || null, prospect.phone || null, prospect.email || null,
+     unitText ? String(unitText).slice(0, 255) : null]
+  );
+  const { set, outbounds } = await computeResolutionPlan(pool, orgId, unitText, prospect.phone);
+  const cols = Object.keys(set);
+  if (cols.length) {
+    await pool.execute(
+      `UPDATE viewing_negotiation SET ${cols.map(c => `${c} = ?`).join(', ')} WHERE id = ?`,
+      [...cols.map(c => set[c]), negId]
+    );
+  }
+  const events = await dispatchOutbounds(pool, orgId, negId, setting, outbounds);
+  const fresh = await loadNegotiation(pool, negId);
+  return {
+    negotiation_id: negId, state: fresh.state, awaiting: fresh.awaiting, events,
+    ...buildRouting(fresh, null),
   };
 }
 
@@ -464,6 +548,11 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     cancel: Boolean(rawIntent && rawIntent.cancel),
     currentWhen: dateToWallClock(neg.current_proposed_datetime),
     pendingWhen: dateToWallClock(neg.pending_datetime),
+    // Unit resolution phase (RESOLVE_UNIT / CONFIRM_UNIT): a fresh unit name, a
+    // numbered pick from the offered list, or a text label.
+    unit_text: rawIntent && rawIntent.unit_text ? String(rawIntent.unit_text) : undefined,
+    index: rawIntent && rawIntent.index != null ? Number(rawIntent.index) : undefined,
+    choice: rawIntent && rawIntent.choice ? String(rawIntent.choice) : undefined,
   };
   await logInbound(pool, neg.id, party, rawIntent, rawText, messageId);
 
@@ -584,7 +673,103 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     });
   }
 
+  // Pin a resolved/confirmed unit onto the negotiation and run the marketable +
+  // window gate (same outcomes as the direct-unit_id start): in-window →
+  // ASK_PROSPECT_DAY; off-window → off_window hold; not open → not_marketing hold.
+  async function pinUnitAndProceed(unitId) {
+    const [[u]] = await pool.execute(
+      `SELECT u.id, u.name AS unit_name, u.property_id, p.display_name AS property_name
+         FROM unit u JOIN property p ON p.id = u.property_id
+        WHERE u.id = ? AND p.org_id = ? AND u.active_status = 1 AND u.deleted_at IS NULL LIMIT 1`,
+      [unitId, orgId]
+    );
+    if (!u) { // resolved unit vanished/invalid — back to asking
+      set.state = 'RESOLVE_UNIT'; set.awaiting = 'prospect';
+      set.pending_unit_id = null;
+      outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Unit-NotFound', vars: {} });
+      return;
+    }
+    const vars = { '%Unit Name%': u.unit_name, '%Property Name%': u.property_name,
+      '%Unit Full Name%': `${u.property_name} ${u.unit_name}` };
+    set.unit_id = String(u.id); set.property_id = String(u.property_id);
+    set.pending_unit_id = null; set.pending_unit_text = null; set.unit_candidates = null;
+
+    const active = await findActiveLeaseForUnit(pool, unitId); // { leasing_id, tenant_id, contract_type, end_date, viewing_enabled } | null
+    const marketableOccupied = active && Number(active.viewing_enabled) === 1;
+    let hostLink = false;
+    if (!active) {
+      const [[hl]] = await pool.execute(
+        `SELECT 1 FROM viewing_link WHERE unit_id = ? AND status = 1 AND employee_id IS NOT NULL LIMIT 1`, [unitId]);
+      hostLink = !!hl;
+    }
+    set.lease_id = active ? active.leasing_id : null;
+    set.tenant_id = active ? active.tenant_id : null;
+
+    if (!marketableOccupied && !hostLink) {
+      // Identified, but not open for viewings → inform the prospect + capture as a staff lead.
+      set.state = 'NEEDS_STAFF'; set.awaiting = 'staff'; set.needs_staff_reason = 'not_marketing';
+      outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Hold-OffWindow', vars });
+      notifyStaff(pool, orgId, 'Viewing request needs review',
+        `${neg.prospect_name || prospectPhone || 'A prospect'} asked to view ${u.unit_name} at ${u.property_name}, but it isn't open for viewings. Open Viewing Requests.`);
+      return;
+    }
+    if (active) {
+      const win = viewingWindow({ endDate: active.end_date, contractType: active.contract_type,
+        leadDaysNr: setting.lead_days_nr, leadDaysOther: setting.lead_days_other, today: todayYmd() });
+      if (!win.inWindow) {
+        set.state = 'NEEDS_STAFF'; set.awaiting = 'staff'; set.needs_staff_reason = 'off_window';
+        outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Hold-OffWindow', vars });
+        const endLabel = active.end_date || 'no end date';
+        notifyStaff(pool, orgId, 'Viewing request needs review',
+          `${neg.prospect_name || prospectPhone || 'A prospect'} asked to view ${u.unit_name} at ${u.property_name}, but the current lease ends ${endLabel} (outside the ${win.leadDays}-day window). Open Viewing Requests to Start viewing anyway.`);
+        return;
+      }
+    }
+    // In-window (occupied) or vacant-with-host-link → proceed to the day-ask.
+    set.state = 'ASK_PROSPECT_DAY'; set.awaiting = 'prospect'; set.needs_staff_reason = null;
+    outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Prospect-Day-Ask', vars });
+  }
+
   switch (plan.type) {
+    case 'resolve_unit': {
+      const p = await computeResolutionPlan(pool, orgId, plan.text, prospectPhone);
+      Object.assign(set, p.set);
+      for (const ob of p.outbounds) outbounds.push(ob);
+      break;
+    }
+    case 'unit_confirmed':
+      if (neg.pending_unit_id) await pinUnitAndProceed(String(neg.pending_unit_id));
+      else { set.state = 'RESOLVE_UNIT'; set.awaiting = 'prospect';
+        outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Unit-NotFound', vars: {} }); }
+      break;
+    case 'unit_picked': {
+      const cands = safeParseCandidates(neg.unit_candidates);
+      let picked = null;
+      if (plan.index != null && Number.isFinite(plan.index)) {
+        const i = Number(plan.index) - 1; // options are 1-based
+        if (i >= 0 && i < cands.length) picked = cands[i];
+      }
+      if (!picked && plan.choice) { // a text label → re-resolve it
+        const p = await computeResolutionPlan(pool, orgId, plan.choice, prospectPhone);
+        Object.assign(set, p.set);
+        for (const ob of p.outbounds) outbounds.push(ob);
+        break;
+      }
+      if (picked) await pinUnitAndProceed(String(picked.unit_id));
+      else if (cands.length === 0) { // no list to pick from → ask afresh
+        set.state = 'RESOLVE_UNIT'; set.awaiting = 'prospect';
+        outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Unit-NotFound', vars: {} });
+      } else { // out-of-range number → re-list the same candidates
+        set.state = 'RESOLVE_UNIT'; set.awaiting = 'prospect';
+        outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Choose-Unit',
+          vars: { '%Unit Options%': optionsText(cands), '%Property Name%': (cands[0] && cands[0].label) || '' } });
+      }
+      break;
+    }
+    case 'reask_unit':
+      set.state = 'RESOLVE_UNIT'; set.awaiting = 'prospect'; set.pending_unit_id = null;
+      outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Unit-NotFound', vars: {} });
+      break;
     case 'reprompt_day':
       set.state = 'ASK_PROSPECT_DAY'; set.awaiting = 'prospect';
       outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Prospect-Day-Ask', vars: baseVars });
@@ -653,14 +838,18 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
   // row is still in the state we loaded. If a concurrent reply already advanced
   // or closed it (e.g. a confirm racing a cancel), our stale write is skipped —
   // the confirm path already persisted its result atomically in confirmNegotiation.
+  let wonPersist = true;
   if (Object.keys(set).length) {
     const cols = Object.keys(set);
-    await pool.execute(
+    const [r] = await pool.execute(
       `UPDATE viewing_negotiation SET ${cols.map(c => `${c} = ?`).join(', ')} WHERE id = ? AND state = ?`,
       [...cols.map(c => set[c]), neg.id, neg.state]
     );
+    // Lost the optimistic race (a concurrent reply already advanced this row) →
+    // skip sending, so two racing replies can't both dispatch the same message.
+    wonPersist = r.affectedRows > 0;
   }
-  const events = await dispatchOutbounds(pool, orgId, neg.id, setting, outbounds);
+  const events = wonPersist ? await dispatchOutbounds(pool, orgId, neg.id, setting, outbounds) : [];
   const fresh = await loadNegotiation(pool, neg.id);
   return { negotiation: fresh, events, ...buildRouting(fresh, ctx.tenant_phone) };
 }
@@ -768,7 +957,7 @@ module.exports = {
   // pure / helpers (tested)
   nextStep, combineDateTime, withinWindow, viewingWindow, minutesOf,
   // orchestration
-  getSetting, startNegotiation, handleReply, loadNegotiation,
+  getSetting, startNegotiation, startNegotiationFromText, handleReply, loadNegotiation,
   resolveStaffOfDay, loadStaffById, checkStaffFree, confirmNegotiation,
   approveDraft, staffMessage, cancelNegotiation, proceedNegotiation, loadContext,
   autoEscalateStaleNegotiationsForOrg,

@@ -844,10 +844,10 @@ router.post('/bookings/manual', async (req, res) => {
 
 // Load a negotiation and confirm it belongs to the caller's org.
 async function loadNegotiationOrg(pool, orgId, id) {
+  // Self-scoped by org_id (a resolution-phase row has no property yet, so a
+  // property join would drop it). Older rows were backfilled in migration 028.
   const [[row]] = await pool.execute(
-    `SELECT n.* FROM viewing_negotiation n
-       JOIN property p ON p.id = n.property_id
-      WHERE n.id = ? AND p.org_id = ? LIMIT 1`,
+    `SELECT * FROM viewing_negotiation WHERE id = ? AND org_id = ? LIMIT 1`,
     [id, orgId]
   );
   return row || null;
@@ -857,22 +857,25 @@ async function loadNegotiationOrg(pool, orgId, id) {
 router.get('/negotiations', async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const where = ['p.org_id = ?'];
+    // Scope by n.org_id and LEFT JOIN unit/property so resolution-phase rows (no
+    // unit/property pinned yet) still appear on the dashboard.
+    const where = ['n.org_id = ?'];
     const params = [orgId];
     if (req.query.state) { where.push('n.state = ?'); params.push(req.query.state); }
     if (req.query.awaiting) { where.push('n.awaiting = ?'); params.push(req.query.awaiting); }
     if (req.query.q) {
-      where.push('(n.prospect_name LIKE ? OR u.name LIKE ? OR p.display_name LIKE ?)');
+      where.push('(n.prospect_name LIKE ? OR u.name LIKE ? OR p.display_name LIKE ? OR n.pending_unit_text LIKE ?)');
       const like = `%${req.query.q}%`;
-      params.push(like, like, like);
+      params.push(like, like, like, like);
     }
     const [rows] = await req.pool.execute(
       `SELECT n.id, n.state, n.awaiting, n.round_count, n.current_proposed_datetime,
-              n.prospect_name, n.prospect_phone, n.created_at, n.updated_at,
+              n.prospect_name, n.prospect_phone, n.pending_unit_text, n.needs_staff_reason,
+              n.created_at, n.updated_at,
               u.name AS unit_name, p.display_name AS property_name
          FROM viewing_negotiation n
-         JOIN unit u ON u.id = n.unit_id
-         JOIN property p ON p.id = n.property_id
+         LEFT JOIN unit u ON u.id = n.unit_id
+         LEFT JOIN property p ON p.id = n.property_id
         WHERE ${where.join(' AND ')}
         ORDER BY n.updated_at DESC LIMIT 300`,
       params

@@ -172,6 +172,37 @@ test('CONFIRM_TIME: reply from the WRONG party is ignored', () => {
   );
 });
 
+// ── unit resolution phase (RESOLVE_UNIT / CONFIRM_UNIT) ───────────────────────
+const NR = (state, intent, proposedBy = null) =>
+  nextStep({ state, party: 'prospect', intent, roundCount: 0, maxRounds: 3, proposedBy });
+
+test('CONFIRM_UNIT: YES → unit_confirmed', () => {
+  assert.deepEqual(NR('CONFIRM_UNIT', { accepted: true }), { type: 'unit_confirmed' });
+});
+test('CONFIRM_UNIT: a corrected name → resolve_unit', () => {
+  assert.deepEqual(NR('CONFIRM_UNIT', { unit_text: 'jervois 4b' }), { type: 'resolve_unit', text: 'jervois 4b' });
+});
+test('CONFIRM_UNIT: NO → reask_unit', () => {
+  assert.deepEqual(NR('CONFIRM_UNIT', { accepted: false }), { type: 'reask_unit' });
+});
+test('CONFIRM_UNIT: a bare number (no list here) → reask_unit, not unit_picked', () => {
+  assert.deepEqual(NR('CONFIRM_UNIT', { index: 2 }), { type: 'reask_unit' });
+  assert.deepEqual(NR('CONFIRM_UNIT', {}), { type: 'reask_unit' });
+});
+test('RESOLVE_UNIT: numbered pick → unit_picked', () => {
+  assert.deepEqual(NR('RESOLVE_UNIT', { index: 2 }), { type: 'unit_picked', index: 2, choice: undefined });
+});
+test('RESOLVE_UNIT: a fresh name → resolve_unit', () => {
+  assert.deepEqual(NR('RESOLVE_UNIT', { unit_text: 'mongkok 6a' }), { type: 'resolve_unit', text: 'mongkok 6a' });
+});
+test('RESOLVE_UNIT: cancel → cancel; empty → ignore', () => {
+  assert.deepEqual(NR('RESOLVE_UNIT', { cancel: true }), { type: 'cancel' });
+  assert.deepEqual(NR('RESOLVE_UNIT', {}), { type: 'ignore' });
+});
+test('resolution states ignore the tenant party', () => {
+  assert.deepEqual(nextStep({ state: 'CONFIRM_UNIT', party: 'tenant', intent: { accepted: true }, roundCount: 0, maxRounds: 3 }), { type: 'ignore' });
+});
+
 // ── viewingWindow (per-status lead gate) ──────────────────────────────────────
 // today 2099-01-06: +45 days = 2099-02-20, +46 = 2099-02-21, +60 = 2099-03-07, +61 = 2099-03-08.
 const VW = (endDate, contractType) => viewingWindow({

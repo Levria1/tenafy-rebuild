@@ -160,3 +160,44 @@ PARSED reply as a structured `intent`. See the design doc:
 Tenafy decides the next message and (in auto mode) sends it; in manual mode it
 queues a draft for staff to approve on the dashboard. The bot does NOT send the
 tenant anything — Tenafy relays both sides. Times are Hong Kong wall-clock.
+
+---
+
+## Addendum (2026-08-01): Unit resolution from free text + reconfirmation
+
+Design: `docs/superpowers/specs/2026-08-01-unit-resolution-reconfirmation.md`.
+
+**What changed:** `start` can now begin from the prospect's RAW TEXT — the bot no
+longer has to resolve a unit_id itself. Tenafy fuzzy-matches the phrase (handles
+"mongkok 6a", "mk 6a", "MongKok 6A", light typos, and stray unit-name suffixes
+like "6A Test"), and if it isn't a confident single match, it reconfirms /
+disambiguates over WhatsApp BEFORE the day-ask. This is fully backward compatible
+— passing `unit_id` still works exactly as before.
+
+**`start` now accepts `unit_text` OR `unit_id`:**
+- `POST /viewing-negotiation/start` `{ unit_text:"mongkok 6a", prospect:{...} }`
+  (send `unit_text` = whatever the prospect typed; omit `unit_id`).
+- Response is the same shape (`{ negotiation_id, state, awaiting, events, parties, awaiting_phone }`).
+  The initial `state` will be one of: `CONFIRM_UNIT` (one confident match — Tenafy
+  asks "Confirm — Mong Kok 6A? YES"), `RESOLVE_UNIT` (several candidates or a
+  property-only phrase — Tenafy sends a numbered list, or "which unit?"), or, if a
+  confident match is also marketable + in-window, straight to `ASK_PROSPECT_DAY`
+  after confirmation.
+
+**New reply intents during the resolution phase** (same `prospect-reply` endpoint,
+same `/active` routing — nothing else changes):
+- Confirm the single match ("yes"): `{ accepted:true }`
+- Pick from the offered numbered list ("2"): `{ index:2 }` (1-based)
+- Give a different / corrected unit ("actually jervois 4b"): `{ unit_text:"jervois 4b" }`
+- Not interested / stop: `{ cancel:true }`
+
+Once the unit is confirmed/picked, Tenafy pins it and the flow continues into the
+EXISTING day-ask → tenant relay unchanged; from that point the time intents above
+(`date`/`time`, `accepted`, `cancel`) apply as before. If the resolved unit isn't
+open for viewings (or its lease ends too far out), Tenafy soft-holds the prospect
+and routes it to staff — the bot doesn't need to handle that.
+
+**Bot responsibilities (unchanged principle):** forward the prospect's parsed reply
+as an `intent`; Tenafy owns matching, wording, and sending. The only new work is
+(1) send `unit_text` on `start`, and (2) parse a "yes" / a number / a unit name
+into the three intents above during `CONFIRM_UNIT`/`RESOLVE_UNIT`.

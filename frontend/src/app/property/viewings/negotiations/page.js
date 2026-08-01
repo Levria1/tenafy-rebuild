@@ -17,11 +17,14 @@ const { Text, Title } = Typography;
 
 // state → { label, color }
 const STATE_META = {
+  RESOLVE_UNIT: { label: 'Identifying unit', color: 'cyan' },
+  CONFIRM_UNIT: { label: 'Confirming unit', color: 'cyan' },
   ASK_PROSPECT_DAY: { label: 'Asking prospect', color: 'blue' },
   CHECK_STAFF: { label: 'Checking calendar', color: 'geekblue' },
   AWAIT_TENANT: { label: 'Awaiting tenant', color: 'orange' },
   ASK_TENANT_ALT: { label: 'Asking tenant', color: 'orange' },
   RELAY_TO_PROSPECT: { label: 'Relaying to prospect', color: 'purple' },
+  CONFIRM_TIME: { label: 'Confirming time', color: 'geekblue' },
   CONFIRMED: { label: 'Confirmed', color: 'green' },
   NEEDS_STAFF: { label: 'Needs staff', color: 'red' },
   CANCELLED: { label: 'Cancelled', color: 'default' },
@@ -147,10 +150,14 @@ export default function ViewingNegotiationsPage() {
     {
       title: 'Unit', key: 'unit',
       render: (_, r) => (
-        <Space direction="vertical" size={0}>
-          <Text>{r.unit_name}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>{r.property_name}</Text>
-        </Space>
+        r.unit_name ? (
+          <Space direction="vertical" size={0}>
+            <Text>{r.unit_name}</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>{r.property_name}</Text>
+          </Space>
+        ) : (
+          <Text type="secondary" italic>“{r.pending_unit_text || '…'}” <Text type="secondary" style={{ fontSize: 11 }}>(identifying)</Text></Text>
+        )
       ),
     },
     { title: 'Status', dataIndex: 'state', key: 'state', render: (s) => stateTag(s) },
@@ -237,7 +244,7 @@ function NegotiationDrawer({
 
   return (
     <Drawer
-      title={neg ? `${neg.prospect_name || 'Prospect'} — ${neg.unit_name}` : 'Viewing request'}
+      title={neg ? `${neg.prospect_name || 'Prospect'} — ${neg.unit_name || neg.pending_unit_text || 'identifying unit'}` : 'Viewing request'}
       width={560} open={open} onClose={onClose}
       extra={neg && !closed ? (
         <Popconfirm title="Cancel this viewing request?" onConfirm={onCancel} okText="Cancel it" cancelText="No">
@@ -268,7 +275,9 @@ function NegotiationDrawer({
             />
           )}
           <div style={{ marginBottom: 8 }}>
-            <Text type="secondary">Property: </Text><Text>{neg.property_name}</Text><br />
+            {neg.unit_id
+              ? (<><Text type="secondary">Property: </Text><Text>{neg.property_name}</Text><br /></>)
+              : (neg.pending_unit_text && (<><Text type="secondary">Identifying: </Text><Text>“{neg.pending_unit_text}”</Text><br /></>))}
             {neg.current_proposed_datetime && (<><Text type="secondary">Proposed: </Text><Text>{fmt(neg.current_proposed_datetime)}</Text></>)}
           </div>
 

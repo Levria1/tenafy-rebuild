@@ -47,7 +47,7 @@ function buildUrl(path) {
 // Find the active lease (+ tenant contact) for a unit, if occupied.
 async function findActiveLeaseForUnit(pool, unitId) {
   const [rows] = await pool.execute(
-    `SELECT l.id AS leasing_id, l.tenant_id, l.contract_type,
+    `SELECT l.id AS leasing_id, l.tenant_id, l.contract_type, l.viewing_enabled,
             DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date, t.email, t.phone
      FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
      WHERE l.unit_id = ? AND l.deleted_at IS NULL

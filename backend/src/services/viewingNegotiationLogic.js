@@ -88,6 +88,22 @@ function nextStep({ state, party, intent, roundCount, maxRounds, readBack = fals
   if (intent.cancel) return { type: 'cancel' };
 
   if (party === 'prospect') {
+    // Unit resolution phase (before the day-ask). The orchestrator does the actual
+    // DB-backed matching; nextStep only interprets the prospect's reply. A picked
+    // list item / a confirmed single match / a fresh name all route back to it.
+    if (state === 'CONFIRM_UNIT') {
+      // Single match awaiting a YES: confirm, or a fresh name re-resolves. There is
+      // NO candidate list here, so a bare number/"no"/anything-else just re-asks
+      // (routing it to unit_picked would index an empty list).
+      if (intent.accepted === true) return { type: 'unit_confirmed' };
+      if (intent.unit_text) return { type: 'resolve_unit', text: intent.unit_text };
+      return { type: 'reask_unit' };
+    }
+    if (state === 'RESOLVE_UNIT') {
+      if (intent.index != null || intent.choice) return { type: 'unit_picked', index: intent.index, choice: intent.choice };
+      if (intent.unit_text) return { type: 'resolve_unit', text: intent.unit_text };
+      return { type: 'ignore' };
+    }
     if (state === 'ASK_PROSPECT_DAY') {
       if (!intent.when) return { type: 'reprompt_day' };
       if (readBack) return { type: 'read_back', when: intent.when, proposedBy: 'prospect', roundDelta: 0 };
