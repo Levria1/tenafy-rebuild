@@ -876,6 +876,26 @@ async function approveDraft(pool, orgId, eventId) {
   return { ok: true };
 }
 
+// TaneChat manual mode: the bot already SENT the approved draft from inside the
+// TaneChat thread — Tenafy does NOT re-send, it just records the outbound as sent
+// (single source of truth for the log/dashboard). Atomic claim keeps it idempotent
+// and prevents racing the dashboard's approveDraft into a double delivery.
+// orgId is unused (the caller org-scopes the event); kept for signature parity
+// with approveDraft.
+async function markDraftSent(pool, orgId, eventId) {
+  const [r] = await pool.execute(
+    `UPDATE viewing_negotiation_event SET status = 'sent', sent_at = NOW()
+      WHERE id = ? AND direction = 'out' AND status = 'draft'`,
+    [eventId]
+  );
+  if (r.affectedRows > 0) return { ok: true, marked: true, already_sent: false, status: 'sent' };
+  // Not a draft anymore — read the REAL status so we never falsely assert a
+  // delivery for a non-'sent' terminal state.
+  const [[row]] = await pool.execute(
+    `SELECT status FROM viewing_negotiation_event WHERE id = ? LIMIT 1`, [eventId]);
+  return { ok: true, marked: false, already_sent: row ? row.status === 'sent' : false, status: row ? row.status : null };
+}
+
 // Staff free-form message into either chat (takeover).
 async function staffMessage(pool, orgId, neg, partyTo, text) {
   const phone = partyTo === 'tenant'
@@ -959,6 +979,6 @@ module.exports = {
   // orchestration
   getSetting, startNegotiation, startNegotiationFromText, handleReply, loadNegotiation,
   resolveStaffOfDay, loadStaffById, checkStaffFree, confirmNegotiation,
-  approveDraft, staffMessage, cancelNegotiation, proceedNegotiation, loadContext,
+  approveDraft, markDraftSent, staffMessage, cancelNegotiation, proceedNegotiation, loadContext,
   autoEscalateStaleNegotiationsForOrg,
 };

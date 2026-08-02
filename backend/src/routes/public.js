@@ -425,6 +425,36 @@ router.post('/viewing-negotiation/:id/prospect-reply', (req, res) => handleNegot
 // POST /api/public/viewing-negotiation/:id/tenant-reply    Body: { intent, text }
 router.post('/viewing-negotiation/:id/tenant-reply', (req, res) => handleNegotiationReply(req, res, 'tenant'));
 
+// POST /api/public/viewing-negotiation/:id/draft-sent   Body: { event_id }
+// MANUAL relay mode: Tenafy returns each composed outbound with status:'draft' in
+// the reply/start response. TaneChat shows it as a pending reply in the thread and,
+// on staff approval, SENDS it itself (it owns the WhatsApp — the message is a native
+// TaneChat send in the thread). It then calls THIS to tell Tenafy the draft went out,
+// so Tenafy records it as sent (Tenafy does NOT re-send). The draft/sent distinction
+// is the event's `status` field — never a marker in the message body. Idempotent.
+router.post('/viewing-negotiation/:id/draft-sent', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const negId = req.params.id;
+    const eventId = (req.body && (req.body.event_id || req.body.eventId)) || null;
+    if (!eventId) return fail(res, 'event_id is required', 400);
+    // Confirm the outbound belongs to this negotiation AND this org (defense-in-depth
+    // on top of the org-scoped pool).
+    const [[ev]] = await req.pool.execute(
+      `SELECT e.id FROM viewing_negotiation_event e
+         JOIN viewing_negotiation n ON n.id = e.negotiation_id
+        WHERE e.id = ? AND e.negotiation_id = ? AND e.direction = 'out' AND n.org_id = ? LIMIT 1`,
+      [eventId, negId, orgId]
+    );
+    if (!ev) return fail(res, 'Draft not found', 404);
+    const r = await viewingNegotiation.markDraftSent(req.pool, orgId, eventId);
+    return ok(res, { recorded: true, negotiation_id: negId, event_id: String(eventId), already_sent: r.already_sent, status: r.status });
+  } catch (err) {
+    console.error('Public draft-sent error:', err);
+    fail(res, 'Failed to record draft as sent');
+  }
+});
+
 // GET /api/public/viewing-negotiation/active?phone=...
 // Routing helper: given an inbound WhatsApp phone, find EVERY open negotiation it
 // belongs to (as prospect and/or tenant), so TaneChat can tag the reply — and

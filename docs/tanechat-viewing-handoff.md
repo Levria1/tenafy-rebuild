@@ -201,3 +201,41 @@ and routes it to staff — the bot doesn't need to handle that.
 as an `intent`; Tenafy owns matching, wording, and sending. The only new work is
 (1) send `unit_text` on `start`, and (2) parse a "yes" / a number / a unit name
 into the three intents above during `CONFIRM_UNIT`/`RESOLVE_UNIT`.
+
+---
+
+## Addendum (2026-08-02): Manual mode — approve drafts INSIDE TaneChat
+
+Tenafy composes every relay message; the only difference between modes is whether a
+human releases it first. Previously that approval lived on the Tenafy dashboard.
+This makes it possible to approve **inside the TaneChat thread** instead, so staff
+never leave TaneChat.
+
+**How to tell a draft from a sent message — it's a FLAG, never in the text.**
+Every outbound Tenafy returns (in the `events` array of the `start` / `*-reply`
+responses) already carries a `status` field:
+  - `status: "sent"`  → Tenafy already delivered it (AUTO mode). Nothing to do; it
+    will arrive on WhatsApp as normal.
+  - `status: "draft"` → MANUAL mode. Tenafy did NOT send it. Show `body` in the
+    thread as a pending/suggested reply with an Approve/Send button. Do NOT deliver
+    it yourself.
+The approval state is this `status` flag (plus the event's `id`) — there is NEVER
+any marker inside the message `body`. Track "pending approval" as your own UI state.
+
+Each event you get is: `{ id, party, to_phone, template_type, body, status }`.
+
+**Who sends it:** TaneChat. Tenafy has no WhatsApp of its own, and in manual mode
+the draft already lives in TaneChat — so on approval **TaneChat sends the message
+itself** (a native send in the thread, to the event's `to_phone`). Then, so Tenafy's
+log/dashboard stay accurate, TaneChat tells Tenafy it went out:
+  POST /api/public/viewing-negotiation/:id/draft-sent   { "event_id": "<event id>" }
+  → `{ recorded: true, negotiation_id, event_id, already_sent }`
+Tenafy just flips that event's `status` to `sent` — it does NOT re-send (that would
+double-deliver). Idempotent, so a retried call is safe.
+
+**Auto mode** needs none of this — outbounds come back `status:"sent"`, already
+delivered. (The relay_mode is a Tenafy setting; staff flip manual→auto on the
+Tenafy "Viewing Requests" dashboard once they trust it.)
+
+Editing a draft before sending is not supported yet — approve as-is, or a staffer
+can take over the conversation manually.
