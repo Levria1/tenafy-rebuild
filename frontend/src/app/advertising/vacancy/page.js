@@ -29,7 +29,7 @@ function daysColor(d) {
 export default function VacancyPage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [leadDays, setLeadDays] = useState({ NR: 45, UC: 30, DEFAULT: 20 });
+  const [leadDays, setLeadDays] = useState(60);
   const [counts, setCounts] = useState({ vacant: 0, expiring: 0 });
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState(null);
@@ -168,11 +168,9 @@ export default function VacancyPage() {
         <div style={{ marginBottom: 16 }}>
           <Text type="secondary">
             Units to advertise — <Tag color="red">Vacant now</Tag> (empty, no upcoming lease) first,
-            then <Tag color="green">Expiring</Tag> within the lead window:
-            <Tag color="red">NR {leadDays.NR}d</Tag>
-            <Tag color="orange">UC {leadDays.UC}d</Tag>
-            <Tag color="blue">MR / MTM / Unset {leadDays.DEFAULT}d</Tag>
-            before the lease ends. Units already re-let or with a tenant lined up are excluded.
+            then <Tag color="green">Expiring</Tag> — any lease ending within{' '}
+            <Tag color="blue">{leadDays}d</Tag> before its end, regardless of renewal intent
+            (the intent is shown per unit). Units already re-let or with a tenant lined up are excluded.
           </Text>
         </div>
 

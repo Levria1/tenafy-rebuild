@@ -35,13 +35,15 @@ function lengthError(body, limits = FIELD_LIMITS) {
 // Keyed off DATE-COMPUTED lease status (start_date/end_date/CURDATE()), NOT the
 // stored `leasing.status` column — that column is not maintained on expiry.
 //
-// Lead windows (contract_type): NR(3)=60d (2mo), UC(4)=30d, MR/MTM/unset=20d.
+// Expiring window: a FLAT 60 days for ALL renewal intents (any current lease
+// ending within 60 days shows up, regardless of NR/UC/MR/MTM/unset). The renewal
+// intent is displayed as a badge only — it no longer changes the window.
+// (Was per-intent NR 60 / UC 30 / others 20; flattened per request 2026-08-03.)
 // Sorted by urgency: longest-vacant first, then soonest-to-expire, then
 // never-leased units last.
 // ---------------------------------------------------------------------------
 
-const LEAD_DAYS = { NR: 60, UC: 30, DEFAULT: 20 };   // NR = 2 months (per request 2026-07-25)
-const LEAD_SQL = `CASE l.contract_type WHEN 3 THEN ${LEAD_DAYS.NR} WHEN 4 THEN ${LEAD_DAYS.UC} ELSE ${LEAD_DAYS.DEFAULT} END`;
+const EXPIRING_WINDOW = 60;   // days before lease end, all intents
 const INTENT = { 1: 'MR', 2: 'MTM', 3: 'NR', 4: 'UC' };
 
 const TENANT_NAME_SQL = `CASE WHEN t.type = 1 THEN t.company_name
@@ -85,7 +87,7 @@ async function computeVacancies(pool, orgId) {
          AND l.start_date <= CURDATE()
          AND l.end_date IS NOT NULL
          AND l.end_date >= CURDATE()
-         AND DATEDIFF(l.end_date, CURDATE()) <= ${LEAD_SQL}
+         AND DATEDIFF(l.end_date, CURDATE()) <= ${EXPIRING_WINDOW}
          AND ${NOT_TEST}
          AND NOT EXISTS (
            -- a replacement/continuation lease that keeps the unit occupied past
@@ -201,7 +203,7 @@ router.get('/vacancies', authenticate, async (req, res) => {
       code: 200,
       data: {
         as_of: new Date().toISOString().slice(0, 10),
-        lead_days: LEAD_DAYS,
+        lead_days: EXPIRING_WINDOW,
         count: vacancies.length,
         vacant_count,
         expiring_count,
