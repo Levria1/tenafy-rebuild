@@ -90,6 +90,13 @@ function wrapBody(bodyHtml) {
     h2 { font-size: 14pt; }
     h3 { font-size: 12pt; }
     p { margin: 0 0 0.7em 0; }
+    /* Empty paragraphs are used as blank-line spacers in templates. Without this
+       they have no content, so their margins "collapse through" and a run of them
+       renders as almost no space — which let stamped signatures (drawn upward from
+       their anchor line) overlap the text above. Give each empty paragraph a real
+       line's height so the author's blank lines actually reserve space (matches
+       the Quill editor's WYSIWYG). */
+    p:empty { min-height: 1.2em; }
     ul, ol { margin: 0 0 0.7em 1.5em; padding: 0; }
     table { border-collapse: collapse; margin: 0.5em 0; }
     table td, table th { border: 1px solid #ccc; padding: 4px 8px; }
