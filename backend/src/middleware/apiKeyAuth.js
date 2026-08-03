@@ -14,7 +14,7 @@ const authenticateApiKey = async (req, res, next) => {
 
     const masterPool = getMasterPool();
     const [rows] = await masterPool.execute(
-      `SELECT k.id, k.org_id, k.name, k.status, o.public_api_enabled
+      `SELECT k.id, k.org_id, k.name, k.status, k.read_only, o.public_api_enabled
        FROM api_keys k
        JOIN organizations o ON k.org_id = o.id
        WHERE k.api_key = ?`,
@@ -53,7 +53,13 @@ const authenticateApiKey = async (req, res, next) => {
       id: keyRow.id,
       orgId: keyRow.org_id,
       name: keyRow.name,
+      readOnly: Number(keyRow.read_only) === 1,
     };
+
+    // Read-only keys may only read: allow GET/HEAD/OPTIONS, reject any write.
+    if (req.apiKey.readOnly && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      return res.status(403).json({ code: 403, message: 'This API key is read-only; write operations are not permitted.' });
+    }
 
     // Update last_used_at (fire-and-forget)
     masterPool.execute('UPDATE api_keys SET last_used_at = NOW() WHERE id = ?', [keyRow.id]).catch(() => {});

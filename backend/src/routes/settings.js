@@ -654,7 +654,7 @@ router.get('/setting/api-keys', authenticate, requireSuperAdmin, async (req, res
     const orgId = req.user.orgId;
     const masterPool = getMasterPool();
     const [keys] = await masterPool.execute(
-      'SELECT id, api_key, name, status, created_at, last_used_at FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
+      'SELECT id, api_key, name, status, read_only, created_at, last_used_at FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
       [orgId]
     );
     res.json({ code: 200, data: keys });
@@ -669,6 +669,7 @@ router.post('/setting/api-keys', authenticate, requireSuperAdmin, async (req, re
   try {
     const orgId = req.user.orgId;
     const { name } = req.body;
+    const readOnly = req.body.read_only ? 1 : 0;
     const masterPool = getMasterPool();
 
     // Check if public API is enabled
@@ -684,11 +685,11 @@ router.post('/setting/api-keys', authenticate, requireSuperAdmin, async (req, re
     const apiKey = 'pk_' + crypto.randomBytes(32).toString('hex');
 
     await masterPool.execute(
-      'INSERT INTO api_keys (id, org_id, api_key, name, status, created_at) VALUES (?, ?, ?, ?, 1, NOW())',
-      [id, orgId, apiKey, name || 'Default']
+      'INSERT INTO api_keys (id, org_id, api_key, name, status, read_only, created_at) VALUES (?, ?, ?, ?, 1, ?, NOW())',
+      [id, orgId, apiKey, name || 'Default', readOnly]
     );
 
-    res.json({ code: 200, data: { id, api_key: apiKey, name: name || 'Default' } });
+    res.json({ code: 200, data: { id, api_key: apiKey, name: name || 'Default', read_only: readOnly } });
   } catch (err) {
     console.error('Create API key error:', err);
     res.status(500).json({ code: 500, message: err.message });
