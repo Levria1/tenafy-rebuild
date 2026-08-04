@@ -65,7 +65,13 @@ const NOT_TEST = `LOWER(u.name) NOT LIKE '%test%' AND LOWER(p.display_name) NOT 
 // Shared vacancy computation — used by BOTH /vacancies and /scheduler so they can
 // never diverge. Returns the unified, urgency-sorted list plus per-category counts.
 async function computeVacancies(pool, orgId) {
-    // 1. EXPIRING — current lease ending within its lead window, not re-let.
+    // 1. EXPIRING — the unit's LATEST lease (current OR a future one) ends within
+    //    the window and nothing follows it. We intentionally do NOT require the
+    //    lease to have started: a unit re-let with a SHORT upcoming lease (e.g.
+    //    current ends soon, a brief future lease runs a couple weeks, then nothing)
+    //    genuinely goes vacant at that future end — the NOT EXISTS below already
+    //    isolates the last lease, so dropping the start_date filter surfaces it.
+    //    A unit re-let with a LONG future lease stays hidden (its end is >window).
     const [expiring] = await pool.execute(
       `SELECT
           l.id AS lease_id, l.contract_type, l.amount AS rent, l.deposit,
@@ -84,7 +90,6 @@ async function computeVacancies(pool, orgId) {
        WHERE p.org_id = ?
          AND l.deleted_at IS NULL
          AND u.active_status = 1
-         AND l.start_date <= CURDATE()
          AND l.end_date IS NOT NULL
          AND l.end_date >= CURDATE()
          AND DATEDIFF(l.end_date, CURDATE()) <= ${EXPIRING_WINDOW}
@@ -92,10 +97,16 @@ async function computeVacancies(pool, orgId) {
          AND NOT EXISTS (
            -- a replacement/continuation lease that keeps the unit occupied past
            -- this one's end. Uses end_date (not start>end) so a same-day rollover
-           -- or overlapping renewal is correctly treated as "already re-let".
+           -- or overlapping renewal is correctly treated as "already re-let". The
+           -- id tie-break ensures that if two leases share the SAME max end_date
+           -- (e.g. a duplicate/re-entered row) only the highest-id one survives, so
+           -- the unit can't appear twice now that the start_date filter is gone.
            SELECT 1 FROM leasing l2
             WHERE l2.unit_id = l.unit_id AND l2.deleted_at IS NULL
-              AND l2.id <> l.id AND (l2.end_date IS NULL OR l2.end_date > l.end_date))
+              AND l2.id <> l.id
+              AND (l2.end_date IS NULL
+                   OR l2.end_date > l.end_date
+                   OR (l2.end_date = l.end_date AND l2.id > l.id)))
        ORDER BY days_left ASC`,
       [orgId]
     );
