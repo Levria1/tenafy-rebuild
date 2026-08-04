@@ -92,6 +92,7 @@ const TEMPLATE_TYPES = [
   { value: 'Viewing-Confirm-Time', label: 'Viewing Relay — Read-back Confirm (Proposer)' },
   { value: 'Viewing-Relay-Confirmed', label: 'Viewing Relay — Confirmed (Both)' },
   { value: 'Viewing-Relay-Escalated', label: 'Viewing Relay — Needs Staff (Both)' },
+  { value: 'Viewing-Hold-MultiUnit', label: 'Viewing Relay — Multi-Unit Hold (Prospect)' },
   // Inquiry follow-up reminder (sent to staff who created the inquiry)
   { value: 'Inquiry-Reminder', label: 'Inquiry Reminder (Staff)' },
 ];

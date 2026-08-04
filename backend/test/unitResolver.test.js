@@ -46,6 +46,16 @@ test('resolver: same unit token across properties → ambiguous, lists both', ()
   assert.deepEqual(r.candidates.map(c => c.unit_id).sort(), ['1', '4']);
 });
 
+test('resolver: two distinct units named → multi_unit (escalate to staff)', () => {
+  const r = R('mongkok 6a 5a');
+  assert.equal(r.status, 'multi_unit');
+});
+
+test('resolver: single unit token colliding across properties stays ambiguous (not multi_unit)', () => {
+  // "6a" matches 6A at two buildings but is ONE unit intent → ambiguous, not multi.
+  assert.equal(R('6a').status, 'ambiguous');
+});
+
 test('resolver: unrecognisable → none', () => {
   assert.equal(R('the corner flat').status, 'none');
   assert.equal(R('').status, 'none');

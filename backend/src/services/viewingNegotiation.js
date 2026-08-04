@@ -50,6 +50,15 @@ async function computeResolutionPlan(pool, orgId, text, prospectPhone) {
     set.state = 'CONFIRM_UNIT'; set.awaiting = 'prospect';
     outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Confirm-Unit',
       vars: { '%Unit Full Name%': r.match.label, '%Property Name%': r.match.property_name, '%Unit Name%': r.match.unit_name } });
+  } else if (r.status === 'multi_unit') {
+    // Prospect named more than one unit. We don't auto-arrange multi-unit
+    // viewings yet — park it for a human and switch this conversation to manual.
+    set.pending_unit_id = null;
+    set.unit_candidates = JSON.stringify(r.candidates.map(c => ({ unit_id: c.unit_id, label: c.label })));
+    set.state = 'NEEDS_STAFF'; set.awaiting = 'staff'; set.needs_staff_reason = 'multi_unit';
+    outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Hold-MultiUnit', vars: {} });
+    await notifyStaff(pool, orgId, 'Viewing request needs review',
+      `A prospect asked to view more than one unit ("${String(text || '').slice(0, 120)}"). Arrange this one manually.`);
   } else if (r.status === 'ambiguous' || r.status === 'property_only') {
     set.pending_unit_id = null;
     set.unit_candidates = JSON.stringify(r.candidates.map(c => ({ unit_id: c.unit_id, label: c.label })));
@@ -227,6 +236,7 @@ const FALLBACKS = {
   'Viewing-Confirm-Unit': `Just to confirm — you'd like to view %Unit Full Name%? Reply YES, or tell me the correct unit.`,
   'Viewing-Choose-Unit': `Which unit would you like to view?\n%Unit Options%\n\nReply with the number or the unit name.`,
   'Viewing-Unit-NotFound': `Sorry, I couldn't find that unit. Which property and unit would you like to view?`,
+  'Viewing-Hold-MultiUnit': `Thanks! It looks like you'd like to view more than one unit — I'll have a colleague help arrange that. Someone from our team will follow up with you shortly.`,
 };
 
 async function renderMessage(pool, orgId, templateType, vars) {

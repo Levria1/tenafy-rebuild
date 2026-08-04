@@ -241,6 +241,7 @@ function NegotiationDrawer({
   const events = detail?.events || [];
   const closed = neg && ['CONFIRMED', 'CANCELLED'].includes(neg.state);
   const offWindow = neg && neg.state === 'NEEDS_STAFF' && neg.needs_staff_reason === 'off_window';
+  const multiUnit = neg && neg.state === 'NEEDS_STAFF' && neg.needs_staff_reason === 'multi_unit';
 
   return (
     <Drawer
@@ -272,6 +273,13 @@ function NegotiationDrawer({
                   Start viewing anyway
                 </Button>
               }
+            />
+          )}
+          {multiUnit && (
+            <Alert
+              type="info" showIcon style={{ marginBottom: 12 }}
+              message="Held — prospect asked for more than one unit"
+              description={`Their message${neg.pending_unit_text ? ` (“${neg.pending_unit_text}”)` : ''} named multiple units. Multi-unit viewings aren't auto-arranged yet — reply manually to sort out which unit(s) and when.`}
             />
           )}
           <div style={{ marginBottom: 8 }}>

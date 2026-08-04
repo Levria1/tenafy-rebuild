@@ -92,6 +92,18 @@ function scoreUnits(text, units) {
   if (!qTokens.length) return { status: 'none', match: null, candidates: [], query: String(text || '') };
 
   const rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u) }));
+
+  // "More than one unit" intent: the prospect named ≥2 DISTINCT units, each an
+  // exact unit-token match (e.g. "mongkok 6a 5a"). We don't auto-arrange a
+  // multi-unit viewing — the caller escalates it to staff. "Distinct" is by unit
+  // core, so a single token that merely collides across properties ("6a" at two
+  // buildings) stays a normal ambiguous pick, NOT a multi-unit request.
+  const exactUnitRows = rows.filter(r => r.s.unit === 3);
+  const namedCores = new Set(exactUnitRows.map(r => unitCore(r.u.name)));
+  if (namedCores.size >= 2) {
+    return { status: 'multi_unit', match: null, candidates: candidateList(exactUnitRows), query: norm(text) };
+  }
+
   const full = rows.filter(r => r.s.prop > 0 && r.s.unit > 0).sort((a, b) => b.s.total - a.s.total);
   const propMatched = rows.filter(r => r.s.prop > 0).sort((a, b) => b.s.prop - a.s.prop);
   const unitMatched = rows.filter(r => r.s.unit > 0).sort((a, b) => b.s.unit - a.s.unit);
