@@ -23,7 +23,7 @@
 const crypto = require('crypto');
 const { getMasterPool } = require('../config/poolRegistry');
 const { getFreeBusy } = require('./googleCalendar');
-const { sendWhatsApp } = require('./whatsappService');
+const { sendWhatsApp, loadWhatsAppTemplate } = require('./whatsappService');
 const { sendViewingConfirmation } = require('./viewingNotify');
 const { loadTemplate, substituteVariables } = require('./emailService');
 const { KIND_ACTION, KIND_MANAGE } = require('../middleware/viewingTokenAuth');
@@ -232,7 +232,12 @@ const FALLBACKS = {
 async function renderMessage(pool, orgId, templateType, vars) {
   let text = FALLBACKS[templateType] || '';
   try {
-    const tpl = await loadTemplate(pool, orgId, templateType);
+    // Relay messages are delivered over WhatsApp, so the WhatsApp template store
+    // (Channels → WhatsApp → Templates) is the authoritative place to customise
+    // their wording. Fall back to the shared email_template store, then to the
+    // built-in code fallback above.
+    let tpl = await loadWhatsAppTemplate(pool, orgId, templateType);
+    if (!tpl || !tpl.template_content) tpl = await loadTemplate(pool, orgId, templateType);
     if (tpl && tpl.template_content) text = stripToText(tpl.template_content);
   } catch { /* fallback */ }
   return substituteVariables(text, vars || {});
