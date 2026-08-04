@@ -1591,6 +1591,87 @@ const search_whatsapp = {
 };
 
 // ---------------------------------------------------------------------------
+// Tool: get_conversation  (INTERNAL ONLY — full ordered thread of ONE convo)
+// ---------------------------------------------------------------------------
+// search_whatsapp returns SCATTERED keyword hits, which is not enough to judge
+// "what was finally agreed" — a later confirmation can override an earlier offer.
+// This pulls the whole conversation in chronological order so the model reasons
+// over the real sequence of offers → confirmations instead of guessing from
+// fragments (the failure that read a superseded "Aug 9" offer as the final date).
+const get_conversation = {
+  cap: null, // internal-only; excluded from the prospect toolset via INTERNAL_ONLY
+  definition: {
+    type: 'function',
+    function: {
+      name: 'get_conversation',
+      description:
+        'INTERNAL (staff only). Fetch the FULL message thread of ONE TaneChat conversation in ' +
+        'chronological order (oldest→newest). Call this AFTER search_whatsapp surfaces a relevant ' +
+        'conversation_id whenever your conclusion depends on WHAT WAS FINALLY AGREED — a lease ' +
+        'extension/end date, a move-out date, a price, or a yes/no decision. Keyword search returns ' +
+        'scattered fragments and cannot tell you which statement is the latest/authoritative; this ' +
+        'returns the ordered thread so you can see the sequence. The LAST message on a topic wins; ' +
+        'an offer ("we can do X, would you like to proceed?") is NOT a confirmation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          conversation_id: { type: 'string', description: 'TaneChat conversation_id (from a search_whatsapp result).' },
+          limit: { type: 'integer', description: 'How many of the MOST RECENT messages to return (oldest→newest). Default 50, max 100. Raise it if the thread looks truncated (truncated=true) and you need older context.' },
+        },
+        required: ['conversation_id'],
+      },
+    },
+  },
+  async execute(ctx, args = {}) {
+    const id = args && args.conversation_id != null ? String(args.conversation_id).trim() : '';
+    if (!id) return { error: 'conversation_id is required — get it from a search_whatsapp result.' };
+    if (!taneChatClient.isConfigured()) {
+      return { error: 'TaneChat is not configured. Set TANECHAT_API_KEY to enable conversation fetch.' };
+    }
+    const limit = clampLimit(args.limit, 50, 100);
+    // Keep messages long enough to quote verbatim (the persona mandates a quote);
+    // only very long messages are clipped, and the note flags that.
+    const truncate = (value) => {
+      const text = String(value || '').replace(/\s+/g, ' ').trim();
+      return text.length > 1200 ? text.slice(0, 1200) + '…' : text;
+    };
+    // Numeric-aware ordering (ISO-8601 or epoch); unparseable/missing → 0 (front).
+    const tsMillis = (v) => { const n = new Date(v).getTime(); return Number.isFinite(n) ? n : 0; };
+    try {
+      const resp = (await taneChatClient.getConversationMessages(id, { limit })) || {};
+      const raw = Array.isArray(resp) ? resp : (resp.messages || resp.results || resp.data || []);
+      // oldest→newest so offers precede their confirmations when the model reads.
+      const rows = (Array.isArray(raw) ? raw : []).slice().sort((a, b) => tsMillis(a.timestamp) - tsMillis(b.timestamp));
+      const withContact = rows.find(r => r.contact);
+      const contact = withContact ? withContact.contact : null;
+      const maxedOut = rows.length >= limit; // hit the window — older messages may exist ABOVE it
+      return {
+        conversation_id: id,
+        count: rows.length,
+        contact: contact ? { name: contact.name || null, phone: contact.phone || null, channel: contact.channel || null } : null,
+        truncated: maxedOut,
+        messages: rows.map(r => ({
+          timestamp: r.timestamp,
+          direction: r.direction,
+          content: truncate(r.content),
+          deep_link: r.deep_link || null,
+        })),
+        note: 'Messages are OLDEST→NEWEST and this window always includes the NEWEST ones (which decide the current state). '
+          + 'The most recent message on a topic is authoritative; an offer/proposal is NOT a confirmation. '
+          + (maxedOut
+              ? (limit >= 100
+                  ? 'This is the maximum 100 messages we can fetch — older history is omitted, but the newest (authoritative) ones are here, so proceed; do not re-call for more.'
+                  : 'Older messages exist ABOVE this window — raise limit (max 100) ONLY if you need earlier context.')
+              : 'This is the complete thread.')
+          + ' Long messages may be clipped at 1200 chars (shown with …) — quote what is shown.',
+      };
+    } catch (e) {
+      return { error: e.message };
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Tool: trace_amount  (INTERNAL ONLY — reconciliation lead finder)
 // ---------------------------------------------------------------------------
 const trace_amount = {
@@ -1721,6 +1802,7 @@ const ALL_TOOLS = [
   search_vacancies,
   search_chats,
   search_whatsapp,
+  get_conversation,
   trace_amount,
   ask_data,
 ];
@@ -1731,7 +1813,7 @@ const ALL_BY_NAME = Object.fromEntries(
 
 // Tools that must NEVER reach the prospect-facing bot, even if their `cap` is
 // unset. The internal endpoint assembles these explicitly via toolsForInternal().
-const INTERNAL_ONLY = new Set(['search_vacancies', 'search_chats', 'search_whatsapp', 'trace_amount', 'ask_data']);
+const INTERNAL_ONLY = new Set(['search_vacancies', 'search_chats', 'search_whatsapp', 'get_conversation', 'trace_amount', 'ask_data']);
 
 /**
  * Return tool definitions + executor map filtered by the org's capabilities.
@@ -1753,7 +1835,7 @@ function toolsForCapabilities(capabilities) {
 // prospect bot. `extra` lets the internal endpoint add ask_data (Phase 3).
 const INTERNAL_TOOL_NAMES = [
   'search_leases', 'search_invoices', 'search_services',
-  'search_documents', 'search_inquiries', 'search_vacancies', 'search_chats', 'search_whatsapp', 'trace_amount',
+  'search_documents', 'search_inquiries', 'search_vacancies', 'search_chats', 'search_whatsapp', 'get_conversation', 'trace_amount',
 ];
 function toolsForInternal(extra = []) {
   const base = INTERNAL_TOOL_NAMES.map(n => ALL_BY_NAME[n]).filter(Boolean);
@@ -1787,10 +1869,12 @@ const INTERNAL_SYSTEM_PROMPT = [
   'You are the INTERNAL operations assistant for a property-management team using Tenafy.',
   'You are talking to STAFF, not prospects. Answer their data questions directly and completely.',
   'Do NOT use a sales tone. Do NOT ask for a move-in date, area, or budget. There is no qualification gate — just answer.',
-  'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, search_vacancies (vacant-now + upcoming vacancies), search_chats (local mirrored chat sessions), search_whatsapp (LIVE TaneChat WhatsApp/email search), and trace_amount (reconcile bank-line amounts).',
+  'Prefer the structured tools: search_leases, search_invoices, search_services, search_documents, search_inquiries, search_vacancies (vacant-now + upcoming vacancies), search_chats (local mirrored chat sessions), search_whatsapp (LIVE TaneChat WhatsApp/email search — returns scattered keyword hits), get_conversation (fetch ONE conversation\'s FULL thread in chronological order), and trace_amount (reconcile bank-line amounts).',
   'For Xero screenshots or reconciliation requests, first parse each bank line into {amount, date, direction}, echo the parsed rows back for confirmation, and call out Spent vs Received explicitly because OCR can flip columns.',
   'Then call trace_amount ONCE with all parsed rows. For each row, rank leads by returned score and date closeness; always show alternatives, never a lone confident answer, because common HK surnames and identical rents collide.',
   'Cite WhatsApp deep_link values so staff can verify. Treat chat mentions as corroboration, not proof of identity. Nothing is auto-reconciled; this is advice and the human reconciles in Xero.',
+  'DETERMINING WHAT WAS AGREED (extension/end dates, move-out dates, prices, yes/no): search_whatsapp returns scattered fragments and CANNOT tell you which statement is final. Before you conclude that something was "confirmed" or "needs updating", call get_conversation on that conversation_id and read the thread IN ORDER. The MOST RECENT message on a topic is authoritative — a later confirmation overrides an earlier one, and an offer or proposal ("we can extend to X, would you like to proceed?") is NOT a decision. Example: if the team floats "extend to Aug 9" at 03:18 and then confirms "we will now proceed with extending until Aug 8" at 05:49, the answer is Aug 8. If the thread is genuinely ambiguous or self-contradictory, SAY SO and flag it for a human — do not guess.',
+  'For EVERY claim that a value was "confirmed" or "needs updating", quote the single most-recent authoritative message VERBATIM with its date (DD-MMM-YYYY) and cite its deep_link, so staff can verify in one click. No quote = do not assert it as fact.',
   'Use ask_data ONLY when the structured tools cannot answer it — aggregations, sums, counts, ad-hoc joins. It is strictly read-only.',
   'Be precise with numbers, dates (DD-MMM-YYYY), and money (HK$). If a tool returns nothing, say so plainly — never invent rows.',
   'When you list units/leases/invoices, include the identifying details (unit, property, tenant, dates, amounts). Group long lists sensibly.',
