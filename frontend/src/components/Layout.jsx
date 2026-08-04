@@ -208,6 +208,10 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   if (hasPermission('LANDLORD/SETTING_CATEGORY')) acctSettingsChildren.push({ key: '/settings?tab=categories', label: <Link href="/settings?tab=categories">Categories</Link> });
   if (hasPermission('LANDLORD/SETTING_ACCOUNT')) acctSettingsChildren.push({ key: '/settings?tab=accounts', label: <Link href="/settings?tab=accounts">Accounts</Link> });
   if (hasPermission('LANDLORD/SETTING_SEQUENCE')) acctSettingsChildren.push({ key: '/settings?tab=sequences', label: <Link href="/settings?tab=sequences">Sequences</Link> });
+  // Integrations (Xero, etc.) — grouped under Accounting since Xero is accounting
+  // software. Gated by the email-template permission for now; promote to its own
+  // permission when there's more than one integration needing separate gates.
+  if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) acctSettingsChildren.push({ key: '/settings/integrations', label: <Link href="/settings/integrations">Integrations</Link> });
   if (acctSettingsChildren.length > 0) {
     settingsChildren.push({
       key: '/settings/accounting',
@@ -216,28 +220,19 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     });
   }
 
-  // Email settings sub-group
-  const emailSettingsChildren = [];
-  if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) emailSettingsChildren.push({ key: '/settings?tab=emailTemplates', label: <Link href="/settings?tab=emailTemplates">Email Template</Link> });
-  if (emailSettingsChildren.length > 0) {
-    settingsChildren.push({
-      key: '/settings/email',
-      label: 'Email Settings',
-      children: emailSettingsChildren,
-    });
-  }
-
-  // WhatsApp settings sub-group (reuses email template permission)
-  const whatsappSettingsChildren = [];
+  // Channels sub-group (Email + WhatsApp). Each channel's page carries its own
+  // templates + channel config (SMTP/whitelist, connection) as horizontal tabs.
+  // Both reuse the email-template permission.
+  const channelsChildren = [];
   if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) {
-    whatsappSettingsChildren.push({ key: '/settings?tab=whatsappTemplates', label: <Link href="/settings?tab=whatsappTemplates">WhatsApp Templates</Link> });
-    whatsappSettingsChildren.push({ key: '/settings?tab=whatsappSettings', label: <Link href="/settings?tab=whatsappSettings">Connection & Whitelist</Link> });
+    channelsChildren.push({ key: '/settings?tab=emailTemplates', label: <Link href="/settings?tab=emailTemplates">Email</Link> });
+    channelsChildren.push({ key: '/settings?tab=whatsappTemplates', label: <Link href="/settings?tab=whatsappTemplates">WhatsApp</Link> });
   }
-  if (whatsappSettingsChildren.length > 0) {
+  if (channelsChildren.length > 0) {
     settingsChildren.push({
-      key: '/settings/whatsapp',
-      label: 'WhatsApp Settings',
-      children: whatsappSettingsChildren,
+      key: '/settings/channels',
+      label: 'Channels',
+      children: channelsChildren,
     });
   }
 
@@ -263,13 +258,6 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) {
     settingsChildren.push({ key: '/settings/lease-templates', label: <Link href="/settings/lease-templates">Lease Templates</Link> });
     settingsChildren.push({ key: '/settings/landlord-signatures', label: <Link href="/settings/landlord-signatures">Landlord Signatures</Link> });
-  }
-
-  // Integrations (Xero, etc.) — own route, gated by the same permission as
-  // email templates for now. Promote to its own permission when there's
-  // more than one integration and they need separate gates.
-  if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) {
-    settingsChildren.push({ key: '/settings/integrations', label: <Link href="/settings/integrations">Integrations</Link> });
   }
 
   // API Keys — super admin only
@@ -568,6 +556,10 @@ function MainLayout({ children }) {
       return ['/accounting/accounts'];
     }
     if (pathname.startsWith('/settings') && tab) {
+      // Channel sub-tabs (SMTP/whitelist/connection) have no own sidebar entry —
+      // highlight their channel's menu item so the sidebar reflects the section.
+      if (['smtpAccounts', 'emailSettings'].includes(tab)) return ['/settings?tab=emailTemplates'];
+      if (tab === 'whatsappSettings') return ['/settings?tab=whatsappTemplates'];
       return [`/settings?tab=${tab}`];
     }
     // Leasing sub-routes
@@ -594,12 +586,12 @@ function MainLayout({ children }) {
     if (pathname.startsWith('/chatbot')) keys.push('/chatbot');
     if (pathname.startsWith('/settings')) {
       keys.push('/settings'); // Always open parent Settings
-      if (['payment', 'categories', 'accounts', 'sequences'].includes(tab)) {
+      if (pathname.startsWith('/settings/integrations')) {
         keys.push('/settings/accounting');
-      } else if (['emailTemplates'].includes(tab)) {
-        keys.push('/settings/email');
-      } else if (['whatsappTemplates', 'whatsappSettings'].includes(tab)) {
-        keys.push('/settings/whatsapp');
+      } else if (['payment', 'categories', 'accounts', 'sequences'].includes(tab)) {
+        keys.push('/settings/accounting');
+      } else if (['emailTemplates', 'smtpAccounts', 'emailSettings', 'whatsappTemplates', 'whatsappSettings'].includes(tab)) {
+        keys.push('/settings/channels');
       } else if (['users', 'roles'].includes(tab)) {
         keys.push('/settings/users');
       }

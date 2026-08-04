@@ -370,7 +370,7 @@ function SettingsPage() {
   ];
 
   const emailTabs = [
-    { key: 'emailTemplates', label: 'Email Templates', children: (
+    { key: 'emailTemplates', label: 'Templates', children: (
       <Card>
         {canCreateTemplate && <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/email-templates/create')} block={isMobile}>Add Template</Button></div>}
         {isMobile ? (
@@ -381,7 +381,7 @@ function SettingsPage() {
       </Card>
     )},
     { key: 'smtpAccounts', label: 'SMTP Accounts', children: <SmtpAccountSettings isMobile={isMobile} /> },
-    { key: 'emailSettings', label: 'Settings', children: <EmailWhitelistSettings /> },
+    { key: 'emailSettings', label: 'Whitelist', children: <EmailWhitelistSettings /> },
   ];
 
   const whatsappTemplateColumns = [
@@ -416,7 +416,7 @@ function SettingsPage() {
   );
 
   const whatsappTabs = [
-    { key: 'whatsappTemplates', label: 'WhatsApp Templates', children: (
+    { key: 'whatsappTemplates', label: 'Templates', children: (
       <Card>
         {canCreateTemplate && <div style={{ marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/settings/whatsapp-templates/create')} block={isMobile}>Add Template</Button></div>}
         {isMobile ? (
@@ -426,7 +426,7 @@ function SettingsPage() {
         )}
       </Card>
     )},
-    { key: 'whatsappSettings', label: 'Settings', children: <WhatsAppWhitelistSettings /> },
+    { key: 'whatsappSettings', label: 'Connection & Whitelist', children: <WhatsAppWhitelistSettings /> },
   ];
 
   const userTabs = [
@@ -499,10 +499,10 @@ function SettingsPage() {
     pageTitle = 'Amenity Settings';
   } else if (emailKeys.includes(activeTab)) {
     tabItems = emailTabs;
-    pageTitle = 'Email Settings';
+    pageTitle = 'Email';
   } else if (whatsappKeys.includes(activeTab)) {
     tabItems = whatsappTabs;
-    pageTitle = 'WhatsApp Settings';
+    pageTitle = 'WhatsApp';
   } else if (userKeys.includes(activeTab)) {
     tabItems = userTabs;
     pageTitle = 'User Management';
