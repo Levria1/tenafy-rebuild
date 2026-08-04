@@ -53,7 +53,17 @@ export default function InternalChatPage() {
   const [sending, setSending] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [error, setError] = useState(null);
+  const [elapsed, setElapsed] = useState(0);
   const endRef = useRef(null);
+
+  // Live "working" timer — a query can run 1–2 min (LLM tool loop + TaneChat
+  // lookups). A ticking counter + changing phrase shows it's alive, not timed out.
+  useEffect(() => {
+    if (!sending) { setElapsed(0); return undefined; }
+    setElapsed(0);
+    const t = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [sending]);
   const imageOcr = useChatImageOcr({
     onError: (msg) => {
       setError(msg);
@@ -164,7 +174,16 @@ export default function InternalChatPage() {
           {sending && (
             <div style={{ display: 'flex', alignItems: 'center', color: '#8c8c8c', marginBottom: 12 }}>
               <Avatar style={{ marginRight: 8, background: '#2f54eb' }} icon={<DatabaseOutlined />} />
-              <Spin size="small" style={{ marginRight: 8 }} /> working…
+              <Spin size="small" style={{ marginRight: 8 }} />
+              <span>
+                {elapsed < 4 ? 'Thinking…'
+                  : elapsed < 10 ? 'Searching your data…'
+                  : elapsed < 25 ? 'Running queries…'
+                  : elapsed < 60 ? 'Cross-referencing leases & TaneChat…'
+                  : 'Still working — complex lookups can take a minute or two…'}
+                {' '}
+                <Text type="secondary" style={{ fontVariantNumeric: 'tabular-nums' }}>({elapsed}s)</Text>
+              </span>
             </div>
           )}
           <div ref={endRef} />
