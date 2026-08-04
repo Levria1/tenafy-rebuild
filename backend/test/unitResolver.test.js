@@ -87,3 +87,20 @@ test('helpers: editDistance bounded + unitCore strips suffix', () => {
   assert.equal(_unitCore('6A Test'), '6a');
   assert.equal(_unitCore('Rooftop/Stairway'), 'rooftop');
 });
+
+test('helpers: unitCore skips a leading generic word ("Unit 22" -> "22")', () => {
+  assert.equal(_unitCore('Unit 22'), '22');
+  assert.equal(_unitCore('Flat 3B'), '3b');
+  assert.equal(_unitCore('Unit 3 B'), '3b'); // multi-token tail kept (no 3A/3B collision)
+  assert.equal(_unitCore('6A'), '6a');       // number+letter unaffected
+  assert.equal(_unitCore('Unit'), 'unit');   // only a generic word → keep it
+});
+
+test('resolver: "Unit N" names resolve on the number (single confident + multi escalates)', () => {
+  const U = [
+    { id: 'a', name: 'Unit 22', property_id: 'p9', property_name: 'Pearl City', marketable: true },
+    { id: 'b', name: 'Unit 23', property_id: 'p9', property_name: 'Pearl City', marketable: true },
+  ];
+  assert.equal(scoreUnits('pearl city unit 22', U).status, 'confident');
+  assert.equal(scoreUnits('pearl city unit 22 and 23', U).status, 'multi_unit');
+});

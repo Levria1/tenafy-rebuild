@@ -15,8 +15,21 @@ function squish(s) { return norm(s).replace(/ /g, ''); }
 function toTokens(s) { const n = norm(s); return n ? n.split(' ') : []; }
 // property initials alias: "Mong Kok" -> "mk", "Nam Pak Hong" -> "nph"
 function initials(name) { return toTokens(name).map(w => w[0]).join(''); }
-// the meaningful unit token: first token of the name — "6A Test" -> "6a"
-function unitCore(name) { const t = toTokens(name); return t.length ? t[0] : ''; }
+// A leading generic word carries no identity — the meaningful token is what
+// follows it: "Unit 22" -> "22", "Flat 3B" -> "3b".
+const GENERIC_UNIT_WORDS = new Set(['unit', 'flat', 'apt', 'apartment', 'room', 'suite', 'rm']);
+// the meaningful unit token. Non-generic names use the first token, so a stray
+// suffix is tolerated ("6A Test" -> "6a"). When the name starts with a generic
+// word, that word carries no identity, so we join the REMAINING tokens to keep a
+// multi-part tail intact — "Unit 22" -> "22", "Unit 3 B" -> "3b", "Flat 3B" ->
+// "3b" (taking only the next token would collide "Unit 3 A"/"Unit 3 B" on "3").
+// A name that is ONLY a generic word keeps it (nothing better to use).
+function unitCore(name) {
+  const t = toTokens(name);
+  if (!t.length) return '';
+  if (t.length > 1 && GENERIC_UNIT_WORDS.has(t[0])) return t.slice(1).join('');
+  return t[0];
+}
 
 // bounded Levenshtein (early-exit once the running best exceeds max)
 function editDistance(a, b, max) {
