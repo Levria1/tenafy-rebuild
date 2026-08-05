@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm } from 'antd';
-import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined, MailOutlined } from '@ant-design/icons';
+import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert } from 'antd';
+import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined, MailOutlined, LogoutOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
@@ -35,6 +35,10 @@ export default function LeasingDetailPage() {
   const [revisions, setRevisions] = useState([]);
   const [resendingSig, setResendingSig] = useState(false);
   const [sendingCheckin, setSendingCheckin] = useState(false);
+  const [moveOutOpen, setMoveOutOpen] = useState(false);
+  const [moveOutDate, setMoveOutDate] = useState(dayjs());
+  const [moveOutNotes, setMoveOutNotes] = useState('');
+  const [recordingMoveOut, setRecordingMoveOut] = useState(false);
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
@@ -113,6 +117,33 @@ export default function LeasingDetailPage() {
       message.error(err.response?.data?.message || 'Failed to send check-in email');
     } finally {
       setSendingCheckin(false);
+    }
+  };
+
+  const handleOpenMoveOut = () => {
+    setMoveOutDate(dayjs());
+    setMoveOutNotes('');
+    setMoveOutOpen(true);
+  };
+
+  const handleRecordMoveOut = async () => {
+    if (!moveOutDate) {
+      message.error('Move-out date is required');
+      return;
+    }
+    setRecordingMoveOut(true);
+    try {
+      await leasing.moveOut(leaseId, {
+        move_out_date: moveOutDate.format('YYYY-MM-DD'),
+        notes: moveOutNotes,
+      });
+      message.success('Move-out recorded');
+      setMoveOutOpen(false);
+      loadLease();
+    } catch (err) {
+      message.error(err?.response?.data?.message || 'Failed to record move-out');
+    } finally {
+      setRecordingMoveOut(false);
     }
   };
 
@@ -199,6 +230,8 @@ export default function LeasingDetailPage() {
   const isPending = lease?.lease_state === 'pending';
   const statusLabel = isPending ? 'PENDING' : leaseStatus === 2 ? 'Upcoming' : leaseStatus === 1 ? 'Active' : 'Inactive';
   const statusColor = isPending ? 'gold' : leaseStatus === 2 ? 'blue' : leaseStatus === 1 ? 'green' : 'red';
+  const originalEndDate = lease?.end_date ? dayjs(lease.end_date) : null;
+  const isEarlyMoveOut = originalEndDate && moveOutDate && originalEndDate.startOf('day').isAfter(moveOutDate.startOf('day'));
 
   // Confirm a pending lease: flips lease_state to 'active', fires deferred
   // rent + deposit invoices. Re-runs the overlap check first, so a friendly
@@ -706,9 +739,41 @@ export default function LeasingDetailPage() {
             >
               <Button icon={<MailOutlined />} loading={sendingCheckin}>Send Check-in Email</Button>
             </Popconfirm>
+            {canEdit && <Button icon={<LogoutOutlined />} onClick={handleOpenMoveOut}>Move out</Button>}
             {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/leasing/${leaseId}/edit`)}>Edit Lease</Button>}
           </Space>
         </div>
+        <Modal
+          title="Record move-out"
+          open={moveOutOpen}
+          onCancel={() => setMoveOutOpen(false)}
+          onOk={handleRecordMoveOut}
+          okText="Record move-out"
+          confirmLoading={recordingMoveOut}
+        >
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <div>
+              <div style={{ marginBottom: 6, fontWeight: 500 }}>Move-out date</div>
+              <DatePicker value={moveOutDate} onChange={setMoveOutDate} style={{ width: '100%' }} />
+            </div>
+            <div>
+              <div style={{ marginBottom: 6, fontWeight: 500 }}>Notes</div>
+              <Input.TextArea
+                rows={4}
+                value={moveOutNotes}
+                onChange={(e) => setMoveOutNotes(e.target.value)}
+                placeholder="e.g. Moved out early, paid until 31 Aug, keys returned, forwarding address ..."
+              />
+            </div>
+            {isEarlyMoveOut && (
+              <Alert
+                type="warning"
+                showIcon
+                message={`This lease runs to ${originalEndDate.format('DD MMM YYYY')}. Moving out earlier stops future rent invoices from being generated — if the tenant still owes rent for that period, issue those invoices before completing the move-out.`}
+              />
+            )}
+          </Space>
+        </Modal>
         {/* E-Signature status card — visible only when there's any signing
             activity. Status badge + link to view signed PDF (if completed) or
             the active signing request. */}

@@ -234,7 +234,13 @@ function CalendarInner() {
             <div key={l.id} style={{ marginBottom: i < cellInfo.leases.length - 1 ? 8 : 0, borderBottom: i < cellInfo.leases.length - 1 ? '1px solid rgba(255,255,255,0.2)' : 'none', paddingBottom: i < cellInfo.leases.length - 1 ? 8 : 0 }}>
               <div style={{ fontWeight: 600 }}>
                 {l.lease_state === 'pending' && (
-                  <span style={{ color: '#d48806', fontWeight: 700, marginRight: 4 }}>*PENDING*</span>
+                  <span style={{ color: '#ffd666', fontWeight: 700, marginRight: 4 }}>*PENDING*</span>
+                )}
+                {l.lease_state !== 'pending' && l.unconfirmed && (
+                  <span style={{ color: '#ffd666', fontWeight: 700, marginRight: 4 }}>*UNCONFIRMED*</span>
+                )}
+                {l.deposit_pending && (
+                  <span style={{ color: '#ff7875', fontWeight: 700, marginRight: 4 }}>*DEPOSIT DUE*</span>
                 )}
                 {l.tenant_name}
               </div>
@@ -246,6 +252,8 @@ function CalendarInner() {
               <div style={{ fontSize: 11 }}>${Number(l.amount || 0).toLocaleString()}/mo</div>
               {isMovingIn && <div style={{ fontSize: 11, color: '#52c41a', fontWeight: 600 }}>Moving In: {ls.format('DD MMM')}</div>}
               {isMovingOut && <div style={{ fontSize: 11, color: '#ff4d4f', fontWeight: 600 }}>Moving Out: {le.format('DD MMM')}</div>}
+              {l.moved_out_early && <div style={{ fontSize: 11, color: '#ffd666' }}>Moved out early</div>}
+              {l.moveout_notes && <div style={{ fontSize: 11, opacity: 0.85, whiteSpace: 'pre-wrap' }}>Note: {l.moveout_notes}</div>}
             </div>
           );
         })}
@@ -352,6 +360,9 @@ function CalendarInner() {
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#ff4d4f30', border: '1px solid #ff4d4f', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Expiring (No Next Lease)</span>
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#faad1440', border: '1px solid #faad14', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Pending Lease</span>
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#fff', border: '1px solid #d9d9d9', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Vacant</span>
+      </div>
+      <div style={{ marginBottom: 12, fontSize: 12, color: '#666' }}>
+        Hover a cell for details. Markers: <span style={{ color: '#d48806', fontWeight: 700 }}>*PENDING*</span> draft lease, not yet confirmed · <span style={{ color: '#d48806', fontWeight: 700 }}>*UNCONFIRMED*</span> awaiting e-signature · <span style={{ color: '#ff4d4f', fontWeight: 700 }}>*DEPOSIT DUE*</span> deposit invoice unpaid
       </div>
 
       {loading ? (

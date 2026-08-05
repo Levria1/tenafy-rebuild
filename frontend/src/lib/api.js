@@ -183,6 +183,7 @@ export const leasing = {
   create: (data) => api.post('/api/leasing', data),
   update: (id, data) => api.put(`/api/leasing/${id}`, data),
   delete: (id) => api.delete(`/api/leasing/${id}`),
+  moveOut: (id, data) => api.post(`/api/leasing/${id}/move-out`, data),
   // Flip lease_state from 'pending' to 'active'. Server re-runs the overlap
   // check and generates deferred rent + deposit invoices.
   confirm: (id) => api.post(`/api/leasing/${id}/confirm`),

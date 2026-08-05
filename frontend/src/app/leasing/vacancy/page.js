@@ -107,15 +107,29 @@ export default function VacancyPage() {
       key: 'tenant_name',
       render: (_, r) => {
         if (!r.tenant_name) return <Text type="secondary">—</Text>;
+        const hasMoveOutInfo = !!r.moveout_notes || !!r.moved_out_early;
+        const tooltipTitle = (r.status === 'vacant' || hasMoveOutInfo) ? (
+          <div style={{ maxWidth: 320, whiteSpace: 'pre-wrap' }}>
+            {r.status === 'vacant' && <div>Previous tenant</div>}
+            {r.moved_out_early && <div style={{ fontWeight: 600 }}>Moved out early</div>}
+            {r.moveout_notes && <div>{r.moveout_notes}</div>}
+          </div>
+        ) : null;
         const inner = r.tenant_id
           ? <Link href={`/contacts/tenants/${r.tenant_id}`}>{r.tenant_name}</Link>
           : <Text type="secondary">{r.tenant_name}</Text>;
-        const nameEl = r.status === 'vacant'
-          ? <Tooltip title="Previous tenant"><Text type="secondary" style={{ fontSize: 12 }}>Last: </Text>{inner}</Tooltip>
+        const nameContent = r.status === 'vacant'
+          ? <><Text type="secondary" style={{ fontSize: 12 }}>Last: </Text>{inner}</>
           : inner;
+        const nameEl = tooltipTitle
+          ? <Tooltip title={tooltipTitle}>{nameContent}</Tooltip>
+          : nameContent;
         return (
           <div>
             {nameEl}
+            {r.moved_out_early && (
+              <div><Text type="secondary" style={{ fontSize: 12, color: '#d48806' }}>Moved out early</Text></div>
+            )}
             {r.notice_period_days != null && (
               <div><Text type="secondary" style={{ fontSize: 12 }}>Notice Period ({r.notice_period_days} days)</Text></div>
             )}

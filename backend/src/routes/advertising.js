@@ -145,6 +145,7 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
           u.rent_price_min, u.rent_price_max,
           at.id AS template_id, at.name AS template_name,
           p.id AS property_id, p.display_name AS property_name, p.street_address,
+          ll.id AS last_lease_id,
           DATE_FORMAT(ll.end_date, '%Y-%m-%d') AS vacant_since,
           DATEDIFF(CURDATE(), ll.end_date) AS days_vacant,
           ll.amount AS rent, ll.deposit, ll.contract_type,
@@ -165,6 +166,43 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
          ${page ? '' : 'AND ' + NO_UPCOMING_LEASE}`,
       [orgId]
     );
+
+    const moveoutByLease = {};
+    const moveoutLeaseIds = [
+      ...expiring.map(r => r.lease_id),
+      ...vacant.map(r => r.last_lease_id),
+    ].filter(Boolean);
+    if (moveoutLeaseIds.length > 0) {
+      try {
+        const placeholders = moveoutLeaseIds.map(() => '?').join(',');
+        const [moveouts] = await pool.execute(
+          `SELECT m.leasing_id, m.notes,
+                  (m.original_end_date IS NOT NULL AND m.requested_date < m.original_end_date) AS moved_out_early
+             FROM lease_moveout_request m
+            WHERE m.org_id = ?
+              AND m.leasing_id IN (${placeholders})
+              AND m.status = 'approved'
+              AND m.deleted_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM lease_moveout_request m2
+                 WHERE m2.org_id = m.org_id
+                   AND m2.leasing_id = m.leasing_id
+                   AND m2.status = 'approved'
+                   AND m2.deleted_at IS NULL
+                   AND (m2.created_at > m.created_at OR (m2.created_at = m.created_at AND m2.id > m.id))
+              )`,
+          [orgId, ...moveoutLeaseIds]
+        );
+        for (const m of moveouts) {
+          moveoutByLease[String(m.leasing_id)] = {
+            moveout_notes: m.notes || null,
+            moved_out_early: !!m.moved_out_early,
+          };
+        }
+      } catch (e) {
+        console.error('[advertising/vacancies] move-out lookup skipped:', e.message);
+      }
+    }
 
     const expiringRows = expiring.map(r => ({
       status: 'expiring',
@@ -188,6 +226,8 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
       property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
       tenant_id: r.tenant_id ? String(r.tenant_id) : null,
       tenant_name: (r.tenant_name || '').trim() || '(no tenant)',
+      moveout_notes: moveoutByLease[String(r.lease_id)]?.moveout_notes || null,
+      moved_out_early: !!moveoutByLease[String(r.lease_id)]?.moved_out_early,
       // Expiring rows are (page) NOT re-let, so there is no upcoming move-in.
       next_move_in_date: null, days_to_move_in: null, next_tenant_id: null, next_tenant_name: null,
     }));
@@ -220,6 +260,8 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
         property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
         tenant_id: r.tenant_id ? String(r.tenant_id) : null,   // last tenant
         tenant_name: (r.tenant_name || '').trim() || null,
+        moveout_notes: moveoutByLease[String(r.last_lease_id)]?.moveout_notes || null,
+        moved_out_early: !!moveoutByLease[String(r.last_lease_id)]?.moved_out_early,
         // Next upcoming lease (a booked move-in even though it's empty today).
         next_move_in_date: r.next_move_in_date || null,
         days_to_move_in: r.days_to_move_in != null ? Number(r.days_to_move_in) : null,

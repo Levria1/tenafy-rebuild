@@ -54,6 +54,31 @@ function computeLeaseStatus(lease) {
   return 1; // active
 }
 
+function calendarDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  if (typeof value === 'string') {
+    const s = value.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    const dt = new Date(`${s}T00:00:00Z`);
+    if (Number.isNaN(dt.getTime()) || dt.toISOString().slice(0, 10) !== s) return null;
+    return s;
+  }
+  return null;
+}
+
+function isMovedOutEarly(moveOutDate, originalEndDate) {
+  const moveOut = calendarDate(moveOutDate);
+  const originalEnd = calendarDate(originalEndDate);
+  return !!(moveOut && originalEnd && moveOut < originalEnd);
+}
+
 // SQL expression for computed lease status (for filtering/sorting)
 // Purely date-based — stored status column is not used
 const COMPUTED_STATUS_SQL = `CASE
@@ -249,8 +274,27 @@ router.get('/calendar', authenticate, async (req, res) => {
 
     // Get all leases that overlap with the date range for these units
     const placeholders = unitIds.map(() => '?').join(',');
+    const [[depositCat]] = await req.pool.execute(
+      "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 AND name LIKE '%Deposit%' AND name NOT LIKE '%Expense%' AND name NOT LIKE '%Don%' ORDER BY id LIMIT 1",
+      [orgId]
+    );
+    const depositCategoryId = depositCat ? depositCat.id : null;
+    const depositPendingSql = depositCategoryId
+      ? `EXISTS (
+          SELECT 1 FROM invoice i
+           WHERE i.leasing_id = l.id
+             AND i.org_id = ?
+             AND i.deleted_at IS NULL
+             AND i.status <> 1
+             AND i.category = ?
+        ) AS deposit_pending`
+      : '0 AS deposit_pending';
+    const leaseParams = depositCategoryId
+      ? [orgId, depositCategoryId, ...unitIds, endDate, startDate]
+      : [...unitIds, endDate, startDate];
     const [leases] = await req.pool.execute(
-      `SELECT l.id, l.unit_id, l.tenant_id, l.start_date, l.end_date, l.status, l.type, l.amount, l.price, l.contract_type, l.lease_state,
+      `SELECT l.id, l.unit_id, l.tenant_id, l.start_date, l.end_date, l.status, l.type, l.amount, l.price, l.contract_type, l.lease_state, l.signature_status,
+              ${depositPendingSql},
               t.first_name, t.last_name, t.company_name, t.type AS tenant_type, t.phone, t.email
        FROM leasing l
        JOIN tenant t ON l.tenant_id = t.id
@@ -259,13 +303,47 @@ router.get('/calendar', authenticate, async (req, res) => {
          AND l.start_date <= ?
          AND (l.end_date >= ? OR l.end_date IS NULL)
        ORDER BY l.start_date ASC`,
-      [...unitIds, endDate, startDate]
+      leaseParams
     );
+
+    const moveoutByLease = {};
+    const leaseIds = leases.map(l => l.id);
+    if (leaseIds.length > 0) {
+      try {
+        const leasePlaceholders = leaseIds.map(() => '?').join(',');
+        const [moveouts] = await req.pool.execute(
+          `SELECT m.leasing_id,
+                  DATE_FORMAT(m.requested_date, '%Y-%m-%d') AS requested_date,
+                  DATE_FORMAT(m.original_end_date, '%Y-%m-%d') AS original_end_date,
+                  m.notes
+             FROM lease_moveout_request m
+            WHERE m.org_id = ?
+              AND m.leasing_id IN (${leasePlaceholders})
+              AND m.status = 'approved'
+              AND m.deleted_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM lease_moveout_request m2
+                 WHERE m2.org_id = m.org_id
+                   AND m2.leasing_id = m.leasing_id
+                   AND m2.status = 'approved'
+                   AND m2.deleted_at IS NULL
+                   AND (m2.created_at > m.created_at OR (m2.created_at = m.created_at AND m2.id > m.id))
+              )`,
+          [orgId, ...leaseIds]
+        );
+        for (const m of moveouts) {
+          moveoutByLease[String(m.leasing_id)] = m;
+        }
+      } catch (e) {
+        console.error('[leasing/calendar] move-out lookup skipped:', e.message);
+      }
+    }
 
     // Group leases by unit_id
     const leasesByUnit = {};
     for (const lease of leases) {
       const uid = String(lease.unit_id);
+      const moveout = moveoutByLease[String(lease.id)] || null;
       if (!leasesByUnit[uid]) leasesByUnit[uid] = [];
       leasesByUnit[uid].push({
         id: String(lease.id),
@@ -283,6 +361,10 @@ router.get('/calendar', authenticate, async (req, res) => {
         amount: lease.amount || lease.price,
         contract_type: lease.contract_type ?? null,
         lease_state: lease.lease_state || 'active',
+        unconfirmed: lease.lease_state === 'pending' || lease.signature_status === 'pending' || lease.signature_status === 'declined',
+        deposit_pending: !!lease.deposit_pending,
+        moved_out_early: !!(moveout && isMovedOutEarly(moveout.requested_date, moveout.original_end_date)),
+        moveout_notes: moveout ? (moveout.notes || null) : null,
       });
     }
 
@@ -1272,6 +1354,103 @@ router.put('/:id', authenticate, async (req, res) => {
   }
 });
 
+// POST /api/leasing/:id/move-out - Record an approved tenant move-out
+router.post('/:id/move-out', authenticate, async (req, res) => {
+  const conn = await req.pool.getConnection();
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const { move_out_date, notes, reason } = req.body || {};
+
+    await conn.beginTransaction();
+
+    const moveOutDate = typeof move_out_date === 'string' ? calendarDate(move_out_date) : null;
+    if (!moveOutDate || moveOutDate !== move_out_date) {
+      await conn.rollback();
+      return res.status(400).json({ code: 400, message: 'move_out_date must be a real YYYY-MM-DD date' });
+    }
+
+    const [[lease]] = await conn.execute(
+      `SELECT l.id, l.end_date, l.start_date
+         FROM leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+        WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL
+        LIMIT 1
+        FOR UPDATE`,
+      [id, orgId]
+    );
+    if (!lease) {
+      await conn.rollback();
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+
+    const startDate = calendarDate(lease.start_date);
+    if (startDate && moveOutDate < startDate) {
+      await conn.rollback();
+      return res.status(400).json({ code: 400, message: 'move_out_date cannot be before the lease start_date' });
+    }
+
+    const moveoutId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+    // Re-recording a move-out (e.g. correcting a wrong date) must NOT snapshot the
+    // already-shortened end_date as the "original" — that would silently lose the
+    // real original term and flip moved_out_early to false. Carry forward the
+    // earliest prior snapshot for this lease when one exists.
+    let priorOriginalEnd = null;
+    try {
+      const [[prior]] = await conn.execute(
+        `SELECT DATE_FORMAT(original_end_date, '%Y-%m-%d') AS original_end_date
+           FROM lease_moveout_request
+          WHERE leasing_id = ? AND org_id = ? AND status = 'approved'
+            AND deleted_at IS NULL AND original_end_date IS NOT NULL
+          ORDER BY created_at ASC, id ASC LIMIT 1`,
+        [id, orgId]
+      );
+      priorOriginalEnd = prior ? prior.original_end_date : null;
+    } catch { /* table missing (unmigrated org) — the INSERT below will surface it */ }
+    const originalEndDate = priorOriginalEnd || calendarDate(lease.end_date);
+    const movedOutEarly = isMovedOutEarly(moveOutDate, originalEndDate);
+    const noteValue = notes == null ? null : String(notes);
+    const reasonValue = reason == null ? null : String(reason);
+
+    await conn.execute(
+      `INSERT INTO lease_moveout_request
+        (id, org_id, leasing_id, requested_date, original_end_date, reason, notes, status, requested_by, decided_by, decided_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, NOW())`,
+      [moveoutId, orgId, id, moveOutDate, originalEndDate, reasonValue, noteValue, req.user.id || null, req.user.id || null]
+    );
+
+    await conn.execute(
+      `UPDATE leasing l
+        JOIN unit u ON l.unit_id = u.id
+        JOIN property p ON u.property_id = p.id
+          SET l.end_date = ?
+        WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL`,
+      [moveOutDate, id, orgId]
+    );
+
+    await conn.commit();
+    res.json({
+      code: 200,
+      data: {
+        id: moveoutId,
+        leasing_id: String(id),
+        requested_date: moveOutDate,
+        original_end_date: originalEndDate,
+        notes: noteValue,
+        moved_out_early: movedOutEarly,
+        future_invoices_stopped: movedOutEarly,
+      },
+    });
+  } catch (error) {
+    try { await conn.rollback(); } catch { /* already rolled back */ }
+    console.error('Lease move-out error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to record move-out' });
+  } finally {
+    conn.release();
+  }
+});
+
 // POST /api/leasing/:id/confirm — flip pending → active and fire invoices
 //
 // Pending leases are drafts that don't generate invoices. When staff confirm
@@ -1790,3 +1969,4 @@ router.delete('/:id/revisions/:rid', authenticate, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.isMovedOutEarly = isMovedOutEarly;
