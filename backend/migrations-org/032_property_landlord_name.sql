@@ -27,13 +27,24 @@ PREPARE s FROM @ddl; EXECUTE s; DEALLOCATE PREPARE s;
 -- entity-consistent (verified on the live org: no property mixes two entities).
 -- TRIM matters — some existing values carry a leading space (" NAOS Holdings
 -- Limited"), which would otherwise read as a different entity.
+--
+-- GUARDED on unit.account_name existing: orgs created from
+-- src/migrations/org_schema_template.sql have no such column (it only exists in
+-- DBs imported from the legacy Java dump), so an unguarded UPDATE fails there
+-- with "Unknown column 'u.account_name'". Those orgs have no source data to
+-- backfill anyway — the column is simply left NULL for manual entry.
+SET @has_src := (SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'unit' AND COLUMN_NAME = 'account_name');
+SET @bf := IF(@has_src = 1, '
 UPDATE property p
    SET p.landlord_name = (
-     SELECT NULLIF(TRIM(u.account_name), '')
+     SELECT NULLIF(TRIM(u.account_name), \'\')
        FROM unit u
       WHERE u.property_id = p.id
-        AND TRIM(COALESCE(u.account_name, '')) <> ''
+        AND TRIM(COALESCE(u.account_name, \'\')) <> \'\'
       ORDER BY u.id ASC
       LIMIT 1
    )
- WHERE p.landlord_name IS NULL OR p.landlord_name = '';
+ WHERE p.landlord_name IS NULL OR p.landlord_name = \'\'',
+  'SELECT 1');
+PREPARE s2 FROM @bf; EXECUTE s2; DEALLOCATE PREPARE s2;
