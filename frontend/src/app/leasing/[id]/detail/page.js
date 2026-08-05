@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert } from 'antd';
+import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert, Checkbox, InputNumber } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined, MailOutlined, LogoutOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
@@ -39,6 +39,9 @@ export default function LeasingDetailPage() {
   const [moveOutDate, setMoveOutDate] = useState(dayjs());
   const [moveOutNotes, setMoveOutNotes] = useState('');
   const [recordingMoveOut, setRecordingMoveOut] = useState(false);
+  const [pushRows, setPushRows] = useState([]);          // rent still owed
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState(null);
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
@@ -120,10 +123,37 @@ export default function LeasingDetailPage() {
     }
   };
 
+  // Rent the tenant still owes for the rest of the ORIGINAL term. These invoices
+  // don't exist yet (the scheduler only generates up to today) and could never be
+  // created once end_date is shortened, so they're pushed as part of moving out.
+  const previewSeq = useRef(0);
+  const loadMoveOutPreview = async (d) => {
+    const seq = ++previewSeq.current;      // ignore out-of-order responses
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      const r = await leasing.moveOutPreview(leaseId, (d || dayjs()).format('YYYY-MM-DD'));
+      if (seq !== previewSeq.current) return;
+      const rows = r.data?.data?.invoices || [];
+      setPushRows(rows.map(x => ({ ...x, selected: true })));
+    } catch (e) {
+      if (seq !== previewSeq.current) return;
+      // An EMPTY list and a FAILED lookup must never look the same — otherwise
+      // staff could close out a move-out believing no rent is owed.
+      setPushRows([]);
+      setPreviewError(e?.response?.data?.message || 'Could not check what rent is still owed.');
+    } finally {
+      if (seq === previewSeq.current) setPreviewLoading(false);
+    }
+  };
+
   const handleOpenMoveOut = () => {
-    setMoveOutDate(dayjs());
+    const today = dayjs();
+    setMoveOutDate(today);
     setMoveOutNotes('');
+    setPushRows([]);
     setMoveOutOpen(true);
+    loadMoveOutPreview(today);
   };
 
   const handleRecordMoveOut = async () => {
@@ -133,11 +163,17 @@ export default function LeasingDetailPage() {
     }
     setRecordingMoveOut(true);
     try {
-      await leasing.moveOut(leaseId, {
+      const r = await leasing.moveOut(leaseId, {
         move_out_date: moveOutDate.format('YYYY-MM-DD'),
         notes: moveOutNotes,
+        push_invoices: pushRows
+          .filter(x => x.selected && Number(x.amount) > 0)
+          .map(x => ({ due_on: x.due_on, amount: Number(x.amount) })),
       });
-      message.success('Move-out recorded');
+      const n = r.data?.data?.pushed_invoices?.length || 0;
+      message.success(n > 0
+        ? `Move-out recorded — ${n} invoice${n === 1 ? '' : 's'} issued for rent still owed`
+        : 'Move-out recorded');
       setMoveOutOpen(false);
       loadLease();
     } catch (err) {
@@ -754,8 +790,66 @@ export default function LeasingDetailPage() {
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
             <div>
               <div style={{ marginBottom: 6, fontWeight: 500 }}>Move-out date</div>
-              <DatePicker value={moveOutDate} onChange={setMoveOutDate} style={{ width: '100%' }} />
+              <DatePicker
+                value={moveOutDate}
+                onChange={(d) => { setMoveOutDate(d); if (d) loadMoveOutPreview(d); }}
+                style={{ width: '100%' }}
+              />
             </div>
+
+            {/* Rent still owed for the rest of the original term. These invoices
+                don't exist yet and can't be created once the lease is shortened,
+                so they're issued here. Amounts are editable — the settlement is
+                negotiated case by case. */}
+            {previewError && (
+              <Alert
+                type="warning"
+                showIcon
+                message={`${previewError} Check the tenant's invoices manually before finalising — this is NOT a confirmation that nothing is owed.`}
+              />
+            )}
+
+            {(previewLoading || pushRows.length > 0) && (
+              <div>
+                <div style={{ marginBottom: 6, fontWeight: 500 }}>
+                  Rent still owed {previewLoading && <span style={{ fontWeight: 400, color: '#999' }}>· loading…</span>}
+                </div>
+                {pushRows.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+                      These invoices haven&apos;t been issued yet. Tick the ones to bill —
+                      once the lease is shortened they can no longer be generated.
+                    </div>
+                    <div style={{ border: '1px solid #f0f0f0', borderRadius: 4 }}>
+                      {pushRows.map((row, i) => (
+                        <div key={row.due_on} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderBottom: i < pushRows.length - 1 ? '1px solid #f5f5f5' : 'none' }}>
+                          <Checkbox
+                            checked={row.selected}
+                            onChange={(e) => setPushRows(rows => rows.map((r, j) => j === i ? { ...r, selected: e.target.checked } : r))}
+                          />
+                          <span style={{ flex: 1, fontSize: 13 }}>
+                            Due {row.due_on}
+                            <span style={{ color: '#999', marginLeft: 6, fontSize: 11 }}>
+                              {row.period_start} → {row.period_end}
+                            </span>
+                          </span>
+                          <InputNumber
+                            size="small"
+                            style={{ width: 120 }}
+                            min={0}
+                            value={row.amount}
+                            onChange={(v) => setPushRows(rows => rows.map((r, j) => j === i ? { ...r, amount: v } : r))}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ textAlign: 'right', marginTop: 6, fontSize: 13, fontWeight: 600 }}>
+                      Total to bill: HK${pushRows.filter(r => r.selected).reduce((s, r) => s + (Number(r.amount) || 0), 0).toLocaleString()}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             <div>
               <div style={{ marginBottom: 6, fontWeight: 500 }}>Notes</div>
               <Input.TextArea

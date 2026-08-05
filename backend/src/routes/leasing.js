@@ -7,6 +7,7 @@ const { findLastMeterReadingForUnit } = require('../utils/meterReadingLookup');
 const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
+const { resolveLeaseValues } = require('../utils/leaseRevision');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -1360,13 +1361,123 @@ router.put('/:id', authenticate, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Move-out invoice PUSH
+//
+// A tenant who leaves early still owes the rest of the term (the landlord does
+// NOT re-let-mitigate). But the scheduler only generates invoices up to today
+// AND stops at end_date — so shortening the lease to the move-out date would
+// silently cancel the rent they still owe. So at move-out we PUSH the remaining
+// scheduled invoices first, then shorten the lease.
+//
+// Amounts are computed against the ORIGINAL end_date, so each pushed invoice is
+// a FULL scheduled month (per the agreed rule: a partial period at move-out is
+// billed in full, staff can edit it down).
+// ---------------------------------------------------------------------------
+async function computeRemainingScheduledInvoices(pool, orgId, lease) {
+  const out = [];
+  if (!lease.invoicing || !lease.end_date) return out;   // not recurring / open-ended
+
+  const [[rentalCat]] = await pool.execute(
+    "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1", [orgId]
+  );
+  if (!rentalCat) return out;
+
+  // Mirror the scheduler: walk on from the latest RENT invoice so non-rent rows
+  // (deposit, stamp duty, utilities) can't contaminate the next-rent date.
+  const [[latest]] = await pool.execute(
+    `SELECT due_on FROM invoice WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL AND category = ?
+      ORDER BY due_on DESC LIMIT 1`,
+    [lease.id, orgId, rentalCat.id]
+  );
+
+  const originalEnd = new Date(calendarDate(lease.end_date) + 'T00:00:00');
+  let cursor = latest ? new Date(calendarDate(latest.due_on) + 'T00:00:00') : null;
+  let next = cursor
+    ? advanceInvoiceDate(cursor, lease.invoicing, lease.due_date)
+    : new Date(calendarDate(lease.first_invoice_date || lease.start_date) + 'T00:00:00');
+
+  for (let i = 0; i < 50; i++) {
+    if (!next || isNaN(next.getTime())) break;
+    if (next > originalEnd) break;
+    const dueStr = calendarDate(next);
+
+    const after = advanceInvoiceDate(next, lease.invoicing, lease.due_date);
+    const periodEnd = new Date(after);
+    periodEnd.setDate(periodEnd.getDate() - 1);
+
+    const effective = await resolveLeaseValues(pool, lease.id, next, { price: lease.amount || lease.price });
+    const amount = computeRentInvoiceAmount({
+      rent: effective.price,
+      invoicing: lease.invoicing,
+      periodStart: next,
+      periodEnd,
+      leaseEnd: originalEnd,          // ORIGINAL end -> full months, no early proration
+    });
+
+    // Idempotent: never offer a RENT invoice that already exists for this due
+    // date. Scoped to the rental category (and the org) so a deposit/utility
+    // invoice that happens to share the due date can't suppress the rent.
+    const [[exists]] = await pool.execute(
+      `SELECT id FROM invoice WHERE leasing_id = ? AND org_id = ? AND due_on = ?
+         AND category = ? AND deleted_at IS NULL LIMIT 1`,
+      [lease.id, orgId, dueStr, rentalCat.id]
+    );
+    if (!exists && amount !== null && Number(amount) > 0) {
+      out.push({
+        due_on: dueStr,
+        amount: Number(amount),
+        period_start: dueStr,
+        period_end: calendarDate(periodEnd),
+      });
+    }
+    cursor = next;
+    next = after;
+  }
+  return out;
+}
+
+// GET /api/leasing/:id/move-out/preview?move_out_date=YYYY-MM-DD
+// The rent invoices that would still be billed if the lease ran its ORIGINAL
+// term — i.e. what the tenant still owes after moving out early.
+router.get('/:id/move-out/preview', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[lease]] = await req.pool.execute(
+      `SELECT l.id, l.start_date, l.end_date, l.invoicing, l.due_date, l.amount, l.price, l.first_invoice_date
+         FROM leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+        WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!lease) return res.status(404).json({ code: 404, message: 'Lease not found' });
+
+    const moveOutDate = calendarDate(req.query.move_out_date) || null;
+    const invoices = await computeRemainingScheduledInvoices(req.pool, orgId, lease);
+    res.json({
+      code: 200,
+      data: {
+        move_out_date: moveOutDate,
+        original_end_date: calendarDate(lease.end_date),
+        moved_out_early: isMovedOutEarly(moveOutDate, lease.end_date),
+        invoices,
+        total: invoices.reduce((s, r) => s + Number(r.amount || 0), 0),
+      },
+    });
+  } catch (error) {
+    console.error('Move-out preview error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load move-out preview' });
+  }
+});
+
 // POST /api/leasing/:id/move-out - Record an approved tenant move-out
 router.post('/:id/move-out', authenticate, async (req, res) => {
   const conn = await req.pool.getConnection();
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
-    const { move_out_date, notes, reason } = req.body || {};
+    const { move_out_date, notes, reason, push_invoices } = req.body || {};
 
     await conn.beginTransaction();
 
@@ -1377,7 +1488,9 @@ router.post('/:id/move-out', authenticate, async (req, res) => {
     }
 
     const [[lease]] = await conn.execute(
-      `SELECT l.id, l.end_date, l.start_date
+      `SELECT l.id, l.end_date, l.start_date, l.tenant_id, l.unit_id, l.currency_id,
+              l.invoicing, l.due_date, l.amount, l.price, l.first_invoice_date,
+              l.booking_platform_id, l.sales_agent_id, u.property_id
          FROM leasing l
          JOIN unit u ON l.unit_id = u.id
          JOIN property p ON u.property_id = p.id
@@ -1426,6 +1539,59 @@ router.post('/:id/move-out', authenticate, async (req, res) => {
       [moveoutId, orgId, id, moveOutDate, originalEndDate, reasonValue, noteValue, req.user.id || null, req.user.id || null]
     );
 
+    // PUSH the rent the tenant still owes BEFORE shortening the lease. Order is
+    // critical: the scheduler stops generating at end_date, so once end_date is
+    // moved earlier these invoices could never be created. Idempotent per
+    // (leasing_id, due_on) so a retry can't double-bill.
+    const pushed = [];
+    if (Array.isArray(push_invoices) && push_invoices.length > 0) {
+      const [[rentalCat]] = await conn.execute(
+        "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1", [orgId]
+      );
+      if (!rentalCat) {
+        await conn.rollback();
+        return res.status(400).json({ code: 400, message: 'No Rental Income category configured — cannot push invoices' });
+      }
+      let currencyId = lease.currency_id;
+      if (!currencyId) {
+        const [[cur]] = await conn.execute(
+          'SELECT id FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1', [orgId]
+        );
+        currencyId = cur ? cur.id : null;
+      }
+      // NEVER trust the client's due dates: re-derive the schedule server-side
+      // (inside the transaction, against the still-original end_date) and accept
+      // only those due dates. Staff may override the AMOUNT — that's the
+      // negotiated part — but not invent arbitrary billing dates.
+      const allowed = await computeRemainingScheduledInvoices(conn, orgId, lease);
+      const allowedDates = new Set(allowed.map(r => r.due_on));
+
+      for (const row of push_invoices) {
+        const dueOn = calendarDate(row && row.due_on);
+        const amount = Number(row && row.amount);
+        if (!dueOn || !allowedDates.has(dueOn)) continue;                  // not on the schedule
+        if (!Number.isFinite(amount) || amount <= 0) continue;             // skip junk rows
+        const [[exists]] = await conn.execute(
+          `SELECT id FROM invoice WHERE leasing_id = ? AND org_id = ? AND due_on = ?
+             AND category = ? AND deleted_at IS NULL LIMIT 1`,
+          [id, orgId, dueOn, rentalCat.id]
+        );
+        if (exists) continue;
+        const invoiceCode = await generateInvoiceCode(conn, orgId);
+        const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+        await conn.execute(
+          `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
+             invoice_code, amount, note, due_on, status, category, currency_id, type,
+             booking_platform_id, sales_agent_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, NOW())`,
+          [invoiceId, orgId, lease.tenant_id, lease.unit_id, id, lease.property_id,
+           invoiceCode, amount, 'Rent owed after early move-out', dueOn,
+           rentalCat.id, currencyId, lease.booking_platform_id || null, lease.sales_agent_id || null]
+        );
+        pushed.push({ id: invoiceId, invoice_code: invoiceCode, due_on: dueOn, amount });
+      }
+    }
+
     await conn.execute(
       `UPDATE leasing l
         JOIN unit u ON l.unit_id = u.id
@@ -1446,6 +1612,7 @@ router.post('/:id/move-out', authenticate, async (req, res) => {
         notes: noteValue,
         moved_out_early: movedOutEarly,
         future_invoices_stopped: movedOutEarly,
+        pushed_invoices: pushed,
       },
     });
   } catch (error) {

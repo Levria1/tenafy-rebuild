@@ -649,6 +649,95 @@ router.get('/property/:unit_id', authenticate, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Write-off (uncollectable) — invoice.status 3
+//
+// A tenant who has moved out can leave a balance that is impossible to chase.
+// Writing it off keeps the invoice visible (you can still see it is owed) but
+// moves it OUT of every outstanding/overdue total: those all filter on
+// status = 0 / = 2 / IN (0,2), so status 3 drops out automatically, and the
+// scheduler's overdue/paid sweeps (status = 0 / IN (0,2)) skip it too.
+// Reversible — restoring recomputes Open vs Overdue from due_on.
+//
+// NOTE: these are declared BEFORE the '/:id' routes (static before dynamic).
+// ---------------------------------------------------------------------------
+
+// Recompute a restored invoice's status from its due date + payments.
+const RESTORE_STATUS_SQL = `
+  CASE
+    WHEN i.amount <= COALESCE((SELECT SUM(al.amount) FROM accounting_line al
+           JOIN accounting a ON al.accounting_id = a.id
+          WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id
+            AND a.deleted_at IS NULL AND al.deleted_at IS NULL), 0) THEN 1
+    WHEN i.due_on IS NOT NULL AND i.due_on < CURDATE() THEN 2
+    ELSE 0
+  END`;
+
+// POST /api/invoice/write-off-bulk — write off many invoices at once
+router.post('/write-off-bulk', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { ids, reason } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ code: 400, message: 'ids must be a non-empty array' });
+    }
+    // Only Open/Overdue can be written off — never touch Paid (1) or already-written-off (3).
+    const placeholders = ids.map(() => '?').join(',');
+    const [result] = await req.pool.execute(
+      `UPDATE invoice SET status = 3, written_off_at = NOW(), written_off_reason = ?
+        WHERE id IN (${placeholders}) AND org_id = ? AND deleted_at IS NULL AND status IN (0, 2)`,
+      [reason ? String(reason).slice(0, 255) : null, ...ids, orgId]
+    );
+    res.json({ code: 200, data: { written_off: result.affectedRows, requested: ids.length } });
+  } catch (error) {
+    console.error('Bulk write-off error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to write off invoices' });
+  }
+});
+
+// POST /api/invoice/:id/write-off — mark ONE invoice uncollectable
+router.post('/:id/write-off', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { reason } = req.body || {};
+    const [result] = await req.pool.execute(
+      `UPDATE invoice SET status = 3, written_off_at = NOW(), written_off_reason = ?
+        WHERE id = ? AND org_id = ? AND deleted_at IS NULL AND status IN (0, 2)`,
+      [reason ? String(reason).slice(0, 255) : null, req.params.id, orgId]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(400).json({ code: 400, message: 'Invoice not found, or it is already paid or written off' });
+    }
+    res.json({ code: 200, data: { id: String(req.params.id), status: 3 } });
+  } catch (error) {
+    console.error('Write-off error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to write off invoice' });
+  }
+});
+
+// POST /api/invoice/:id/restore — undo a write-off (recompute Open/Overdue/Paid)
+router.post('/:id/restore', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [result] = await req.pool.execute(
+      `UPDATE invoice i SET i.status = ${RESTORE_STATUS_SQL},
+              i.written_off_at = NULL, i.written_off_reason = NULL
+        WHERE i.id = ? AND i.org_id = ? AND i.deleted_at IS NULL AND i.status = 3`,
+      [req.params.id, orgId]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(400).json({ code: 400, message: 'Invoice not found or is not written off' });
+    }
+    const [[row]] = await req.pool.execute(
+      'SELECT status FROM invoice WHERE id = ? AND org_id = ? LIMIT 1', [req.params.id, orgId]
+    );
+    res.json({ code: 200, data: { id: String(req.params.id), status: row ? row.status : null } });
+  } catch (error) {
+    console.error('Restore invoice error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to restore invoice' });
+  }
+});
+
 // GET /api/invoice/:id - Get invoice detail
 // POST /api/invoice/:id/email-to-tenant — email the invoice PDF to the tenant
 router.post('/:id/email-to-tenant', authenticate, async (req, res) => {

@@ -184,6 +184,9 @@ export const leasing = {
   update: (id, data) => api.put(`/api/leasing/${id}`, data),
   delete: (id) => api.delete(`/api/leasing/${id}`),
   moveOut: (id, data) => api.post(`/api/leasing/${id}/move-out`, data),
+  // Rent still owed if the lease ran its ORIGINAL term — pushed at move-out.
+  moveOutPreview: (id, moveOutDate) =>
+    api.get(`/api/leasing/${id}/move-out/preview`, { params: { move_out_date: moveOutDate } }),
   // Flip lease_state from 'pending' to 'active'. Server re-runs the overlap
   // check and generates deferred rent + deposit invoices.
   confirm: (id) => api.post(`/api/leasing/${id}/confirm`),
@@ -232,6 +235,10 @@ export const invoice = {
   update: (id, data) => api.put(`/api/invoice/${id}`, data),
   delete: (id) => api.delete(`/api/invoice/${id}`),
   emailToTenant: (id) => api.post(`/api/invoice/${id}/email-to-tenant`),
+  // Uncollectable: keeps the invoice visible but out of outstanding-due totals.
+  writeOff: (id, reason) => api.post(`/api/invoice/${id}/write-off`, { reason }),
+  writeOffBulk: (ids, reason) => api.post('/api/invoice/write-off-bulk', { ids, reason }),
+  restore: (id) => api.post(`/api/invoice/${id}/restore`),
   getSums: (data) => api.post('/api/invoice/paid-outstanding', data),
   getInitializationPayer: (params) => api.get('/api/invoice/initialization-payer', { params }),
   getInitializationProperty: (params) => api.get('/api/invoice/initialization-property', { params }),

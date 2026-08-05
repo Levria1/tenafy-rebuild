@@ -28,6 +28,11 @@ const SEARCH_FIELD_OPTIONS = [
 export default function InvoicesPage() {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Bulk write-off (uncollectable) selection
+  const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+  const [writeOffOpen, setWriteOffOpen] = useState(false);
+  const [writeOffReason, setWriteOffReason] = useState('');
+  const [writingOff, setWritingOff] = useState(false);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
   const [search, setSearch] = useState('');
   const [searchFields, setSearchFields] = useState(['tenantName']); // default: Contact checked
@@ -245,6 +250,7 @@ export default function InvoicesPage() {
             <Radio value={0}>Open</Radio>
             <Radio value={1}>Paid</Radio>
             <Radio value={2}>Overdue</Radio>
+            <Radio value={3}>Written off</Radio>
           </Space>
         </Radio.Group>
       </div>
@@ -447,6 +453,9 @@ export default function InvoicesPage() {
 
   const getStatusLabel = (s, r) => {
     const n = Number(s);
+    // Written off (uncollectable) wins over the Partial/Paid heuristics below:
+    // it is still owed on paper but deliberately excluded from what we chase.
+    if (n === 3) return { text: 'Written off', color: '#8c8c8c' };
     // Show "Partial" when some payment made but not fully paid
     if (r) {
       const amt = Number(r.amount) || 0;
@@ -789,6 +798,53 @@ export default function InvoicesPage() {
         </div>
       </div>
 
+      {/* Bulk actions — appears only when rows are selected */}
+      {!isMobile && selectedRowKeys.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '8px 12px', background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 13 }}>{selectedRowKeys.length} selected</span>
+          <Button size="small" danger onClick={() => { setWriteOffReason(''); setWriteOffOpen(true); }}>
+            Mark uncollectable (write off)
+          </Button>
+          <a style={{ fontSize: 13 }} onClick={() => setSelectedRowKeys([])}>Clear</a>
+        </div>
+      )}
+
+      <Modal
+        title={`Write off ${selectedRowKeys.length} invoice${selectedRowKeys.length === 1 ? '' : 's'}?`}
+        open={writeOffOpen}
+        onCancel={() => setWriteOffOpen(false)}
+        okText="Write off"
+        okButtonProps={{ danger: true }}
+        confirmLoading={writingOff}
+        onOk={async () => {
+          setWritingOff(true);
+          try {
+            const res = await invoice.writeOffBulk(selectedRowKeys, writeOffReason);
+            const n = res.data?.data?.written_off ?? 0;
+            message.success(`${n} invoice${n === 1 ? '' : 's'} written off`);
+            setWriteOffOpen(false);
+            setSelectedRowKeys([]);
+            loadInvoices();
+          } catch (e) {
+            message.error(e?.response?.data?.message || 'Failed to write off invoices');
+          } finally {
+            setWritingOff(false);
+          }
+        }}
+      >
+        <p style={{ marginTop: 0 }}>
+          These invoices stay visible and still show as owed, but are <b>excluded from
+          outstanding-due totals</b> so they no longer inflate what you are chasing.
+          You can restore them later.
+        </p>
+        <Input.TextArea
+          rows={3}
+          value={writeOffReason}
+          onChange={(e) => setWriteOffReason(e.target.value)}
+          placeholder="Reason (optional) — e.g. tenant left the country, uncontactable"
+        />
+      </Modal>
+
       {/* Table / Mobile Cards */}
       {isMobile ? (
         <MobileCardList
@@ -811,6 +867,13 @@ export default function InvoicesPage() {
           rowKey="id"
           loading={loading}
           scroll={{ x: 1400 }}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: setSelectedRowKeys,
+            // Only Open/Overdue can be written off — Paid and already-written-off
+            // rows aren't selectable, so the bulk action can't silently no-op.
+            getCheckboxProps: (r) => ({ disabled: ![0, 2].includes(Number(r.status)) }),
+          }}
           onChange={(pag, _filters, sorter) => {
             setPagination(p => ({ ...p, current: pag.current, pageSize: pag.pageSize }));
             if (sorter && sorter.field) {
