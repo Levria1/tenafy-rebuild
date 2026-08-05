@@ -110,9 +110,17 @@ export default function VacancyPage() {
         const inner = r.tenant_id
           ? <Link href={`/contacts/tenants/${r.tenant_id}`}>{r.tenant_name}</Link>
           : <Text type="secondary">{r.tenant_name}</Text>;
-        return r.status === 'vacant'
+        const nameEl = r.status === 'vacant'
           ? <Tooltip title="Previous tenant"><Text type="secondary" style={{ fontSize: 12 }}>Last: </Text>{inner}</Tooltip>
           : inner;
+        return (
+          <div>
+            {nameEl}
+            {r.notice_period_days != null && (
+              <div><Text type="secondary" style={{ fontSize: 12 }}>Notice Period ({r.notice_period_days} days)</Text></div>
+            )}
+          </div>
+        );
       },
     },
     {

@@ -98,7 +98,7 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
     //    A unit re-let with a LONG future lease stays hidden (its end is >window).
     const [expiring] = await pool.execute(
       `SELECT
-          l.id AS lease_id, l.contract_type, l.amount AS rent, l.deposit,
+          l.id AS lease_id, l.contract_type, l.amount AS rent, l.deposit, l.notice_period_days,
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
           DATEDIFF(l.end_date, CURDATE()) AS days_left,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
@@ -170,6 +170,7 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
       status: 'expiring',
       lease_id: String(r.lease_id),
       contract_type: r.contract_type,
+      notice_period_days: r.notice_period_days != null ? Number(r.notice_period_days) : null,
       intent: INTENT[r.contract_type] || 'Unset',
       days_left: r.days_left != null ? Number(r.days_left) : null,   // days until vacant (positive)
       end_date: r.end_date,
@@ -199,6 +200,7 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
         status: 'vacant',
         lease_id: null,
         contract_type: null,
+        notice_period_days: null,   // no current lease → no notice period
         intent: null,
         // Negative = already vacant N days; null = never leased.
         days_left: daysVacant != null ? -daysVacant : null,
