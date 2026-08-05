@@ -218,9 +218,16 @@ export default function LeaseCreatePage() {
   // (start 2026-08-20 -> 2028-08-19), so the stamped period is exactly two years
   // inclusive. Only ever PREFILLED — staff can override it.
   const [stampUserEdited, setStampUserEdited] = useState(false);
+  // Only SOME tenancies must be stamped for a longer term than the tenant stays,
+  // so this is OPT-IN: unticked, the contract's Term of Tenancy is simply the real
+  // lease end. Ticking it reveals the date, prefilled 2 years - 1 day.
+  const [stampEnabled, setStampEnabled] = useState(false);
   // `start` is passed in from the picker's own onChange rather than read back via
   // getFieldValue, so the prefill can't act on a stale value.
-  const prefillStampEnd = (start) => {
+  // `force` is passed when the tick box itself turns it on: setStampEnabled() has
+  // not re-rendered yet, so reading stampEnabled here would still see the old false.
+  const prefillStampEnd = (start, force = false) => {
+    if (!force && !stampEnabled) return;      // opt-in only — leave it blank
     if (stampUserEdited) return;              // never clobber a manual entry
     const s = start || form.getFieldValue('start_date');
     if (!s) return;
@@ -379,7 +386,9 @@ export default function LeaseCreatePage() {
       viewing_enabled: values.viewing_enabled === false ? 0 : 1,
       notice_period_days: (values.notice_period_days != null && values.notice_period_days !== '')
         ? Number(values.notice_period_days) : null,
-      stamp_end_date: values.stamp_end_date?.format('YYYY-MM-DD') || null,
+      // Opt-in only: unticked means "no stamped override", so the contract's
+      // Term of Tenancy falls back to the real lease end.
+      stamp_end_date: stampEnabled ? (values.stamp_end_date?.format('YYYY-MM-DD') || null) : null,
       unit_information: values.unit_information || null,
       note: values.note || null,
       credits: values.credits || null,
@@ -555,18 +564,31 @@ export default function LeaseCreatePage() {
           </div>
           <div style={{ width: 200 }}>
             <FLabel>GOVERNMENT STAMP END DATE</FLabel>
+            <Checkbox
+              checked={stampEnabled}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setStampEnabled(on);
+                if (on) { setStampUserEdited(false); prefillStampEnd(undefined, true); }
+                else { form.setFieldsValue({ stamp_end_date: null }); setStampUserEdited(false); }
+              }}
+            >
+              <span style={{ fontSize: 13 }}>Stamp for a longer term</span>
+            </Checkbox>
             <Form.Item name="stamp_end_date" noStyle>
               <DatePicker
-                style={{ width: 200 }}
+                style={{ width: 200, marginTop: 6 }}
                 format="YYYY-MM-DD"
+                disabled={!stampEnabled}
                 // Clearing the field is a request to go back to the default, so
                 // un-stick the guard and let the next start-date change prefill again.
                 onChange={(d) => setStampUserEdited(!!d)}
               />
             </Form.Item>
             <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
-              Paperwork only — for the stamped term. Defaults to 2 years − 1 day
-              from the start date. Does not affect invoicing or vacancy.
+              {stampEnabled
+                ? 'The contract’s Term of Tenancy prints THIS date (2 years − 1 day by default). Paperwork only — invoicing, vacancy and the Minimum Term still use the real lease end.'
+                : 'Off — Term of Tenancy prints the real lease end. Tick only when the government requires a longer stamped term.'}
             </div>
           </div>
         </div>

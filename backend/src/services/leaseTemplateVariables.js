@@ -95,9 +95,14 @@ function ymd(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
 }
 
+// The end date the CONTRACT should show as its Term of Tenancy.
+// Only SOME tenancies must be stamped for a longer term than the tenant actually
+// stays, so the stamped date is an OPT-IN override (the tick box on the lease
+// form): set -> print the stamped term; not set -> the contract's term simply IS
+// the real tenancy term. It must NOT invent a 2-year term for an ordinary lease.
 function effectiveStampEndDate(lease) {
   if (!lease) return '';
-  return ymd(lease.stamp_end_date) || defaultStampEndDate(lease.start_date);
+  return ymd(lease.stamp_end_date) || ymd(lease.end_date) || '';
 }
 
 function joinName(first, last, company, type) {
@@ -214,10 +219,10 @@ const VARIABLES = [
   // for a longer term (e.g. 2 years) than the tenant actually stays. This never
   // affects vacancy/invoicing/expiry — those use LEASE_END. Falls back to
   // start_date + 2 years - 1 day when the lease has no stamp date set.
-  { key: 'STAMP_END_DATE', group: 'Lease', label: 'Government stamp end date (19 August 2028)',
+  { key: 'STAMP_END_DATE', group: 'Lease', label: 'Term-of-Tenancy end (stamped term if set, else lease end)',
     sample: '19 August 2028',
     resolve: (ctx) => fmtDateLong(effectiveStampEndDate(ctx.lease)) },
-  { key: 'STAMP_END_DATE_SHORT', group: 'Lease', label: 'Government stamp end date (2028-08-19)',
+  { key: 'STAMP_END_DATE_SHORT', group: 'Lease', label: 'Term-of-Tenancy end, short (2028-08-19)',
     sample: '2028-08-19',
     resolve: (ctx) => fmtDateShort(effectiveStampEndDate(ctx.lease)) },
   { key: 'LEASE_TERM_MONTHS', group: 'Lease', label: 'Lease term in months',

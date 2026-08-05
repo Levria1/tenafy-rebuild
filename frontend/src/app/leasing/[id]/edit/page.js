@@ -44,6 +44,8 @@ export default function LeasingEditPage() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
+  // Stamped-term override is opt-in; ticked only when the lease already has one.
+  const [stampEnabled, setStampEnabled] = useState(false);
   const [properties, setProperties] = useState([]);
   const [allUnits, setAllUnits] = useState([]);
   const [filteredUnits, setFilteredUnits] = useState([]);
@@ -191,6 +193,8 @@ export default function LeasingEditPage() {
 
         // Initialize recurring toggle from existing data
         setMakeRecurring(!!d.invoicing);
+        // Tick the stamped-term box only if this lease actually has an override.
+        setStampEnabled(!!d.stamp_end_date);
 
         form.setFieldsValue({
           property_id: propertyId ? String(propertyId) : undefined,
@@ -286,7 +290,8 @@ export default function LeasingEditPage() {
         viewing_enabled: values.viewing_enabled ? 1 : 0,
         notice_period_days: (values.notice_period_days != null && values.notice_period_days !== '')
           ? Number(values.notice_period_days) : null,
-        stamp_end_date: values.stamp_end_date?.format('YYYY-MM-DD') || null,
+        // Opt-in: unticked clears the override so Term of Tenancy = real lease end.
+        stamp_end_date: stampEnabled ? (values.stamp_end_date?.format('YYYY-MM-DD') || null) : null,
         unit_information: values.unit_information || null,
         note: values.note || null,
         credits: values.credits || null,
@@ -519,11 +524,30 @@ export default function LeasingEditPage() {
             </Col>
             <Col span={6}>
               <FLabel>Government Stamp End Date</FLabel>
+              <Checkbox
+                checked={stampEnabled}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setStampEnabled(on);
+                  if (on) {
+                    const s = form.getFieldValue('start_date');
+                    if (s && !form.getFieldValue('stamp_end_date')) {
+                      form.setFieldsValue({ stamp_end_date: s.add(2, 'year').subtract(1, 'day') });
+                    }
+                  } else {
+                    form.setFieldsValue({ stamp_end_date: null });
+                  }
+                }}
+              >
+                <span style={{ fontSize: 13 }}>Stamp for a longer term</span>
+              </Checkbox>
               <Form.Item name="stamp_end_date" noStyle>
-                <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+                <DatePicker style={{ width: '100%', marginTop: 6 }} format="YYYY-MM-DD" disabled={!stampEnabled} />
               </Form.Item>
               <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
-                Paperwork only — the stamped term. Does not affect invoicing or vacancy.
+                {stampEnabled
+                  ? 'Term of Tenancy prints THIS date. Paperwork only — invoicing, vacancy and the Minimum Term use the real lease end.'
+                  : 'Off — Term of Tenancy prints the real lease end.'}
               </div>
             </Col>
           </Row>

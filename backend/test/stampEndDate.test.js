@@ -30,23 +30,33 @@ test('stamp default: missing/invalid input yields empty string', () => {
   assert.equal(defaultStampEndDate('not-a-date'), '');
 });
 
-test('effective: stored stamp date wins over the computed default', () => {
+// The stamped term is an OPT-IN override (tick box on the lease form). Only some
+// tenancies must be stamped longer than the tenant actually stays, so an ordinary
+// lease must print its REAL end date — never an invented 2-year term.
+test('effective: stored stamp date overrides the lease end', () => {
   assert.equal(
-    effectiveStampEndDate({ start_date: '2026-08-20', stamp_end_date: '2029-01-31' }),
-    '2029-01-31'
+    effectiveStampEndDate({ start_date: '2026-08-20', end_date: '2026-10-19', stamp_end_date: '2028-08-19' }),
+    '2028-08-19'
   );
 });
 
-test('effective: falls back to the default when no stamp date is stored', () => {
-  assert.equal(effectiveStampEndDate({ start_date: '2026-08-20' }), '2028-08-19');
-  assert.equal(effectiveStampEndDate({ start_date: '2026-08-20', stamp_end_date: null }), '2028-08-19');
+test('effective: NO stamp date -> the real lease end (not a computed 2-year term)', () => {
+  assert.equal(effectiveStampEndDate({ start_date: '2026-08-20', end_date: '2026-10-19' }), '2026-10-19');
+  assert.equal(
+    effectiveStampEndDate({ start_date: '2026-08-20', end_date: '2026-10-19', stamp_end_date: null }),
+    '2026-10-19'
+  );
 });
 
 test('effective: a stored Date is read as wall-clock (no TZ day shift)', () => {
   // mysql2 returns a DATE column as a LOCAL-midnight Date.
   assert.equal(
-    effectiveStampEndDate({ start_date: '2026-08-20', stamp_end_date: new Date(2028, 7, 19) }),
+    effectiveStampEndDate({ start_date: '2026-08-20', end_date: new Date(2026, 9, 19), stamp_end_date: new Date(2028, 7, 19) }),
     '2028-08-19'
+  );
+  assert.equal(
+    effectiveStampEndDate({ start_date: '2026-08-20', end_date: new Date(2026, 9, 19) }),
+    '2026-10-19'
   );
 });
 
