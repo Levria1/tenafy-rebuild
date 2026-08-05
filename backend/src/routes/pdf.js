@@ -6,6 +6,23 @@ const { renderFromTemplate } = require('../services/leasePdfRenderer');
 const { resolveLeaseTemplateId } = require('../services/leaseTemplateResolver');
 
 
+// Org-level info for document headers.
+//
+// These four call sites used to read `SELECT * FROM org_setting`, a table that has
+// NEVER existed in any org DB — no migration creates it. Every call therefore threw
+// straight into its `.catch(() => [[]])` and produced `{}`, which is why org fields
+// rendered blank: on invoices the company line was simply omitted, and on receipts
+// `titleText = companyName || 'RECEIPT'` meant the document was titled with the
+// literal word "RECEIPT".
+//
+// The real table is `organization`, keyed by `id` (not `org_id`). It carries
+// display_name + default_currency but no contact_person / address / logo, so those
+// reads stay undefined exactly as before. The company name on invoices and receipts
+// now comes from `unit.account_name || property.landlord_name` (migration 032)
+// rather than from here.
+const ORG_INFO_SQL =
+  'SELECT display_name AS company_name, default_currency FROM organization WHERE id = ? LIMIT 1';
+
 // Helper: draw a horizontal line
 function hLine(doc, y, margin = 50) {
   doc.moveTo(margin, y).lineTo(doc.page.width - margin, y).strokeColor('#cccccc').lineWidth(0.5).stroke();
@@ -37,7 +54,7 @@ async function loadInvoicePdfData(pool, id, orgId) {
             u.name as unit_name, u.account_name as unit_account_name,
             p.display_name as property_name, p.street_address as property_address,
             p.city as property_city, p.state as property_state,
-            p.currency as property_currency
+            p.currency as property_currency, p.landlord_name as property_landlord_name
      FROM invoice i
      LEFT JOIN tenant t ON i.tenant_id = t.id
      LEFT JOIN unit u ON i.unit_id = u.id
@@ -63,16 +80,16 @@ async function loadInvoicePdfData(pool, id, orgId) {
   const amountTotal = parseFloat(inv.amount) || 0;
   const outstanding = Math.max(0, amountTotal - amountPaid);
 
-  const [orgRows] = await pool.execute(
-    'SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]
-  ).catch(() => [[]]);
+  const [orgRows] = await pool.execute(ORG_INFO_SQL, [orgId]).catch(() => [[]]);
   const org = orgRows?.[0] || {};
 
   return { inv, org, amountTotal, amountPaid, outstanding };
 }
 
 function renderInvoicePdf(doc, { inv, org, amountTotal, amountPaid, outstanding }) {
-  const companyName = inv.unit_account_name || org.company_name || '';
+  // Unit-level account name wins, then the property's landlord entity. `org` came
+  // from the non-existent `org_setting` table, so it was ALWAYS '' — see migration 032.
+  const companyName = inv.unit_account_name || inv.property_landlord_name || '';
   const currencyCode = inv.property_currency || org.default_currency || 'USD';
   const currSymbol = { USD: '$', HKD: 'HK$', GBP: '£', EUR: '€', SGD: 'S$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$', MYR: 'RM', PHP: '₱', THB: '฿', JPY: '¥', CNY: '¥', KRW: '₩', INR: '₹', AED: 'AED ' }[currencyCode] || (currencyCode + ' ');
   const fmtCurr = (v) => `${currSymbol}${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -284,7 +301,8 @@ router.get('/lease/:id', authenticate, async (req, res) => {
     }
 
     // ── Fallback: generic hand-drawn Basic PDF (org has no lease template) ─────
-    const [orgRows] = await req.pool.execute('SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]).catch(() => [[]]);
+    // Org info: `organization`, not the phantom `org_setting` — see ORG_INFO_SQL note above.
+    const [orgRows] = await req.pool.execute(ORG_INFO_SQL, [orgId]).catch(() => [[]]);
     const org = orgRows?.[0] || {};
     const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';
     const fmtCurr = (v) => `$${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
@@ -423,7 +441,7 @@ router.get('/receipt/:paymentId', authenticate, async (req, res) => {
               u.name AS unit_name, u.account_name AS unit_account_name,
               p.display_name AS property_name, p.street_address AS property_address,
               p.city AS property_city, p.state AS property_state,
-              p.currency AS property_currency
+              p.currency AS property_currency, p.landlord_name AS property_landlord_name
        FROM accounting_line al
        LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
        LEFT JOIN category_setting cs ON cs.id = i.category
@@ -436,12 +454,13 @@ router.get('/receipt/:paymentId', authenticate, async (req, res) => {
 
     // 3. Fetch org settings
     const [orgRows] = await req.pool.execute(
-      'SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]
+      ORG_INFO_SQL, [orgId]
     ).catch(() => [[]]);
     const org = orgRows?.[0] || {};
 
-    // Use first line's unit account_name as company name, fallback to org
-    const companyName = (lines.length > 0 && lines[0].unit_account_name) || org.company_name || '';
+    // Use first line's unit account_name as company name, then the property's
+    // landlord entity (see migration 032 — `org.company_name` was always empty).
+    const companyName = (lines.length > 0 && (lines[0].unit_account_name || lines[0].property_landlord_name)) || '';
 
     // Use first line's property info for display
     const firstLine = lines[0] || {};
@@ -649,7 +668,8 @@ async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
             cs.name AS invoice_category,
             u.name AS unit_name, u.account_name AS unit_account_name,
             p.display_name AS property_name, p.street_address AS property_address,
-            p.city AS property_city, p.state AS property_state, p.currency AS property_currency
+            p.city AS property_city, p.state AS property_state, p.currency AS property_currency,
+            p.landlord_name AS property_landlord_name
      FROM accounting_line al
      LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
      LEFT JOIN category_setting cs ON cs.id = i.category
@@ -661,11 +681,12 @@ async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
 
   // 3. Org settings
   const [orgRows] = await pool.execute(
-    'SELECT * FROM org_setting WHERE org_id = ? LIMIT 1', [orgId]
+    ORG_INFO_SQL, [orgId]
   ).catch(() => [[]]);
   const org = orgRows?.[0] || {};
 
-  const companyName = (lines.length > 0 && lines[0].unit_account_name) || org.company_name || '';
+  // Same chain as the /receipt/:id route above — keep both copies in step.
+  const companyName = (lines.length > 0 && (lines[0].unit_account_name || lines[0].property_landlord_name)) || '';
   const firstLine = lines[0] || {};
   const currencyCode = firstLine.property_currency || org.default_currency || 'USD';
   const currSymbol = { USD: '$', HKD: 'HK$', GBP: '\u00a3', EUR: '\u20ac', SGD: 'S$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$' }[currencyCode] || (currencyCode + ' ');

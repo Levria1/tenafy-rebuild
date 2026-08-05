@@ -92,6 +92,13 @@ function hasOwn(obj, key) {
   return Object.prototype.hasOwnProperty.call(obj || {}, key);
 }
 
+// Landlord entity names came out of the legacy data with stray leading spaces
+// (" NAOS Holdings Limited"), which read as a different entity. Normalise on write.
+function trimOrNull(value) {
+  const s = typeof value === 'string' ? value.trim() : value;
+  return s === '' || s === undefined ? null : s;
+}
+
 // GET /api/property/summary - Portfolio-wide unit totals across ALL active properties
 // (not paginated). Excludes inactive properties (status != 1) and deleted ones.
 // Occupied = active unit with a lease covering today (same rule as /list).
@@ -665,7 +672,7 @@ router.get('/:id', authenticate, async (req, res) => {
 // POST /api/property - Create property
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { display_name, street_address, city, state, country, zip_code, district,
+    const { display_name, landlord_name, street_address, city, state, country, zip_code, district,
             type, status, currency, year_of_built, notes, payment_instructions, amenityIds,
             photo, galleryFileIds, listing_url, bank_account_id } = req.body;
     const orgId = req.user.orgId;
@@ -673,11 +680,11 @@ router.post('/', authenticate, async (req, res) => {
     const propertyId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
     await req.pool.execute(
-      `INSERT INTO property (id, org_id, display_name, street_address, city, state, country,
+      `INSERT INTO property (id, org_id, display_name, landlord_name, street_address, city, state, country,
        zip_code, district, type, status, currency, year_of_built, notes, payment_instructions,
        photo, listing_url, bank_account_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [propertyId, orgId, display_name || null, street_address || null, city || null, state || null, country || null, zip_code || null,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [propertyId, orgId, display_name || null, trimOrNull(landlord_name), street_address || null, city || null, state || null, country || null, zip_code || null,
        district || null, type || 1, status ?? 1, currency || null,
        year_of_built || null, notes || null, payment_instructions || null, photo || null, listing_url || null,
        nullableId(bank_account_id)]
@@ -713,11 +720,14 @@ router.post('/', authenticate, async (req, res) => {
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { display_name, street_address, city, state, country, zip_code, district,
+    const { display_name, landlord_name, street_address, city, state, country, zip_code, district,
             type, status, currency, year_of_built, mls, notes, payment_instructions, amenityIds,
             photo, galleryFileIds, listing_url, bank_account_id } = req.body;
     const orgId = req.user.orgId;
     const updateBankAccount = hasOwn(req.body, 'bank_account_id') ? 1 : 0;
+    // Same guard as bank_account_id: a caller that never sends the field (e.g. a
+    // partial update from another screen) must not blank an existing entity name.
+    const updateLandlordName = hasOwn(req.body, 'landlord_name') ? 1 : 0;
 
     // Block deactivation if there are active or upcoming leases on any unit of this property
     if (status != null && Number(status) === 0) {
@@ -740,13 +750,16 @@ router.put('/:id', authenticate, async (req, res) => {
     }
 
     await req.pool.execute(
-      `UPDATE property SET display_name = ?, street_address = ?, city = ?, state = ?,
+      `UPDATE property SET display_name = ?,
+       landlord_name = CASE WHEN ? = 1 THEN ? ELSE landlord_name END,
+       street_address = ?, city = ?, state = ?,
        country = ?, zip_code = ?, district = ?, type = ?, status = ?, currency = ?,
        year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, photo = ?,
        listing_url = ?, bank_account_id = CASE WHEN ? = 1 THEN ? ELSE bank_account_id END,
        updated_at = NOW()
        WHERE id = ? AND org_id = ?`,
-      [display_name || null, street_address || null, city || null, state || null,
+      [display_name || null, updateLandlordName, trimOrNull(landlord_name),
+       street_address || null, city || null, state || null,
        country || null, zip_code || null, district || null, type ?? 1, status ?? 1,
        currency || null, year_of_built || null, mls || null, notes || null,
        payment_instructions || null, photo || null,

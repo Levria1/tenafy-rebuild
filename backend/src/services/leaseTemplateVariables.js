@@ -380,8 +380,20 @@ function sampleContext() {
  * Frontend-friendly list for the "Insert Variable" dropdown.
  * Strips resolve functions (not serializable).
  */
+// Groups withheld from the editor's "Insert Variable" menu. The Landlord group
+// resolves from a table (`org_setting`) that does not exist in any org DB, so
+// every LANDLORD_* variable renders as an empty string — inserting one silently
+// blanks that line of the contract. No live template uses them (all of them type
+// the landlord in literally, and the entity differs per property anyway), so they
+// are offered only as a trap. They still RESOLVE, so any old template that
+// referenced one behaves exactly as before. Re-expose once landlord details have
+// a real store — see property.landlord_name (migration 032) for the invoice side.
+const HIDDEN_GROUPS = new Set(['Landlord']);
+
 function publicList() {
-  return VARIABLES.map(({ key, label, group, sample }) => ({ key, label, group, sample }));
+  return VARIABLES
+    .filter(v => !HIDDEN_GROUPS.has(v.group))
+    .map(({ key, label, group, sample }) => ({ key, label, group, sample }));
 }
 
 // Marker tokens emitted by the signature anchors (real render only). The

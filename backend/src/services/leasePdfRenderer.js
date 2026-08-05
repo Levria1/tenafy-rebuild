@@ -218,11 +218,12 @@ async function loadLeaseContext(pool, orgId, leaseId) {
     [leaseId]
   );
 
-  const [orgRows] = await pool.execute(
-    'SELECT * FROM org_setting WHERE org_id = ? LIMIT 1',
-    [orgId]
-  ).catch(() => [[]]);
-  const org = (orgRows && orgRows[0]) || {};
+  // `org_setting` does not exist in any org DB (no migration ever created it), so
+  // this query always threw and the `.catch` always produced {} — every LANDLORD_*
+  // variable has therefore rendered blank since day one. The Landlord group is now
+  // hidden from the Insert-Variable menu (leaseTemplateVariables.HIDDEN_GROUPS) and
+  // no template references it, so keep the empty context object and skip the query.
+  const org = {};
 
   const [currencyRows] = await pool.execute(
     'SELECT symbol FROM currency WHERE org_id = ? AND is_current = 1 LIMIT 1',

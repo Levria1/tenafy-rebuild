@@ -91,6 +91,7 @@ export default function PropertyEditPage() {
           type:                  d.type || 1,
           status:                d.status ?? 1,
           mls:                   d.mls,
+          landlord_name:         d.landlord_name,
           payment_instructions:  d.payment_instructions,
           notes:                 d.notes,
           listing_url:           d.listing_url,
@@ -394,9 +395,16 @@ export default function PropertyEditPage() {
               </div>
             )}
 
-            {/* Payment Instructions */}
-            <SectionLabel>PAYMENT INSTRUCTIONS</SectionLabel>
-            <Form.Item name="payment_instructions">
+            {/* Billing & Payment */}
+            <SectionLabel>BILLING &amp; PAYMENT</SectionLabel>
+            <Form.Item
+              name="landlord_name"
+              label="Landlord / Legal Entity"
+              extra="Prints as the company name on invoices and receipts for this property. A unit's own account name overrides it."
+            >
+              <Input placeholder="e.g. ACJ Ventures Limited" />
+            </Form.Item>
+            <Form.Item name="payment_instructions" label="Payment Instructions">
               <Input.TextArea rows={3} placeholder="e.g. Bank account details, accepted payment methods..." />
             </Form.Item>
 

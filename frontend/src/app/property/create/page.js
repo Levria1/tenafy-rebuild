@@ -385,6 +385,18 @@ export default function PropertyCreatePage() {
               </div>
             )}
 
+            {/* Billing & Payment */}
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#888', letterSpacing: 1, marginBottom: 14, marginTop: 12 }}>
+              BILLING &amp; PAYMENT
+            </div>
+            <Form.Item
+              name="landlord_name"
+              label="Landlord / Legal Entity"
+              extra="Prints as the company name on invoices and receipts for this property. A unit's own account name overrides it."
+            >
+              <Input placeholder="e.g. ACJ Ventures Limited" />
+            </Form.Item>
+
             {/* Payment Instructions */}
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, marginTop: 8 }}>
               Payment Instructions
