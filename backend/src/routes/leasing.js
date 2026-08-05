@@ -363,7 +363,10 @@ router.get('/calendar', authenticate, async (req, res) => {
         contract_type: lease.contract_type ?? null,
         lease_state: lease.lease_state || 'active',
         unconfirmed: lease.lease_state === 'pending' || lease.signature_status === 'pending' || lease.signature_status === 'declined',
-        deposit_pending: !!lease.deposit_pending,
+        // NOTE: the pools run with bigNumberStrings:true, so a SQL EXISTS/boolean
+        // (typed BIGINT) arrives as the STRING "0" or "1" — and !!"0" is TRUE.
+        // Always compare numerically, never coerce with !!.
+        deposit_pending: Number(lease.deposit_pending) === 1,
         moved_out_early: !!(moveout && isMovedOutEarly(moveout.requested_date, moveout.original_end_date)),
         moveout_notes: moveout ? (moveout.notes || null) : null,
       });

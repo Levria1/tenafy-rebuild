@@ -196,7 +196,9 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
         for (const m of moveouts) {
           moveoutByLease[String(m.leasing_id)] = {
             moveout_notes: m.notes || null,
-            moved_out_early: !!m.moved_out_early,
+            // bigNumberStrings:true makes a SQL boolean arrive as "0"/"1", and
+            // !!"0" is TRUE — compare numerically.
+            moved_out_early: Number(m.moved_out_early) === 1,
           };
         }
       } catch (e) {
