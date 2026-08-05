@@ -46,8 +46,23 @@ function lengthError(body, limits = FIELD_LIMITS) {
 const EXPIRING_WINDOW = 60;   // days before lease end, all intents
 const INTENT = { 1: 'MR', 2: 'MTM', 3: 'NR', 4: 'UC' };
 
-const TENANT_NAME_SQL = `CASE WHEN t.type = 1 THEN t.company_name
-       ELSE TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) END`;
+const tenantNameSql = (a) => `CASE WHEN ${a}.type = 1 THEN ${a}.company_name
+       ELSE TRIM(CONCAT(COALESCE(${a}.first_name,''), ' ', COALESCE(${a}.last_name,''))) END`;
+const TENANT_NAME_SQL = tenantNameSql('t');
+
+// The unit's NEXT upcoming lease (earliest start > today) → next move-in date +
+// tenant. Used by the "vacant now" query so the Leasing → Vacancy page can show a
+// unit that is empty TODAY even when someone is moving in later (for viewings).
+const NEXT_MOVE_IN_JOIN = `
+       LEFT JOIN leasing nl ON nl.id = (
+         SELECT lm.id FROM leasing lm
+          WHERE lm.unit_id = u.id AND lm.deleted_at IS NULL AND lm.start_date > CURDATE()
+          ORDER BY lm.start_date ASC LIMIT 1)
+       LEFT JOIN tenant nt ON nt.id = nl.tenant_id`;
+const NEXT_MOVE_IN_COLS = `
+          DATE_FORMAT(nl.start_date, '%Y-%m-%d') AS next_move_in_date,
+          DATEDIFF(nl.start_date, CURDATE()) AS days_to_move_in,
+          nl.tenant_id AS next_tenant_id, ${tenantNameSql('nt')} AS next_tenant_name`;
 
 // Sub-conditions reused for the "vacant now" query (correlated on u.id).
 const NO_CURRENT_LEASE = `NOT EXISTS (
@@ -64,7 +79,16 @@ const NOT_TEST = `LOWER(u.name) NOT LIKE '%test%' AND LOWER(p.display_name) NOT 
 
 // Shared vacancy computation — used by BOTH /vacancies and /scheduler so they can
 // never diverge. Returns the unified, urgency-sorted list plus per-category counts.
-async function computeVacancies(pool, orgId) {
+// `page` view (Leasing → Vacancy) differs from the Advertising SCHEDULER view:
+//   - EXPIRING: page requires the lease to be CURRENT (occupied today); the
+//     scheduler keeps the broader "latest lease ends soon incl. a future one"
+//     (so it still advertises a re-let-then-vacant gap). Empty-today units with a
+//     short upcoming lease therefore move OUT of expiring and INTO vacant on the
+//     page (shown as "vacant now + next move-in").
+//   - VACANT: page includes units that are empty TODAY even if a move-in is
+//     booked; the scheduler stays "truly open" (no upcoming) so it never
+//     advertises a unit that is already filling.
+async function computeVacancies(pool, orgId, { page = false } = {}) {
     // 1. EXPIRING — the unit's LATEST lease (current OR a future one) ends within
     //    the window and nothing follows it. We intentionally do NOT require the
     //    lease to have started: a unit re-let with a SHORT upcoming lease (e.g.
@@ -90,6 +114,7 @@ async function computeVacancies(pool, orgId) {
        WHERE p.org_id = ?
          AND l.deleted_at IS NULL
          AND u.active_status = 1
+         ${page ? 'AND l.start_date <= CURDATE()' : ''}
          AND l.end_date IS NOT NULL
          AND l.end_date >= CURDATE()
          AND DATEDIFF(l.end_date, CURDATE()) <= ${EXPIRING_WINDOW}
@@ -123,7 +148,7 @@ async function computeVacancies(pool, orgId) {
           DATE_FORMAT(ll.end_date, '%Y-%m-%d') AS vacant_since,
           DATEDIFF(CURDATE(), ll.end_date) AS days_vacant,
           ll.amount AS rent, ll.deposit, ll.contract_type,
-          t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name
+          t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name${page ? ',' + NEXT_MOVE_IN_COLS : ''}
        FROM unit u
        JOIN property p ON u.property_id = p.id
        LEFT JOIN advertising_template at ON at.id = u.advertising_template_id AND at.deleted_at IS NULL
@@ -132,12 +157,12 @@ async function computeVacancies(pool, orgId) {
            WHERE le.unit_id = u.id AND le.deleted_at IS NULL
              AND le.end_date IS NOT NULL AND le.end_date < CURDATE()
            ORDER BY le.end_date DESC, le.id DESC LIMIT 1)
-       LEFT JOIN tenant t ON t.id = ll.tenant_id
+       LEFT JOIN tenant t ON t.id = ll.tenant_id${page ? NEXT_MOVE_IN_JOIN : ''}
        WHERE p.org_id = ?
          AND u.active_status = 1
          AND ${NOT_TEST}
          AND ${NO_CURRENT_LEASE}
-         AND ${NO_UPCOMING_LEASE}`,
+         ${page ? '' : 'AND ' + NO_UPCOMING_LEASE}`,
       [orgId]
     );
 
@@ -162,6 +187,8 @@ async function computeVacancies(pool, orgId) {
       property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
       tenant_id: r.tenant_id ? String(r.tenant_id) : null,
       tenant_name: (r.tenant_name || '').trim() || '(no tenant)',
+      // Expiring rows are (page) NOT re-let, so there is no upcoming move-in.
+      next_move_in_date: null, days_to_move_in: null, next_tenant_id: null, next_tenant_name: null,
     }));
 
     const vacantRows = vacant.map(r => {
@@ -191,6 +218,11 @@ async function computeVacancies(pool, orgId) {
         property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
         tenant_id: r.tenant_id ? String(r.tenant_id) : null,   // last tenant
         tenant_name: (r.tenant_name || '').trim() || null,
+        // Next upcoming lease (a booked move-in even though it's empty today).
+        next_move_in_date: r.next_move_in_date || null,
+        days_to_move_in: r.days_to_move_in != null ? Number(r.days_to_move_in) : null,
+        next_tenant_id: r.next_tenant_id ? String(r.next_tenant_id) : null,
+        next_tenant_name: (r.next_tenant_name || '').trim() || null,
       };
     });
 
@@ -209,7 +241,7 @@ async function computeVacancies(pool, orgId) {
 
 router.get('/vacancies', authenticate, async (req, res) => {
   try {
-    const { vacancies, vacant_count, expiring_count } = await computeVacancies(req.pool, req.user.orgId);
+    const { vacancies, vacant_count, expiring_count } = await computeVacancies(req.pool, req.user.orgId, { page: true });
     res.json({
       code: 200,
       data: {

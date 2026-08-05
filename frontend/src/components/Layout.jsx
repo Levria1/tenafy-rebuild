@@ -90,18 +90,18 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
       children: [
         { key: '/leasing/list', label: <Link href="/leasing">Leases</Link> },
         { key: '/leasing/calendar', label: <Link href="/leasing/calendar">Calendar</Link> },
+        { key: '/leasing/vacancy', label: <Link href="/leasing/vacancy">Vacancy</Link> },
       ],
     });
   }
 
-  // Advertising — surfaces units expiring soon that need re-advertising.
+  // Advertising — the Facebook posting pipeline (vacancy now lives under Leasing).
   if (hasPermission('LANDLORD/LEASING_LIST')) {
     items.push({
       key: '/advertising',
       icon: <SoundOutlined />,
       label: 'Advertising',
       children: [
-        { key: '/advertising/vacancy', label: <Link href="/advertising/vacancy">Vacancy</Link> },
         { key: '/advertising/scheduler', label: <Link href="/advertising/scheduler">Scheduler</Link> },
         { key: '/advertising/templates', label: <Link href="/advertising/templates">Templates</Link> },
         { key: '/advertising/forums', label: <Link href="/advertising/forums">Forums</Link> },
@@ -565,6 +565,7 @@ function MainLayout({ children }) {
     // Leasing sub-routes
     if (pathname.startsWith('/leasing')) {
       if (pathname === '/leasing/calendar') return ['/leasing/calendar'];
+      if (pathname.startsWith('/leasing/vacancy')) return ['/leasing/vacancy'];
       return ['/leasing/list'];
     }
     // Contacts sub-routes
