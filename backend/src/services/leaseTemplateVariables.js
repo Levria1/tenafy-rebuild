@@ -28,7 +28,18 @@ function fmtMoney(v, currency) {
 
 function fmtDateLong(v) {
   if (!v) return '';
-  const d = v instanceof Date ? v : new Date(v);
+  // A bare 'YYYY-MM-DD' must be read as a CALENDAR date, not an instant:
+  // new Date('2028-08-19') is UTC midnight, and toLocaleDateString then renders
+  // it in LOCAL time — one day early on any server west of UTC. Build it from
+  // the parts instead so the printed day always matches the stored day.
+  let d;
+  if (v instanceof Date) {
+    d = v;
+  } else {
+    const s = String(v).slice(0, 10);
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(v);
+  }
   if (isNaN(d.getTime())) return '';
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
 }
@@ -37,6 +48,56 @@ function fmtDateShort(v) {
   if (!v) return '';
   const s = String(v).slice(0, 10);
   return s;
+}
+
+// Government Stamp End Date default: the stamped term conventionally runs
+// 2 years MINUS 1 DAY from the lease start (start 2026-08-20 -> 2028-08-19), so
+// the stamped period is exactly two years inclusive. Returns 'YYYY-MM-DD' (wall
+// clock, no TZ shift) or '' when the start date is missing/invalid.
+function defaultStampEndDate(startDate) {
+  if (!startDate) return '';
+  const s = String(startDate).slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  let y, mo, d;
+  if (m) {
+    y = Number(m[1]); mo = Number(m[2]); d = Number(m[3]);
+  } else {
+    const dt = startDate instanceof Date ? startDate : new Date(startDate);
+    if (isNaN(dt.getTime())) return '';
+    y = dt.getFullYear(); mo = dt.getMonth() + 1; d = dt.getDate();
+  }
+  // +2 years, then -1 day, in UTC so no TZ can shift the calendar date.
+  // The day is CLAMPED to the target month's length first, so a 29-Feb start
+  // behaves like dayjs's .add(2,'year') and MySQL's DATE_ADD(... INTERVAL 2 YEAR)
+  // (2024-02-29 -> 2026-02-28 -> minus a day -> 2026-02-27). Without the clamp the
+  // backend default and the create-form prefill would disagree on leap days.
+  const targetY = y + 2;
+  const lastDayOfMonth = new Date(Date.UTC(targetY, mo, 0)).getUTCDate();
+  const end = new Date(Date.UTC(targetY, mo - 1, Math.min(d, lastDayOfMonth)));
+  end.setUTCDate(end.getUTCDate() - 1);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${end.getUTCFullYear()}-${p(end.getUTCMonth() + 1)}-${p(end.getUTCDate())}`;
+}
+
+// The stamped end date actually in force for a lease: the stored value when set,
+// otherwise the 2-years-minus-1-day default derived from the start date.
+// Returns 'YYYY-MM-DD'. mysql2 hands back a DATE as a LOCAL-midnight Date, so we
+// read wall-clock parts here — never toISOString(), which would shift the day on
+// a non-UTC server (same convention as dateToWallClock elsewhere).
+function ymd(v) {
+  if (!v) return '';
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return '';
+    const p = (n) => String(n).padStart(2, '0');
+    return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`;
+  }
+  const s = String(v).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+
+function effectiveStampEndDate(lease) {
+  if (!lease) return '';
+  return ymd(lease.stamp_end_date) || defaultStampEndDate(lease.start_date);
 }
 
 function joinName(first, last, company, type) {
@@ -149,6 +210,16 @@ const VARIABLES = [
   { key: 'LEASE_END_SHORT', group: 'Lease', label: 'Lease end (2027-08-31)',
     sample: '2027-08-31',
     resolve: (ctx) => fmtDateShort(ctx.lease?.end_date) },
+  // Government Stamp End Date — PAPERWORK ONLY. Some tenancies must be stamped
+  // for a longer term (e.g. 2 years) than the tenant actually stays. This never
+  // affects vacancy/invoicing/expiry — those use LEASE_END. Falls back to
+  // start_date + 2 years - 1 day when the lease has no stamp date set.
+  { key: 'STAMP_END_DATE', group: 'Lease', label: 'Government stamp end date (19 August 2028)',
+    sample: '19 August 2028',
+    resolve: (ctx) => fmtDateLong(effectiveStampEndDate(ctx.lease)) },
+  { key: 'STAMP_END_DATE_SHORT', group: 'Lease', label: 'Government stamp end date (2028-08-19)',
+    sample: '2028-08-19',
+    resolve: (ctx) => fmtDateShort(effectiveStampEndDate(ctx.lease)) },
   { key: 'LEASE_TERM_MONTHS', group: 'Lease', label: 'Lease term in months',
     sample: '12',
     resolve: (ctx) => {
@@ -323,4 +394,7 @@ module.exports = {
   sampleContext,
   publicList,
   SIGNATURE_MARKERS,
+  // exported for tests
+  defaultStampEndDate,
+  effectiveStampEndDate,
 };

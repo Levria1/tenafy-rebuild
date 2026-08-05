@@ -214,11 +214,29 @@ export default function LeaseCreatePage() {
     lookupCheckInMeter(unitId, form.getFieldValue('start_date'));
   };
 
+  // Government Stamp End Date convention: 2 years MINUS 1 day from the start
+  // (start 2026-08-20 -> 2028-08-19), so the stamped period is exactly two years
+  // inclusive. Only ever PREFILLED — staff can override it.
+  const [stampUserEdited, setStampUserEdited] = useState(false);
+  // `start` is passed in from the picker's own onChange rather than read back via
+  // getFieldValue, so the prefill can't act on a stale value.
+  const prefillStampEnd = (start) => {
+    if (stampUserEdited) return;              // never clobber a manual entry
+    const s = start || form.getFieldValue('start_date');
+    if (!s) return;
+    form.setFieldsValue({ stamp_end_date: s.add(2, 'year').subtract(1, 'day') });
+  };
+
   const handleDateChange = () => {
     checkConflict();
     setMeterPrefillHint(null);
     setMeterUserEdited(false);
     lookupCheckInMeter(form.getFieldValue('unit_id'), form.getFieldValue('start_date'));
+  };
+
+  const handleStartDateChange = (d) => {
+    handleDateChange();
+    prefillStampEnd(d);
   };
 
   // ── Missing-email prompt ──────────────────────────────────────────────────
@@ -361,6 +379,7 @@ export default function LeaseCreatePage() {
       viewing_enabled: values.viewing_enabled === false ? 0 : 1,
       notice_period_days: (values.notice_period_days != null && values.notice_period_days !== '')
         ? Number(values.notice_period_days) : null,
+      stamp_end_date: values.stamp_end_date?.format('YYYY-MM-DD') || null,
       unit_information: values.unit_information || null,
       note: values.note || null,
       credits: values.credits || null,
@@ -502,7 +521,7 @@ export default function LeaseCreatePage() {
           <FLabel required>START DATE AND END DATE</FLabel>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <Form.Item name="start_date" noStyle rules={[{ required: true, message: 'Select start date' }]}>
-              <DatePicker style={{ width: 160 }} onChange={handleDateChange} />
+              <DatePicker style={{ width: 160 }} onChange={handleStartDateChange} />
             </Form.Item>
             <span style={{ color: '#999' }}>~</span>
             <Form.Item name="end_date" noStyle>
@@ -532,6 +551,22 @@ export default function LeaseCreatePage() {
             </Form.Item>
             <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
               Notice the tenant must give to renew.
+            </div>
+          </div>
+          <div style={{ width: 200 }}>
+            <FLabel>GOVERNMENT STAMP END DATE</FLabel>
+            <Form.Item name="stamp_end_date" noStyle>
+              <DatePicker
+                style={{ width: 200 }}
+                format="YYYY-MM-DD"
+                // Clearing the field is a request to go back to the default, so
+                // un-stick the guard and let the next start-date change prefill again.
+                onChange={(d) => setStampUserEdited(!!d)}
+              />
+            </Form.Item>
+            <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+              Paperwork only — for the stamped term. Defaults to 2 years − 1 day
+              from the start date. Does not affect invoicing or vacancy.
             </div>
           </div>
         </div>

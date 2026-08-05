@@ -203,6 +203,7 @@ export default function LeasingEditPage() {
           contract_type: d.contract_type ? Number(d.contract_type) : undefined,
           viewing_enabled: !!Number(d.viewing_enabled),
           notice_period_days: d.notice_period_days != null ? Number(d.notice_period_days) : undefined,
+          stamp_end_date: d.stamp_end_date ? dayjs(d.stamp_end_date) : undefined,
           price: d.price || d.amount || '',
           deposit: d.deposit || '',
           due_date: d.due_date ? Number(d.due_date) : undefined,
@@ -285,6 +286,7 @@ export default function LeasingEditPage() {
         viewing_enabled: values.viewing_enabled ? 1 : 0,
         notice_period_days: (values.notice_period_days != null && values.notice_period_days !== '')
           ? Number(values.notice_period_days) : null,
+        stamp_end_date: values.stamp_end_date?.format('YYYY-MM-DD') || null,
         unit_information: values.unit_information || null,
         note: values.note || null,
         credits: values.credits || null,
@@ -513,6 +515,15 @@ export default function LeasingEditPage() {
               </Form.Item>
               <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
                 Notice the tenant must give to renew.
+              </div>
+            </Col>
+            <Col span={6}>
+              <FLabel>Government Stamp End Date</FLabel>
+              <Form.Item name="stamp_end_date" noStyle>
+                <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+              </Form.Item>
+              <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+                Paperwork only — the stamped term. Does not affect invoicing or vacancy.
               </div>
             </Col>
           </Row>
