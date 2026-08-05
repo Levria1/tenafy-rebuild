@@ -73,25 +73,45 @@ Two distinct actions: **log a request** (intent, pending) and **execute the move
 - "Request early move-out" action on the lease detail → captures requested_date + reason → row with `status='requested'`, snapshots `original_end_date`. No date/invoice change yet.
 - A **pending-requests filter/badge** on the Leases list, and the calendar marker (Project D).
 
-**Execute / Move out (the reconciliation flow)**
-Triggered by approving a request, or a direct "Move out" action. Opens a dialog:
+**Execute / Move out — "push the remaining invoices, then close the lease"**
+
+Decided rules (user, 2026-08-05):
+- The amount owed is **negotiated case-by-case** — the system never auto-decides it; staff can edit every amount.
+- The tenant **owes regardless of re-letting** → NO mitigation, NO credit-back, and NO separate
+  `moved_out_date` field. The unit can be re-let the next day while their invoices stand.
+- Billing shape: **push the remaining monthly invoices** (not one lump settlement).
+- Pushed invoices **keep their original due dates** (Sep 1, Oct 1 — they come due month by month,
+  rather than all flipping Overdue at once).
+- The **deposit is NOT auto-applied** — it stays the existing separate refund/forfeit step.
+
+Flow (triggered by approving a request, or a direct "Move out" action):
 1. **Move-out date** (default: requested date, or today).
-2. **Ledger reconciliation at that date** (read-only summary):
-   - Paid-through date vs move-out date → **paid ahead** (overpaid amount) or **owes** (gap + unpaid invoices ≤ move-out).
-   - **Future invoices** dated > move-out (already issued).
-3. **Decisions** (per situation):
-   - If owed a partial final period → optional **"Generate final prorated invoice"** (move-out date).
-   - **Outstanding invoices** (unpaid ≤ move-out) → Keep outstanding / **Write off** (Project C) / Void.
-   - **Future invoices** (> move-out) → Void / Keep.
-   - **Overpayment** (paid past move-out) → Refund / Convert to credit / Keep (no action). *(Refund = existing deposit-refund-style outflow invoice; credit = `leasing.credits`/`utility_credit` — TBD which, see Open Questions.)*
-4. **Apply** → set `leasing.end_date = move-out date`; mark the request `approved` with `decided_by/at`; perform the chosen invoice actions in one transaction.
+2. **Preview the remaining scheduled invoices** between the move-out date and the ORIGINAL
+   `end_date`, computed with the SAME helpers the scheduler uses (`advanceInvoiceDate`,
+   `computeRentInvoiceAmount`, `resolveLeaseValues`) so dates/amounts/proration match exactly what
+   would have been billed.
+3. Staff **tick which to issue** (default: all) and may **edit each amount** (the negotiated part).
+4. **Issue** the ticked invoices against the lease, tagged in the note as an early-termination push.
+5. **Then** set `leasing.end_date = move-out date`; mark any open request `approved` (+`decided_by/at`).
+6. Unpaid afterwards → **write off** (Project C). Deposit → existing separate flow.
 
-**Worked example (today Aug 5; paid through Aug 31; end_date Aug 31; move out Aug 5):**
-- Reconciliation shows: paid ahead ~26 days (HK$X); no outstanding; no future invoices.
-- Only decision offered: overpayment → Refund / Credit / Keep.
-- Apply → `end_date = Aug 5`, unit frees up, invoicing stops. Nothing auto-issued.
+⚠️ **Order is critical.** The scheduler stops generating at `end_date`
+(`scheduler.js`: `if (lease.end_date && nextDueDate > new Date(lease.end_date)) break;`), so the
+invoices MUST be generated while `end_date` is still the original, and only then shortened. Reverse
+the order and nothing generates. All of it in one transaction.
 
-**Contrast (paid only through Jul 31; move out Aug 5):** reconciliation shows an Aug 1–5 gap + any unpaid invoices → offers a final prorated invoice (Aug 1–5) and keep/write-off/void for the rest.
+Reuse note: generation is idempotent per `(leasing_id, due_on)` in the scheduler; the push must keep
+that guarantee so a retry can't double-bill.
+
+**Worked example (today Aug 5; paid through Aug 31; lease ends Oct 31; moves out Aug 5):**
+- Sep/Oct invoices do NOT exist yet (the scheduler only generates up to today), so the preview
+  offers **Sep 1: HK$X** and **Oct 1: HK$X**.
+- Staff tick both (or edit/untick per the negotiation) → issued with due dates Sep 1 / Oct 1.
+- `end_date` → Aug 5: the unit frees up immediately and can be re-let; the two invoices stand as
+  outstanding for that tenant.
+
+**Simple case (lease also ended Aug 31, paid to Aug 31, leaves Aug 5):** nothing remains to push —
+the preview is empty, `end_date` → Aug 5, and the already-paid August rent is simply kept (no refund).
 
 ---
 
@@ -122,6 +142,15 @@ No master-schema changes.
 
 ## Open questions
 
-1. **Overpayment "credit"** — refund is clear (deposit-refund-style outflow). For "convert to credit", do we use `leasing.credits`/`utility_credit`, or just leave the paid invoices as-is and note it? (Lean: Keep/Refund for v1; credit later.)
-2. **Prorated final invoice** — day-based proration of the monthly rent, or a manual amount staff type? (Lean: prefill day-based, staff can edit.)
-3. **Permissions** — reuse `LANDLORD/ACCOUNTING_CREATE` for write-offs and `LANDLORD/LEASING_*` for move-outs? (Lean: yes.)
+1. **Permissions** — reuse `LANDLORD/ACCOUNTING_CREATE` for write-offs and `LANDLORD/LEASING_*` for move-outs? (Lean: yes.)
+
+Resolved during brainstorming (2026-08-05): amount owed = negotiated (editable, never auto-decided);
+no re-let mitigation (they owe regardless) → no credit-back and no `moved_out_date` field; billing =
+push the remaining monthly invoices; pushed invoices keep their original due dates; deposit stays a
+separate manual step; **a partial period at move-out bills the FULL scheduled month** (they owe the
+term regardless — NO proration to the move-out date; staff can still edit the amount down).
+
+⚠️ Implementation note for the full-month rule: the scheduler's `computeRentInvoiceAmount` PRORATES
+the final period against `leaseEnd`. The move-out push must therefore compute amounts against the
+ORIGINAL `end_date` (not the new move-out date) so each pushed invoice is a full scheduled month —
+another reason the push must run before `end_date` is shortened.
