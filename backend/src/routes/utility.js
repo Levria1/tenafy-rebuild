@@ -5,6 +5,29 @@ const { generateInvoiceCode } = require('../utils/sequenceCode');
 
 const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
+// Format a billing period for an invoice note as "May 9 - July 7, 2026" (year
+// shown once when both dates share it). Accepts a Date or a 'YYYY-MM-DD…' string.
+// For a Date it reads WALL-CLOCK parts (local getters) — mysql2 returns a DATE
+// column as a local-midnight Date, so this preserves the stored day on any server
+// TZ (same convention as dateToWallClock elsewhere). Avoids the raw Date.toString()
+// ("Sat May 09 2026 00:00:00 GMT+0000 (Coordinated Universal Time)") that
+// template-literal interpolation produced before.
+const PERIOD_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+function fmtPeriod(start, end) {
+  const parse = (v) => {
+    if (v == null || v === '') return null;
+    if (v instanceof Date && !isNaN(v)) return { y: v.getFullYear(), m: v.getMonth(), d: v.getDate() };
+    const [y, m, d] = String(v).slice(0, 10).split('-').map(Number);
+    if (!y || !m || !d) return null;
+    return { y, m: m - 1, d };
+  };
+  const a = parse(start), b = parse(end);
+  if (!a || !b) return `${start ?? ''} to ${end ?? ''}`.trim(); // fallback: raw
+  const md = (x) => `${PERIOD_MONTHS[x.m]} ${x.d}`;
+  return a.y === b.y ? `${md(a)} - ${md(b)}, ${b.y}` : `${md(a)}, ${a.y} - ${md(b)}, ${b.y}`;
+}
+
 // ─── GROUPS ──────────────────────────────────────────────────
 
 // GET /api/utility/groups
@@ -1076,7 +1099,7 @@ router.post('/bill/:id/generate-invoices', authenticate, async (req, res) => {
       const note = `Utility charge: ${line.kw_used} kW × $${Number(bill.rate_per_kw).toFixed(4)}/kW = $${Number(line.gross_amount).toFixed(2)}` +
         (Number(line.prorated_credit) > 0 ? ` | Credit: -$${Number(line.prorated_credit).toFixed(2)}` : '') +
         ` | Meter: ${line.meter_number || 'N/A'}` +
-        ` | Period: ${bill.period_start} to ${bill.period_end}`;
+        ` | Period: ${fmtPeriod(bill.period_start, bill.period_end)}`;
 
       await req.pool.execute(
         `INSERT INTO invoice (id, org_id, invoice_code, property_id, unit_id, leasing_id, tenant_id,
