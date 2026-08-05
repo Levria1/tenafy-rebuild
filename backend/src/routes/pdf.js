@@ -419,12 +419,14 @@ router.get('/receipt/:paymentId', authenticate, async (req, res) => {
     const [lines] = await req.pool.execute(
       `SELECT al.amount, al.invoice_code,
               i.id AS invoice_id, i.amount AS invoice_amount, i.status AS invoice_status, i.note AS invoice_note,
+              cs.name AS invoice_category,
               u.name AS unit_name, u.account_name AS unit_account_name,
               p.display_name AS property_name, p.street_address AS property_address,
               p.city AS property_city, p.state AS property_state,
               p.currency AS property_currency
        FROM accounting_line al
        LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
+       LEFT JOIN category_setting cs ON cs.id = i.category
        LEFT JOIN unit u ON i.unit_id = u.id
        LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
        WHERE al.accounting_id = ? AND al.deleted_at IS NULL
@@ -544,16 +546,26 @@ router.get('/receipt/:paymentId', authenticate, async (req, res) => {
 
     // One row per line item (usually 1, but could be multiple if payment covers multiple invoices)
     const displayLines = lines.length > 0 ? lines : [{ amount: paymentAmount, invoice_code: pmt.invoice_code, invoice_note: null }];
+    const descW = CW * 0.5 - 10;
     displayLines.forEach((line, idx) => {
+      // Per-line description: prefer THIS line's invoice note. Only a single-line
+      // receipt falls back to the payment's (combined) note — using pmt.payment_note
+      // for every line duplicated the whole combined note on each row.
+      const desc = (displayLines.length > 1
+        ? (line.invoice_note || line.invoice_category || 'Payment')
+        : (pmt.payment_note || line.invoice_note || line.invoice_category || 'Payment'));
+      // Row height must fit the WRAPPED description — a long note overflowed the
+      // fixed 28px row and overlapped the next row / the totals block.
+      const descH = doc.fontSize(9).font('Helvetica').heightOfString(desc, { width: descW });
+      const rowH = Math.max(28, descH + 14);
       const bg = idx % 2 === 0 ? '#ffffff' : '#fafafa';
-      doc.rect(M, y, CW, 28).fill(bg);
-      const desc = pmt.payment_note || line.invoice_note || 'Payment';
+      doc.rect(M, y, CW, rowH).fill(bg);
       doc.fillColor('#333333').fontSize(9).font('Helvetica')
-         .text(desc, M + 10, y + 8, { width: CW * 0.5 - 10 })
+         .text(desc, M + 10, y + 8, { width: descW })
          .text(line.invoice_code || '-', M + CW * 0.55, y + 8)
          .font('Helvetica-Bold')
          .text(fmtCurr(line.amount), M + CW - 80, y + 8, { width: 70, align: 'right' });
-      y += 28;
+      y += rowH;
     });
 
     doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
@@ -634,11 +646,13 @@ async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
   const [lines] = await pool.execute(
     `SELECT al.amount, al.invoice_code,
             i.id AS invoice_id, i.amount AS invoice_amount, i.note AS invoice_note,
+            cs.name AS invoice_category,
             u.name AS unit_name, u.account_name AS unit_account_name,
             p.display_name AS property_name, p.street_address AS property_address,
             p.city AS property_city, p.state AS property_state, p.currency AS property_currency
      FROM accounting_line al
      LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
+     LEFT JOIN category_setting cs ON cs.id = i.category
      LEFT JOIN unit u ON i.unit_id = u.id
      LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
      WHERE al.accounting_id = ? AND al.deleted_at IS NULL ORDER BY al.id ASC`,
@@ -734,14 +748,22 @@ async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
        .text('AMOUNT', M + CW - 80, y + 6, { width: 70, align: 'right' });
     y += 22;
     const displayLines = lines.length > 0 ? lines : [{ amount: paymentAmount, invoice_code: pmt.invoice_code, invoice_note: null }];
+    const descW = CW * 0.5 - 10;
     displayLines.forEach((line, idx) => {
+      // Per-line description (see /receipt route): each line uses its OWN invoice
+      // note; only single-line receipts fall back to the payment's combined note.
+      const desc = (displayLines.length > 1
+        ? (line.invoice_note || line.invoice_category || 'Payment')
+        : (pmt.payment_note || line.invoice_note || line.invoice_category || 'Payment'));
+      // Dynamic row height so a long wrapped note doesn't overlap the next row.
+      const descH = doc.fontSize(9).font('Helvetica').heightOfString(desc, { width: descW });
+      const rowH = Math.max(28, descH + 14);
       const bg = idx % 2 === 0 ? '#ffffff' : '#fafafa';
-      doc.rect(M, y, CW, 28).fill(bg);
-      const desc = pmt.payment_note || line.invoice_note || 'Payment';
-      doc.fillColor('#333333').fontSize(9).font('Helvetica').text(desc, M + 10, y + 8, { width: CW * 0.5 - 10 })
+      doc.rect(M, y, CW, rowH).fill(bg);
+      doc.fillColor('#333333').fontSize(9).font('Helvetica').text(desc, M + 10, y + 8, { width: descW })
          .text(line.invoice_code || '-', M + CW * 0.55, y + 8)
          .font('Helvetica-Bold').text(fmtCurr(line.amount), M + CW - 80, y + 8, { width: 70, align: 'right' });
-      y += 28;
+      y += rowH;
     });
     doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
     y += 15;
