@@ -343,6 +343,11 @@ function sampleContext() {
       lease_no: 'LEA3168',
       start_date: '2026-09-01',
       end_date: '2027-08-31',
+      // Set so a template author can SEE the difference between the stamped
+      // Term of Tenancy ({{STAMP_END_DATE}} → 2028-08-31) and the real term
+      // ({{LEASE_END}} → 2027-08-31). With this null the two printed the same
+      // date and the distinction was invisible in the preview.
+      stamp_end_date: '2028-08-31',
       price: 25000, amount: 25000,
       deposit: 50000,
       utility_credit: 0,

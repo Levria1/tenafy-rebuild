@@ -29,7 +29,7 @@ import {
   ArrowLeftOutlined, SendOutlined, EyeOutlined, PlusOutlined, DeleteOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../../../../components/Layout';
-import { leasing, leaseTemplate, signature } from '../../../../lib/api';
+import { leasing, leaseTemplate, signature, pdf } from '../../../../lib/api';
 
 export default function ReviewAndSendPage() {
   const params = useParams();
@@ -104,12 +104,12 @@ export default function ReviewAndSendPage() {
     if (!selectedTemplateId) return;
     setPreviewLoading(true);
     try {
-      // Render real lease + template via the renderer's preview endpoint. We
-      // don't have a dedicated "real lease render" endpoint yet — but we DO
-      // get a render-on-create as a side effect of POST /api/signature/request.
-      // For preview-before-send, use the template's sample-data preview as a
-      // close approximation. (TODO: dedicated render-lease-with-template endpoint.)
-      const r = await leaseTemplate.previewSaved(selectedTemplateId);
+      // THIS lease's real data rendered against the chosen template. Previously
+      // this called leaseTemplate.previewSaved(), which renders the template's
+      // SAMPLE data — so the preview always showed "Alice Wong / 1 September 2026"
+      // and you could never see the real dates (notably the stamped Term of
+      // Tenancy) before sending the lease out for signature.
+      const r = await pdf.fetchLeaseWithTemplate(leaseId, selectedTemplateId);
       const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
       previewUrlRef.current = url;
@@ -203,7 +203,10 @@ export default function ReviewAndSendPage() {
                     onChange={(v) => setSelectedTemplateId(v)}
                     options={templates.map(t => ({
                       value: String(t.id),
-                      label: <span>{t.name} {t.is_default && <Tag color="gold">Default</Tag>}</span>,
+                      // Number(): is_default arrives as 0/1, and `0 && <Tag/>` renders
+                      // the NUMBER 0 in JSX — that's the stray "0" that appeared after
+                      // every non-default template name ("...Contract Template 0").
+                      label: <span>{t.name} {Number(t.is_default) === 1 && <Tag color="gold">Default</Tag>}</span>,
                     }))}
                   />
                   <Button size="small" icon={<EyeOutlined />} onClick={refreshPreview} loading={previewLoading}>
@@ -316,7 +319,7 @@ export default function ReviewAndSendPage() {
               )}
             </Card>
             <div style={{ fontSize: 11, color: '#888', marginTop: 8 }}>
-              Note: the preview currently shows sample data. The actual lease data will be filled in when the signer opens their link.
+              This preview shows this lease&apos;s real data. Signatures are added when each signer opens their link.
             </div>
           </Col>
         </Row>

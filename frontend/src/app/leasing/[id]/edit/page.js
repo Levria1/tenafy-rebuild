@@ -522,7 +522,12 @@ export default function LeasingEditPage() {
                 Notice the tenant must give to renew.
               </div>
             </Col>
-            <Col span={6}>
+          </Row>
+          {/* Government Stamp End Date — its own row BELOW Notice Period. Beside it,
+              a checkbox + date + two lines of helper text next to a bare number input
+              read as jumbled. */}
+          <Row gutter={16} style={{ marginTop: 16 }}>
+            <Col span={12}>
               <FLabel>Government Stamp End Date</FLabel>
               <Checkbox
                 checked={stampEnabled}
@@ -542,7 +547,7 @@ export default function LeasingEditPage() {
                 <span style={{ fontSize: 13 }}>Stamp for a longer term</span>
               </Checkbox>
               <Form.Item name="stamp_end_date" noStyle>
-                <DatePicker style={{ width: '100%', marginTop: 6 }} format="YYYY-MM-DD" disabled={!stampEnabled} />
+                <DatePicker style={{ width: 200, marginTop: 6, display: 'block' }} format="YYYY-MM-DD" disabled={!stampEnabled} />
               </Form.Item>
               <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
                 {stampEnabled

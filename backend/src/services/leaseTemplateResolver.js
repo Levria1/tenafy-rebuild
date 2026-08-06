@@ -50,24 +50,35 @@ async function loadResolutionData(pool, orgId) {
 
 // Pure, in-memory resolution against pre-loaded data. Returns a template id
 // string, or null when nothing resolves.
-function resolveWithData(lease, data) {
-  if (lease.template_id) {
-    const own = data.templates.find(t => String(t.id) === String(lease.template_id));
-    if (own) return String(own.id);
-  }
+// `requestedTemplateId` (optional) lets a caller preview the real lease against a
+// template the user is choosing in the UI — but it is only honoured when that
+// template is genuinely eligible for the lease's property, so a hand-edited query
+// param can't render a lease with another property's contract.
+function resolveWithData(lease, data, requestedTemplateId = null) {
   const allowed = data.allowByProperty.get(String(lease.property_id)) || [];
   const candidates = allowed.length
     ? data.templates.filter(t => allowed.includes(String(t.id)))
     : data.templates;
+
+  if (requestedTemplateId) {
+    const req = candidates.find(t => String(t.id) === String(requestedTemplateId));
+    if (req) return String(req.id);
+    return null;   // asked for something not permitted here — don't silently substitute
+  }
+
+  if (lease.template_id) {
+    const own = data.templates.find(t => String(t.id) === String(lease.template_id));
+    if (own) return String(own.id);
+  }
   const chosen = candidates.find(t => t.is_default) || candidates[0];
   return chosen ? String(chosen.id) : null;
 }
 
 // Convenience for single-lease callers (pdf.js, lease detail GET): loads data
 // then resolves. Two queries.
-async function resolveLeaseTemplateId(pool, orgId, lease) {
+async function resolveLeaseTemplateId(pool, orgId, lease, requestedTemplateId = null) {
   const data = await loadResolutionData(pool, orgId);
-  return resolveWithData(lease, data);
+  return resolveWithData(lease, data, requestedTemplateId);
 }
 
 // Derive the display status shown next to the "View Lease" button and in the

@@ -472,6 +472,9 @@ export const pdf = {
   // Fetch as blob (for download with custom filename)
   fetchInvoice: (id) => api.get(`/api/pdf/invoice/${id}`, { responseType: 'blob' }),
   fetchLease: (id) => api.get(`/api/pdf/lease/${id}`, { responseType: 'blob' }),
+  // Real lease data rendered against a specific template (e-sign review preview).
+  fetchLeaseWithTemplate: (id, templateId) =>
+    api.get(`/api/pdf/lease/${id}`, { params: { template_id: templateId }, responseType: 'blob' }),
   fetchReceipt: (paymentId) => api.get(`/api/pdf/receipt/${paymentId}`, { responseType: 'blob' }),
 };
 

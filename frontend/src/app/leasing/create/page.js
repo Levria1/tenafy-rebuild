@@ -562,34 +562,38 @@ export default function LeaseCreatePage() {
               Notice the tenant must give to renew.
             </div>
           </div>
-          <div style={{ width: 200 }}>
-            <FLabel>GOVERNMENT STAMP END DATE</FLabel>
-            <Checkbox
-              checked={stampEnabled}
-              onChange={(e) => {
-                const on = e.target.checked;
-                setStampEnabled(on);
-                if (on) { setStampUserEdited(false); prefillStampEnd(undefined, true); }
-                else { form.setFieldsValue({ stamp_end_date: null }); setStampUserEdited(false); }
-              }}
-            >
-              <span style={{ fontSize: 13 }}>Stamp for a longer term</span>
-            </Checkbox>
-            <Form.Item name="stamp_end_date" noStyle>
-              <DatePicker
-                style={{ width: 200, marginTop: 6 }}
-                format="YYYY-MM-DD"
-                disabled={!stampEnabled}
-                // Clearing the field is a request to go back to the default, so
-                // un-stick the guard and let the next start-date change prefill again.
-                onChange={(d) => setStampUserEdited(!!d)}
-              />
-            </Form.Item>
-            <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
-              {stampEnabled
-                ? 'The contract’s Term of Tenancy prints THIS date (2 years − 1 day by default). Paperwork only — invoicing, vacancy and the Minimum Term still use the real lease end.'
-                : 'Off — Term of Tenancy prints the real lease end. Tick only when the government requires a longer stamped term.'}
-            </div>
+        </div>
+
+        {/* Government Stamp End Date — on its OWN row below Notice Period. Sitting
+            beside it made the row read as jumbled: a checkbox + date + two lines of
+            helper text next to a bare number input. */}
+        <div style={{ marginTop: 16, maxWidth: 560 }}>
+          <FLabel>GOVERNMENT STAMP END DATE</FLabel>
+          <Checkbox
+            checked={stampEnabled}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setStampEnabled(on);
+              if (on) { setStampUserEdited(false); prefillStampEnd(undefined, true); }
+              else { form.setFieldsValue({ stamp_end_date: null }); setStampUserEdited(false); }
+            }}
+          >
+            <span style={{ fontSize: 13 }}>Stamp for a longer term</span>
+          </Checkbox>
+          <Form.Item name="stamp_end_date" noStyle>
+            <DatePicker
+              style={{ width: 200, marginTop: 6, display: 'block' }}
+              format="YYYY-MM-DD"
+              disabled={!stampEnabled}
+              // Clearing the field is a request to go back to the default, so
+              // un-stick the guard and let the next start-date change prefill again.
+              onChange={(d) => setStampUserEdited(!!d)}
+            />
+          </Form.Item>
+          <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+            {stampEnabled
+              ? 'The contract’s Term of Tenancy prints THIS date (2 years − 1 day by default). Paperwork only — invoicing, vacancy and the Minimum Term still use the real lease end.'
+              : 'Off — Term of Tenancy prints the real lease end. Tick only when the government requires a longer stamped term.'}
           </div>
         </div>
 

@@ -286,8 +286,13 @@ router.get('/lease/:id', authenticate, async (req, res) => {
     // this is a read-only, on-the-fly render (nothing stored, lease not stamped).
     // Falls through to the hand-drawn Basic PDF below when no template resolves
     // or the HTML→PDF render fails, so this endpoint never errors out.
+    // `?template_id=` lets the e-sign review screen preview THIS lease against the
+    // template being chosen in its dropdown (it previously rendered the template's
+    // sample data, so the real dates — including the stamped Term of Tenancy —
+    // were never visible before sending). Validated against the property allowlist.
+    const requestedTemplateId = req.query.template_id || null;
     try {
-      const templateId = await resolveLeaseTemplateId(req.pool, orgId, lease);
+      const templateId = await resolveLeaseTemplateId(req.pool, orgId, lease, requestedTemplateId);
       if (templateId) {
         const { pdfBuffer } = await renderFromTemplate({
           pool: req.pool, orgId, leaseId: id, templateId, stamp: false,
@@ -295,6 +300,15 @@ router.get('/lease/:id', authenticate, async (req, res) => {
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="lease-${id}.pdf"`);
         return res.end(pdfBuffer);
+      }
+      // An explicitly requested template that isn't permitted for this property must
+      // NOT quietly become the generic Basic PDF — that reads as a successful render
+      // of the wrong document. Only the no-request path falls through.
+      if (requestedTemplateId) {
+        return res.status(400).json({
+          code: 400,
+          message: 'That template is not available for this property',
+        });
       }
     } catch (err) {
       console.error('View Lease template render failed — falling back to Basic PDF:', err.message);
