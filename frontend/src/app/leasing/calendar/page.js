@@ -233,11 +233,16 @@ function CalendarInner() {
           return (
             <div key={l.id} style={{ marginBottom: i < cellInfo.leases.length - 1 ? 8 : 0, borderBottom: i < cellInfo.leases.length - 1 ? '1px solid rgba(255,255,255,0.2)' : 'none', paddingBottom: i < cellInfo.leases.length - 1 ? 8 : 0 }}>
               <div style={{ fontWeight: 600 }}>
+                {/* A DRAFT lease (lease_state 'pending') reads as *UNCONFIRMED* —
+                    nothing about it is agreed yet. A lease that is out for
+                    e-signature reads as *PENDING* — it's agreed and awaiting ink.
+                    The backend's `unconfirmed` flag covers BOTH cases, so the
+                    draft check has to come first. */}
                 {l.lease_state === 'pending' && (
-                  <span style={{ color: '#ffd666', fontWeight: 700, marginRight: 4 }}>*PENDING*</span>
+                  <span style={{ color: '#ffd666', fontWeight: 700, marginRight: 4 }}>*UNCONFIRMED*</span>
                 )}
                 {l.lease_state !== 'pending' && l.unconfirmed && (
-                  <span style={{ color: '#ffd666', fontWeight: 700, marginRight: 4 }}>*UNCONFIRMED*</span>
+                  <span style={{ color: '#ffd666', fontWeight: 700, marginRight: 4 }}>*PENDING*</span>
                 )}
                 {l.deposit_pending && (
                   <span style={{ color: '#ff7875', fontWeight: 700, marginRight: 4 }}>*DEPOSIT DUE*</span>
@@ -278,9 +283,9 @@ function CalendarInner() {
       if (days > bestDays) { bestDays = days; best = l; }
     }
     const ct = CONTRACT_TYPE_MAP[best.contract_type];
-    // Prefix tenant name with *PENDING* when the most-overlapping lease in
-    // this cell is in pending state — matches the in-cell expanded view.
-    const prefix = best.lease_state === 'pending' ? '*PENDING* ' : '';
+    // Prefix the tenant name when the most-overlapping lease in this cell is a
+    // draft — matches the tooltip's wording.
+    const prefix = best.lease_state === 'pending' ? '*UNCONFIRMED* ' : '';
     const text = ct ? `${prefix}${best.tenant_name} (${ct})` : `${prefix}${best.tenant_name}`;
     return { text, leaseId: best.id || null };
   };
@@ -358,11 +363,11 @@ function CalendarInner() {
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#52c41a30', border: '1px solid #52c41a', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Booked</span>
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#fa8c1640', border: '1px solid #fa8c16', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Gap Between Leases</span>
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#ff4d4f30', border: '1px solid #ff4d4f', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Expiring (No Next Lease)</span>
-        <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#faad1440', border: '1px solid #faad14', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Pending Lease</span>
+        <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#faad1440', border: '1px solid #faad14', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Unconfirmed Lease</span>
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#fff', border: '1px solid #d9d9d9', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Vacant</span>
       </div>
       <div style={{ marginBottom: 12, fontSize: 12, color: '#666' }}>
-        Hover a cell for details. Markers: <span style={{ color: '#d48806', fontWeight: 700 }}>*PENDING*</span> draft lease, not yet confirmed · <span style={{ color: '#d48806', fontWeight: 700 }}>*UNCONFIRMED*</span> awaiting e-signature · <span style={{ color: '#ff4d4f', fontWeight: 700 }}>*DEPOSIT DUE*</span> deposit invoice unpaid
+        Hover a cell for details. Markers: <span style={{ color: '#d48806', fontWeight: 700 }}>*UNCONFIRMED*</span> draft lease, not yet confirmed · <span style={{ color: '#d48806', fontWeight: 700 }}>*PENDING*</span> awaiting e-signature · <span style={{ color: '#ff4d4f', fontWeight: 700 }}>*DEPOSIT DUE*</span> deposit invoice unpaid
       </div>
 
       {loading ? (

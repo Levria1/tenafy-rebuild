@@ -34,6 +34,7 @@ export default function LeasingDetailPage() {
   const [notesSaving, setNotesSaving] = useState(false);
   const [revisions, setRevisions] = useState([]);
   const [resendingSig, setResendingSig] = useState(false);
+  const [cancellingSig, setCancellingSig] = useState(false);
   const [sendingCheckin, setSendingCheckin] = useState(false);
   const [moveOutOpen, setMoveOutOpen] = useState(false);
   const [moveOutDate, setMoveOutDate] = useState(dayjs());
@@ -102,6 +103,39 @@ export default function LeasingDetailPage() {
       message.error(err.response?.data?.message || 'Failed to resend');
     } finally {
       setResendingSig(false);
+    }
+  };
+
+  // Cancel the outstanding e-signature request. The common reason is that the
+  // tenant signed a PAPER copy instead, leaving the lease stuck on "Awaiting
+  // signature" forever with no way out — the backend has supported cancelling
+  // all along (POST /api/signature/request/:id/cancel) but nothing called it.
+  // Cancelling voids the signer's link and returns signature_status to 'none'.
+  const handleCancelSignature = async () => {
+    setCancellingSig(true);
+    try {
+      const listRes = await signature.listForLease(leaseId);
+      const requests = listRes.data?.data || [];
+      // Anything still open: created(0), sent(1) or viewed(2). Never a signed one.
+      const open = requests.filter(r => [0, 1, 2].includes(Number(r.status)));
+      if (open.length === 0) {
+        message.info('No open signing request to cancel.');
+        return;
+      }
+      for (const r of open) {
+        const res = await signature.cancelRequest(r.id);
+        if (res.data?.code !== 200) throw new Error(res.data?.message || 'Failed to cancel');
+      }
+      message.success(
+        open.length > 1
+          ? `Cancelled ${open.length} signing requests. The signer links no longer work.`
+          : 'Signing request cancelled. The signer link no longer works.'
+      );
+      await loadLease();
+    } catch (err) {
+      message.error(err?.response?.data?.message || err.message || 'Failed to cancel the signing request');
+    } finally {
+      setCancellingSig(false);
     }
   };
 
@@ -933,6 +967,17 @@ export default function LeasingDetailPage() {
                   <Button loading={resendingSig} onClick={handleResendSignature}>
                     Resend to Signer
                   </Button>
+                )}
+                {(lease.signature_status === 'pending' || lease.signature_status === 'declined') && (
+                  <Popconfirm
+                    title="Cancel the e-signature request?"
+                    description="Use this when the lease was signed on paper instead. The signer's link stops working and the lease no longer shows as awaiting signature. You can always send a new request later."
+                    okText="Cancel request"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={handleCancelSignature}
+                  >
+                    <Button danger loading={cancellingSig}>Cancel Request</Button>
+                  </Popconfirm>
                 )}
                 <Button onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}>
                   {lease.signature_status === 'pending' ? 'Manage Request' : 'Send Again'}
