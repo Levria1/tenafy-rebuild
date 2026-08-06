@@ -20,7 +20,9 @@ function CalendarInner() {
   const [allUnits, setAllUnits] = useState([]);
   const [filteredUnits, setFilteredUnits] = useState([]);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState(null);
+  const [statusFilter, setStatusFilter] = useState(null);        // occupancy
+  const [renewalFilter, setRenewalFilter] = useState(null);      // contract_type (MR/MTM/NR/UC)
+  const [leaseStatusFilter, setLeaseStatusFilter] = useState(null); // pending / unconfirmed / deposit_due
   const [dateRange, setDateRange] = useState([
     dayjs().subtract(1, 'month').startOf('month'),
     dayjs().add(6, 'month').endOf('month'),
@@ -195,11 +197,33 @@ function CalendarInner() {
     };
   };
 
-  // Filter data by unit status
+  // Does any lease on this unit (within the shown window) match the lease-status
+  // filter? Mirrors the tooltip markers exactly, so what you filter on is what
+  // you see: a DRAFT lease is 'unconfirmed', a lease out for e-signature is
+  // 'pending' (the API's `unconfirmed` flag covers both, hence the draft test).
+  const matchesLeaseStatus = (unit, want) => {
+    return (unit.leases || []).some(l => {
+      const isDraft = l.lease_state === 'pending';
+      if (want === 'unconfirmed') return isDraft;
+      if (want === 'pending') return !isDraft && !!l.unconfirmed;
+      if (want === 'deposit_due') return !!l.deposit_pending;
+      return false;
+    });
+  };
+
+  const matchesRenewal = (unit, want) => {
+    return (unit.leases || []).some(l => Number(l.contract_type) === Number(want));
+  };
+
+  // Occupancy + renewal status + lease status all narrow together (AND).
   const filteredData = useMemo(() => {
-    if (!statusFilter) return data;
+    if (!statusFilter && !renewalFilter && !leaseStatusFilter) return data;
     return data.map(prop => {
       const units = prop.units.filter(unit => {
+        if (renewalFilter && !matchesRenewal(unit, renewalFilter)) return false;
+        if (leaseStatusFilter && !matchesLeaseStatus(unit, leaseStatusFilter)) return false;
+        if (!statusFilter) return true;
+
         if (statusFilter === 'vacant' || statusFilter === 'occupied') {
           const refDate = dateRange[0];
           const hasLeaseOnDate = (unit.leases || []).some(l => {
@@ -218,7 +242,7 @@ function CalendarInner() {
       });
       return units.length > 0 ? { ...prop, units } : null;
     }).filter(Boolean);
-  }, [data, statusFilter, dateRange, months]);
+  }, [data, statusFilter, renewalFilter, leaseStatusFilter, dateRange, months]);
 
   const renderTooltip = (cellInfo, unit, month) => {
     if (cellInfo.leases.length === 0) return 'Vacant';
@@ -336,18 +360,48 @@ function CalendarInner() {
               <Select.Option key={u.id} value={u.id}>{u.name}{u.property_name ? ` (${u.property_name})` : ''}</Select.Option>
             ))}
           </Select>
+          {/* Occupancy — what the cell colours mean. Was labelled "All Statuses",
+              which read as if it filtered renewal status. */}
           <Select
-            placeholder="All Statuses"
+            placeholder="All Occupancy"
             allowClear
             value={statusFilter}
             onChange={setStatusFilter}
-            style={{ width: 180 }}
+            style={{ width: 160 }}
           >
             <Select.Option value="occupied">Occupied</Select.Option>
             <Select.Option value="vacant">Vacant</Select.Option>
             <Select.Option value="booked">Booked</Select.Option>
             <Select.Option value="gap">Gap</Select.Option>
             <Select.Option value="expiring">Expiring</Select.Option>
+          </Select>
+          {/* Renewal intent — the MR/MTM/NR/UC already shown in its own column. */}
+          <Select
+            placeholder="All Renewal Status"
+            allowClear
+            value={renewalFilter}
+            onChange={setRenewalFilter}
+            style={{ width: 180 }}
+          >
+            {/* "UC" is renewal-intent Unconfirmed — spelled out so it can't be
+                confused with the Lease Status "Unconfirmed (draft)" beside it. */}
+            {Object.entries(CONTRACT_TYPE_LABEL).map(([value, label]) => (
+              <Select.Option key={value} value={Number(value)}>
+                {CONTRACT_TYPE_MAP[value]} ({Number(value) === 4 ? 'Renewal unconfirmed' : label})
+              </Select.Option>
+            ))}
+          </Select>
+          {/* Lease status — the tooltip markers, now filterable. */}
+          <Select
+            placeholder="Lease Status"
+            allowClear
+            value={leaseStatusFilter}
+            onChange={setLeaseStatusFilter}
+            style={{ width: 190 }}
+          >
+            <Select.Option value="pending">Pending (awaiting e-sign)</Select.Option>
+            <Select.Option value="unconfirmed">Unconfirmed (draft)</Select.Option>
+            <Select.Option value="deposit_due">Deposit Due</Select.Option>
           </Select>
           <Input
             placeholder="Search tenant..."
