@@ -167,7 +167,10 @@ function CalendarInner() {
     } else if (expiringNoNext) {
       color = '#ff4d4f30'; // red — expiring, no next lease
     } else if (hasGap) {
-      color = '#fa8c1640'; // orange — gap between leases (yellow reserved for Pending leases)
+      // Light blue — gap between leases. Was orange (#fa8c16), which sat one hue
+      // away from the unconfirmed-lease yellow (#faad14) and was hard to tell
+      // apart in a dense grid. Blue is unambiguous against green/yellow/red.
+      color = '#1677ff30';
     } else {
       // Check if fully booked for the entire month
       const coversFullMonth = overlapping.some(l => {
@@ -361,7 +364,7 @@ function CalendarInner() {
       {/* Legend */}
       <div style={{ display: 'flex', gap: 20, marginBottom: 12, fontSize: 12 }}>
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#52c41a30', border: '1px solid #52c41a', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Booked</span>
-        <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#fa8c1640', border: '1px solid #fa8c16', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Gap Between Leases</span>
+        <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#1677ff30', border: '1px solid #1677ff', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Gap Between Leases</span>
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#ff4d4f30', border: '1px solid #ff4d4f', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Expiring (No Next Lease)</span>
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#faad1440', border: '1px solid #faad14', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Unconfirmed Lease</span>
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#fff', border: '1px solid #d9d9d9', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Vacant</span>
