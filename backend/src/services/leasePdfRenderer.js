@@ -77,27 +77,40 @@ function wrapBody(bodyHtml) {
        page.pdf({ margin }) option — an @page margin:0 here silently zeroed
        the 50px/60px page margins and rendered every lease edge-to-edge.
        Page size + margins are owned solely by the page.pdf() options below. */
+    /* ── WYSIWYG with the Quill editor ─────────────────────────────────────
+       These values MIRROR quill.snow.css, which is what the author sees while
+       editing:
+           .ql-editor                    { line-height: 1.42 }
+           .ql-editor p, ol, h1…h6       { margin: 0; padding: 0 }
+       Previously this stylesheet added a 0.7em bottom margin to EVERY paragraph
+       and used line-height 1.5. The editor has neither, so a block of one-line
+       paragraphs (Schedule I is ~15 of them) gained an extra ~7.7pt per row —
+       about an inch and a half of phantom space in that schedule alone, and a
+       whole document ~19% taller than what the author laid out. Blank-line
+       spacers were hit twice (1.2em min-height PLUS the 0.7em margin = 1.9em
+       against the editor's 1.42em).
+       Do NOT reintroduce paragraph margins here: spacing belongs to the author's
+       blank lines, not to the renderer. */
     html, body { margin: 0; padding: 0; }
     body {
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
       font-size: 11pt;
-      line-height: 1.5;
+      line-height: 1.42;
       color: #222;
     }
     /* Quill's default output classes — keep typography sensible */
-    h1, h2, h3 { color: #1a3c8f; margin-top: 1.2em; margin-bottom: 0.5em; }
+    h1, h2, h3 { color: #1a3c8f; margin: 0; padding: 0; }
     h1 { font-size: 18pt; }
     h2 { font-size: 14pt; }
     h3 { font-size: 12pt; }
-    p { margin: 0 0 0.7em 0; }
-    /* Empty paragraphs are used as blank-line spacers in templates. Without this
-       they have no content, so their margins "collapse through" and a run of them
-       renders as almost no space — which let stamped signatures (drawn upward from
-       their anchor line) overlap the text above. Give each empty paragraph a real
-       line's height so the author's blank lines actually reserve space (matches
-       the Quill editor's WYSIWYG). */
-    p:empty { min-height: 1.2em; }
-    ul, ol { margin: 0 0 0.7em 1.5em; padding: 0; }
+    p { margin: 0; padding: 0; }
+    /* Empty paragraphs are the templates' blank-line spacers. Without this they
+       have no content, so their margins "collapse through" and a run of them
+       renders as almost no space — which let stamped signatures (drawn upward
+       from their anchor line) overlap the text above. One empty paragraph must
+       equal exactly ONE editor line, hence 1.42em to match line-height above. */
+    p:empty { min-height: 1.42em; }
+    ul, ol { margin: 0 0 0 1.5em; padding: 0; }
     table { border-collapse: collapse; margin: 0.5em 0; }
     table td, table th { border: 1px solid #ccc; padding: 4px 8px; }
     .page-break { page-break-after: always; }
