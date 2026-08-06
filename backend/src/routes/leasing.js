@@ -440,6 +440,31 @@ router.get('/:id', authenticate, async (req, res) => {
     lease.additional_tenants = additionalTenants;
     lease.lease_status = computeLeaseStatus(lease);
 
+    // The recorded move-out, if any. Drives the detail page's "Move out" button
+    // becoming an EDIT (prefilled with the recorded date + notes, rather than
+    // blank — retyping the note from scratch was the only way to amend it) and
+    // the "Undo move-out" action. `original_end_date` is carried forward across
+    // re-records, so the latest row still holds the true original term.
+    try {
+      const [[mo]] = await req.pool.execute(
+        `SELECT DATE_FORMAT(m.requested_date, '%Y-%m-%d')    AS requested_date,
+                DATE_FORMAT(m.original_end_date, '%Y-%m-%d') AS original_end_date,
+                m.notes, m.reason
+           FROM lease_moveout_request m
+          WHERE m.org_id = ? AND m.leasing_id = ? AND m.status = 'approved'
+            AND m.deleted_at IS NULL
+          ORDER BY m.created_at DESC, m.id DESC
+          LIMIT 1`,
+        [orgId, id]
+      );
+      lease.moveout = mo
+        ? { ...mo, moved_out_early: isMovedOutEarly(mo.requested_date, mo.original_end_date) }
+        : null;
+    } catch (e) {
+      // lease_moveout_request absent on an un-migrated org DB — no move-out to show.
+      lease.moveout = null;
+    }
+
     // Per-property lease-template allowlist (drives the e-sign template
     // dropdown). Empty = property is unrestricted (any template allowed).
     try {
@@ -1440,6 +1465,28 @@ async function computeRemainingScheduledInvoices(pool, orgId, lease) {
   return out;
 }
 
+// The end date to measure un-issued rent against. Once a move-out is recorded,
+// leasing.end_date is ALREADY shortened — so measuring against it would report
+// "nothing owed" and the rent for the rest of the real term would be permanently
+// unreachable (the scheduler stops at end_date). That would make editing a
+// move-out useless for pushing invoices the first recording forgot. The earliest
+// snapshot holds the true original term.
+async function effectiveOriginalEndDate(conn, orgId, leaseId, currentEndDate) {
+  try {
+    const [[snap]] = await conn.execute(
+      `SELECT DATE_FORMAT(original_end_date, '%Y-%m-%d') AS original_end_date
+         FROM lease_moveout_request
+        WHERE leasing_id = ? AND org_id = ? AND status = 'approved'
+          AND deleted_at IS NULL AND original_end_date IS NOT NULL
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1`,
+      [leaseId, orgId]
+    );
+    if (snap && snap.original_end_date) return snap.original_end_date;
+  } catch (e) { /* table missing on an un-migrated org — fall back to the lease */ }
+  return calendarDate(currentEndDate);
+}
+
 // GET /api/leasing/:id/move-out/preview?move_out_date=YYYY-MM-DD
 // The rent invoices that would still be billed if the lease ran its ORIGINAL
 // term — i.e. what the tenant still owes after moving out early.
@@ -1457,13 +1504,16 @@ router.get('/:id/move-out/preview', authenticate, async (req, res) => {
     if (!lease) return res.status(404).json({ code: 404, message: 'Lease not found' });
 
     const moveOutDate = calendarDate(req.query.move_out_date) || null;
-    const invoices = await computeRemainingScheduledInvoices(req.pool, orgId, lease);
+    const originalEnd = await effectiveOriginalEndDate(req.pool, orgId, lease.id, lease.end_date);
+    const invoices = await computeRemainingScheduledInvoices(
+      req.pool, orgId, { ...lease, end_date: originalEnd }
+    );
     res.json({
       code: 200,
       data: {
         move_out_date: moveOutDate,
-        original_end_date: calendarDate(lease.end_date),
-        moved_out_early: isMovedOutEarly(moveOutDate, lease.end_date),
+        original_end_date: originalEnd,
+        moved_out_early: isMovedOutEarly(moveOutDate, originalEnd),
         invoices,
         total: invoices.reduce((s, r) => s + Number(r.amount || 0), 0),
       },
@@ -1563,10 +1613,14 @@ router.post('/:id/move-out', authenticate, async (req, res) => {
         currencyId = cur ? cur.id : null;
       }
       // NEVER trust the client's due dates: re-derive the schedule server-side
-      // (inside the transaction, against the still-original end_date) and accept
-      // only those due dates. Staff may override the AMOUNT — that's the
-      // negotiated part — but not invent arbitrary billing dates.
-      const allowed = await computeRemainingScheduledInvoices(conn, orgId, lease);
+      // (inside the transaction, against the ORIGINAL end_date) and accept only
+      // those due dates. Staff may override the AMOUNT — that's the negotiated
+      // part — but not invent arbitrary billing dates. `originalEndDate` already
+      // carries the earliest snapshot forward, so EDITING a move-out can still
+      // push rent the first recording left un-issued.
+      const allowed = await computeRemainingScheduledInvoices(
+        conn, orgId, { ...lease, end_date: originalEndDate }
+      );
       const allowedDates = new Set(allowed.map(r => r.due_on));
 
       for (const row of push_invoices) {
@@ -1622,6 +1676,101 @@ router.post('/:id/move-out', authenticate, async (req, res) => {
     try { await conn.rollback(); } catch { /* already rolled back */ }
     console.error('Lease move-out error:', error);
     res.status(500).json({ code: 500, message: 'Failed to record move-out' });
+  } finally {
+    conn.release();
+  }
+});
+
+// POST /api/leasing/:id/move-out/undo — reverse a recorded move-out.
+//
+// Restores leasing.end_date from the EARLIEST snapshot (the true original term —
+// a later re-record carries the same value forward, but reading the earliest is
+// the safe choice) and soft-deletes every approved move-out row for the lease, so
+// the calendar/vacancy markers and the "moved out early" badge clear.
+//
+// Invoices created by the move-out push are deliberately NOT removed: by the time
+// someone undoes, one may already be paid, and deleting a paid invoice would
+// corrupt the ledger. The count is returned so the UI can say what's left behind
+// — write them off or delete them individually if they shouldn't stand.
+router.post('/:id/move-out/undo', authenticate, async (req, res) => {
+  const conn = await req.pool.getConnection();
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+
+    await conn.beginTransaction();
+
+    const [[lease]] = await conn.execute(
+      `SELECT l.id, DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date
+         FROM leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+        WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL
+        LIMIT 1
+        FOR UPDATE`,
+      [id, orgId]
+    );
+    if (!lease) {
+      await conn.rollback();
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+
+    const [[earliest]] = await conn.execute(
+      `SELECT DATE_FORMAT(original_end_date, '%Y-%m-%d') AS original_end_date
+         FROM lease_moveout_request
+        WHERE leasing_id = ? AND org_id = ? AND status = 'approved' AND deleted_at IS NULL
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1`,
+      [id, orgId]
+    );
+    if (!earliest) {
+      await conn.rollback();
+      return res.status(400).json({ code: 400, message: 'No move-out is recorded for this lease' });
+    }
+
+    if (earliest.original_end_date) {
+      await conn.execute(
+        `UPDATE leasing l
+           JOIN unit u ON l.unit_id = u.id
+           JOIN property p ON u.property_id = p.id
+            SET l.end_date = ?
+          WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL`,
+        [earliest.original_end_date, id, orgId]
+      );
+    }
+
+    const [del] = await conn.execute(
+      `UPDATE lease_moveout_request
+          SET deleted_at = NOW()
+        WHERE leasing_id = ? AND org_id = ? AND status = 'approved' AND deleted_at IS NULL`,
+      [id, orgId]
+    );
+
+    // Pushed invoices carry this exact note (set by the move-out handler above).
+    const [[pushed]] = await conn.execute(
+      `SELECT COUNT(*) AS cnt FROM invoice
+        WHERE leasing_id = ? AND org_id = ? AND deleted_at IS NULL
+          AND note = 'Rent owed after early move-out'`,
+      [id, orgId]
+    );
+
+    await conn.commit();
+    await logActivity(req, 'UPDATE', 'lease', id,
+      `Undid move-out — lease end restored to ${earliest.original_end_date}`);
+
+    res.json({
+      code: 200,
+      data: {
+        restored_end_date: earliest.original_end_date,
+        previous_end_date: lease.end_date,
+        moveouts_removed: del.affectedRows,
+        pushed_invoices_remaining: Number(pushed.cnt),
+      },
+    });
+  } catch (error) {
+    try { await conn.rollback(); } catch { /* already rolled back */ }
+    console.error('Lease move-out undo error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to undo move-out' });
   } finally {
     conn.release();
   }
@@ -2146,3 +2295,4 @@ router.delete('/:id/revisions/:rid', authenticate, async (req, res) => {
 
 module.exports = router;
 module.exports.isMovedOutEarly = isMovedOutEarly;
+module.exports.effectiveOriginalEndDate = effectiveOriginalEndDate;   // exported for tests

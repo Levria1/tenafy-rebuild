@@ -187,6 +187,7 @@ export const leasing = {
   // Rent still owed if the lease ran its ORIGINAL term — pushed at move-out.
   moveOutPreview: (id, moveOutDate) =>
     api.get(`/api/leasing/${id}/move-out/preview`, { params: { move_out_date: moveOutDate } }),
+  moveOutUndo: (id) => api.post(`/api/leasing/${id}/move-out/undo`),
   // Flip lease_state from 'pending' to 'active'. Server re-runs the overlap
   // check and generates deferred rent + deposit invoices.
   confirm: (id) => api.post(`/api/leasing/${id}/confirm`),

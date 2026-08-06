@@ -39,6 +39,7 @@ export default function LeasingDetailPage() {
   const [moveOutDate, setMoveOutDate] = useState(dayjs());
   const [moveOutNotes, setMoveOutNotes] = useState('');
   const [recordingMoveOut, setRecordingMoveOut] = useState(false);
+  const [undoingMoveOut, setUndoingMoveOut] = useState(false);
   const [pushRows, setPushRows] = useState([]);          // rent still owed
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState(null);
@@ -147,13 +148,40 @@ export default function LeasingDetailPage() {
     }
   };
 
+  // Re-opening after a move-out is already recorded acts as an EDIT: prefill the
+  // recorded date and notes. Previously both were reset (date to today, notes to
+  // blank), so amending a note meant retyping it in full — and leaving the date
+  // untouched silently re-shortened the lease to today.
   const handleOpenMoveOut = () => {
-    const today = dayjs();
-    setMoveOutDate(today);
-    setMoveOutNotes('');
+    const existing = lease?.moveout || null;
+    const when = existing?.requested_date ? dayjs(existing.requested_date) : dayjs();
+    setMoveOutDate(when);
+    setMoveOutNotes(existing?.notes || '');
     setPushRows([]);
     setMoveOutOpen(true);
-    loadMoveOutPreview(today);
+    loadMoveOutPreview(when);
+  };
+
+  const handleUndoMoveOut = async () => {
+    setUndoingMoveOut(true);
+    try {
+      const r = await leasing.moveOutUndo(leaseId);
+      const d = r.data?.data || {};
+      message.success(`Move-out undone — lease end restored to ${d.restored_end_date || 'its original date'}`);
+      if (Number(d.pushed_invoices_remaining) > 0) {
+        // Never silently leave money on the books without saying so.
+        message.warning(
+          `${d.pushed_invoices_remaining} invoice(s) raised for rent after the move-out still stand. ` +
+          `Write them off or delete them if they shouldn't.`,
+          8
+        );
+      }
+      await loadLease();
+    } catch (err) {
+      message.error(err?.response?.data?.message || 'Failed to undo move-out');
+    } finally {
+      setUndoingMoveOut(false);
+    }
   };
 
   const handleRecordMoveOut = async () => {
@@ -775,16 +803,31 @@ export default function LeasingDetailPage() {
             >
               <Button icon={<MailOutlined />} loading={sendingCheckin}>Send Check-in Email</Button>
             </Popconfirm>
-            {canEdit && <Button icon={<LogoutOutlined />} onClick={handleOpenMoveOut}>Move out</Button>}
+            {canEdit && (
+              <Button icon={<LogoutOutlined />} onClick={handleOpenMoveOut}>
+                {lease?.moveout ? 'Edit move-out' : 'Move out'}
+              </Button>
+            )}
+            {canEdit && lease?.moveout && (
+              <Popconfirm
+                title="Undo this move-out?"
+                description={`The lease end date goes back to ${lease.moveout.original_end_date || 'its original date'} and the move-out is removed. Any invoices already raised for rent after the move-out are NOT deleted.`}
+                okText="Undo move-out"
+                okButtonProps={{ danger: true }}
+                onConfirm={handleUndoMoveOut}
+              >
+                <Button danger loading={undoingMoveOut}>Undo move-out</Button>
+              </Popconfirm>
+            )}
             {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/leasing/${leaseId}/edit`)}>Edit Lease</Button>}
           </Space>
         </div>
         <Modal
-          title="Record move-out"
+          title={lease?.moveout ? 'Edit move-out' : 'Record move-out'}
           open={moveOutOpen}
           onCancel={() => setMoveOutOpen(false)}
           onOk={handleRecordMoveOut}
-          okText="Record move-out"
+          okText={lease?.moveout ? 'Save changes' : 'Record move-out'}
           confirmLoading={recordingMoveOut}
         >
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
