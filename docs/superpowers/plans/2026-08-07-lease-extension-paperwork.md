@@ -210,6 +210,19 @@ test('date maths reads a mysql2 Date as wall-clock, not UTC', () => {
 const signed = (term_start, term_end) => ({ status: 3, term_start, term_end });
 const inFlight = (term_start, term_end) => ({ status: 1, term_start, term_end });
 
+test('a lease whose only request was CANCELLED is not flagged', () => {
+  // The paper-signed lease from 2026-08-05 had its request cancelled. Counting
+  // an abandoned attempt as "documented" would nag about a lease nobody ever
+  // papered. Only signed or in-flight documents opt a lease in.
+  const s = computePaperworkState({
+    leaseEndDate: '2027-08-31',
+    documents: [{ status: 6, term_start: null, term_end: null }],
+  });
+  assert.equal(s.needs_document, false);
+  assert.equal(s.reason, 'no_documents');
+  assert.equal(s.has_documents, false);
+});
+
 test('a lease with no documents is never flagged', () => {
   // 110 of 113 live leases predate e-signature. Nagging about them would make
   // the marker useless — documenting a lease is what opts it in.
@@ -422,7 +435,11 @@ const isInFlight = (doc) => Number(doc.status) === 1 || Number(doc.status) === 2
  * @param {Array}    input.documents     [{ status, term_start, term_end }]
  */
 function computePaperworkState({ leaseEndDate, documents }) {
-  const docs = Array.isArray(documents) ? documents : [];
+  const all = Array.isArray(documents) ? documents : [];
+  // Only SIGNED or IN-FLIGHT documents opt a lease in. A lease whose sole
+  // request was cancelled or declined never got papered, so treating it as
+  // "documented" would nag about an abandoned attempt.
+  const docs = all.filter(d => isSigned(d) || isInFlight(d));
   const leaseEnd = ymd(leaseEndDate);
 
   const base = {
@@ -476,12 +493,12 @@ module.exports = { ymd, addDays, addOneMonthMinusDay, computePaperworkState };
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run from `backend/`: `node --test test/paperworkPeriod.test.js`
-Expected: PASS, 19 tests.
+Expected: PASS, 20 tests.
 
 - [ ] **Step 5: Run the whole suite for regressions**
 
 Run from `backend/`: `npm test`
-Expected: 150 existing tests still pass, plus the 19 new ones.
+Expected: 150 existing tests still pass, plus the 20 new ones.
 
 - [ ] **Step 6: Commit**
 
@@ -798,12 +815,15 @@ router.post('/record-paper', authenticate, async (req, res) => {
       if (!f) return fail(res, 'That file was not found', 400);
     }
 
-    // Any in-flight request for this same period is moot now.
+    // Any in-flight request for this same period is moot now. Match on BOTH
+    // boundaries — two periods can share an end date, and cancelling the wrong
+    // one would strand a document that is still legitimately out for signature.
     await req.pool.execute(
       `UPDATE signature_request SET status = 6, updated_at = NOW()
         WHERE lease_id = ? AND org_id = ? AND status IN (1, 2)
-          AND (term_end IS NULL OR term_end = ?)`,
-      [lease_id, orgId, termEnd]
+          AND ((term_start IS NULL AND term_end IS NULL)
+               OR (term_start = ? AND term_end = ?))`,
+      [lease_id, orgId, termStart, termEnd]
     );
 
     const requestId = newId();
@@ -937,6 +957,12 @@ function nextSignatureStatus(rows) {
 }
 ```
 
+While in this handler, harden the guard three lines above (`signature.js:437`) from
+`r.status === 3` to `Number(r.status) === 3`. **This is not a live bug** — `bigNumberStrings`
+applies to BIGINT and DECIMAL, not TINYINT, so `status` arrives as a number and the strict
+compare works today (as `party.status === 2` does at line 670). It is free insurance against
+the column type ever changing.
+
 Replace the reset block at the end of the cancel handler:
 
 ```js
@@ -1018,7 +1044,13 @@ async function loadPaperwork(conn, orgId, leaseId, leaseEndDate) {
     );
     documents = rows.map(r => ({ ...r, id: String(r.id) }));
   } catch (e) {
-    console.error('[leasing] paperwork lookup skipped:', e.message);
+    // Only an un-migrated org is an expected failure here. Swallowing every
+    // error would hide a real query bug behind a silent "no documents".
+    if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') {
+      console.error('[leasing] paperwork lookup skipped (un-migrated org):', e.message);
+    } else {
+      throw e;
+    }
   }
   return { documents, paperwork: computePaperworkState({ leaseEndDate: leaseEndDate, documents }) };
 }
@@ -1036,7 +1068,28 @@ In `router.get('/:id', ...)`, after the `lease.moveout` block:
     lease.paperwork = pw.paperwork;
 ```
 
-- [ ] **Step 3: Return the state from the update**
+- [ ] **Step 3: Close the cross-org write hole in `PUT /:id`**
+
+**Pre-existing security bug, found while reviewing this plan.** `router.put('/:id', ...)` at
+`backend/src/routes/leasing.js:1227` reads `const orgId = req.user.orgId` and then never uses
+it — the update runs `UPDATE leasing SET ... WHERE id = ?` with no ownership check, so an
+authenticated user of one org can edit another org's lease by ID. `verifyLeaseOwnership`
+already exists at line 2120 and is used by four other routes.
+
+Add it as the first thing the handler does after reading `id` and `orgId`:
+
+```js
+    // leasing has no org_id — ownership is via unit -> property.org_id. Without
+    // this the UPDATE below would happily write another org's lease.
+    if (!(await verifyLeaseOwnership(req.pool, id, orgId))) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+```
+
+Verify by hand: log in, then `PUT /api/leasing/<an id from another org>`.
+Expected: 404, and that lease is unchanged. Before the fix it returns 200 and writes.
+
+- [ ] **Step 4: Return the state from the update**
 
 At the end of the successful `PUT /:id` handler, replace the plain success response so the edit page can prompt without doing any date maths of its own:
 
@@ -1051,7 +1104,7 @@ At the end of the successful `PUT /:id` handler, replace the plain success respo
     res.json({ code: 200, message: 'Lease updated', data: { paperwork: pw.paperwork } });
 ```
 
-- [ ] **Step 4: Verify by hand**
+- [ ] **Step 5: Verify by hand**
 
 With both servers running, open a lease detail in the browser and inspect the network response for `GET /api/leasing/<id>`.
 
@@ -1060,17 +1113,27 @@ Expected: `documents: []` and `paperwork.reason === 'no_documents'` on a lease t
 Then save an unrelated field from the edit page and inspect the `PUT` response.
 Expected: `data.paperwork` present.
 
-- [ ] **Step 5: Run the suite**
+- [ ] **Step 6: Run the suite**
 
 Run from `backend/`: `npm test`
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
+
+Two logically separate changes — commit the security fix on its own so it is
+reviewable (and cherry-pickable) independently of the feature.
 
 ```bash
 git add backend/src/routes/leasing.js
-git commit -m "feat(leasing): expose the document ledger and paperwork state on a lease"
+git commit -m "fix(leasing): org-scope the lease update endpoint
+
+PUT /api/leasing/:id read req.user.orgId but never used it, so the UPDATE ran
+WHERE id = ? with no ownership check -- an authenticated user of one org could
+edit another org's lease by ID. verifyLeaseOwnership already existed."
+git commit --allow-empty -m "feat(leasing): expose the document ledger and paperwork state on a lease"
 ```
+
+If both changes are already staged together, split them with `git add -p`.
 
 ---
 
@@ -1216,12 +1279,35 @@ import { leasing, pdf, utility, signature, file as fileApi } from '../../../../l
           },
         },
         {
+          // The card this replaces carried Resend / Cancel / Send Again. Those
+          // controls must survive per-row or the section is a regression.
           title: '',
           key: 'actions',
           align: 'right',
-          render: (_, d) => (d.signed_file_id
-            ? <Button size="small" onClick={() => window.open(`/api/file/preview/${d.signed_file_id}`, '_blank')}>View PDF</Button>
-            : null),
+          render: (_, d) => {
+            const st = Number(d.status);
+            return (
+              <Space>
+                {d.signed_file_id && (
+                  <Button size="small" onClick={() => window.open(`/api/file/preview/${d.signed_file_id}`, '_blank')}>View PDF</Button>
+                )}
+                {(st === 1 || st === 2) && (
+                  <Button size="small" loading={resendingSig} onClick={handleResendSignature}>Resend</Button>
+                )}
+                {(st === 1 || st === 2 || st === 4) && (
+                  <Popconfirm
+                    title="Cancel this signing request?"
+                    description="The signer's link stops working. Use this when the document was signed on paper instead — then record the scan below."
+                    okText="Cancel request"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => handleCancelRequest(d.id)}
+                  >
+                    <Button size="small" danger loading={cancellingSig}>Cancel</Button>
+                  </Popconfirm>
+                )}
+              </Space>
+            );
+          },
         },
       ]}
     />
@@ -1358,6 +1444,41 @@ Replace both `onClick={() => setPaperOpen(true)}` in Step 2 with `onClick={openP
 
 `loadLease` is the existing loader at line 58 — calling it refreshes `lease.documents` and `lease.paperwork` after recording.
 
+- [ ] **Step 3b: Make the surviving controls work per row**
+
+The existing `handleCancelSignature` cancels *every* active request on the lease — correct
+when a lease had one document, wrong now that each period has its own. Add a per-row
+version beside it:
+
+```jsx
+  const handleCancelRequest = async (requestId) => {
+    setCancellingSig(true);
+    try {
+      await signature.cancelRequest(requestId);
+      message.success('Request cancelled.');
+      loadLease();
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Failed to cancel');
+    } finally {
+      setCancellingSig(false);
+    }
+  };
+```
+
+And fix `handleResendSignature` (line ~85). It picks the active request with
+`requests.find(...)` and its comment says "Most recent first" — an assumption that held only
+because the endpoint ordered by `created_at DESC`. Task 4 reorders by period, and a lease can
+now legitimately have more than one request, so make the choice explicit rather than
+positional:
+
+```jsx
+      // Newest active request, chosen explicitly — the list is ordered by
+      // PERIOD now, so position no longer implies recency.
+      const active = requests
+        .filter(r => Number(r.status) === 1 || Number(r.status) === 2)
+        .sort((a, b) => new Date(b.sent_at || 0) - new Date(a.sent_at || 0))[0];
+```
+
 - [ ] **Step 4: Build**
 
 Run from `frontend/`: `npm run build`
@@ -1386,10 +1507,91 @@ git commit -m "feat(leasing): documents and signatures section with paper record
 ### Task 10: Period and stamped term on Review & Send
 
 **Files:**
-- Modify: `frontend/src/app/leasing/[id]/review-and-send/page.js:147` (the `createRequest` call) and its form area
+- Modify: `backend/src/routes/pdf.js:294-299` (the lease preview route)
+- Modify: `frontend/src/lib/api.js:477` (`pdf.fetchLeaseWithTemplate`)
+- Modify: `frontend/src/app/leasing/[id]/review-and-send/page.js:93-99` (preview) and `:147` (the `createRequest` call), plus its form area
 
 **Interfaces:**
-- Consumes: `POST /api/signature/request` accepting `term_start`/`term_end`/`term_stamp_end` from Task 4; `lease.paperwork` from Task 7.
+- Consumes: `POST /api/signature/request` accepting `term_start`/`term_end`/`term_stamp_end` from Task 4; `renderFromTemplate({ term })` from Task 3; `lease.paperwork` from Task 7.
+- Produces: `GET /api/pdf/lease/:id` accepts `term_start`, `term_end`, `term_stamp_end` query params.
+
+- [ ] **Step 0: Make the preview able to show a period**
+
+Without this the preview renders the *lease's* dates while the request sends the *period's*
+— staff would approve a document that isn't the one that goes out. In
+`backend/src/routes/pdf.js`, alongside the existing `requestedTemplateId` read:
+
+```js
+    // The preview must show the same period the request will send, or staff are
+    // approving a document that differs from the one the signer receives.
+    const previewTerm = (req.query.term_start && req.query.term_end)
+      ? {
+          start_date: String(req.query.term_start).slice(0, 10),
+          end_date: String(req.query.term_end).slice(0, 10),
+          stamp_end_date: req.query.term_stamp_end
+            ? String(req.query.term_stamp_end).slice(0, 10) : null,
+        }
+      : null;
+```
+
+and pass it into the render:
+
+```js
+        const { pdfBuffer } = await renderFromTemplate({
+          pool: req.pool, orgId, leaseId: id, templateId, stamp: false, term: previewTerm,
+        });
+```
+
+Then widen the API client in `frontend/src/lib/api.js` — keep the existing two-argument
+call sites working by making the term optional:
+
+The current implementation is:
+
+```js
+  fetchLeaseWithTemplate: (id, templateId) =>
+    api.get(`/api/pdf/lease/${id}`, { params: { template_id: templateId }, responseType: 'blob' }),
+```
+
+Replace it with a version that takes an optional term, keeping every existing
+two-argument call site working (axios omits `undefined` params):
+
+```js
+  fetchLeaseWithTemplate: (id, templateId, term) =>
+    api.get(`/api/pdf/lease/${id}`, {
+      params: {
+        template_id: templateId,
+        term_start: term?.from || undefined,
+        term_end: term?.to || undefined,
+        term_stamp_end: term?.stampEnd || undefined,
+      },
+      responseType: 'blob',
+    }),
+```
+
+- [ ] **Step 0b: Feed the period into the preview**
+
+`refreshPreview` (line ~102) currently calls `pdf.fetchLeaseWithTemplate(leaseId, selectedTemplateId)`.
+Pass the term, and re-render whenever the period changes so the preview never lags the form:
+
+```jsx
+      const res = await pdf.fetchLeaseWithTemplate(leaseId, selectedTemplateId, {
+        from: termFrom ? termFrom.format('YYYY-MM-DD') : null,
+        to: termTo ? termTo.format('YYYY-MM-DD') : null,
+        stampEnd: stampLonger && termStampEnd ? termStampEnd.format('YYYY-MM-DD') : null,
+      });
+```
+
+Extend the effect that triggers it (line ~98) so the period is a dependency:
+
+```jsx
+  useEffect(() => {
+    if (selectedTemplateId && leaseId) refreshPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTemplateId, termFrom, termTo, stampLonger, termStampEnd]);
+```
+
+The state these reference is declared in Step 1 below — write Step 1 first, then come back
+to this, or the page will not compile.
 
 - [ ] **Step 1: Add the state, prefilled from the server's uncovered period**
 
@@ -1471,13 +1673,15 @@ Expected: builds clean.
 On a lease with an uncovered period, open Review & Send.
 Expected: the period prefills to the uncovered stretch, not the whole lease.
 
-Preview the PDF.
-Expected: the contract's term reads the period's dates. On a lease that has "Stamp for a longer term" ticked at lease level, confirm the Term of Tenancy shows the **period's** end and not the lease's stored stamped date — this is the bug Task 3 exists to prevent.
+Change the period dates in the form.
+Expected: the **preview re-renders** and its term follows the dates you typed. This is the
+step that proves Step 0 worked — before it, the preview silently showed the lease's own
+dates while the request sent the period's. On a lease that has "Stamp for a longer term" ticked at lease level, confirm the Term of Tenancy shows the **period's** end and not the lease's stored stamped date — this is the bug Task 3 exists to prevent.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add "frontend/src/app/leasing/[id]/review-and-send/page.js"
+git add backend/src/routes/pdf.js frontend/src/lib/api.js "frontend/src/app/leasing/[id]/review-and-send/page.js"
 git commit -m "feat(leasing): choose the period and stamped term when sending for signature"
 ```
 
@@ -1632,7 +1836,7 @@ the client, so the prompt and the banner cannot drift apart.
 - [ ] **Step 6: Run the whole suite one last time**
 
 Run from `backend/`: `npm test`
-Expected: 150 pre-existing tests plus 31 new ones pass.
+Expected: 150 pre-existing tests plus 32 new ones pass.
 
 - [ ] **Step 7: Commit**
 
