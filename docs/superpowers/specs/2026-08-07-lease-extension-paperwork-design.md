@@ -25,7 +25,8 @@ Two gaps make this impossible right now:
 |---|---|
 | Record model | **Extending stays an edit to the existing lease row.** No new lease rows, no renewal chain. |
 | Document | The **same contract template**, rendered with the new period's dates. |
-| Period boundary | The new period starts the **day after** the previous one ends (1 Sep 2025–31 Aug 2026 → 1 Sep 2026–31 Aug 2027). |
+| Period boundary | The new period starts the **day after** the previous one ends — covered to 19 Aug, extended a month → the contract runs **20 Aug – 19 Sep**. |
+| When paperwork is required | Only when the uncovered stretch reaches **a month or more**, measured from the last signed period. |
 | Where documents live | **`signature_request`**, which is already one-row-per-signing-event with a non-unique `lease_id`. |
 | Paper signing | First-class: upload the scan and record the period. |
 | Raising the gap | **Prompt immediately after saving a later end date**, plus a persistent banner / calendar marker / filter. |
@@ -109,8 +110,9 @@ Edit lease → change the end date → save. Nothing in this path changes.
 
 The edit page already loads the lease's existing `end_date` before editing
 (`frontend/src/app/leasing/[id]/edit/page.js:239`), so the comparison is entirely
-client-side — no backend detection needed. After a successful save where the new end
-date is **later** than the old one:
+client-side — no backend detection needed. After a successful save where the new end date
+is **later** than the old one **and the resulting uncovered period reaches a month**
+(shared threshold helper — a short extension prompts nothing):
 
 ```
 Term extended by 12 months.
@@ -166,8 +168,38 @@ For a given lease:
 - `has_documents` = any row exists for the lease
 
 ```
-gap = has_documents AND NOT in_flight AND (covered_end IS NULL OR lease.end_date > covered_end)
+uncovered_start = covered_end + 1 day
+long_enough    = lease.end_date >= (uncovered_start + 1 month - 1 day)
+
+gap = has_documents AND NOT in_flight
+      AND (covered_end IS NULL OR (lease.end_date > covered_end AND long_enough))
 ```
+
+### The one-month threshold
+
+**Extensions shorter than a month need no contract.** A month or more does. Worked
+through, with a period covered to 19 Aug (so `uncovered_start` = 20 Aug and the
+threshold date is 19 Sep):
+
+| Lease end date | Uncovered | Result |
+|---|---|---|
+| 5 Sep | ~2 weeks | quiet |
+| 19 Sep | exactly 1 month | **contract needed** |
+| 19 Oct | 2 months | **contract needed** |
+
+**Measured from the last signed period, not from the last edit.** Three consecutive
+three-week extensions each look short in isolation, but the undocumented stretch itself
+grows — 21 days stays quiet, 42 days is flagged. This is what stops repeated
+month-to-month rollovers from quietly accumulating into an undocumented year.
+
+Calendar-month arithmetic, clamped the same way as `defaultStampEndDate` (31 Jan + 1
+month → 28 Feb), and **the client and server must share one helper** — a prompt that
+disagrees with the banner about whether paperwork is due would be worse than no prompt.
+
+A sub-month uncovered period is not silence in the UI: the Documents section shows it as
+a plain grey line, `20 Aug – 5 Sep · no paperwork required (under a month)`, with no
+warning colour. **"Add document" stays available at all times**, so a short extension can
+still be papered when a particular tenant warrants it.
 
 **`has_documents` is what keeps this quiet on legacy data.** 110 of 113 live leases have
 `signature_status = 'none'` because they predate e-signature; keying the highlight off
@@ -201,8 +233,12 @@ when any `status = 3` row exists, otherwise `'pending'` when one is in flight, o
   reflect the supplied term, not the lease row; omitting `term` leaves output unchanged
   (regression guard)
 - **Gap rule:** no documents → no gap · signed document covering the end date → no gap ·
-  signed document ending short → gap · in-flight request covering the end date →
-  in-flight, not gap · signed document with `NULL` period → gap
+  signed document ending short by a month or more → gap · in-flight request covering the
+  end date → in-flight, not gap · signed document with `NULL` period → gap
+- **One-month threshold:** covered to 19 Aug → end 5 Sep quiet · end 19 Sep flagged ·
+  end 20 Sep flagged; accumulation (three ×3-week extensions) quiet at 21 days, flagged
+  at 42; month-end clamping (covered to 31 Jan → threshold 28 Feb in a non-leap year);
+  and the client and server helpers agree on every case in the table
 - **Period prefill:** latest covered end + 1 day; falls back to `lease.start_date` with
   no documents
 - **`record-paper`:** sets `status=3`, `signature_method='paper'`, `signed_file_id`,
