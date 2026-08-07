@@ -361,7 +361,9 @@ router.get('/calendar', authenticate, async (req, res) => {
           documentsByLease[key].push(d);
         }
       } catch (e) {
-        // signature_request absent or un-migrated on this org — no flags.
+        // Broad catch on purpose, unlike loadPaperwork which rethrows anything
+        // that isn't a missing table/column: losing a marker is far better than
+        // failing the whole calendar for every unit.
         console.error('[leasing/calendar] paperwork lookup skipped:', e.message);
       }
     }
