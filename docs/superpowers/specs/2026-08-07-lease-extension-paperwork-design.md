@@ -66,6 +66,7 @@ Migration `033_signature_request_term.sql` — per-org, idempotent via
 | `term_start` | `DATE NULL` | first day of the period this document covers |
 | `term_end` | `DATE NULL` | last day of that period |
 | `signature_method` | `VARCHAR(16) NOT NULL DEFAULT 'esign'` | `'esign'` or `'paper'` |
+| `term_stamp_end` | `DATE NULL` | stamped Term of Tenancy for this period; `NULL` = the period's own end date |
 
 Index: `(lease_id, status, term_end)` for the gap query.
 
@@ -82,9 +83,23 @@ leases with signature requests as of 2026-08-05; the period can be set by hand.
 
 ```js
 if (term && term.start_date && term.end_date) {
-  ctx.lease = { ...ctx.lease, start_date: term.start_date, end_date: term.end_date };
+  ctx.lease = {
+    ...ctx.lease,
+    start_date: term.start_date,
+    end_date: term.end_date,
+    // Explicitly null, never inherited — see below.
+    stamp_end_date: term.stamp_end_date || null,
+  };
 }
 ```
+
+**`stamp_end_date` must be overridden explicitly, not left to fall through.**
+`effectiveStampEndDate` returns `ymd(lease.stamp_end_date) || ymd(lease.end_date)`
+(`leaseTemplateVariables.js:103`), so the **stored** value wins. Overriding only
+`start_date`/`end_date` on a lease that had "Stamp for a longer term" ticked for its
+original term would print that original stamped date as the extension's Term of Tenancy
+— a silently wrong date on a legal document. Forcing it to the period's own value unless
+a stamped term is supplied for *this* period closes that off.
 
 Every date variable resolves from that one object — `START_DATE`, `END_DATE`, their
 `_SHORT` forms, the term-length variable and the `STAMP_END_DATE` fallback
@@ -96,9 +111,14 @@ the current (possibly increased) rent. Stored PDFs are the record of truth: "Vie
 always serves the saved file and never re-renders, so an earlier period's document can
 never be retroactively altered by a later rent change.
 
-**Accepted limitation:** `leasing.stamp_end_date` remains one value per lease, so an
-extension document uses the lease's current stamp date, or the extended end date when
-none is set. Per-period stamp dates are out of scope.
+**`leasing.stamp_end_date` is left untouched by this feature.** It keeps meaning what the
+lease form says, and is still what a whole-lease render uses; each period document carries
+its own `term_stamp_end`. No write-back, so extending can never silently rewrite the
+lease's stamped term.
+
+*Known consequence:* "View Lease" renders live lease data with no term override, so on an
+extended lease it prints the new end date beside the lease-level stamped term. That is
+pre-existing behaviour of a live re-render — the signed PDFs remain the record.
 
 ## Flows
 
@@ -143,6 +163,11 @@ The existing Review & Send page, with a period field added. Prefill:
 - `term_start` = latest covered `term_end` + 1 day, falling back to `lease.start_date`
   when the lease has no documents yet
 - `term_end` = `lease.end_date`
+- **Term of Tenancy** — a "Stamp this period for a longer term" tick box, unticked by
+  default, mirroring the lease form. Unticked, the document prints its own period end.
+  Ticked, it prefills `term_start + 2 years − 1 day` (same clamped helper) and is
+  editable. Stored as `term_stamp_end` on the document row, giving a per-period stamping
+  history the single lease column can't hold.
 
 `POST /api/signature/request` accepts and stores `term_start` / `term_end`.
 
@@ -229,9 +254,12 @@ when any `status = 3` row exists, otherwise `'pending'` when one is in flight, o
 
 ## Tests
 
-- **Renderer override:** `START_DATE`, `END_DATE` and the `STAMP_END_DATE` fallback
-  reflect the supplied term, not the lease row; omitting `term` leaves output unchanged
-  (regression guard)
+- **Renderer override:** `START_DATE` and `END_DATE` reflect the supplied term, not the
+  lease row; omitting `term` leaves output unchanged (regression guard)
+- **Stamped term isolation (the bug this spec caught):** a lease with
+  `stamp_end_date` set, rendered with a term override and no `term_stamp_end`, prints the
+  **period's own end** as `STAMP_END_DATE` — never the lease's stored stamped date. With
+  `term_stamp_end` supplied, that value prints instead
 - **Gap rule:** no documents → no gap · signed document covering the end date → no gap ·
   signed document ending short by a month or more → gap · in-flight request covering the
   end date → in-flight, not gap · signed document with `NULL` period → gap
@@ -247,7 +275,7 @@ when any `status = 3` row exists, otherwise `'pending'` when one is in flight, o
 
 ## Explicitly out of scope
 
-- Per-period stamp dates
+- Writing a period's stamped term back onto `leasing.stamp_end_date`
 - A distinct "extension addendum" template — the same contract is re-issued with the new
   period, as decided
 - Rent history per period (the lease carries one rent; earlier periods are evidenced by
