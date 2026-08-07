@@ -23,7 +23,9 @@
  */
 
 const puppeteer = require('puppeteer');
-const { substitute, sampleContext, applyTermOverride } = require('./leaseTemplateVariables');
+const {
+  substitute, sampleContext, applyTermOverride, applySectionPageBreaks,
+} = require('./leaseTemplateVariables');
 
 let _browserPromise = null;
 
@@ -114,6 +116,9 @@ function wrapBody(bodyHtml) {
     table { border-collapse: collapse; margin: 0.5em 0; }
     table td, table th { border: 1px solid #ccc; padding: 4px 8px; }
     .page-break { page-break-after: always; }
+    /* Each contract section (Schedule I-V, Special Conditions) starts a fresh
+       page. Added at render time by applySectionPageBreaks, never stored. */
+    .pdf-section-break { page-break-before: always; break-before: page; }
   </style>
 </head>
 <body>${bodyHtml}</body>
@@ -137,7 +142,7 @@ function wrapHeaderFooter(html, kind) {
 async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = true, term = null }) {
   // Fetch the template
   const [[tpl]] = await pool.execute(
-    `SELECT id, body_html, header_html, footer_html, page_size, version
+    `SELECT id, name, body_html, header_html, footer_html, page_size, version
        FROM lease_template
       WHERE id = ? AND org_id = ? AND deleted_at IS NULL
       LIMIT 1`,
@@ -154,8 +159,9 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = tr
   // dashed preview placeholders) so the stamper can locate them after signing.
   ctx.realRender = true;
 
-  // Substitute placeholders
-  const body   = substitute(tpl.body_html   || '', ctx);
+  // Substitute placeholders. Section page breaks are applied to the body only —
+  // headers and footers repeat on every page, so a break there is meaningless.
+  const body   = applySectionPageBreaks(substitute(tpl.body_html || '', ctx), tpl.name);
   const header = substitute(tpl.header_html || '', ctx);
   const footer = substitute(tpl.footer_html || '', ctx);
 
@@ -179,7 +185,7 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = tr
 // ───────────────────────────────────────────────────────────────────────────
 async function renderTemplatePreview({ pool, orgId, templateId }) {
   const [[tpl]] = await pool.execute(
-    `SELECT body_html, header_html, footer_html, page_size
+    `SELECT name, body_html, header_html, footer_html, page_size
        FROM lease_template
       WHERE id = ? AND org_id = ? AND deleted_at IS NULL
       LIMIT 1`,
@@ -188,7 +194,9 @@ async function renderTemplatePreview({ pool, orgId, templateId }) {
   if (!tpl) throw new Error('Template not found');
 
   const ctx = sampleContext();
-  const body   = substitute(tpl.body_html   || '', ctx);
+  // Same section page breaks as the real render, so the editor's Preview button
+  // shows the pagination staff will actually get.
+  const body   = applySectionPageBreaks(substitute(tpl.body_html || '', ctx), tpl.name);
   const header = substitute(tpl.header_html || '', ctx);
   const footer = substitute(tpl.footer_html || '', ctx);
 

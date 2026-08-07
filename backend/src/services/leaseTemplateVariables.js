@@ -133,6 +133,66 @@ function applyTermOverride(ctx, term) {
   return ctx;
 }
 
+// ── Section page breaks (tenancy contracts only) ────────────────────────────
+//
+// The contract templates are one continuous flow: Tenancy Agreement, Schedule I
+// to V, then SPECIAL CONDITIONS. Each should start on a fresh page.
+//
+// Done at RENDER time, never stored. The titles are `<p class="ql-align-center">
+// <strong>…</strong></p>`, not headings, and Quill only round-trips formats it
+// knows — a page-break style written into the stored HTML would be silently
+// stripped the next time someone saved the template in the editor. Converting
+// the titles to real <h2> headings would survive, but then the editor would
+// render them as large headings while the PDF kept them body-sized, breaking the
+// WYSIWYG parity the templates were tuned for.
+//
+// Matches a whole-block title only, so prose like "as detailed in the Schedule
+// hereto" is untouched.
+const SECTION_TITLE_RE = /^(?:schedule\s+[ivx]+|special\s+conditions|tenancy\s+agreement)$/i;
+
+// The Licence Agreements ALSO have centred bold "Schedule I"/"Schedule II"
+// titles, so the title pattern cannot scope this on its own — only tenancy
+// contracts get the breaks (user, 2026-08-07: "for contract template (not
+// license agreement)").
+function templateWantsSectionBreaks(templateName) {
+  return /contract/i.test(String(templateName || ''));
+}
+
+function blockText(html) {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Start each contract section on a new page.
+ *
+ * Skips the FIRST section title: a break before the opening block would leave a
+ * blank leading page. Idempotent — a block already carrying the class is left
+ * alone, so double-application cannot stack breaks.
+ */
+function insertSectionPageBreaks(html) {
+  if (!html) return html || '';
+  let seen = 0;
+  return String(html).replace(/<p\b([^>]*)>([\s\S]*?)<\/p>/gi, (full, attrs, inner) => {
+    if (!SECTION_TITLE_RE.test(blockText(inner))) return full;
+    seen += 1;
+    if (seen === 1) return full;                       // first section: no break
+    if (/pdf-section-break/.test(attrs)) return full;  // already marked
+    const withClass = /\bclass\s*=\s*"([^"]*)"/i.test(attrs)
+      ? attrs.replace(/\bclass\s*=\s*"([^"]*)"/i, (m, c) => `class="${c} pdf-section-break"`)
+      : `${attrs} class="pdf-section-break"`;
+    return `<p${withClass}>${inner}</p>`;
+  });
+}
+
+// Apply only to tenancy contracts.
+function applySectionPageBreaks(html, templateName) {
+  return templateWantsSectionBreaks(templateName) ? insertSectionPageBreaks(html) : (html || '');
+}
+
 function joinName(first, last, company, type) {
   if (Number(type) === 1 && company) return company;
   return [first, last].filter(Boolean).join(' ').trim();
@@ -445,6 +505,9 @@ module.exports = {
   publicList,
   SIGNATURE_MARKERS,
   applyTermOverride,
+  applySectionPageBreaks,
+  insertSectionPageBreaks,
+  templateWantsSectionBreaks,
   // exported for tests
   defaultStampEndDate,
   effectiveStampEndDate,

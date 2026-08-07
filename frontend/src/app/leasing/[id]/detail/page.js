@@ -752,7 +752,16 @@ export default function LeasingDetailPage() {
           <Descriptions.Item label="Contact Phone">{lease?.contact_phone || lease?.tenant_phone || '-'}</Descriptions.Item>
           <Descriptions.Item label="Tenant Email">{lease?.tenant_email || '-'}</Descriptions.Item>
           <Descriptions.Item label="Booking Platform">{lease?.booking_platform_name || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Sales Agent">{lease?.sales_agent_name || '-'}</Descriptions.Item>
+          {/* Sales agent, followed by when the lease record was created — handy
+              for telling a freshly-entered lease from a long-standing one. */}
+          <Descriptions.Item label="Sales Agent">
+            {lease?.sales_agent_name || '-'}
+            {lease?.created_at && (
+              <span style={{ color: '#888', marginLeft: 8 }}>
+                · Created {dayjs(lease.created_at).format('D MMM YYYY')}
+              </span>
+            )}
+          </Descriptions.Item>
           {lease?.note && (
             <Descriptions.Item label="Notes" span={2}>{lease.note}</Descriptions.Item>
           )}
