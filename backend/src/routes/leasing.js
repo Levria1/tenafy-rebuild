@@ -8,6 +8,7 @@ const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequence
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
 const { resolveLeaseValues } = require('../utils/leaseRevision');
+const { computePaperworkState } = require('../utils/paperworkPeriod');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -340,11 +341,40 @@ router.get('/calendar', authenticate, async (req, res) => {
       }
     }
 
+    // Per-period signed documents for the leases in view, so the calendar can
+    // flag a term that has run past its paperwork.
+    const documentsByLease = {};
+    if (leaseIds.length > 0) {
+      try {
+        const leasePlaceholders = leaseIds.map(() => '?').join(',');
+        const [docs] = await req.pool.execute(
+          `SELECT lease_id, status,
+                  DATE_FORMAT(term_start, '%Y-%m-%d') AS term_start,
+                  DATE_FORMAT(term_end, '%Y-%m-%d')   AS term_end
+             FROM signature_request
+            WHERE org_id = ? AND lease_id IN (${leasePlaceholders})`,
+          [orgId, ...leaseIds]
+        );
+        for (const d of docs) {
+          const key = String(d.lease_id);
+          if (!documentsByLease[key]) documentsByLease[key] = [];
+          documentsByLease[key].push(d);
+        }
+      } catch (e) {
+        // signature_request absent or un-migrated on this org — no flags.
+        console.error('[leasing/calendar] paperwork lookup skipped:', e.message);
+      }
+    }
+
     // Group leases by unit_id
     const leasesByUnit = {};
     for (const lease of leases) {
       const uid = String(lease.unit_id);
       const moveout = moveoutByLease[String(lease.id)] || null;
+      const paperwork = computePaperworkState({
+        leaseEndDate: lease.end_date,
+        documents: documentsByLease[String(lease.id)] || [],
+      });
       if (!leasesByUnit[uid]) leasesByUnit[uid] = [];
       leasesByUnit[uid].push({
         id: String(lease.id),
@@ -367,6 +397,8 @@ router.get('/calendar', authenticate, async (req, res) => {
         // (typed BIGINT) arrives as the STRING "0" or "1" — and !!"0" is TRUE.
         // Always compare numerically, never coerce with !!.
         deposit_pending: Number(lease.deposit_pending) === 1,
+        // The term runs a month or more past the last signed document.
+        paperwork_gap: paperwork.needs_document,
         moved_out_early: !!(moveout && isMovedOutEarly(moveout.requested_date, moveout.original_end_date)),
         moveout_notes: moveout ? (moveout.notes || null) : null,
       });
@@ -464,6 +496,12 @@ router.get('/:id', authenticate, async (req, res) => {
       // lease_moveout_request absent on an un-migrated org DB — no move-out to show.
       lease.moveout = null;
     }
+
+    // The per-period document ledger + whether the term is covered by signed
+    // paperwork. Drives the Documents & Signatures section and the gap banner.
+    const pw = await loadPaperwork(req.pool, orgId, id, lease.end_date);
+    lease.documents = pw.documents;
+    lease.paperwork = pw.paperwork;
 
     // Per-property lease-template allowlist (drives the e-sign template
     // dropdown). Empty = property is unrestricted (any template allowed).
@@ -1250,6 +1288,14 @@ router.put('/:id', authenticate, async (req, res) => {
       viewing_enabled
     } = req.body;
 
+    // Ownership check. leasing has no org_id — it is reached via
+    // unit -> property.org_id. Without this the UPDATE below runs `WHERE id = ?`
+    // with no org constraint, so an authenticated user of one org could edit
+    // another org's lease by ID.
+    if (!(await verifyLeaseOwnership(req.pool, id, orgId))) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+
     // Same missing-email guard as create (see blockIfUnreachable).
     if (await blockIfUnreachable(req, res, tenant_id, additionalTenantIds)) return;
 
@@ -1382,7 +1428,16 @@ router.put('/:id', authenticate, async (req, res) => {
     if (req.body.send_payment_options) { maybeSendPaymentOptions(req.pool, req.user.orgId, id); }
 
     await logActivity(req, 'UPDATE', 'lease', id, 'Updated lease ' + id);
-    res.json({ code: 200, message: 'Lease updated' });
+
+    // Server-authoritative paperwork state. The edit page prompts from THIS, so
+    // the prompt and the lease banner can never disagree about whether an
+    // extension needs a signed document — no date arithmetic on the client.
+    const [[fresh]] = await req.pool.execute(
+      `SELECT DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date FROM leasing WHERE id = ?`,
+      [id]
+    );
+    const pw = await loadPaperwork(req.pool, orgId, id, fresh ? fresh.end_date : null);
+    res.json({ code: 200, message: 'Lease updated', data: { paperwork: pw.paperwork } });
   } catch (error) {
     console.error('Update lease error:', error);
     res.status(500).json({ code: 500, message: 'Failed to update lease' });
@@ -2115,6 +2170,48 @@ router.post('/unit/available', authenticate, async (req, res) => {
 // Each row in `lease_revision` takes effect on its `effective_from` date.
 // The invoice scheduler picks the latest revision whose effective_from <= due_on.
 // ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The lease's signed-document ledger and whether its term is covered by it.
+ *
+ * Tolerates an un-migrated org (033 not yet applied): no ledger means no
+ * documents, which reads as "not flagged" — the same as a legacy lease. Only
+ * missing-table/column errors are swallowed; anything else would be a real
+ * query bug and must not hide behind a silent empty list.
+ */
+async function loadPaperwork(conn, orgId, leaseId, leaseEndDate) {
+  let documents = [];
+  try {
+    const [rows] = await conn.execute(
+      `SELECT id, status, signature_method, template_id, signed_file_id,
+              DATE_FORMAT(term_start, '%Y-%m-%d')     AS term_start,
+              DATE_FORMAT(term_end, '%Y-%m-%d')       AS term_end,
+              DATE_FORMAT(term_stamp_end, '%Y-%m-%d') AS term_stamp_end,
+              DATE_FORMAT(completed_at, '%Y-%m-%d')   AS completed_at,
+              sent_at
+         FROM signature_request
+        WHERE lease_id = ? AND org_id = ?
+        ORDER BY term_start IS NULL, term_start ASC, created_at ASC`,
+      [leaseId, orgId]
+    );
+    documents = rows.map(r => ({
+      ...r,
+      id: String(r.id),
+      signed_file_id: r.signed_file_id != null ? String(r.signed_file_id) : null,
+      template_id: r.template_id != null ? String(r.template_id) : null,
+    }));
+  } catch (e) {
+    if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') {
+      console.error('[leasing] paperwork lookup skipped (un-migrated org):', e.message);
+    } else {
+      throw e;
+    }
+  }
+  return {
+    documents,
+    paperwork: computePaperworkState({ leaseEndDate, documents }),
+  };
+}
 
 // Helper: confirm lease exists & belongs to this org
 async function verifyLeaseOwnership(pool, leaseId, orgId) {
