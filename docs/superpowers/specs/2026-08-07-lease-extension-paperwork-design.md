@@ -28,6 +28,7 @@ Two gaps make this impossible right now:
 | Period boundary | The new period starts the **day after** the previous one ends — covered to 19 Aug, extended a month → the contract runs **20 Aug – 19 Sep**. |
 | When paperwork is required | Only when the uncovered stretch reaches **a month or more**, measured from the last signed period. |
 | Where documents live | **`signature_request`**, which is already one-row-per-signing-event with a non-unique `lease_id`. |
+| What the document prints | **Only its own period.** An extension contract shows 20 Aug – 19 Sep and makes no reference to the term before it. |
 | Paper signing | First-class: upload the scan and record the period. |
 | Raising the gap | **Prompt immediately after saving a later end date**, plus a persistent banner / calendar marker / filter. |
 
@@ -273,9 +274,28 @@ when any `status = 3` row exists, otherwise `'pending'` when one is in flight, o
   `completed_at`; org-scopes the `file_id`; creates no party rows
 - **Cancel:** recomputes `signature_status` from the ledger instead of forcing `'none'`
 
+## Separate follow-up — unit lease history
+
+Not part of this feature, but identified alongside it and approved as its own change.
+
+Historic leases are reachable today from `/leasing` (which applies **no default status
+filter** — set Lease Status → Inactive for expired ones, per `COMPUTED_STATUS_SQL`) and
+from the tenant detail Leases tab. **Unit detail is the gap:**
+`GET /api/property/unit/:unit_id/current-lease` (`property.js:1210`) returns exactly one
+current lease and one future one, so a unit shows no past tenancies.
+
+Add a "Lease History" section to unit detail listing every past tenancy — tenant, dates,
+rent, link — leaving the current/next panels as they are. One endpoint, one UI section.
+Kept separate so it can ship independently.
+
 ## Explicitly out of scope
 
 - Writing a period's stamped term back onto `leasing.stamp_end_date`
+- **Any recital of earlier terms on an extension document.** It prints its own period and
+  nothing else. Note that `substitute` is plain `{{VAR}}` replacement with no conditional
+  support (`leaseTemplateVariables.js:324`), so a recital sentence added to the shared
+  template would also render — with a blank date — on first contracts. Reviving this
+  would need either a self-blanking single variable or a separate extension template
 - A distinct "extension addendum" template — the same contract is re-issued with the new
   period, as decided
 - Rent history per period (the lease carries one rent; earlier periods are evidenced by
