@@ -25,6 +25,7 @@ const stamper = require('../services/signatureStamper');
 const { sendMail } = require('../config/mailer');
 const { sendTemplateEmail, loadTemplate } = require('../services/emailService');
 const config = require('../config');
+const { nextSignatureStatus } = require('../utils/signatureLedger');
 
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 
@@ -250,7 +251,8 @@ router.post('/request', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const userId = req.user.id;
     const { lease_id, template_id, landlord_signature_id,
-            parties, message, expires_in_days } = req.body || {};
+            parties, message, expires_in_days,
+            term_start, term_end, term_stamp_end } = req.body || {};
     if (!lease_id || !template_id) return fail(res, 'lease_id and template_id are required', 400);
     if (!Array.isArray(parties) || parties.length === 0) return fail(res, 'At least one signer is required', 400);
 
@@ -268,11 +270,26 @@ router.post('/request', authenticate, async (req, res) => {
       );
     }
 
+    // The period this document covers. Optional — a whole-lease document sends
+    // none — but if given it must be coherent, or the contract prints nonsense.
+    const termStart = (term_start || '').slice(0, 10) || null;
+    const termEnd = (term_end || '').slice(0, 10) || null;
+    const termStampEnd = (term_stamp_end || '').slice(0, 10) || null;
+    if ((termStart && !termEnd) || (termEnd && !termStart)) {
+      return fail(res, 'A document period needs both a start and an end date', 400);
+    }
+    if (termStart && termEnd && termEnd < termStart) {
+      return fail(res, 'The period end cannot be before its start', 400);
+    }
+
     // Render the unsigned lease PDF using the template + lease data. Store it
     // in the file table so we can re-serve it for the signer (no auth needed
     // since the file is gated by the unique party token).
     const { pdfBuffer, templateId, version } = await renderer.renderFromTemplate({
       pool: req.pool, orgId, leaseId: lease_id, templateId: template_id,
+      term: termStart && termEnd
+        ? { start_date: termStart, end_date: termEnd, stamp_end_date: termStampEnd }
+        : null,
     });
 
     // Save PDF to uploads + file row
@@ -317,10 +334,12 @@ router.post('/request', authenticate, async (req, res) => {
     await req.pool.execute(
       `INSERT INTO signature_request
          (id, org_id, lease_id, template_id, template_version, original_file_id,
-          landlord_signature_id, token, status, message, expires_at, sent_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NOW(), ?)`,
+          landlord_signature_id, token, status, message, expires_at, sent_at, created_by,
+          term_start, term_end, term_stamp_end, signature_method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NOW(), ?, ?, ?, ?, 'esign')`,
       [requestId, orgId, lease_id, templateId, version, fileId,
-       resolvedLandlordSigId, token, message || null, expiresAt, userId || null]
+       resolvedLandlordSigId, token, message || null, expiresAt, userId || null,
+       termStart, termEnd, termStampEnd]
     );
 
     // Insert signature_party rows
@@ -378,6 +397,106 @@ router.post('/request', authenticate, async (req, res) => {
   }
 });
 
+// POST /api/signature/record-paper — record a lease signed in ink, not e-signed.
+//
+// Declared BEFORE the /request/:id routes (static before dynamic).
+//
+// Without this the only option was "Cancel Request", which resets the lease to
+// signature_status='none' — making an ink-signed lease indistinguishable from
+// one nobody ever sent, with no scan stored anywhere.
+//
+// Creates a fully-signed ledger row with NO signature_party rows. That is safe:
+// the public signing URL resolves by PARTY token (resolveTokenContext joins on
+// sp.party_token), so a party-less request has no reachable signing link.
+router.post('/record-paper', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const userId = req.user.id;
+    const { lease_id, term_start, term_end, term_stamp_end,
+            file_id, signed_at, template_id, note } = req.body || {};
+
+    if (!lease_id) return fail(res, 'lease_id is required', 400);
+    const termStart = (term_start || '').slice(0, 10) || null;
+    const termEnd = (term_end || '').slice(0, 10) || null;
+    if (!termStart || !termEnd) {
+      return fail(res, 'The period this document covers is required', 400);
+    }
+    if (termEnd < termStart) {
+      return fail(res, 'The period end cannot be before its start', 400);
+    }
+    const signedAt = (signed_at || '').slice(0, 10) || null;
+    if (!signedAt) return fail(res, 'The date it was signed is required', 400);
+
+    // Org-scope the lease. leasing has no org_id — scope via unit -> property.
+    const [[lease]] = await req.pool.execute(
+      `SELECT l.id FROM leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+        WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL LIMIT 1`,
+      [lease_id, orgId]
+    );
+    if (!lease) return fail(res, 'Lease not found', 404);
+
+    // The scan is optional, but if given it must belong to this org — a file_id
+    // is caller-supplied and must never be trusted across tenants.
+    const fileId = file_id || null;
+    if (fileId) {
+      const [[f]] = await req.pool.execute(
+        `SELECT id FROM file WHERE id = ? AND org_id = ? LIMIT 1`, [fileId, orgId]
+      );
+      if (!f) return fail(res, 'That file was not found', 400);
+    }
+
+    // Any in-flight request for this same period is moot now. Match on BOTH
+    // boundaries — two periods can share an end date, and cancelling the wrong
+    // one would strand a document still legitimately out for signature.
+    await req.pool.execute(
+      `UPDATE signature_request SET status = 6, updated_at = NOW()
+        WHERE lease_id = ? AND org_id = ? AND status IN (1, 2)
+          AND ((term_start IS NULL AND term_end IS NULL)
+               OR (term_start = ? AND term_end = ?))`,
+      [lease_id, orgId, termStart, termEnd]
+    );
+
+    const requestId = newId();
+    await req.pool.execute(
+      `INSERT INTO signature_request
+         (id, org_id, lease_id, template_id, original_file_id, signed_file_id,
+          token, status, signature_method, message,
+          term_start, term_end, term_stamp_end, completed_at, created_by)
+       VALUES (?, ?, ?, ?, NULL, ?, ?, 3, 'paper', ?, ?, ?, ?, ?, ?)`,
+      [requestId, orgId, lease_id, template_id || null, fileId,
+       newToken(), note || null, termStart, termEnd,
+       (term_stamp_end || '').slice(0, 10) || null, signedAt, userId || null]
+    );
+
+    // The audit trail must never imply an e-signature took place.
+    await req.pool.execute(
+      `INSERT INTO signature_event (id, request_id, event_type, ip, user_agent, metadata)
+       VALUES (?, ?, 'completed', ?, ?, ?)`,
+      [newId(), requestId, req.ip || null,
+       (req.headers['user-agent'] || '').slice(0, 500),
+       JSON.stringify({ recorded_manually: true, method: 'paper', signed_at: signedAt })]
+    );
+
+    // Keep the lease's own pointer on the most recent signed document, matching
+    // what finalizeRequest does for the e-sign path. The lease is org-verified
+    // above, so updating by id here is safe.
+    await req.pool.execute(
+      `UPDATE leasing SET signature_status = 'signed',
+              signed_file_id = COALESCE(?, signed_file_id), signed_at = ?
+        WHERE id = ?`,
+      [fileId, signedAt, lease_id]
+    );
+
+    logActivity(req, { action: 'CREATE', entityType: 'SIGNATURE_REQUEST', entityId: requestId }).catch(() => {});
+    ok(res, { id: requestId });
+  } catch (err) {
+    console.error('[signature] record-paper error:', err);
+    fail(res, err.message || 'Failed to record the signed document');
+  }
+});
+
 // GET /api/signature/request/:id — detail (admin view)
 router.get('/request/:id', authenticate, async (req, res) => {
   try {
@@ -410,12 +529,16 @@ router.get('/lease/:leaseId', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const [rows] = await req.pool.execute(
       `SELECT sr.id, sr.status, sr.sent_at, sr.completed_at, sr.expires_at, sr.token,
-              sr.original_file_id, sr.signed_file_id,
+              sr.original_file_id, sr.signed_file_id, sr.template_id,
+              sr.signature_method,
+              DATE_FORMAT(sr.term_start, '%Y-%m-%d')     AS term_start,
+              DATE_FORMAT(sr.term_end, '%Y-%m-%d')       AS term_end,
+              DATE_FORMAT(sr.term_stamp_end, '%Y-%m-%d') AS term_stamp_end,
               (SELECT COUNT(*) FROM signature_party WHERE request_id = sr.id) AS party_count,
               (SELECT COUNT(*) FROM signature_party WHERE request_id = sr.id AND status = 2) AS signed_count
          FROM signature_request sr
         WHERE sr.lease_id = ? AND sr.org_id = ?
-        ORDER BY sr.created_at DESC`,
+        ORDER BY sr.term_start IS NULL, sr.term_start ASC, sr.created_at ASC`,
       [req.params.leaseId, orgId]
     );
     ok(res, rows);
@@ -434,7 +557,9 @@ router.post('/request/:id/cancel', authenticate, async (req, res) => {
       [req.params.id, orgId]
     );
     if (!r) return fail(res, 'Not found', 404);
-    if (r.status === 3) return fail(res, 'Already fully signed — cannot cancel', 400);
+    // Number() is insurance only — bigNumberStrings applies to BIGINT/DECIMAL,
+    // not TINYINT, so this arrives as a number today.
+    if (Number(r.status) === 3) return fail(res, 'Already fully signed — cannot cancel', 400);
     await req.pool.execute(
       `UPDATE signature_request SET status = 6, updated_at = NOW() WHERE id = ?`,
       [req.params.id]
@@ -443,14 +568,17 @@ router.post('/request/:id/cancel', authenticate, async (req, res) => {
       `INSERT INTO signature_event (id, request_id, event_type) VALUES (?, ?, 'cancelled')`,
       [newId(), req.params.id]
     );
-    // Reset the lease's signature_status if there's no other in-flight request
+    // Recompute the lease's status from the WHOLE ledger rather than assuming
+    // 'none'. With a document per period, an earlier period may be legitimately
+    // signed — forcing 'none' here used to erase that.
+    const [siblings] = await req.pool.execute(
+      `SELECT status FROM signature_request
+        WHERE lease_id = ? AND org_id = ? AND id != ?`,
+      [r.lease_id, orgId, req.params.id]
+    );
     await req.pool.execute(
-      `UPDATE leasing SET signature_status = 'none' WHERE id = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM signature_request
-            WHERE lease_id = ? AND status IN (1, 2) AND id != ?
-         )`,
-      [r.lease_id, r.lease_id, req.params.id]
+      `UPDATE leasing SET signature_status = ? WHERE id = ?`,
+      [nextSignatureStatus(siblings), r.lease_id]
     );
     ok(res, { cancelled: true });
   } catch (err) {

@@ -23,7 +23,7 @@
  */
 
 const puppeteer = require('puppeteer');
-const { substitute, sampleContext } = require('./leaseTemplateVariables');
+const { substitute, sampleContext, applyTermOverride } = require('./leaseTemplateVariables');
 
 let _browserPromise = null;
 
@@ -134,7 +134,7 @@ function wrapHeaderFooter(html, kind) {
 // ───────────────────────────────────────────────────────────────────────────
 // Real-data renderer
 // ───────────────────────────────────────────────────────────────────────────
-async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = true }) {
+async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = true, term = null }) {
   // Fetch the template
   const [[tpl]] = await pool.execute(
     `SELECT id, body_html, header_html, footer_html, page_size, version
@@ -147,6 +147,9 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = tr
 
   // Fetch the full lease context
   const ctx = await loadLeaseContext(pool, orgId, leaseId);
+  // Documents that cover ONE period of the tenancy print that period, not the
+  // lease's own dates. No-op when no term is supplied.
+  applyTermOverride(ctx, term);
   // Real render: signature anchors emit invisible markers (not the visible
   // dashed preview placeholders) so the stamper can locate them after signing.
   ctx.realRender = true;
@@ -301,4 +304,5 @@ module.exports = {
   renderFromTemplate,
   renderTemplatePreview,
   renderInlinePreview,
+  applyTermOverride,
 };

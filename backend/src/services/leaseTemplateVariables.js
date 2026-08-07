@@ -105,6 +105,34 @@ function effectiveStampEndDate(lease) {
   return ymd(lease.stamp_end_date) || ymd(lease.end_date) || '';
 }
 
+/**
+ * Point a lease context at ONE period of the tenancy, for documents that cover
+ * an extension rather than the whole lease.
+ *
+ * stamp_end_date MUST be set explicitly, never left to fall through:
+ * effectiveStampEndDate returns `stamp_end_date || end_date`, so a lease with
+ * "Stamp for a longer term" ticked for its ORIGINAL period would otherwise
+ * print that original stamped date as the extension's Term of Tenancy — a
+ * wrong date on a legal document.
+ *
+ * Everything else — rent, tenant, property, unit — deliberately still comes
+ * from the lease row, so an extension prints the current rent.
+ *
+ * Lives here rather than in leasePdfRenderer because that module requires
+ * puppeteer at load time, which cannot be imported by the unit tests.
+ */
+function applyTermOverride(ctx, term) {
+  if (!ctx || !ctx.lease) return ctx;
+  if (!term || !term.start_date || !term.end_date) return ctx;
+  ctx.lease = {
+    ...ctx.lease,
+    start_date: term.start_date,
+    end_date: term.end_date,
+    stamp_end_date: term.stamp_end_date || null,
+  };
+  return ctx;
+}
+
 function joinName(first, last, company, type) {
   if (Number(type) === 1 && company) return company;
   return [first, last].filter(Boolean).join(' ').trim();
@@ -416,6 +444,7 @@ module.exports = {
   sampleContext,
   publicList,
   SIGNATURE_MARKERS,
+  applyTermOverride,
   // exported for tests
   defaultStampEndDate,
   effectiveStampEndDate,
