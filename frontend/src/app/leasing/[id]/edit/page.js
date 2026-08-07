@@ -43,6 +43,9 @@ const FLabel = ({ children, required }) => (
 export default function LeasingEditPage() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  // The end date as it stood BEFORE this edit, so an EXTENSION can be told apart
+  // from any other change. Set once when the lease loads.
+  const [loadedEndDate, setLoadedEndDate] = useState(null);
   const [pageLoading, setPageLoading] = useState(true);
   // Stamped-term override is opt-in; ticked only when the lease already has one.
   const [stampEnabled, setStampEnabled] = useState(false);
@@ -243,6 +246,7 @@ export default function LeasingEditPage() {
           share_lease: !!d.share_lease,
           all_past: !!d.all_past,
         });
+        setLoadedEndDate(d.end_date ? dayjs(d.end_date).format('YYYY-MM-DD') : null);
       }
     } catch (error) {
       console.error('Failed to load data:', error);
@@ -327,6 +331,24 @@ export default function LeasingEditPage() {
       const res = await leasing.update(leaseId, payload);
       if (res.data.code === 200) {
         message.success('Lease updated successfully');
+
+        // Only when the term actually GREW, and only when the SERVER says the
+        // uncovered stretch is long enough to need paperwork. No date maths
+        // here — the prompt and the lease banner must never disagree.
+        const newEnd = values.end_date ? values.end_date.format('YYYY-MM-DD') : null;
+        const extended = !!(newEnd && loadedEndDate && newEnd > loadedEndDate);
+        const pw = res.data.data?.paperwork;
+        if (extended && pw?.needs_document && pw.uncovered) {
+          Modal.confirm({
+            title: 'Paperwork for the extended term',
+            content: `No signed document covers ${dayjs(pw.uncovered.from).format('D MMM YYYY')} \u2013 ${dayjs(pw.uncovered.to).format('D MMM YYYY')}.`,
+            okText: 'Send for e-signature',
+            cancelText: 'Later',
+            onOk: () => router.push(`/leasing/${leaseId}/review-and-send`),
+            onCancel: () => router.push(`/leasing/${leaseId}/detail`),
+          });
+          return;
+        }
         router.push('/leasing');
       } else {
         message.error(res.data.message || 'Failed to update lease');

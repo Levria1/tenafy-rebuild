@@ -23,11 +23,12 @@ import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Card, Button, Select, Input, Space, message, Spin, Empty,
-  Form, Row, Col, Tag, Tooltip, InputNumber,
+  Form, Row, Col, Tag, Tooltip, InputNumber, DatePicker, Checkbox,
 } from 'antd';
 import {
   ArrowLeftOutlined, SendOutlined, EyeOutlined, PlusOutlined, DeleteOutlined,
 } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
 import { leasing, leaseTemplate, signature, pdf } from '../../../../lib/api';
 
@@ -48,6 +49,13 @@ export default function ReviewAndSendPage() {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [sending, setSending] = useState(false);
   const previewUrlRef = useRef(null);
+  // The PERIOD this document covers. A tenancy extended by editing its end date
+  // needs a document for the new period only, so this is not always the whole
+  // lease. Prefilled from the server's uncovered stretch.
+  const [termFrom, setTermFrom] = useState(null);
+  const [termTo, setTermTo] = useState(null);
+  const [stampLonger, setStampLonger] = useState(false);
+  const [termStampEnd, setTermStampEnd] = useState(null);
 
   // Initial load
   useEffect(() => {
@@ -86,6 +94,13 @@ export default function ReviewAndSendPage() {
           signer_email: l.tenant_email || '',
           role: 'tenant',
         }]);
+
+        // Prefill the period from the server's uncovered stretch, so an
+        // extension defaults to the new period rather than the whole tenancy.
+        // Falls back to the lease's own dates for a first contract.
+        const gap = l.paperwork?.uncovered;
+        setTermFrom(gap?.from ? dayjs(gap.from) : (l.start_date ? dayjs(l.start_date) : null));
+        setTermTo(gap?.to ? dayjs(gap.to) : (l.end_date ? dayjs(l.end_date) : null));
       } catch (e) {
         message.error('Failed to load lease data');
       } finally {
@@ -98,7 +113,7 @@ export default function ReviewAndSendPage() {
   useEffect(() => {
     if (selectedTemplateId && leaseId) refreshPreview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTemplateId]);
+  }, [selectedTemplateId, termFrom, termTo, stampLonger, termStampEnd]);
 
   const refreshPreview = async () => {
     if (!selectedTemplateId) return;
@@ -109,7 +124,11 @@ export default function ReviewAndSendPage() {
       // SAMPLE data — so the preview always showed "Alice Wong / 1 September 2026"
       // and you could never see the real dates (notably the stamped Term of
       // Tenancy) before sending the lease out for signature.
-      const r = await pdf.fetchLeaseWithTemplate(leaseId, selectedTemplateId);
+      const r = await pdf.fetchLeaseWithTemplate(leaseId, selectedTemplateId, {
+        from: termFrom ? termFrom.format('YYYY-MM-DD') : null,
+        to: termTo ? termTo.format('YYYY-MM-DD') : null,
+        stampEnd: stampLonger && termStampEnd ? termStampEnd.format('YYYY-MM-DD') : null,
+      });
       const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
       previewUrlRef.current = url;
@@ -151,6 +170,9 @@ export default function ReviewAndSendPage() {
         parties: cleanParties,
         message: msg || null,
         expires_in_days: exp,
+        term_start: termFrom ? termFrom.format('YYYY-MM-DD') : null,
+        term_end: termTo ? termTo.format('YYYY-MM-DD') : null,
+        term_stamp_end: stampLonger && termStampEnd ? termStampEnd.format('YYYY-MM-DD') : null,
       });
       if (r.data?.code === 200) {
         message.success(`Signature request sent to ${cleanParties.length} signer${cleanParties.length === 1 ? '' : 's'}.`);
@@ -214,6 +236,41 @@ export default function ReviewAndSendPage() {
                   </Button>
                 </Space>
               )}
+            </Card>
+
+            {/* The period this document covers. The contract prints these as its
+                term, and the preview re-renders when they change so what you
+                approve is what the signer receives. */}
+            <Card title="Period this document covers" size="small" style={{ marginBottom: 12 }}>
+              <Space wrap>
+                <DatePicker value={termFrom} onChange={setTermFrom} placeholder="From" />
+                <DatePicker value={termTo} onChange={setTermTo} placeholder="To" />
+              </Space>
+              <div style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
+                For an extension this starts the day after the last signed period ended.
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <Checkbox
+                  checked={stampLonger}
+                  onChange={(e) => {
+                    setStampLonger(e.target.checked);
+                    // +2 years - 1 day from the period start, matching the lease form.
+                    setTermStampEnd(e.target.checked && termFrom
+                      ? termFrom.add(2, 'year').subtract(1, 'day') : null);
+                  }}
+                >
+                  Stamp this period for a longer term
+                </Checkbox>
+                {stampLonger && (
+                  <div style={{ marginTop: 8 }}>
+                    <DatePicker value={termStampEnd} onChange={setTermStampEnd} />
+                    <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+                      Prints as the Term of Tenancy on this document only. The lease's own
+                      stamped term is left untouched.
+                    </div>
+                  </div>
+                )}
+              </div>
             </Card>
 
             <Card title="Signers" size="small" style={{ marginBottom: 12 }}>

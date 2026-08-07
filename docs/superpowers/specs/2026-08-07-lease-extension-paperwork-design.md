@@ -219,8 +219,11 @@ grows — 21 days stays quiet, 42 days is flagged. This is what stops repeated
 month-to-month rollovers from quietly accumulating into an undocumented year.
 
 Calendar-month arithmetic, clamped the same way as `defaultStampEndDate` (31 Jan + 1
-month → 28 Feb), and **the client and server must share one helper** — a prompt that
-disagrees with the banner about whether paperwork is due would be worse than no prompt.
+month → 28 Feb), and computed **only on the server**. `PUT /api/leasing/:id` returns the
+recomputed `paperwork` state and the edit page prompts from that — no date arithmetic on
+the client, so the prompt and the banner cannot drift apart. (The spec originally called
+for a shared client/server helper; duplicating the clamped maths across two packages is
+how they diverge, so the server is authoritative instead.)
 
 A sub-month uncovered period is not silence in the UI: the Documents section shows it as
 a plain grey line, `20 Aug – 5 Sep · no paperwork required (under a month)`, with no

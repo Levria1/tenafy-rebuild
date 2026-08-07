@@ -207,6 +207,7 @@ function CalendarInner() {
       if (want === 'unconfirmed') return isDraft;
       if (want === 'pending') return !isDraft && !!l.unconfirmed;
       if (want === 'deposit_due') return !!l.deposit_pending;
+      if (want === 'paperwork_gap') return !!l.paperwork_gap;
       return false;
     });
   };
@@ -273,6 +274,11 @@ function CalendarInner() {
                 )}
                 {l.deposit_pending && (
                   <span style={{ color: '#ff7875', fontWeight: 700, marginRight: 4 }}>*DEPOSIT DUE*</span>
+                )}
+                {/* The term runs a month or more past the last signed document —
+                    an extension that was never papered. */}
+                {l.paperwork_gap && (
+                  <span style={{ color: '#ffa940', fontWeight: 700, marginRight: 4 }}>*UNSIGNED PERIOD*</span>
                 )}
                 {l.tenant_name}
               </div>
@@ -402,6 +408,7 @@ function CalendarInner() {
             <Select.Option value="pending">Pending (awaiting e-sign)</Select.Option>
             <Select.Option value="unconfirmed">Unconfirmed (draft)</Select.Option>
             <Select.Option value="deposit_due">Deposit Due</Select.Option>
+            <Select.Option value="paperwork_gap">Paperwork gap</Select.Option>
           </Select>
           <Input
             placeholder="Search tenant..."
@@ -424,7 +431,7 @@ function CalendarInner() {
         <span><span style={{ display: 'inline-block', width: 14, height: 14, background: '#fff', border: '1px solid #d9d9d9', borderRadius: 2, marginRight: 4, verticalAlign: 'middle' }} /> Vacant</span>
       </div>
       <div style={{ marginBottom: 12, fontSize: 12, color: '#666' }}>
-        Hover a cell for details. Markers: <span style={{ color: '#d48806', fontWeight: 700 }}>*UNCONFIRMED*</span> draft lease, not yet confirmed · <span style={{ color: '#d48806', fontWeight: 700 }}>*PENDING*</span> awaiting e-signature · <span style={{ color: '#ff4d4f', fontWeight: 700 }}>*DEPOSIT DUE*</span> deposit invoice unpaid
+        Hover a cell for details. Markers: <span style={{ color: '#d48806', fontWeight: 700 }}>*UNCONFIRMED*</span> draft lease, not yet confirmed · <span style={{ color: '#d48806', fontWeight: 700 }}>*PENDING*</span> awaiting e-signature · <span style={{ color: '#ff4d4f', fontWeight: 700 }}>*DEPOSIT DUE*</span> deposit invoice unpaid · <span style={{ color: '#d46b08', fontWeight: 700 }}>*UNSIGNED PERIOD*</span> term runs past its paperwork
       </div>
 
       {loading ? (
