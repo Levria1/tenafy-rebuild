@@ -2,14 +2,14 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert, Checkbox, InputNumber } from 'antd';
+import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert, Checkbox, InputNumber, Upload } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined, MailOutlined, LogoutOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../components/mobile/MobileCardList';
 import SignStatusTag from '../../../../components/SignStatusTag';
-import { leasing, pdf, utility, signature } from '../../../../lib/api';
+import { leasing, pdf, utility, signature, file as fileApi } from '../../../../lib/api';
 
 const LEASE_TYPE_MAP = { 0: 'Fixed', 1: 'Month-to-Month' };
 const CONTRACT_TYPE_MAP = { 1: 'MR (May Renew)', 2: 'MTM (Month To Month)', 3: 'NR (Not Renewing)', 4: 'UC (Unconfirmed)' };
@@ -44,6 +44,13 @@ export default function LeasingDetailPage() {
   const [pushRows, setPushRows] = useState([]);          // rent still owed
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState(null);
+  // "Record signed on paper" — a document signed in ink against its period.
+  const [paperOpen, setPaperOpen] = useState(false);
+  const [paperSaving, setPaperSaving] = useState(false);
+  const [paperFrom, setPaperFrom] = useState(null);
+  const [paperTo, setPaperTo] = useState(null);
+  const [paperSignedAt, setPaperSignedAt] = useState(null);
+  const [paperFileId, setPaperFileId] = useState(null);
   const router = useRouter();
   const params = useParams();
   const { hasPermission } = useAuth();
@@ -86,8 +93,12 @@ export default function LeasingDetailPage() {
     try {
       const listRes = await signature.listForLease(leaseId);
       const requests = listRes.data?.data || [];
-      // Most recent first; pick the active (sent/viewed) one.
-      const active = requests.find(r => Number(r.status) === 1 || Number(r.status) === 2);
+      // Newest active request, chosen explicitly. The list is ordered by PERIOD
+      // now (a lease can hold one document per period), so position no longer
+      // implies recency.
+      const active = requests
+        .filter(r => Number(r.status) === 1 || Number(r.status) === 2)
+        .sort((a, b) => new Date(b.sent_at || 0) - new Date(a.sent_at || 0))[0];
       if (!active) {
         message.info('No active signing request to resend. Use "Send Again" to create a new one.');
         return;
@@ -106,11 +117,62 @@ export default function LeasingDetailPage() {
     }
   };
 
-  // Cancel the outstanding e-signature request. The common reason is that the
-  // tenant signed a PAPER copy instead, leaving the lease stuck on "Awaiting
-  // signature" forever with no way out — the backend has supported cancelling
-  // all along (POST /api/signature/request/:id/cancel) but nothing called it.
-  // Cancelling voids the signer's link and returns signature_status to 'none'.
+  // Cancel ONE request from the documents ledger. handleCancelSignature below
+  // cancels every open request on the lease, which was right when a lease had a
+  // single document but is too broad now that each period has its own.
+  const handleCancelRequest = async (requestId) => {
+    setCancellingSig(true);
+    try {
+      const res = await signature.cancelRequest(requestId);
+      if (res.data?.code !== 200) throw new Error(res.data?.message || 'Failed to cancel');
+      message.success('Request cancelled. The signer link no longer works.');
+      await loadLease();
+    } catch (err) {
+      message.error(err?.response?.data?.message || err.message || 'Failed to cancel');
+    } finally {
+      setCancellingSig(false);
+    }
+  };
+
+  // Prefilled from the server's uncovered period so staff never retype dates.
+  const openPaperModal = () => {
+    const gap = lease?.paperwork?.uncovered;
+    setPaperFrom(gap?.from ? dayjs(gap.from) : (lease?.start_date ? dayjs(lease.start_date) : null));
+    setPaperTo(gap?.to ? dayjs(gap.to) : (lease?.end_date ? dayjs(lease.end_date) : null));
+    setPaperSignedAt(dayjs());
+    setPaperFileId(null);
+    setPaperOpen(true);
+  };
+
+  const handleRecordPaper = async () => {
+    if (!paperFrom || !paperTo) return message.warning('Set the period this document covers.');
+    if (!paperSignedAt) return message.warning('Set the date it was signed.');
+    setPaperSaving(true);
+    try {
+      const res = await signature.recordPaper({
+        lease_id: leaseId,
+        term_start: paperFrom.format('YYYY-MM-DD'),
+        term_end: paperTo.format('YYYY-MM-DD'),
+        signed_at: paperSignedAt.format('YYYY-MM-DD'),
+        file_id: paperFileId,
+      });
+      if (res.data?.code === 200) {
+        message.success('Recorded.');
+        setPaperOpen(false);
+        await loadLease();
+      } else {
+        message.error(res.data?.message || 'Failed to record');
+      }
+    } catch (err) {
+      message.error(err?.response?.data?.message || 'Failed to record');
+    } finally {
+      setPaperSaving(false);
+    }
+  };
+
+  // Cancel EVERY outstanding e-signature request on the lease. Kept for the
+  // blunt "signed on paper, clear it all" case; the ledger's per-row Cancel is
+  // the precise one.
   const handleCancelSignature = async () => {
     setCancellingSig(true);
     try {
@@ -945,48 +1007,171 @@ export default function LeasingDetailPage() {
             )}
           </Space>
         </Modal>
-        {/* E-Signature status card — visible only when there's any signing
-            activity. Status badge + link to view signed PDF (if completed) or
-            the active signing request. */}
-        {(lease?.signature_status && lease.signature_status !== 'none') && (
-          <Card size="small" style={{ borderColor: lease.signature_status === 'signed' ? '#52c41a' : '#1677ff' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-              <div>
-                <strong>E-Signature:</strong>{' '}
-                {lease.signature_status === 'pending' && <Tag color="blue">Pending — waiting for signers</Tag>}
-                {lease.signature_status === 'signed' && <Tag color="green">Signed{lease.signed_at ? ` on ${dayjs(lease.signed_at).format('YYYY-MM-DD')}` : ''}</Tag>}
-                {lease.signature_status === 'declined' && <Tag color="red">Declined</Tag>}
-              </div>
+
+        {/* Record a document signed in ink. Without this the only option was
+            cancelling the request, which reset the lease to 'none' — an
+            ink-signed lease then looked identical to one nobody ever sent, with
+            no scan stored anywhere. */}
+        <Modal
+          title="Record a document signed on paper"
+          open={paperOpen}
+          onOk={handleRecordPaper}
+          confirmLoading={paperSaving}
+          okText="Record"
+          onCancel={() => setPaperOpen(false)}
+        >
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <div>
+              <div style={{ marginBottom: 4 }}>Period this document covers</div>
               <Space>
-                {lease.signed_file_id && (
-                  <Button onClick={() => window.open(`/api/file/preview/${lease.signed_file_id}`, '_blank')}>
-                    View Signed Lease
-                  </Button>
-                )}
-                {lease.signature_status === 'pending' && (
-                  <Button loading={resendingSig} onClick={handleResendSignature}>
-                    Resend to Signer
-                  </Button>
-                )}
-                {(lease.signature_status === 'pending' || lease.signature_status === 'declined') && (
-                  <Popconfirm
-                    title="Cancel the e-signature request?"
-                    description="Use this when the lease was signed on paper instead. The signer's link stops working and the lease no longer shows as awaiting signature. You can always send a new request later."
-                    okText="Cancel request"
-                    okButtonProps={{ danger: true }}
-                    onConfirm={handleCancelSignature}
-                  >
-                    <Button danger loading={cancellingSig}>Cancel Request</Button>
-                  </Popconfirm>
-                )}
-                <Button onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}>
-                  {lease.signature_status === 'pending' ? 'Manage Request' : 'Send Again'}
+                <DatePicker value={paperFrom} onChange={setPaperFrom} placeholder="From" />
+                <DatePicker value={paperTo} onChange={setPaperTo} placeholder="To" />
+              </Space>
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>Date signed</div>
+              <DatePicker value={paperSignedAt} onChange={setPaperSignedAt} />
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>Scan (optional)</div>
+              <Upload
+                maxCount={1}
+                customRequest={async ({ file, onSuccess, onError }) => {
+                  try {
+                    const fd = new FormData();
+                    fd.append('file', file);
+                    const r = await fileApi.upload(fd);
+                    const id = r.data?.data?.id || r.data?.data;
+                    setPaperFileId(id);
+                    onSuccess({ id });
+                  } catch (err) {
+                    message.error('Upload failed');
+                    onError(err);
+                  }
+                }}
+              >
+                <Button size="small">Upload scan</Button>
+              </Upload>
+            </div>
+          </Space>
+        </Modal>
+
+        {/* Documents & Signatures — one row per period of the tenancy.
+            Extending a lease by editing its end date leaves the new period
+            undocumented; this is where each signed document lives, whether
+            e-signed or signed on paper. */}
+        {(lease?.documents?.length > 0 || lease?.paperwork?.needs_document) && (
+          <Card size="small" title="Documents & Signatures">
+            <Table
+              size="small"
+              pagination={false}
+              rowKey="id"
+              dataSource={lease.documents || []}
+              columns={[
+                {
+                  title: 'Period',
+                  key: 'period',
+                  render: (_, d) => (d.term_start && d.term_end
+                    ? `${dayjs(d.term_start).format('D MMM YYYY')} \u2013 ${dayjs(d.term_end).format('D MMM YYYY')}`
+                    : <span style={{ color: '#999' }}>Period not recorded</span>),
+                },
+                {
+                  title: 'Status',
+                  key: 'status',
+                  render: (_, d) => {
+                    const st = Number(d.status);
+                    if (st === 3) {
+                      return (
+                        <Tag color="green">
+                          {d.signature_method === 'paper' ? 'Signed on paper' : 'E-signed'}
+                          {d.completed_at ? ` \u00b7 ${dayjs(d.completed_at).format('D MMM YYYY')}` : ''}
+                        </Tag>
+                      );
+                    }
+                    if (st === 1 || st === 2) return <Tag color="blue">Out for signature</Tag>;
+                    if (st === 4) return <Tag color="red">Declined</Tag>;
+                    if (st === 5) return <Tag>Expired</Tag>;
+                    return <Tag>Cancelled</Tag>;
+                  },
+                },
+                {
+                  // The card this replaced carried Resend / Cancel / Send Again.
+                  // Those controls survive per row rather than being dropped.
+                  title: '',
+                  key: 'actions',
+                  align: 'right',
+                  render: (_, d) => {
+                    const st = Number(d.status);
+                    return (
+                      <Space>
+                        {d.signed_file_id && (
+                          <Button size="small" onClick={() => window.open(`/api/file/preview/${d.signed_file_id}`, '_blank')}>
+                            View PDF
+                          </Button>
+                        )}
+                        {(st === 1 || st === 2) && (
+                          <Button size="small" loading={resendingSig} onClick={handleResendSignature}>
+                            Resend
+                          </Button>
+                        )}
+                        {(st === 0 || st === 1 || st === 2 || st === 4) && (
+                          <Popconfirm
+                            title="Cancel this signing request?"
+                            description="The signer's link stops working. Use this when the document was signed on paper instead — then record the scan below."
+                            okText="Cancel request"
+                            okButtonProps={{ danger: true }}
+                            onConfirm={() => handleCancelRequest(d.id)}
+                          >
+                            <Button size="small" danger loading={cancellingSig}>Cancel</Button>
+                          </Popconfirm>
+                        )}
+                      </Space>
+                    );
+                  },
+                },
+              ]}
+            />
+
+            {/* The gap. Only ever shown when the uncovered stretch reaches a
+                month — the SERVER decides, so this can never disagree with the
+                prompt shown after saving an extension. */}
+            {lease.paperwork?.needs_document && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginTop: 12 }}
+                message={lease.paperwork.reason === 'period_not_recorded'
+                  ? 'A signed document exists but the period it covers was never recorded.'
+                  : `No signed document covers ${dayjs(lease.paperwork.uncovered?.from).format('D MMM YYYY')} \u2013 ${dayjs(lease.paperwork.uncovered?.to).format('D MMM YYYY')}.`}
+                action={
+                  <Space>
+                    <Button size="small" type="primary" onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}>
+                      Send for e-signature
+                    </Button>
+                    <Button size="small" onClick={openPaperModal}>Record signed on paper</Button>
+                  </Space>
+                }
+              />
+            )}
+
+            {/* Under a month uncovered: informational, never a warning. */}
+            {!lease.paperwork?.needs_document && lease.paperwork?.reason === 'under_a_month' && (
+              <div style={{ marginTop: 12, color: '#888', fontSize: 12 }}>
+                {dayjs(lease.paperwork.uncovered?.from).format('D MMM YYYY')} \u2013 {dayjs(lease.paperwork.uncovered?.to).format('D MMM YYYY')}
+                {' '}\u00b7 no paperwork required (under a month)
+              </div>
+            )}
+
+            <div style={{ marginTop: 12 }}>
+              <Space>
+                <Button size="small" onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}>
+                  Send for e-signature
                 </Button>
+                <Button size="small" onClick={openPaperModal}>Record signed on paper</Button>
               </Space>
             </div>
           </Card>
         )}
-
         {/* Pending banner — prominently flags drafts that haven't been
             confirmed. Clicking "Confirm Lease" flips state to active and
             fires the deferred rent + deposit invoices. */}

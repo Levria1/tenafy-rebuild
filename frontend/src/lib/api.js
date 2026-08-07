@@ -392,6 +392,9 @@ export const signature = {
   cancelRequest: (id) => api.post(`/api/signature/request/${id}/cancel`),
   resendRequest: (id) => api.post(`/api/signature/request/${id}/resend`),
   listForLease: (leaseId) => api.get(`/api/signature/lease/${leaseId}`),
+  // Record a document signed in ink rather than e-signed, against the period it
+  // covers: { lease_id, term_start, term_end, signed_at, file_id?, term_stamp_end? }
+  recordPaper: (data) => api.post('/api/signature/record-paper', data),
   // Public (signer)
   getPublic: (token) => api.get(`/api/signature/public/${token}`),
   sign: (token, data) => api.post(`/api/signature/public/${token}/sign`, data),
@@ -474,8 +477,19 @@ export const pdf = {
   fetchInvoice: (id) => api.get(`/api/pdf/invoice/${id}`, { responseType: 'blob' }),
   fetchLease: (id) => api.get(`/api/pdf/lease/${id}`, { responseType: 'blob' }),
   // Real lease data rendered against a specific template (e-sign review preview).
-  fetchLeaseWithTemplate: (id, templateId) =>
-    api.get(`/api/pdf/lease/${id}`, { params: { template_id: templateId }, responseType: 'blob' }),
+  // `term` is optional: { from, to, stampEnd } renders the document for ONE
+  // period of the tenancy instead of the lease's own dates, so the preview
+  // matches what the signature request will actually send.
+  fetchLeaseWithTemplate: (id, templateId, term) =>
+    api.get(`/api/pdf/lease/${id}`, {
+      params: {
+        template_id: templateId,
+        term_start: term?.from || undefined,
+        term_end: term?.to || undefined,
+        term_stamp_end: term?.stampEnd || undefined,
+      },
+      responseType: 'blob',
+    }),
   fetchReceipt: (paymentId) => api.get(`/api/pdf/receipt/${paymentId}`, { responseType: 'blob' }),
 };
 

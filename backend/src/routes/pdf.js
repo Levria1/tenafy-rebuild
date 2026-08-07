@@ -291,11 +291,21 @@ router.get('/lease/:id', authenticate, async (req, res) => {
     // sample data, so the real dates — including the stamped Term of Tenancy —
     // were never visible before sending). Validated against the property allowlist.
     const requestedTemplateId = req.query.template_id || null;
+    // The preview must show the same period the signature request will send, or
+    // staff approve a document that differs from the one the signer receives.
+    const previewTerm = (req.query.term_start && req.query.term_end)
+      ? {
+          start_date: String(req.query.term_start).slice(0, 10),
+          end_date: String(req.query.term_end).slice(0, 10),
+          stamp_end_date: req.query.term_stamp_end
+            ? String(req.query.term_stamp_end).slice(0, 10) : null,
+        }
+      : null;
     try {
       const templateId = await resolveLeaseTemplateId(req.pool, orgId, lease, requestedTemplateId);
       if (templateId) {
         const { pdfBuffer } = await renderFromTemplate({
-          pool: req.pool, orgId, leaseId: id, templateId, stamp: false,
+          pool: req.pool, orgId, leaseId: id, templateId, stamp: false, term: previewTerm,
         });
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="lease-${id}.pdf"`);
