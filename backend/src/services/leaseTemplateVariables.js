@@ -133,30 +133,23 @@ function applyTermOverride(ctx, term) {
   return ctx;
 }
 
-// ── Section page breaks (tenancy contracts only) ────────────────────────────
+// ── Page breaks inside a template ───────────────────────────────────────────
 //
-// The contract templates are one continuous flow: Tenancy Agreement, Schedule I
-// to V, then SPECIAL CONDITIONS. Each should start on a fresh page.
+// Authors place {{PAGE_BREAK}} on its own line wherever a new page should start
+// (the contract templates use one before Schedule I..V and SPECIAL CONDITIONS).
 //
-// Done at RENDER time, never stored. The titles are `<p class="ql-align-center">
-// <strong>…</strong></p>`, not headings, and Quill only round-trips formats it
-// knows — a page-break style written into the stored HTML would be silently
-// stripped the next time someone saved the template in the editor. Converting
-// the titles to real <h2> headings would survive, but then the editor would
-// render them as large headings while the PDF kept them body-sized, breaking the
-// WYSIWYG parity the templates were tuned for.
+// It has to be a TEXT marker, not a class or style. The template editor is
+// react-quill (`<ReactQuill value={bodyHtml} onChange={setBodyHtml}>`), which
+// loads HTML through clipboard.convert() — that parses into Quill's Delta model
+// using only REGISTERED formats and discards everything else, then hands back
+// normalised HTML. So a class="page-break" or style="page-break-before" written
+// into the stored HTML would disappear the first time someone opened the
+// template and saved it. Plain text survives that round-trip, which is exactly
+// why {{VARIABLE}} placeholders work — so the break rides along as one of them.
 //
-// Matches a whole-block title only, so prose like "as detailed in the Schedule
-// hereto" is untouched.
-const SECTION_TITLE_RE = /^(?:schedule\s+[ivx]+|special\s+conditions|tenancy\s+agreement)$/i;
-
-// The Licence Agreements ALSO have centred bold "Schedule I"/"Schedule II"
-// titles, so the title pattern cannot scope this on its own — only tenancy
-// contracts get the breaks (user, 2026-08-07: "for contract template (not
-// license agreement)").
-function templateWantsSectionBreaks(templateName) {
-  return /contract/i.test(String(templateName || ''));
-}
+// PAGE_BREAK resolves to ITSELF in the variable registry, so substitution leaves
+// the marker intact for this transform to convert afterwards.
+const PAGE_BREAK_TOKEN = '{{PAGE_BREAK}}';
 
 function blockText(html) {
   return html
@@ -167,30 +160,26 @@ function blockText(html) {
 }
 
 /**
- * Start each contract section on a new page.
+ * Turn {{PAGE_BREAK}} markers into real page breaks.
  *
- * Skips the FIRST section title: a break before the opening block would leave a
- * blank leading page. Idempotent — a block already carrying the class is left
- * alone, so double-application cannot stack breaks.
+ * A marker sitting alone in a block REPLACES that block rather than nesting
+ * inside it: `<div>` is not valid inside `<p>`, and browsers silently close the
+ * paragraph early, which shifts the surrounding layout. A marker mixed into a
+ * line of text is dropped — an author who typed it mid-sentence did not mean to
+ * break the page there, and leaving the raw token visible in a signed contract
+ * would be worse.
  */
-function insertSectionPageBreaks(html) {
+function applyPageBreakMarkers(html) {
   if (!html) return html || '';
-  let seen = 0;
-  return String(html).replace(/<p\b([^>]*)>([\s\S]*?)<\/p>/gi, (full, attrs, inner) => {
-    if (!SECTION_TITLE_RE.test(blockText(inner))) return full;
-    seen += 1;
-    if (seen === 1) return full;                       // first section: no break
-    if (/pdf-section-break/.test(attrs)) return full;  // already marked
-    const withClass = /\bclass\s*=\s*"([^"]*)"/i.test(attrs)
-      ? attrs.replace(/\bclass\s*=\s*"([^"]*)"/i, (m, c) => `class="${c} pdf-section-break"`)
-      : `${attrs} class="pdf-section-break"`;
-    return `<p${withClass}>${inner}</p>`;
-  });
-}
-
-// Apply only to tenancy contracts.
-function applySectionPageBreaks(html, templateName) {
-  return templateWantsSectionBreaks(templateName) ? insertSectionPageBreaks(html) : (html || '');
+  let out = String(html).replace(/<(p|div)\b[^>]*>([\s\S]*?)<\/\1>/gi, (full, tag, inner) =>
+    blockText(inner) === PAGE_BREAK_TOKEN ? '<div class="page-break"></div>' : full
+  );
+  // Any leftover marker (mixed into text, or outside a block) is removed so the
+  // literal token can never print on a contract.
+  if (out.includes(PAGE_BREAK_TOKEN)) {
+    out = out.split(PAGE_BREAK_TOKEN).join('');
+  }
+  return out;
 }
 
 function joinName(first, last, company, type) {
@@ -313,6 +302,11 @@ const VARIABLES = [
   { key: 'STAMP_END_DATE_SHORT', group: 'Lease', label: 'Term-of-Tenancy end, short (2028-08-19)',
     sample: '2028-08-19',
     resolve: (ctx) => fmtDateShort(effectiveStampEndDate(ctx.lease)) },
+  // Layout marker, not data. Resolves to ITSELF so it survives substitution and
+  // is converted to a real break by applyPageBreakMarkers.
+  { key: 'PAGE_BREAK', group: 'Layout', label: 'Page break — start a new page here',
+    sample: '',
+    resolve: () => PAGE_BREAK_TOKEN },
   { key: 'LEASE_TERM_MONTHS', group: 'Lease', label: 'Lease term in months',
     sample: '12',
     resolve: (ctx) => {
@@ -505,9 +499,8 @@ module.exports = {
   publicList,
   SIGNATURE_MARKERS,
   applyTermOverride,
-  applySectionPageBreaks,
-  insertSectionPageBreaks,
-  templateWantsSectionBreaks,
+  applyPageBreakMarkers,
+  PAGE_BREAK_TOKEN,
   // exported for tests
   defaultStampEndDate,
   effectiveStampEndDate,

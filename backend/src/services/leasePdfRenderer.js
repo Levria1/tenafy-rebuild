@@ -24,7 +24,7 @@
 
 const puppeteer = require('puppeteer');
 const {
-  substitute, sampleContext, applyTermOverride, applySectionPageBreaks,
+  substitute, sampleContext, applyTermOverride, applyPageBreakMarkers,
 } = require('./leaseTemplateVariables');
 
 let _browserPromise = null;
@@ -115,10 +115,9 @@ function wrapBody(bodyHtml) {
     ul, ol { margin: 0 0 0 1.5em; padding: 0; }
     table { border-collapse: collapse; margin: 0.5em 0; }
     table td, table th { border: 1px solid #ccc; padding: 4px 8px; }
-    .page-break { page-break-after: always; }
-    /* Each contract section (Schedule I-V, Special Conditions) starts a fresh
-       page. Added at render time by applySectionPageBreaks, never stored. */
-    .pdf-section-break { page-break-before: always; break-before: page; }
+    /* Emitted by applyPageBreakMarkers from a {{PAGE_BREAK}} marker in the
+       template. break-after is the modern alias; keep both for Chrome. */
+    .page-break { page-break-after: always; break-after: page; }
   </style>
 </head>
 <body>${bodyHtml}</body>
@@ -159,9 +158,9 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = tr
   // dashed preview placeholders) so the stamper can locate them after signing.
   ctx.realRender = true;
 
-  // Substitute placeholders. Section page breaks are applied to the body only —
+  // Substitute placeholders, then convert {{PAGE_BREAK}} markers. Body only —
   // headers and footers repeat on every page, so a break there is meaningless.
-  const body   = applySectionPageBreaks(substitute(tpl.body_html || '', ctx), tpl.name);
+  const body   = applyPageBreakMarkers(substitute(tpl.body_html || '', ctx));
   const header = substitute(tpl.header_html || '', ctx);
   const footer = substitute(tpl.footer_html || '', ctx);
 
@@ -194,9 +193,9 @@ async function renderTemplatePreview({ pool, orgId, templateId }) {
   if (!tpl) throw new Error('Template not found');
 
   const ctx = sampleContext();
-  // Same section page breaks as the real render, so the editor's Preview button
+  // Same page-break handling as the real render, so the editor's Preview button
   // shows the pagination staff will actually get.
-  const body   = applySectionPageBreaks(substitute(tpl.body_html || '', ctx), tpl.name);
+  const body   = applyPageBreakMarkers(substitute(tpl.body_html || '', ctx));
   const header = substitute(tpl.header_html || '', ctx);
   const footer = substitute(tpl.footer_html || '', ctx);
 
@@ -207,7 +206,9 @@ async function renderTemplatePreview({ pool, orgId, templateId }) {
 // Used so staff can see changes BEFORE clicking Save.
 async function renderInlinePreview({ body_html, header_html, footer_html, page_size }) {
   const ctx = sampleContext();
-  const body   = substitute(body_html   || '', ctx);
+  // Markers must convert here too, or "Preview" before saving would show
+  // different pagination from the saved template.
+  const body   = applyPageBreakMarkers(substitute(body_html || '', ctx));
   const header = substitute(header_html || '', ctx);
   const footer = substitute(footer_html || '', ctx);
   return renderHtmlToPdf({ body, header, footer, pageSize: page_size || 'A4' });

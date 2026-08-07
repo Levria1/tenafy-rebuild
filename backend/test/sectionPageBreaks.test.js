@@ -1,104 +1,108 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  applySectionPageBreaks,
-  insertSectionPageBreaks,
-  templateWantsSectionBreaks,
+  applyPageBreakMarkers,
+  PAGE_BREAK_TOKEN,
+  substitute,
+  sampleContext,
 } = require('../src/services/leaseTemplateVariables');
 
 // Titles exactly as the live contract templates store them.
 const title = (t) =>
   `<p class="ql-align-center"><strong style="color: rgb(0, 0, 0); background-color: transparent;">${t}</strong></p>`;
 const para = (t) => `<p>${t}</p>`;
+const marker = () => `<p>${PAGE_BREAK_TOKEN}</p>`;
 
-const CONTRACT = [
-  title('Tenancy&nbsp;Agreement'), para('The Landlord lets the Premises...'),
-  title('Schedule&nbsp;I'), para('Bank details...'),
-  title('Schedule&nbsp;II'), para('Name: Tane Residence Ltd'),
-  title('Schedule&nbsp;III'), para('Inventory...'),
-  title('Schedule&nbsp;IV'), para('Rules...'),
-  title('Schedule&nbsp;V'), para('More...'),
-  title('SPECIAL&nbsp;CONDITIONS'), para('Extra terms...'),
-].join('');
+const breaks = (html) => (html.match(/class="page-break"/g) || []).length;
 
-const breaks = (html) => (html.match(/pdf-section-break/g) || []).length;
-
-test('every section after the first starts a new page', () => {
-  // 7 titles -> 6 breaks. The first must NOT break, or the PDF opens with a
-  // blank leading page.
-  const out = insertSectionPageBreaks(CONTRACT);
-  assert.equal(breaks(out), 6);
+test('a marker alone in a paragraph becomes a real page break', () => {
+  const out = applyPageBreakMarkers(marker() + title('Schedule&nbsp;I'));
+  assert.equal(breaks(out), 1);
+  assert.ok(out.includes('<div class="page-break"></div>'));
 });
 
-test('the opening Tenancy Agreement title is left alone', () => {
-  const out = insertSectionPageBreaks(CONTRACT);
-  const firstTitleEnd = out.indexOf('</p>');
-  assert.ok(!out.slice(0, firstTitleEnd).includes('pdf-section-break'));
+test('the marker REPLACES its paragraph rather than nesting inside it', () => {
+  // <div> inside <p> makes the browser close the paragraph early, which shifts
+  // the surrounding layout.
+  const out = applyPageBreakMarkers(marker());
+  assert.equal(out, '<div class="page-break"></div>');
+  assert.ok(!out.includes('<p'));
 });
 
-test('the existing alignment class is preserved, not replaced', () => {
-  // Losing ql-align-center would left-align every section heading.
-  const out = insertSectionPageBreaks(CONTRACT);
-  assert.ok(out.includes('class="ql-align-center pdf-section-break"'));
-  assert.equal((out.match(/ql-align-center/g) || []).length, 7);
+test('one marker per section gives one break each', () => {
+  const contract = [
+    title('Tenancy&nbsp;Agreement'), para('The Landlord lets...'),
+    marker(), title('Schedule&nbsp;I'), para('Bank details...'),
+    marker(), title('Schedule&nbsp;II'), para('Name: Tane Residence Ltd'),
+    marker(), title('Schedule&nbsp;III'), para('Inventory...'),
+    marker(), title('Schedule&nbsp;IV'), para('Rules...'),
+    marker(), title('Schedule&nbsp;V'), para('More...'),
+    marker(), title('SPECIAL&nbsp;CONDITIONS'), para('Extra terms...'),
+  ].join('');
+  assert.equal(breaks(applyPageBreakMarkers(contract)), 6);
+});
+
+test('a marker Quill has wrapped with formatting still converts', () => {
+  // Quill may store the marker inside a styled span or with an alignment class.
+  const html = '<p class="ql-align-center"><span style="color: rgb(0, 0, 0);">'
+    + PAGE_BREAK_TOKEN + '</span></p>';
+  assert.equal(breaks(applyPageBreakMarkers(html)), 1);
+});
+
+test('a marker padded with &nbsp; still converts', () => {
+  assert.equal(breaks(applyPageBreakMarkers(`<p>&nbsp;${PAGE_BREAK_TOKEN}&nbsp;</p>`)), 1);
+});
+
+test('a marker in a div converts too', () => {
+  assert.equal(breaks(applyPageBreakMarkers(`<div>${PAGE_BREAK_TOKEN}</div>`)), 1);
+});
+
+test('a marker typed mid-sentence is removed, never printed', () => {
+  // Leaving the raw token visible on a signed contract would be worse than
+  // ignoring a break the author probably did not mean there.
+  const out = applyPageBreakMarkers(`<p>Rent is payable ${PAGE_BREAK_TOKEN} monthly.</p>`);
+  assert.equal(breaks(out), 0);
+  assert.ok(!out.includes(PAGE_BREAK_TOKEN));
+  assert.ok(out.includes('Rent is payable'));
+  assert.ok(out.includes('monthly.'));
+});
+
+test('the literal token can never survive to the PDF', () => {
+  const out = applyPageBreakMarkers(`${PAGE_BREAK_TOKEN}<p>loose marker outside a block</p>`);
+  assert.ok(!out.includes(PAGE_BREAK_TOKEN));
+});
+
+test('templates with no marker are untouched', () => {
+  // This is what keeps the Licence Agreements exactly as they are: no marker,
+  // no breaks, no dependence on template names.
+  const licence = title('Schedule&nbsp;I') + para('x') + title('Schedule&nbsp;II') + para('y');
+  const out = applyPageBreakMarkers(licence);
+  assert.equal(breaks(out), 0);
+  assert.equal(out, licence);
 });
 
 test('prose mentioning a Schedule is never broken', () => {
-  const html = title('Tenancy&nbsp;Agreement')
-    + para('The fixtures are as detailed in the Schedule hereto.')
+  const html = para('The fixtures are as detailed in the Schedule hereto.')
     + para('Rent is payable per Schedule I of this Agreement.');
-  assert.equal(breaks(insertSectionPageBreaks(html)), 0);
+  assert.equal(breaks(applyPageBreakMarkers(html)), 0);
 });
 
 test('applying twice does not stack breaks', () => {
-  const once = insertSectionPageBreaks(CONTRACT);
-  const twice = insertSectionPageBreaks(once);
-  assert.equal(breaks(twice), 6);
-});
-
-test('SPECIAL CONDITIONS is matched despite its own attribute order', () => {
-  // The live templates write this one's style attributes the other way round.
-  const html = title('Schedule&nbsp;I')
-    + '<p class="ql-align-center"><strong style="background-color: transparent; color: rgb(0, 0, 0);">SPECIAL&nbsp;CONDITIONS</strong></p>';
-  assert.equal(breaks(insertSectionPageBreaks(html)), 1);
-});
-
-test('lower-case and extra-spaced titles still match', () => {
-  const html = title('Tenancy Agreement') + title('schedule   iv');
-  assert.equal(breaks(insertSectionPageBreaks(html)), 1);
+  const once = applyPageBreakMarkers(marker() + title('Schedule&nbsp;I'));
+  assert.equal(breaks(applyPageBreakMarkers(once)), 1);
 });
 
 test('empty or missing html is safe', () => {
-  assert.equal(insertSectionPageBreaks(''), '');
-  assert.equal(insertSectionPageBreaks(null), '');
-  assert.equal(insertSectionPageBreaks(undefined), '');
+  assert.equal(applyPageBreakMarkers(''), '');
+  assert.equal(applyPageBreakMarkers(null), '');
+  assert.equal(applyPageBreakMarkers(undefined), '');
 });
 
-// ── scoping: contracts only ─────────────────────────────────────────────────
-
-test('only templates named as contracts get section breaks', () => {
-  assert.equal(templateWantsSectionBreaks('Tane Residence Contract Template'), true);
-  assert.equal(templateWantsSectionBreaks('ACJ Contract Template'), true);
-  assert.equal(templateWantsSectionBreaks('Naos Holdings Limited Contract Template'), true);
-  assert.equal(templateWantsSectionBreaks('Parcelle Limited Contract Template'), true);
-});
-
-test('licence agreements are excluded even though they also have Schedule titles', () => {
-  // This is the whole reason scoping cannot be by title pattern: the licences
-  // carry centred bold "Schedule I"/"Schedule II" of their own.
-  const LICENCE = title('Schedule&nbsp;I') + para('x') + title('Schedule&nbsp;II') + para('y');
-  for (const n of ['Tane License Agreement', 'ACJ License Agreement',
-                   'Parcelle License Agreement', 'Naos License Agreement']) {
-    assert.equal(templateWantsSectionBreaks(n), false, n);
-    assert.equal(breaks(applySectionPageBreaks(LICENCE, n)), 0, n);
-  }
-});
-
-test('a contract template gets breaks through the gated entry point', () => {
-  assert.equal(breaks(applySectionPageBreaks(CONTRACT, 'ACJ Contract Template')), 6);
-});
-
-test('a missing template name is treated as not-a-contract', () => {
-  assert.equal(breaks(applySectionPageBreaks(CONTRACT, null)), 0);
-  assert.equal(breaks(applySectionPageBreaks(CONTRACT, undefined)), 0);
+test('substitution leaves the marker intact for the transform', () => {
+  // PAGE_BREAK resolves to ITSELF, so variable substitution must not consume it.
+  const html = marker() + para('Tenant: {{TENANT_NAME}}');
+  const substituted = substitute(html, sampleContext());
+  assert.ok(substituted.includes(PAGE_BREAK_TOKEN), 'marker survived substitute()');
+  assert.ok(!substituted.includes('{{TENANT_NAME}}'), 'real variables still resolved');
+  assert.equal(breaks(applyPageBreakMarkers(substituted)), 1);
 });
