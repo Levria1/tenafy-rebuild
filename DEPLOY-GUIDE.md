@@ -551,13 +551,40 @@ New file uploads go to `~/tenafy/backend/uploads/` automatically (created by the
 
 ### Legacy files (from original Tenafy)
 
-If you have the legacy storage files (originally from `D:\Tane\AWS Backup\frontend\tane\storage\`):
+⚠️ **This is NOT optional on the production droplet — 10,211 of 12,218 rows in the
+`file` table (84%) reference legacy filenames.** `routes/file.js` looks in
+`backend/uploads/` first and then `LEGACY_STORAGE_DIR`; if neither has the file it
+returns "File not found". Pointing this at the wrong path silently breaks every
+legacy tenant photo, ID scan and property image in the app.
+
+**Production value (verified 2026-08-08):**
+
+```
+LEGACY_STORAGE_DIR=/var/www/tane/storage
+```
+
+Those 6.3 GB / 10,302 files were left in place by the original Java app rather than
+copied into the rebuild, so the two systems **share** the directory. It must be kept
+even after the legacy stack is retired — the rebuild's own records depend on it.
+
+The paths shown elsewhere in this guide (`/home/tenafy/tenafy/storage`) are generic
+examples. Prod was once set to a variant of that placeholder, which pointed at a
+directory that did not exist and made all 10,211 files unviewable until it was
+corrected. **Verify with a real file, not just the config:**
 
 ```bash
-# Transfer from dev machine to server
-scp -r "/path/to/storage" tenafy@APP_DROPLET_IP:~/tenafy/storage/
+# Pick a real legacy row, fetch it through the API, confirm it is actually an image
+ID=$(mysql -u USER -p -D DB -N -B -e \
+  'SELECT id FROM file WHERE item_name REGEXP "^[0-9]{13}_[0-9]+" LIMIT 1')
+curl -s -o /tmp/f.bin -w '%{http_code} %{content_type}\n' \
+  "http://127.0.0.1:4001/api/file/preview/$ID"
+file -b /tmp/f.bin      # expect: JPEG image data …  (a 200 alone is not proof)
+```
 
-# Make sure LEGACY_STORAGE_DIR in .env points to this path
+If instead you are moving the files to a fresh server:
+
+```bash
+scp -r "/path/to/storage" user@APP_DROPLET_IP:/var/www/tane/storage/
 ```
 
 ### Permissions
