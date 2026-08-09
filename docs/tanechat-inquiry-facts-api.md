@@ -224,6 +224,11 @@ Response:
 **Both endpoints always return all five keys**, `null` where not applicable, so one
 parser handles either response.
 
+**On a replay** (same key, same payload) the stored outcome is returned, which records
+`inquiry_id`, `applied` and `reason` but not `created` or `superseded_inquiry_id` — a
+replay always reports `created: false` and a null supersede. The original response is the
+authoritative one for those two fields.
+
 **Call `from-chat` once per conversation first.** Tenafy will not create an inquiry
 from a bare fact list — that would manufacture records from conversations nobody
 classified as enquiries.
@@ -249,7 +254,7 @@ message must not spawn a duplicate deal. Superseding is only for
 | `inquiry_converted` | already has a tenant |
 | `viewing_active` | a confirmed or completed viewing exists |
 | `inquiry_deleted` | soft-deleted |
-| `not_inquiry` | previously recorded as `is_inquiry: false` |
+| `not_inquiry` | returned by `from-chat` for `is_inquiry: false`. Note it is not persisted, so a later `/facts` call for that conversation returns `no_inquiry`, not this |
 
 ---
 

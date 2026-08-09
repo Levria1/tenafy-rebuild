@@ -50,6 +50,26 @@ function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
 
+const API_WRITABLE_INQUIRY_FIELDS = new Set([
+  'first_name',
+  'last_name',
+  'email',
+  'phone',
+  'budget',
+  'desired_start_date',
+]);
+
+function parseApiSetFields(apiSetFields) {
+  if (Array.isArray(apiSetFields)) return apiSetFields.filter(f => typeof f === 'string');
+  if (typeof apiSetFields !== 'string' || !apiSetFields.trim()) return [];
+  try {
+    const parsed = JSON.parse(apiSetFields);
+    return Array.isArray(parsed) ? parsed.filter(f => typeof f === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // GET /list — paged list with optional search + filters
 // ---------------------------------------------------------------------------
@@ -389,6 +409,21 @@ router.put('/:id', async (req, res) => {
     // If reminder_date changed, clear reminder_sent_at so the new date will fire
     if (req.body.reminder_date !== undefined) {
       sets.push('reminder_sent_at = NULL');
+    }
+    const humanFields = Object.keys(req.body || {}).filter(f => API_WRITABLE_INQUIRY_FIELDS.has(f));
+    if (humanFields.length) {
+      const [[current]] = await req.pool.execute(
+        `SELECT api_set_fields
+           FROM inquiry
+          WHERE id = ? AND org_id = ? AND deleted_at IS NULL
+          LIMIT 1`,
+        [req.params.id, orgId]
+      );
+      const remove = new Set(humanFields);
+      const reduced = parseApiSetFields(current ? current.api_set_fields : null)
+        .filter(field => !remove.has(field));
+      sets.push('api_set_fields = ?');
+      params.push(JSON.stringify(reduced));
     }
     if (!sets.length) return fail(res, 'No fields to update', 400);
     params.push(req.params.id, orgId);

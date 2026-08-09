@@ -11,6 +11,14 @@ const { createCandidateBooking, findActiveLeaseForUnit } = require('../services/
 const viewingNegotiation = require('../services/viewingNegotiation');
 const { loadTemplate, substituteVariables } = require('../services/emailService');
 const { validateBookingSlot } = require('../utils/viewingWindow');
+const {
+  hkDate,
+  appendFactsToNotes,
+  resolveWritableFields,
+  mergeApiSetFields,
+  validateFields,
+  payloadHash,
+} = require('../utils/inquiryFacts');
 const config = require('../config');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
@@ -29,6 +37,417 @@ function fail(res, message, status = 500) {
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
+
+const FACT_CHANNELS = new Set(['whatsapp', 'email']);
+const MAX_FACTS = 50;
+const MAX_FACT_CHARS = 500;
+const MAX_NOTES_CHARS = 60000;
+const INQUIRY_FACT_FIELDS = ['first_name', 'last_name', 'email', 'phone', 'budget', 'desired_start_date'];
+
+function inquiryFactResponse({ inquiryId = null, created = false, applied = false, reason = null, supersededInquiryId = null }) {
+  return {
+    inquiry_id: inquiryId == null ? null : String(inquiryId),
+    created,
+    applied,
+    reason,
+    superseded_inquiry_id: supersededInquiryId == null ? null : String(supersededInquiryId),
+  };
+}
+
+function validateInquiryFactRequest(body, { requireIsInquiry = false } = {}) {
+  const b = body || {};
+  for (const field of ['schema_version', 'channel', 'channel_user_id', 'occurred_at', 'idempotency_key']) {
+    if (b[field] === undefined || b[field] === null || b[field] === '') {
+      return { ok: false, error: `${field} is required` };
+    }
+  }
+  if (requireIsInquiry && (b.is_inquiry === undefined || b.is_inquiry === null)) {
+    return { ok: false, error: 'is_inquiry is required' };
+  }
+  if (b.schema_version !== 1) return { ok: false, error: 'unsupported_schema_version' };
+  // occurred_at must PARSE, not merely be present: hkDate returns '' for garbage,
+  // which would append note lines prefixed with a bare ": " and quietly destroy the
+  // date on the audit trail Rule 4 exists to protect.
+  if (!hkDate(b.occurred_at)) return { ok: false, error: 'invalid_occurred_at' };
+  if (!FACT_CHANNELS.has(String(b.channel))) return { ok: false, error: 'unsupported_channel' };
+  if (b.facts !== undefined && !Array.isArray(b.facts)) return { ok: false, error: 'facts_must_be_array' };
+  const facts = Array.isArray(b.facts) ? b.facts : [];
+  if (facts.length > MAX_FACTS) return { ok: false, error: 'too_many_facts' };
+  for (const fact of facts) {
+    if (String(fact).length > MAX_FACT_CHARS) return { ok: false, error: 'fact_too_long' };
+  }
+  const fieldsResult = validateFields(b.fields);
+  if (!fieldsResult.ok) return { ok: false, error: fieldsResult.error };
+  return { ok: true, facts, fields: fieldsResult.fields };
+}
+
+async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
+  await conn.execute(
+    `UPDATE inquiry_fact_delivery
+        SET inquiry_id = ?, applied = ?, reason = ?
+      WHERE org_id = ? AND idempotency_key = ?`,
+    [
+      outcome.inquiryId == null ? null : outcome.inquiryId,
+      outcome.applied ? 1 : 0,
+      outcome.reason || null,
+      orgId,
+      idempotencyKey,
+    ]
+  );
+}
+
+async function claimInquiryFactDelivery(conn, orgId, idempotencyKey, hash) {
+  try {
+    await conn.execute(
+      `INSERT INTO inquiry_fact_delivery
+         (id, org_id, idempotency_key, payload_hash, applied)
+       VALUES (?, ?, ?, ?, 0)`,
+      [newId(), orgId, idempotencyKey, hash]
+    );
+    return null;
+  } catch (e) {
+    if (e.code !== 'ER_DUP_ENTRY') throw e;
+    const [[prior]] = await conn.execute(
+      `SELECT inquiry_id, applied, reason, payload_hash
+         FROM inquiry_fact_delivery
+        WHERE org_id = ? AND idempotency_key = ?
+        LIMIT 1`,
+      [orgId, idempotencyKey]
+    );
+    return prior;
+  }
+}
+
+async function loadLockedInquiryForFacts(conn, orgId, inquiryId) {
+  const [[row]] = await conn.execute(
+    `SELECT i.id, i.status, i.tenant_id, i.notes, i.api_set_fields,
+            i.first_name, i.last_name, i.email, i.phone, i.budget,
+            DATE_FORMAT(i.desired_start_date, '%Y-%m-%d') AS desired_start_date,
+            i.deleted_at
+       FROM inquiry i
+      WHERE i.id = ? AND i.org_id = ?
+      FOR UPDATE`,
+    [inquiryId, orgId]
+  );
+  if (!row) return { row: null, reason: 'no_inquiry' };
+  if (row.deleted_at != null) return { row, reason: 'inquiry_deleted' };
+  if (Number(row.status) !== 0) return { row, reason: 'inquiry_closed' };
+  if (row.tenant_id != null) return { row, reason: 'inquiry_converted' };
+  const [[active]] = await conn.execute(
+    `SELECT EXISTS(
+       SELECT 1
+         FROM viewing_booking vb
+         JOIN inquiry i ON i.id = vb.inquiry_id
+        WHERE vb.inquiry_id = ? AND i.org_id = ? AND vb.status IN (1, 3)
+        LIMIT 1
+     ) AS active`,
+    [inquiryId, orgId]
+  );
+  if (Number(active.active) === 1) return { row, reason: 'viewing_active' };
+  return { row, reason: null };
+}
+
+function buildFieldAssignments(fields, currentRow) {
+  const resolved = resolveWritableFields(fields, currentRow, currentRow ? currentRow.api_set_fields : null);
+  const writtenNames = Object.keys(resolved.writable);
+  const apiSetFields = mergeApiSetFields(currentRow ? currentRow.api_set_fields : null, writtenNames);
+  return { writable: resolved.writable, writtenNames, apiSetFields };
+}
+
+async function createInquiryFromFactPayload(conn, orgId, session, channel, fields, summary) {
+  const inquiryId = newId();
+  const values = {
+    first_name: fields.first_name || null,
+    last_name: fields.last_name || null,
+    email: fields.email || (channel === 'email' ? String(session.channel_user_id).toLowerCase() : null),
+    phone: fields.phone || (channel === 'whatsapp' ? String(session.channel_user_id) : null),
+    budget: fields.budget != null ? Number(fields.budget) : null,
+    desired_start_date: fields.desired_start_date || null,
+  };
+  const written = INQUIRY_FACT_FIELDS.filter(field => values[field] !== null && values[field] !== undefined && values[field] !== '');
+  await conn.execute(
+    `INSERT INTO inquiry
+       (id, org_id, inquiry_date, first_name, last_name, email, phone,
+        notes, api_set_fields, source, status, desired_start_date, budget)
+     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+    [
+      inquiryId,
+      orgId,
+      values.first_name,
+      values.last_name,
+      values.email,
+      values.phone,
+      summary ? String(summary) : null,
+      JSON.stringify(written),
+      channel,
+      values.desired_start_date,
+      values.budget,
+    ]
+  );
+  await conn.execute(
+    `UPDATE chat_session
+        SET inquiry_id = ?, lead_captured = 1
+      WHERE id = ?`,
+    [inquiryId, session.id]
+  );
+  return inquiryId;
+}
+
+async function applyFieldsAndSummaryToInquiry(conn, orgId, row, fields, summary) {
+  const sets = [];
+  const params = [];
+  const { writable, writtenNames, apiSetFields } = buildFieldAssignments(fields, row);
+  if (summary && !(row.notes && String(row.notes).trim())) {
+    sets.push('notes = ?');
+    params.push(String(summary));
+  }
+  sets.push('api_set_fields = ?');
+  params.push(JSON.stringify(apiSetFields));
+  for (const field of writtenNames) {
+    sets.push(`${field} = ?`);
+    params.push(field === 'budget' ? Number(writable[field]) : writable[field]);
+  }
+  sets.push('updated_at = NOW()');
+  await conn.execute(`UPDATE inquiry SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, [...params, row.id, orgId]);
+  return writtenNames;
+}
+
+// POST /api/public/inquiry/from-chat
+router.post('/inquiry/from-chat', async (req, res) => {
+  const checked = validateInquiryFactRequest(req.body, { requireIsInquiry: true });
+  if (!checked.ok) return fail(res, checked.error, 400);
+
+  let conn;
+  try {
+    const orgId = req.apiKey.orgId;
+    const b = req.body || {};
+    const channel = String(b.channel);
+    const channelUserId = String(b.channel_user_id);
+    const idempotencyKey = String(b.idempotency_key);
+    const hash = payloadHash(b);
+
+    conn = await req.pool.getConnection();
+    await conn.beginTransaction();
+
+    const prior = await claimInquiryFactDelivery(conn, orgId, idempotencyKey, hash);
+    if (prior) {
+      await conn.commit();
+      if (prior.payload_hash !== hash) return fail(res, 'idempotency_key_conflict', 409);
+      return ok(res, inquiryFactResponse({
+        inquiryId: prior.inquiry_id,
+        created: false,
+        applied: Number(prior.applied) === 1,
+        reason: prior.reason || null,
+      }));
+    }
+
+    await conn.execute(
+      `INSERT INTO chat_session (id, channel, channel_user_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, 0, NOW(), NOW())
+       ON DUPLICATE KEY UPDATE updated_at = NOW()`,
+      [newId(), channel, channelUserId]
+    );
+    const [[session]] = await conn.execute(
+      `SELECT id, channel, channel_user_id, inquiry_id
+         FROM chat_session
+        WHERE channel = ? AND channel_user_id = ?
+        LIMIT 1
+        FOR UPDATE`,
+      [channel, channelUserId]
+    );
+    if (b.conversation_id !== undefined) {
+      await conn.execute(
+        `UPDATE chat_session SET external_conversation_id = ? WHERE id = ?`,
+        [b.conversation_id == null ? null : String(b.conversation_id), session.id]
+      );
+    }
+
+    if (b.is_inquiry === false) {
+      const outcome = inquiryFactResponse({ reason: 'not_inquiry' });
+      await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
+        inquiryId: null,
+        applied: false,
+        reason: 'not_inquiry',
+      });
+      await conn.commit();
+      return ok(res, outcome);
+    }
+
+    let outcome;
+    if (!session.inquiry_id) {
+      const inquiryId = await createInquiryFromFactPayload(conn, orgId, session, channel, checked.fields, b.summary);
+      outcome = inquiryFactResponse({ inquiryId, created: true, applied: true });
+    } else {
+      const gate = await loadLockedInquiryForFacts(conn, orgId, session.inquiry_id);
+      if (!gate.reason) {
+        await applyFieldsAndSummaryToInquiry(conn, orgId, gate.row, checked.fields, b.summary);
+        outcome = inquiryFactResponse({ inquiryId: gate.row.id, created: false, applied: true });
+      } else if (gate.reason === 'inquiry_closed' || gate.reason === 'inquiry_converted') {
+        const inquiryId = await createInquiryFromFactPayload(conn, orgId, session, channel, checked.fields, b.summary);
+        outcome = inquiryFactResponse({
+          inquiryId,
+          created: true,
+          applied: true,
+          supersededInquiryId: session.inquiry_id,
+        });
+      } else {
+        outcome = inquiryFactResponse({
+          inquiryId: session.inquiry_id,
+          created: false,
+          applied: false,
+          reason: gate.reason,
+        });
+      }
+    }
+
+    await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
+      inquiryId: outcome.inquiry_id,
+      applied: outcome.applied,
+      reason: outcome.reason,
+    });
+    await conn.commit();
+    return ok(res, outcome);
+  } catch (error) {
+    if (conn) await conn.rollback();
+    console.error('Public inquiry from-chat error:', error);
+    return fail(res, 'Failed to process inquiry facts');
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+// POST /api/public/inquiry/facts
+router.post('/inquiry/facts', async (req, res) => {
+  const checked = validateInquiryFactRequest(req.body);
+  if (!checked.ok) return fail(res, checked.error, 400);
+
+  let conn;
+  try {
+    const orgId = req.apiKey.orgId;
+    const b = req.body || {};
+    const channel = String(b.channel);
+    const channelUserId = String(b.channel_user_id);
+    const idempotencyKey = String(b.idempotency_key);
+    const hash = payloadHash(b);
+
+    conn = await req.pool.getConnection();
+    await conn.beginTransaction();
+
+    const prior = await claimInquiryFactDelivery(conn, orgId, idempotencyKey, hash);
+    if (prior) {
+      await conn.commit();
+      if (prior.payload_hash !== hash) return fail(res, 'idempotency_key_conflict', 409);
+      return ok(res, inquiryFactResponse({
+        inquiryId: prior.inquiry_id,
+        created: false,
+        applied: Number(prior.applied) === 1,
+        reason: prior.reason || null,
+      }));
+    }
+
+    const [[session]] = await conn.execute(
+      `SELECT id, channel, channel_user_id, inquiry_id
+         FROM chat_session
+        WHERE channel = ? AND channel_user_id = ?
+        LIMIT 1
+        FOR UPDATE`,
+      [channel, channelUserId]
+    );
+    if (!session) {
+      const outcome = inquiryFactResponse({ reason: 'no_session' });
+      await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
+        inquiryId: null,
+        applied: false,
+        reason: 'no_session',
+      });
+      await conn.commit();
+      return ok(res, outcome);
+    }
+
+    if (b.conversation_id !== undefined) {
+      await conn.execute(
+        `UPDATE chat_session SET external_conversation_id = ? WHERE id = ?`,
+        [b.conversation_id == null ? null : String(b.conversation_id), session.id]
+      );
+    }
+
+    if (!session.inquiry_id) {
+      const outcome = inquiryFactResponse({ reason: 'no_inquiry' });
+      await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
+        inquiryId: null,
+        applied: false,
+        reason: 'no_inquiry',
+      });
+      await conn.commit();
+      return ok(res, outcome);
+    }
+
+    const gate = await loadLockedInquiryForFacts(conn, orgId, session.inquiry_id);
+    if (gate.reason) {
+      const outcome = inquiryFactResponse({
+        inquiryId: session.inquiry_id,
+        created: false,
+        applied: false,
+        reason: gate.reason,
+      });
+      await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
+        inquiryId: session.inquiry_id,
+        applied: false,
+        reason: gate.reason,
+      });
+      await conn.commit();
+      return ok(res, outcome);
+    }
+
+    const row = gate.row;
+    const sets = [];
+    const params = [];
+    if (checked.facts.length) {
+      const notes = appendFactsToNotes(row.notes, checked.facts, hkDate(b.occurred_at));
+      if (notes.length > MAX_NOTES_CHARS) {
+        const limitErr = new Error('notes_limit_reached');
+        limitErr.publicStatus = 413;
+        throw limitErr;
+      }
+      sets.push('notes = ?');
+      params.push(notes);
+    }
+
+    const { writable, writtenNames, apiSetFields } = buildFieldAssignments(checked.fields, row);
+    if (writtenNames.length) {
+      sets.push('api_set_fields = ?');
+      params.push(JSON.stringify(apiSetFields));
+      for (const field of writtenNames) {
+        sets.push(`${field} = ?`);
+        params.push(field === 'budget' ? Number(writable[field]) : writable[field]);
+      }
+    }
+
+    if (sets.length) {
+      sets.push('updated_at = NOW()');
+      await conn.execute(
+        `UPDATE inquiry SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`,
+        [...params, row.id, orgId]
+      );
+    }
+
+    const outcome = inquiryFactResponse({ inquiryId: row.id, created: false, applied: true });
+    await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
+      inquiryId: row.id,
+      applied: true,
+      reason: null,
+    });
+    await conn.commit();
+    return ok(res, outcome);
+  } catch (error) {
+    if (conn) await conn.rollback();
+    if (error && error.publicStatus) return fail(res, error.message, error.publicStatus);
+    console.error('Public inquiry facts error:', error);
+    return fail(res, 'Failed to process inquiry facts');
+  } finally {
+    if (conn) conn.release();
+  }
+});
 
 // ────────────────────────────────────────────────────────────────
 // META / HEALTH
