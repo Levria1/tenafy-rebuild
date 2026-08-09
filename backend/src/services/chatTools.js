@@ -20,6 +20,7 @@ const { searchUnits } = require('./unitSearch');
 const { validateSelect, runReadOnly } = require('./askDataService');
 const taneChatClient = require('./taneChatClient');
 const { traceAmounts } = require('./paymentMatchService');
+const { CHAT_SOURCE_CHANNELS, routeChatSearch, mapTaneChatResult } = require('../utils/chatSearchMap');
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -1373,19 +1374,13 @@ const search_vacancies = {
 // ---------------------------------------------------------------------------
 // Tool: search_chats  (INTERNAL ONLY — search conversation transcripts)
 //
-// Searches chat_message.content across every logged conversation: TaneChat's
-// WhatsApp/email prospect chats (mirrored into Tenafy via /api/public/chat/log)
-// and the in-Tenafy staff assistants. Queries the DB directly, so it is NOT
-// subject to the Sessions History page's 200-row display cap.
+// Routes prospect conversation search to TaneChat's live API and searches the
+// in-Tenafy staff assistants locally. The local branch queries the DB directly,
+// so it is NOT subject to the Sessions History page's 200-row display cap.
 //
 // Only 'user'/'assistant' turns are searched — 'system' rows hold the seeded
 // system prompt (huge, and would leak the prompt) and 'tool' rows are raw JSON.
 // ---------------------------------------------------------------------------
-const CHAT_SOURCE_CHANNELS = {
-  tenafy: ['staff-test', 'staff-internal'],
-  tanechat: ['whatsapp', 'email', 'web'],
-};
-
 const search_chats = {
   cap: null, // internal-only
   definition: {
@@ -1393,17 +1388,17 @@ const search_chats = {
     function: {
       name: 'search_chats',
       description:
-        'INTERNAL search of conversation transcripts (staff only). Finds what was actually SAID in ' +
-        'WhatsApp/email prospect chats (logged from TaneChat) and the in-Tenafy assistants. ' +
+        'INTERNAL search of conversation transcripts (staff only). Prospect conversations are searched LIVE in TaneChat and need keyword. ' +
+        'Staff-assistant conversations are searched locally. Finds what was actually SAID. ' +
         'Use for "find chats mentioning X", "what did <person> say about Y", "who asked about <unit>". ' +
-        'Returns matching message snippets with the prospect, channel, date and session id. ' +
+        'Returns matching message snippets with prospect, channel and date; TaneChat results include conversation_id for get_conversation. ' +
         'For the extracted prospect summary (name/budget/move-in) use search_inquiries instead.',
       parameters: {
         type: 'object',
         properties: {
-          keyword:  { type: 'string',  description: 'Text to find inside message content (e.g. "Hollywood 3A", "deposit", "parking").' },
+          keyword:  { type: 'string',  description: 'Text to find inside message content. Required for LIVE TaneChat prospect conversations.' },
           prospect: { type: 'string',  description: 'Filter by who the conversation is with — matches viewer name, email, phone, or channel user id.' },
-          source:   { type: 'string',  description: "'tanechat' (WhatsApp/email/web prospect chats) or 'tenafy' (the staff assistants). Default: both." },
+          source:   { type: 'string',  description: "'tanechat' searches LIVE prospect chats; 'tenafy' searches local staff assistants. Default: both." },
           channel:  { type: 'string',  description: "Exact channel: whatsapp | email | web | staff-test | staff-internal. Overrides `source`." },
           since:    { type: 'string',  description: 'Only messages on/after this date (YYYY-MM-DD).' },
           until:    { type: 'string',  description: 'Only messages on/before this date (YYYY-MM-DD).' },
@@ -1412,49 +1407,8 @@ const search_chats = {
       },
     },
   },
-  async execute(ctx, args) {
+  async execute(ctx, args = {}) {
     const limit = clampLimit(args.limit, 25, 100);
-    let where = "m.role IN ('user','assistant') AND m.content IS NOT NULL AND m.content <> ''";
-    const params = [];
-
-    if (args.keyword) {
-      where += ' AND m.content LIKE ?';
-      params.push('%' + String(args.keyword).trim() + '%');
-    }
-    if (args.prospect) {
-      const s = '%' + String(args.prospect).trim() + '%';
-      where += ` AND (s.viewer_name LIKE ? OR s.viewer_email LIKE ? OR s.viewer_phone LIKE ?
-                      OR s.channel_user_id LIKE ?)`;
-      params.push(s, s, s, s);
-    }
-    if (args.channel) {
-      where += ' AND s.channel = ?';
-      params.push(String(args.channel).trim());
-    } else if (args.source) {
-      const chans = CHAT_SOURCE_CHANNELS[String(args.source).trim().toLowerCase()];
-      if (chans) {
-        where += ` AND s.channel IN (${chans.map(() => '?').join(',')})`;
-        params.push(...chans);
-      }
-    }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(String(args.since || ''))) {
-      where += ' AND m.created_at >= ?'; params.push(args.since + ' 00:00:00');
-    }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(String(args.until || ''))) {
-      where += ' AND m.created_at <= ?'; params.push(args.until + ' 23:59:59');
-    }
-
-    const [rows] = await ctx.pool.execute(
-      `SELECT m.id, m.session_id, m.role, m.content, m.created_at,
-              s.channel, s.viewer_name, s.viewer_email, s.viewer_phone, s.channel_user_id
-         FROM chat_message m
-         JOIN chat_session s ON s.id = m.session_id
-        WHERE ${where}
-        ORDER BY m.created_at DESC
-        LIMIT ${limit}`,
-      params
-    );
-
     // Content is LONGTEXT — return a window around the match rather than the
     // whole message, so a few hits can't blow up the model's context.
     const snippet = (text, kw) => {
@@ -1467,10 +1421,57 @@ const search_chats = {
       return (start > 0 ? '…' : '') + t.slice(start, end) + (end < t.length ? '…' : '');
     };
 
-    return {
-      count: rows.length,
-      limit,
-      messages: rows.map(r => ({
+    const searchLocal = async (staffOnly = false) => {
+      let where = "m.role IN ('user','assistant') AND m.content IS NOT NULL AND m.content <> ''";
+      const params = [];
+
+      if (args.keyword) {
+        where += ' AND m.content LIKE ?';
+        params.push('%' + String(args.keyword).trim() + '%');
+      }
+      if (args.prospect) {
+        const s = '%' + String(args.prospect).trim() + '%';
+        where += ` AND (s.viewer_name LIKE ? OR s.viewer_email LIKE ? OR s.viewer_phone LIKE ?
+                        OR s.channel_user_id LIKE ?)`;
+        params.push(s, s, s, s);
+      }
+      if (args.channel) {
+        where += ' AND s.channel = ?';
+        params.push(String(args.channel).trim());
+      } else if (args.source) {
+        const chans = CHAT_SOURCE_CHANNELS[String(args.source).trim().toLowerCase()];
+        if (chans) {
+          where += ` AND s.channel IN (${chans.map(() => '?').join(',')})`;
+          params.push(...chans);
+        } else if (staffOnly) {
+          const staffChans = CHAT_SOURCE_CHANNELS.tenafy;
+          where += ` AND s.channel IN (${staffChans.map(() => '?').join(',')})`;
+          params.push(...staffChans);
+        }
+      } else if (staffOnly) {
+        const chans = CHAT_SOURCE_CHANNELS.tenafy;
+        where += ` AND s.channel IN (${chans.map(() => '?').join(',')})`;
+        params.push(...chans);
+      }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(args.since || ''))) {
+        where += ' AND m.created_at >= ?'; params.push(args.since + ' 00:00:00');
+      }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(args.until || ''))) {
+        where += ' AND m.created_at <= ?'; params.push(args.until + ' 23:59:59');
+      }
+
+      const [rows] = await ctx.pool.execute(
+        `SELECT m.id, m.session_id, m.role, m.content, m.created_at,
+                s.channel, s.viewer_name, s.viewer_email, s.viewer_phone, s.channel_user_id
+           FROM chat_message m
+           JOIN chat_session s ON s.id = m.session_id
+          WHERE ${where}
+          ORDER BY m.created_at DESC
+          LIMIT ${limit}`,
+        params
+      );
+
+      return rows.map(r => ({
         session_id: String(r.session_id),
         source: CHAT_SOURCE_CHANNELS.tenafy.includes(r.channel) ? 'tenafy' : 'tanechat',
         channel: r.channel,
@@ -1478,7 +1479,57 @@ const search_chats = {
         who: r.role === 'user' ? 'prospect' : 'assistant',
         said: snippet(r.content, args.keyword),
         at: r.created_at,
-      })),
+      }));
+    };
+
+    const searchTaneChat = async (notices) => {
+      const keyword = args.keyword == null ? '' : String(args.keyword).trim();
+      if (!keyword) {
+        notices.push({
+          unavailable: 'tanechat_requires_keyword',
+          note: 'TaneChat search needs a keyword. Supply `keyword`, or use get_conversation with a conversation_id.',
+        });
+        return [];
+      }
+      if (!taneChatClient.isConfigured()) {
+        notices.push({
+          unavailable: 'tanechat_unreachable',
+          note: 'TaneChat search is not configured. Set TANECHAT_API_KEY to enable live prospect chat search.',
+        });
+        return [];
+      }
+
+      try {
+        const resp = await taneChatClient.searchMessages({ q: keyword, limit, since: args.since });
+        const rows = Array.isArray(resp.results) ? resp.results : [];
+        return rows.map(r => {
+          const mapped = mapTaneChatResult(r);
+          return { ...mapped, said: snippet(mapped.said, keyword) };
+        });
+      } catch (e) {
+        notices.push({ unavailable: 'tanechat_unreachable', note: e.message });
+        return [];
+      }
+    };
+
+    const route = routeChatSearch(args);
+    const notices = [];
+    if ((route === 'tanechat' || route === 'both') && args.prospect) {
+      notices.push({
+        unavailable: 'tanechat_prospect_filter',
+        note: 'The prospect filter applies to local staff-assistant results only; TaneChat search ignores it.',
+      });
+    }
+
+    const localMessages = route === 'local' || route === 'both' ? await searchLocal(route === 'both') : [];
+    const taneChatMessages = route === 'tanechat' || route === 'both' ? await searchTaneChat(notices) : [];
+    const messages = taneChatMessages.concat(localMessages).slice(0, limit);
+
+    return {
+      count: messages.length,
+      limit,
+      messages,
+      ...(notices.length ? { notices } : {}),
     };
   },
 };
