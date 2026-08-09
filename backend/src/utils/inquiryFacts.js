@@ -27,17 +27,69 @@ function hkDate(isoString) {
   return `${y}-${m}-${day}`;
 }
 
+// Compare facts by their text, ignoring the date prefix, case, surrounding
+// whitespace and trailing punctuation — an extractor re-emitting a fact tends to
+// produce the identical sentence, not a reworded one.
+function factKey(text) {
+  return String(text == null ? '' : text)
+    .replace(/^\d{4}-\d{2}-\d{2}:\s*/, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[.\s]+$/, '')
+    .trim()
+    .toLowerCase();
+}
+
+function existingFactKeys(notes) {
+  const keys = new Set();
+  for (const line of String(notes || '').split('\n')) {
+    const key = factKey(line);
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
+/**
+ * Append dated fact lines, skipping any fact already recorded.
+ *
+ * Notes are append-only and kept forever, and idempotency does NOT cover this: it
+ * stops the SAME delivery replaying, but a different delivery carrying a fact
+ * already in notes would append it again. An extractor whose "already sent"
+ * snapshot slips — or two extractors that both notice the same thing — would
+ * otherwise write permanent duplicates into an audit trail nobody cleans.
+ *
+ * Returns { notes, applied, skipped } so the caller can report how many landed
+ * rather than silently dropping them.
+ */
 function appendFactsToNotes(currentNotes, facts, dateStr) {
   const notes = currentNotes == null ? '' : String(currentNotes);
-  if (!Array.isArray(facts) || facts.length === 0) return notes;
+  if (!Array.isArray(facts) || facts.length === 0) return { notes, applied: 0, skipped: 0 };
 
-  const lines = facts.map(fact => `${dateStr}: ${String(fact)}`);
-  const trimmed = notes.trimEnd();
-  if (trimmed.includes(UPDATES_HEADING)) {
-    return `${trimmed}\n${lines.join('\n')}`;
+  const seen = existingFactKeys(notes);
+  const lines = [];
+  let skipped = 0;
+  for (const fact of facts) {
+    const text = String(fact);
+    const key = factKey(text);
+    // Also catches the same fact twice inside ONE payload.
+    if (!key || seen.has(key)) {
+      skipped++;
+      continue;
+    }
+    seen.add(key);
+    lines.push(`${dateStr}: ${text}`);
   }
-  if (!trimmed) return `${UPDATES_HEADING}\n${lines.join('\n')}`;
-  return `${trimmed}\n\n${UPDATES_HEADING}\n${lines.join('\n')}`;
+  if (!lines.length) return { notes, applied: 0, skipped };
+
+  const trimmed = notes.trimEnd();
+  let next;
+  if (trimmed.includes(UPDATES_HEADING)) {
+    next = `${trimmed}\n${lines.join('\n')}`;
+  } else if (!trimmed) {
+    next = `${UPDATES_HEADING}\n${lines.join('\n')}`;
+  } else {
+    next = `${trimmed}\n\n${UPDATES_HEADING}\n${lines.join('\n')}`;
+  }
+  return { notes: next, applied: lines.length, skipped };
 }
 
 function parseApiSetFields(apiSetFields) {

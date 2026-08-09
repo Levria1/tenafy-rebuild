@@ -41,7 +41,9 @@ function newId() {
 const FACT_CHANNELS = new Set(['whatsapp', 'email']);
 const MAX_FACTS = 50;
 const MAX_FACT_CHARS = 500;
-const MAX_NOTES_CHARS = 60000;
+// BYTES, not characters: `inquiry.notes` is TEXT (65,535 bytes) and utf8mb4
+// Chinese costs 3 bytes per character. Compared with Buffer.byteLength.
+const MAX_NOTES_BYTES = 60000;
 const INQUIRY_FACT_FIELDS = ['first_name', 'last_name', 'email', 'phone', 'budget', 'desired_start_date'];
 
 // `applied` means the delivery was ACCEPTED and processed — not that any field
@@ -51,9 +53,13 @@ const INQUIRY_FACT_FIELDS = ['first_name', 'last_name', 'email', 'phone', 'budge
 // `skipped_fields` lists fields we refused to overwrite, and `summary_applied`
 // says whether the summary was used. Additive keys — the original five are
 // always present and unchanged.
+// `facts_applied` / `facts_skipped` exist because facts can be dropped for reasons
+// the caller cannot see: a fact already recorded is not written twice, and a full
+// notes column stops taking them. `reason` may therefore be set WITH applied:true,
+// meaning the delivery was accepted but part of it did not land.
 function inquiryFactResponse({
   inquiryId = null, created = false, applied = false, reason = null, supersededInquiryId = null,
-  skippedFields = [], summaryApplied = false,
+  skippedFields = [], summaryApplied = false, factsApplied = 0, factsSkipped = 0,
 }) {
   return {
     inquiry_id: inquiryId == null ? null : String(inquiryId),
@@ -63,6 +69,8 @@ function inquiryFactResponse({
     superseded_inquiry_id: supersededInquiryId == null ? null : String(supersededInquiryId),
     skipped_fields: Array.isArray(skippedFields) ? skippedFields : [],
     summary_applied: !!summaryApplied,
+    facts_applied: factsApplied,
+    facts_skipped: factsSkipped,
   };
 }
 
@@ -108,7 +116,8 @@ async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
   await conn.execute(
     `UPDATE inquiry_fact_delivery
         SET inquiry_id = ?, applied = ?, created = ?, superseded_inquiry_id = ?, reason = ?,
-            facts_json = ?, fields_json = ?, summary_text = ?, summary_applied = ?, skipped_json = ?
+            facts_json = ?, fields_json = ?, summary_text = ?, summary_applied = ?, skipped_json = ?,
+            facts_applied = ?, facts_skipped = ?
       WHERE org_id = ? AND idempotency_key = ?`,
     [
       outcome.inquiryId == null ? null : outcome.inquiryId,
@@ -121,6 +130,8 @@ async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
       outcome.summary == null || outcome.summary === '' ? null : String(outcome.summary),
       outcome.summaryApplied ? 1 : 0,
       JSON.stringify(Array.isArray(outcome.skippedFields) ? outcome.skippedFields : []),
+      Number(outcome.factsApplied) || 0,
+      Number(outcome.factsSkipped) || 0,
       orgId,
       idempotencyKey,
     ]
@@ -140,7 +151,7 @@ async function claimInquiryFactDelivery(conn, orgId, idempotencyKey, hash) {
     if (e.code !== 'ER_DUP_ENTRY') throw e;
     const [[prior]] = await conn.execute(
       `SELECT inquiry_id, applied, created, superseded_inquiry_id, reason, payload_hash,
-              summary_applied, skipped_json
+              summary_applied, skipped_json, facts_applied, facts_skipped
          FROM inquiry_fact_delivery
         WHERE org_id = ? AND idempotency_key = ?
         LIMIT 1`,
@@ -165,6 +176,8 @@ function priorDeliveryResponse(prior) {
     supersededInquiryId: prior.superseded_inquiry_id,
     skippedFields: Array.isArray(skipped) ? skipped : [],
     summaryApplied: Number(prior.summary_applied) === 1,
+    factsApplied: Number(prior.facts_applied) || 0,
+    factsSkipped: Number(prior.facts_skipped) || 0,
   });
 }
 
@@ -472,15 +485,31 @@ router.post('/inquiry/facts', async (req, res) => {
     const row = gate.row;
     const sets = [];
     const params = [];
+    let factsApplied = 0;
+    let factsSkipped = 0;
+    let notesReason = null;
     if (checked.facts.length) {
-      const notes = appendFactsToNotes(row.notes, checked.facts, hkDate(b.occurred_at));
-      if (Buffer.byteLength(notes, 'utf8') > MAX_NOTES_CHARS) {
-        const limitErr = new Error('notes_limit_reached');
-        limitErr.publicStatus = 413;
-        throw limitErr;
+      const appended = appendFactsToNotes(row.notes, checked.facts, hkDate(b.occurred_at));
+      // A full notes column must NOT become a dead end. Throwing here rolled the
+      // transaction back, which released the idempotency claim, so the caller's
+      // retry hit the same limit and the conversation was stuck on 413 forever.
+      // Instead: skip the notes append, still apply the fields, and say so — the
+      // delivery is recorded, the key is consumed, and the retry loop ends.
+      if (Buffer.byteLength(appended.notes, 'utf8') > MAX_NOTES_BYTES) {
+        notesReason = 'notes_limit_reached';
+        factsSkipped = checked.facts.length;
+        console.warn(
+          `[inquiry-facts] notes at capacity for inquiry ${row.id} (org ${orgId}); ` +
+          `${checked.facts.length} fact(s) not recorded. The field needs trimming.`
+        );
+      } else {
+        factsApplied = appended.applied;
+        factsSkipped = appended.skipped;
+        if (appended.applied > 0) {
+          sets.push('notes = ?');
+          params.push(appended.notes);
+        }
       }
-      sets.push('notes = ?');
-      params.push(notes);
     }
 
     const { writable, writtenNames, apiSetFields, skipped } = buildFieldAssignments(checked.fields, row);
@@ -508,16 +537,19 @@ router.post('/inquiry/facts', async (req, res) => {
     const outcome = inquiryFactResponse({
       inquiryId: row.id, created: false, applied: true,
       skippedFields: skipped, summaryApplied: false,
+      factsApplied, factsSkipped, reason: notesReason,
     });
     await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
       inquiryId: row.id,
       applied: true,
-      reason: null,
+      reason: notesReason,
       facts: checked.facts,
       fields: checked.fields,
       summary: b.summary,
       summaryApplied: false,
       skippedFields: skipped,
+      factsApplied,
+      factsSkipped,
     });
     await conn.commit();
     return ok(res, outcome);

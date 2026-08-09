@@ -229,8 +229,19 @@ Response:
                          "skipped_fields": ["budget"], "summary_applied": false } }
 ```
 
-**Both endpoints always return the same seven keys**, `null` or empty where not
+**Both endpoints always return the same nine keys**, `null`, `0` or empty where not
 applicable, so one parser handles either response.
+
+`facts_applied` and `facts_skipped` complete the picture `skipped_fields` started: facts
+can be dropped for reasons the caller cannot see. **A fact already recorded is not written
+again** — notes are append-only and kept forever, and idempotency only stops the SAME
+delivery replaying, so a different delivery carrying an already-recorded fact would
+otherwise duplicate it permanently. Comparison ignores the date prefix, case, spacing and
+trailing punctuation, and also catches the same fact twice inside one payload.
+
+Note that `reason` may be set **with** `applied: true`. That means the delivery was
+accepted but part of it did not land — today the only such reason is
+`notes_limit_reached`.
 
 ### `applied: true` does not mean anything changed
 
@@ -384,11 +395,17 @@ your side must not look like the extraction quietly getting worse. Missing → `
 
 **6. Limits.** Max **50** facts per call, **500** characters per fact, `summary` 2,000
 characters. `notes` is a MySQL `TEXT` column capped at 65,535 **bytes** — not characters —
-so the limit is measured in UTF-8 bytes: an append taking it past **60,000 bytes** returns
-`413 notes_limit_reached` rather than truncating. This matters here: Chinese text is 3 bytes
-per character in `utf8mb4`, so a Cantonese conversation reaches the ceiling in roughly a
-third of the characters an English one would. Silently truncating an audit trail
-is worse than refusing to add to it.
+so the limit is measured in UTF-8 bytes. Chinese text is 3 bytes per character in
+`utf8mb4`, so a Cantonese conversation reaches the ceiling in roughly a third of the
+characters an English one would.
+
+An append that would pass **60,000 bytes** is **not** written and **not** an error: the
+response is `applied: true` with `reason: "notes_limit_reached"` and `facts_applied: 0`,
+the fields still apply, and the delivery is recorded. It used to be a `413`, which rolled
+the transaction back and released the idempotency claim — so the retry hit the same limit
+and the conversation was stuck on `413` forever. The notes column needs a human to trim
+it; the integration must not stall waiting for that. Silently truncating an audit trail
+is still worse than refusing to add to it.
 
 **7. Error envelope** mirrors the success shape, with `code` equal to the HTTP status:
 

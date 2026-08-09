@@ -18,10 +18,10 @@ test('hkDate returns the Hong Kong calendar date of an instant', () => {
 });
 
 test('appendFactsToNotes adds the heading once and appends below it', () => {
-  const first = appendFactsToNotes('', ['Budget set to HK$18,000'], '2026-08-07');
+  const first = appendFactsToNotes('', ['Budget set to HK$18,000'], '2026-08-07').notes;
   assert.equal(first, '── Updates from chat ──\n2026-08-07: Budget set to HK$18,000');
 
-  const second = appendFactsToNotes(first, ['Move-in date set for September 20'], '2026-08-07');
+  const second = appendFactsToNotes(first, ['Move-in date set for September 20'], '2026-08-07').notes;
   assert.equal(
     second,
     '── Updates from chat ──\n' +
@@ -32,13 +32,13 @@ test('appendFactsToNotes adds the heading once and appends below it', () => {
 
 test('appendFactsToNotes keeps prior notes separated by one blank line', () => {
   assert.equal(
-    appendFactsToNotes('Prospect seeking studio.', ['Needs parking'], '2026-08-07'),
+    appendFactsToNotes('Prospect seeking studio.', ['Needs parking'], '2026-08-07').notes,
     'Prospect seeking studio.\n\n── Updates from chat ──\n2026-08-07: Needs parking'
   );
 });
 
 test('appendFactsToNotes leaves notes unchanged when there are no facts', () => {
-  assert.equal(appendFactsToNotes('Existing notes', [], '2026-08-07'), 'Existing notes');
+  assert.equal(appendFactsToNotes('Existing notes', [], '2026-08-07').notes, 'Existing notes');
 });
 
 test('resolveWritableFields writes empty or API-owned fields and skips human-owned fields', () => {
@@ -136,7 +136,7 @@ test('an unparseable occurred_at must not yield a bare ": fact" note line', () =
   // the audit trail the notes log exists to be.
   assert.equal(hkDate('not-a-date'), '');
   assert.equal(hkDate(undefined), '');
-  assert.equal(appendFactsToNotes('', ['Budget set to HK$18,000'], hkDate('not-a-date')),
+  assert.equal(appendFactsToNotes('', ['Budget set to HK$18,000'], hkDate('not-a-date')).notes,
     '── Updates from chat ──\n: Budget set to HK$18,000');
 });
 
@@ -160,4 +160,55 @@ test('string fields are trimmed, and blank becomes null', () => {
   assert.equal(validateFields({ first_name: '   ' }).fields.first_name, null);
   assert.equal(validateFields({ email: '  ALICE@Example.COM ' }).fields.email, 'alice@example.com');
   assert.equal(validateFields({ last_name: null }).fields.last_name, null);
+});
+
+// ── fact deduplication ───────────────────────────────────────────────────────
+// Notes are append-only and kept forever. Idempotency stops the SAME delivery
+// replaying; it does nothing about a DIFFERENT delivery carrying a fact already
+// recorded, which is what an extractor with a slipped snapshot produces.
+
+test('appendFactsToNotes does not record a fact already in notes', () => {
+  const first = appendFactsToNotes('', ['Prefers Wan Chai over Sheung Wan'], '2026-08-07');
+  assert.equal(first.applied, 1);
+
+  const again = appendFactsToNotes(first.notes, ['Prefers Wan Chai over Sheung Wan'], '2026-08-09');
+  assert.equal(again.applied, 0);
+  assert.equal(again.skipped, 1);
+  assert.equal(again.notes, first.notes, 'notes must be byte-identical');
+});
+
+test('appendFactsToNotes ignores case, spacing and trailing punctuation when comparing', () => {
+  const first = appendFactsToNotes('', ['Needs parking'], '2026-08-07');
+  const again = appendFactsToNotes(first.notes, ['  needs   parking. '], '2026-08-09');
+  assert.equal(again.applied, 0);
+  assert.equal(again.skipped, 1);
+});
+
+test('appendFactsToNotes deduplicates within a single payload', () => {
+  const r = appendFactsToNotes('', ['Wants 2BR', 'Wants 2BR', 'Has a cat'], '2026-08-07');
+  assert.equal(r.applied, 2);
+  assert.equal(r.skipped, 1);
+  assert.equal((r.notes.match(/Wants 2BR/g) || []).length, 1);
+});
+
+test('appendFactsToNotes still records genuinely new facts alongside duplicates', () => {
+  const first = appendFactsToNotes('', ['Needs parking'], '2026-08-07');
+  const next = appendFactsToNotes(first.notes, ['Needs parking', 'Budget raised to HK$25,000'], '2026-08-09');
+  assert.equal(next.applied, 1);
+  assert.equal(next.skipped, 1);
+  assert.match(next.notes, /2026-08-09: Budget raised to HK\$25,000/);
+});
+
+// A fact matching the free-text summary paragraph is also a duplicate — the
+// summary is notes content too, not a separate field.
+test('appendFactsToNotes compares against un-dated notes lines as well', () => {
+  const r = appendFactsToNotes('Needs parking', ['Needs parking'], '2026-08-09');
+  assert.equal(r.applied, 0);
+  assert.equal(r.notes, 'Needs parking');
+});
+
+test('appendFactsToNotes keeps the heading when every fact is a duplicate', () => {
+  const first = appendFactsToNotes('Base summary.', ['Needs parking'], '2026-08-07');
+  const again = appendFactsToNotes(first.notes, ['Needs parking'], '2026-08-09');
+  assert.equal((again.notes.match(/── Updates from chat ──/g) || []).length, 1);
 });
