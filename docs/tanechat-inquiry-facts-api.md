@@ -12,8 +12,8 @@ API Keys). The key must NOT be read-only — these are writes.
 
 | | Owns |
 |---|---|
-| **TaneChat** | the conversation, its full history, search over it, and extracting facts from it |
-| **Tenafy** | the inquiry record, whether an update is applied, and never overwriting human-entered data |
+| **TaneChat** | the conversation, its full history, search over it, extracting facts, and not sending the same fact twice |
+| **Tenafy** | the inquiry record, whether an update is applied, and never overwriting what a human entered |
 
 ---
 
@@ -23,7 +23,7 @@ Today TaneChat posts raw conversation turns to `POST /api/public/chat/log`, and
 Tenafy stores them (`chat_session` + `chat_message`) so it can run its own
 extraction: once on first contact, then nightly at 23:00 HK over new messages.
 
-Three problems with that:
+Four problems with that:
 
 1. **Tenafy holds a partial copy.** 1,147 conversations / 17,875 messages against
    TaneChat's ~2,250 / ~66k, and only from 5 June 2026 — the date logging began.
@@ -33,6 +33,13 @@ Three problems with that:
    because it keeps the copy.
 3. **TaneChat already knows the answer the moment a message arrives**, and already
    has an LLM. The extraction is happening in the wrong place, one day late.
+4. **Email conversations are never re-extracted.** The nightly job is gated on
+   `cs.channel = 'whatsapp'`. Email inquiries are auto-created on first contact and
+   then never updated again — live since the integration started. Moving extraction
+   to TaneChat fixes it, provided email is in scope on your side.
+
+Also: the nightly job handles at most **200 sessions per run** (`LIMIT 200`). Below
+current volume, so invisible today, but a real ceiling that disappears with this.
 
 TaneChat doing the extraction removes the copy, removes the nightly sweep, and
 removes the need for any `?since=` endpoint on TaneChat's side.
@@ -52,8 +59,7 @@ whether anything **new or changed** was revealed. Extract:
 - **contact details** not already known — name, email, phone
 - **intent shifts** — "no longer looking", "found a place", "budget went up"
 
-Real example of what Tenafy currently produces for one conversation, and what it
-should keep looking like:
+Real example of what Tenafy produces today, and what it should keep looking like:
 
 ```
 Prospect seeking 2-month rental in Central or Sheung Wan, Hong Kong.
@@ -65,41 +71,63 @@ No specific start date or budget mentioned.
 2026-08-07: Will be working at Four Seasons Hong Kong by IFC mall
 ```
 
-Each `facts[]` entry is **one self-contained English sentence** describing a
-single fact. Not a paragraph, not a JSON blob rendered as prose. Tenafy dates and
-appends them verbatim.
+Each `facts[]` entry is **one self-contained English sentence** describing a single
+fact. Not a paragraph, not a JSON blob rendered as prose. Tenafy dates and appends
+them verbatim.
 
-Timing is TaneChat's choice — on each inbound message, debounced, or on a
-schedule. Tenafy does not care, as long as each fact is sent once (see
-idempotency below).
+Timing is TaneChat's choice — per message, debounced, or scheduled.
 
-### 2. Keep serving conversation search
+### 2. Do not send the same fact twice
+
+`notes` is append-only and **Tenafy does not de-duplicate content.** Idempotency
+keys only protect against a *retried delivery* (same key). If your extractor
+re-derives "budget is 18,000" on three consecutive messages and sends it three times
+under three different keys, the inquiry gets three identical lines.
+
+So TaneChat must track what it has already sent per conversation and send only
+genuinely new or changed facts. This is the one obligation that cannot move to
+Tenafy — only you know what you extracted last time.
+
+### 3. Keep serving conversation search
 
 Tenafy's internal assistant will call TaneChat live instead of reading its local
-copy, using the endpoints already specified in
+copy, using the endpoints in
 [`tanechat-message-search-api.md`](./tanechat-message-search-api.md):
 `GET /search/messages` and `GET /conversations/{id}/messages`. No change needed —
 this just becomes the only path rather than one of two.
 
-### 3. Stop calling `/api/public/chat/log` — but only at the end
+### 4. Stop calling `/api/public/chat/log` — last, not first
 
-See **Cutover** below. Until the facts endpoints are live and verified, the
-logging must keep running, because it is what currently keeps inquiries updated.
+See **Cutover**. Until the facts endpoints are live and verified, logging must keep
+running: it is what currently keeps inquiries updated.
+
+---
+
+## Identity — how Tenafy matches a conversation
+
+`channel` + `channel_user_id` is the identity, and **Tenafy does not normalise it.**
+Two different normalisations on your side become two sessions and two inquiries for
+one person, so the format is fixed here:
+
+| channel | `channel_user_id` format |
+|---|---|
+| `whatsapp` | E.164 **digits only** — no `+`, no spaces: `85291234567` |
+| `email` | the full address, **lowercased**: `alice@example.com` |
+
+Send `conversation_id` too. Tenafy stores it on the session
+(`chat_session.external_conversation_id`, added for this) so the internal assistant
+can deep-link back into TaneChat. **Last value wins** — if a conversation is
+recreated on your side, the newest id replaces the old. It is never used for matching.
 
 ---
 
 ## Endpoints Tenafy will expose
 
-Both are **upserts keyed on the conversation**, so TaneChat does not need to know
-Tenafy's inquiry ids.
-
 ### 1. `POST /api/public/inquiry/from-chat` — first contact
-
-Creates the inquiry if this conversation has none yet; returns the existing one if
-it does. Safe to call repeatedly.
 
 ```json
 {
+  "schema_version": 1,
   "channel": "whatsapp",
   "channel_user_id": "85291234567",
   "conversation_id": "conv_456",
@@ -118,24 +146,46 @@ it does. Safe to call repeatedly.
 }
 ```
 
-- `is_inquiry: false` → Tenafy records nothing and returns `{ created: false }`.
-  Use it for chats that are not lettings enquiries at all, so both sides agree on
-  what was skipped.
-- `fields` are all optional. Only `channel_user_id` (or `conversation_id`) and
-  `is_inquiry` are required.
-- `budget` is a number, no currency symbol or thousands separator.
-  `desired_start_date` is `YYYY-MM-DD`.
+**Required:** `schema_version`, `channel`, `channel_user_id`, `occurred_at`,
+`is_inquiry`, `idempotency_key`.
+
+**What it does, in order:**
+
+1. **Creates the `chat_session`** if this `(channel, channel_user_id)` has none.
+   Post-cutover a brand-new prospect has no session, so this is not a lookup-only
+   call — it must create one.
+2. `is_inquiry: false` → records nothing, returns `{ "created": false }`. Use it for
+   chats that are not lettings enquiries, so both sides agree on what was skipped.
+3. Session has no inquiry → creates one, with `source` set from `channel`.
+4. Session has an inquiry that is **still live** (passes the Rule 2 gate) → returns
+   it, applying `fields` and `summary` per Rules 3 and 4.
+5. Session has an inquiry that is **not live** — closed, converted, or with a
+   confirmed viewing → **creates a NEW inquiry** and re-points the session at it.
+   This is the returning-prospect case: someone enquires in March, views, goes quiet,
+   then comes back in October. Without it the session points at a dead record forever
+   and every later fact is rejected.
 
 Response:
 
 ```json
-{ "code": 200, "data": { "inquiry_id": "1786…", "created": true, "applied": true } }
+{
+  "code": 200,
+  "data": {
+    "inquiry_id": "1786…",
+    "created": true,
+    "applied": true,
+    "superseded_inquiry_id": "1699…"
+  }
+}
 ```
+
+`superseded_inquiry_id` appears only in case 5.
 
 ### 2. `POST /api/public/inquiry/facts` — ongoing updates
 
 ```json
 {
+  "schema_version": 1,
   "channel": "whatsapp",
   "channel_user_id": "85291234567",
   "conversation_id": "conv_456",
@@ -156,81 +206,185 @@ Response:
 { "code": 200, "data": { "inquiry_id": "1786…", "applied": true, "reason": null } }
 ```
 
-`applied: false` with a `reason` is a normal outcome, not an error — see the rules
-below. Treat it as success and do not retry.
+**Call `from-chat` once per conversation first.** Tenafy will not create an inquiry
+from a bare fact list — that would manufacture records from conversations nobody
+classified as enquiries.
+
+**`applied: false` is a normal outcome, not an error.** Do not retry it. The fact is
+discarded, notes included. If you judge it still relevant later — say a viewing was
+cancelled and the inquiry reopened — re-send under a **new** idempotency key.
+
+`reason` is one of:
+
+| reason | meaning |
+|---|---|
+| `no_session` | Tenafy has never seen this conversation — call `from-chat` |
+| `no_inquiry` | session exists but no inquiry linked — call `from-chat` |
+| `inquiry_closed` | `status != 0` |
+| `inquiry_converted` | already has a tenant |
+| `viewing_active` | a confirmed or completed viewing exists |
+| `inquiry_deleted` | soft-deleted |
+| `not_inquiry` | previously recorded as `is_inquiry: false` |
 
 ---
 
-## Rules Tenafy enforces (so TaneChat does not have to)
+## Rules Tenafy enforces
 
-**1. Idempotency is required.** `notes` is append-only, so a retried delivery
-would duplicate a line with nothing to distinguish it from a genuine repeat. Every
-call must carry an `idempotency_key` that is stable for that extraction — a
-message id, or `conversation_id:message_id`. Tenafy stores applied keys and
-returns the original result for a repeat, applying nothing.
+**1. Idempotency is required.** Every call carries an `idempotency_key` stable for
+that extraction — a message id, or `conversation_id:message_id`. A repeat returns the
+**original** result and applies nothing.
 
-**2. Tenafy decides whether to apply.** TaneChat should send whatever it finds and
-not track lettings state. Tenafy skips the update, returning `applied: false`, when
-the inquiry is closed, already converted to a booking/lease, or soft-deleted.
-Current behaviour, for reference: the nightly job only ran for `status = 0` with
-no booking yet.
+Send the same key with a *different* payload and Tenafy returns
+**`409 idempotency_key_conflict`** rather than silently replaying the old result and
+dropping the new facts. Do not retry a 409 — fix the key.
 
-**3. Structured fields are never overwritten once a human has set them.** `facts`
-always append to `notes`. `fields` only fill values that are still empty. This is
-a Tenafy data-integrity rule and is enforced on receipt — TaneChat does not need
-to know which fields a human touched.
+*Tenafy build note:* no idempotency store exists yet. It needs:
 
-**4. Tenafy owns the dating and formatting of notes.** Send the sentence only;
-Tenafy prefixes the date and manages the `── Updates from chat ──` block. Do not
-pre-format.
+```sql
+CREATE TABLE inquiry_fact_delivery (
+  id               BIGINT       NOT NULL,
+  org_id           BIGINT       NOT NULL,
+  idempotency_key  VARCHAR(191) NOT NULL,
+  payload_hash     CHAR(64)     NOT NULL,   -- sha256 of the canonical body
+  inquiry_id       BIGINT       DEFAULT NULL,
+  applied          TINYINT      NOT NULL DEFAULT 0,
+  reason           VARCHAR(64)  DEFAULT NULL,
+  created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_ifd_org_key (org_id, idempotency_key)
+);
+```
 
-**5. Send a `schema_version`.** Add `"schema_version": 1` to both payloads. If
-TaneChat's prompt or output shape changes, that number changes, and Tenafy can
-tell a format change from a quality regression. Without it, a silent prompt edit
-looks like the extraction getting worse for no reason.
+The delivery row and the inquiry update **must commit in one transaction**. Insert
+first and apply afterwards, and a crash between them records the key as `applied = 0`
+permanently — every retry then replays "not applied" and those facts are lost with
+nothing to notice it.
+
+**2. Tenafy decides whether to apply.** Send what you find; don't track lettings
+state. An update applies only while the inquiry is live, which today means **all** of:
+
+- `inquiry.status = 0` (open)
+- `inquiry.tenant_id IS NULL` (not converted to a tenant)
+- no `viewing_booking` with `status IN (1, 3)` (no confirmed or completed viewing)
+- `inquiry.deleted_at IS NULL`
+
+A confirmed **viewing** is enough to stop updates, not just a lease — existing
+behaviour, carried over deliberately. The gate check and the write happen under a row
+lock on the inquiry, so a viewing confirmed mid-request cannot slip through.
+
+**3. `fields` may update a value the API set, never one a human set.** This is what
+makes "budget went up to 25k" land in the structured column rather than only in notes.
+
+Tenafy tracks provenance per field (`inquiry.api_set_fields`, a JSON list of field
+names last written by this API). A field is written when it is empty, **or** when it
+appears in that list. The moment a human edits that field in the UI, Tenafy drops it
+from the list and the API can never touch it again.
+
+Stated plainly, because it is a real consequence: **a human clearing a field is not a
+"leave this blank" instruction.** If the API set it before, a later fact can refill
+it. Making "unknown" stick needs a UI-level lock, which is out of scope here.
+
+Only these keys are accepted under `fields`:
+
+```
+first_name, last_name, email, phone, budget, desired_start_date
+```
+
+Anything else — `status`, `tenant_id`, `org_id`, `deleted_at`, or an unknown name —
+is rejected with `400 unknown_field`. `org_id` always comes from the API key and is
+never read from the body. Without that whitelist a leaked `pk_` could set `status` or
+`tenant_id` directly and walk straight through the Rule 2 gate.
+
+`budget` is a number in **HKD**, no symbol or separators, `>= 0`, max two decimals.
+`desired_start_date` is `YYYY-MM-DD`.
+
+**4. Tenafy owns note formatting; the DATE comes from `occurred_at`.** Send the
+sentence only — Tenafy prefixes the date and manages the `── Updates from chat ──`
+block. The date is `occurred_at` **converted to Asia/Hong_Kong**, not the time the
+call arrived: otherwise a batched send or a next-day retry stamps facts with the
+wrong date, and these notes are meant to be an audit trail of when the prospect
+actually said things. `occurred_at` is required; missing → `400`.
+
+`summary` becomes the first line of `notes`, above the updates block, and **only when
+notes is empty**. It never replaces an existing summary or human text.
+
+Lines append in **arrival order, not `occurred_at` order** — a delayed retry sits
+below newer lines carrying an older date. Appends use an atomic
+`UPDATE … SET notes = CONCAT(notes, ?)` so concurrent deliveries cannot lose lines.
+
+**5. `schema_version` is required.** Send `1`. An unknown version is rejected with
+`400 unsupported_schema_version` rather than guessed at — a prompt or shape change on
+your side must not look like the extraction quietly getting worse. Missing → `400`.
+
+**6. Limits.** Max **50** facts per call, **500** characters per fact. `notes` is a
+MySQL `TEXT` column (~64 KB) and some conversations have already been re-extracted 30
+times, so when an append would exceed **60,000** characters Tenafy returns
+`413 notes_limit_reached` rather than truncating. Silently truncating an audit trail
+is worse than refusing to add to it.
+
+**7. Error envelope** mirrors the success shape, with `code` equal to the HTTP status:
+
+```json
+{ "code": 400, "message": "unknown_field: status" }
+```
+
+**Retries:** `2xx` → done, including `applied: false`. `409` and other `4xx` → do not
+retry, the payload is wrong. `429` and `5xx` → retry with backoff, reusing the
+**same** `idempotency_key`. `429` carries `Retry-After` in seconds.
 
 ---
 
 ## Cutover — order matters
 
-The current failure mode is **silence**: if extraction stops, inquiries simply
-stop gaining updates. Nothing errors, nothing alerts, and nobody notices for
-weeks. So:
+1. **Tenafy** builds and deploys both endpoints, the delivery table, the provenance
+   column and `external_conversation_id`.
+2. **Parallel run.** TaneChat starts sending facts while still calling `/chat/log`.
+   During this window Tenafy's own nightly extraction writes to a **staging table,
+   not to `notes`** — two extractors appending differently-worded versions of the
+   same facts would bake weeks of duplicate lines into an audit trail kept forever,
+   and no later cleanup could tell them apart.
+3. **Compare and sign off**, on a criterion agreed up front rather than by eyeball:
+   over **50 conversations across 2 weeks**, TaneChat's output matches the staged
+   output on `budget` and `desired_start_date` at field level, and recalls at least
+   the same facts in notes. One named person each side signs it off.
+4. **Tenafy** disables its own extraction — the 23:00 job and the auto-create inside
+   `/chat/log`. `/chat/log` keeps returning `200` but **discards** the payload, so
+   nothing is written that no longer has a reader.
+5. **TaneChat** stops calling `/chat/log`.
+6. **Tenafy** points `search_chats` / `get_conversation` at TaneChat's search API and
+   deletes the local prospect transcripts.
 
-1. Tenafy builds and deploys both endpoints.
-2. TaneChat starts sending facts **while still calling `/chat/log`**. Both run in
-   parallel. Duplicate notes are expected in this window and are the signal that
-   both paths work.
-3. Compare on real conversations: does TaneChat's extraction find what Tenafy's
-   nightly job finds? Tune the prompt until it does.
-4. Tenafy disables its own extraction (the 23:00 job and the auto-create inside
-   `/chat/log`), keeping the endpoint accepting for a grace period.
-5. TaneChat stops calling `/chat/log`.
-6. Tenafy points its `search_chats` / `get_conversation` tools at TaneChat's
-   search API and drops the local prospect transcripts.
-
-Do not skip step 2. Running both is the only way to find out whether the moved
-extraction is as good, and it costs nothing but some duplicate note lines.
+**The heartbeat is part of the deal, not an optional extra.** The failure mode we are
+moving away from is silence: extraction stops, inquiries stop updating, nothing is
+logged. After step 5 that gets worse, because Tenafy no longer holds transcripts to
+fall back on. So TaneChat sends at least one call per active conversation per day —
+an empty `facts: []` no-op is fine — and Tenafy alerts when a conversation with
+recent inbound messages has had no delivery for 48 hours. Without this we have moved
+the silent failure, not removed it.
 
 ---
 
 ## What Tenafy keeps regardless
 
-`chat_session` and `chat_message` do **not** go away. They are also the internal
-staff assistant's own memory — `routes/chat.js` reads and writes them for
-conversation history and intermediate tool results. Of 1,250 sessions today, 103
-are `staff-internal` / `staff-test` and stay local. Only the ~1,147 prospect
-sessions (WhatsApp/email) stop being written.
+`chat_session` and `chat_message` do **not** go away — they are also the internal
+staff assistant's own memory (`routes/chat.js` reads and writes them for conversation
+history and intermediate tool results). Of 1,250 sessions today, 103 are
+`staff-internal` / `staff-test` and stay local. Only the ~1,147 prospect sessions
+stop being written.
 
 ## Open questions for TaneChat
 
 1. Can you extract per-message in near-real-time, or would you rather batch
-   (hourly/nightly)? Either is fine for Tenafy; it affects only how fresh the
-   inquiry notes are.
-2. Do you already keep any structured extraction per conversation that overlaps
-   with the field list above? If so, we should align rather than duplicate.
-3. Which id do you want to key on — `channel_user_id` (stable per WhatsApp user)
-   or `conversation_id`? Tenafy will accept either; `channel_user_id` is what
-   `/chat/log` uses today, so it is the safer match for existing sessions.
-4. Are inbound email conversations in scope for you, or WhatsApp only? Tenafy
-   currently auto-creates inquiries from both.
+   (hourly/nightly)? Either works; it only affects how fresh the notes are.
+2. Do you already keep structured extraction per conversation that overlaps with the
+   field list? If so we should align rather than duplicate.
+3. Are inbound **email** conversations in scope on your side, or WhatsApp only?
+   Tenafy auto-creates inquiries from both today, so WhatsApp-only leaves email
+   exactly where it is — created once, never updated.
+4. **Backfill: do you want to send history for the ~1,100 conversations Tenafy has
+   never seen?** It would close the 27% coverage gap that motivates this change, but
+   it mass-creates inquiries with 2025 / early-2026 `occurred_at` dates appended below
+   newer lines. Our default is **no backfill** — new conversations only — unless you
+   say otherwise. Better decided than discovered.
+5. Can you meet the daily heartbeat, including for conversations where nothing new
+   was extracted?
