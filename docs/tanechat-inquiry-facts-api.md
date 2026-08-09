@@ -161,6 +161,11 @@ recreated on your side, the newest id replaces the old. It is never used for mat
 **Required:** `schema_version`, `channel`, `channel_user_id`, `occurred_at`,
 `is_inquiry`, `idempotency_key`.
 
+**Do not send `facts` to this endpoint** — it has no notes-append path, so they would be
+validated and then dropped while still returning `applied: true`. It rejects them with
+`400 facts_not_allowed_here`. Send the first contact's `summary` here and everything else
+to `/inquiry/facts`. `summary` is capped at 2,000 characters.
+
 **What it does, in order:**
 
 1. **Creates the `chat_session`** if this `(channel, channel_user_id)` has none.
@@ -224,10 +229,8 @@ Response:
 **Both endpoints always return all five keys**, `null` where not applicable, so one
 parser handles either response.
 
-**On a replay** (same key, same payload) the stored outcome is returned, which records
-`inquiry_id`, `applied` and `reason` but not `created` or `superseded_inquiry_id` — a
-replay always reports `created: false` and a null supersede. The original response is the
-authoritative one for those two fields.
+**On a replay** (same key, same payload) the original outcome is returned in full,
+including `created` and `superseded_inquiry_id` — the delivery row stores all five values.
 
 **Call `from-chat` once per conversation first.** Tenafy will not create an inquiry
 from a bare fact list — that would manufacture records from conversations nobody
@@ -359,10 +362,12 @@ below newer lines carrying an older date. Appends use an atomic
 `400 unsupported_schema_version` rather than guessed at — a prompt or shape change on
 your side must not look like the extraction quietly getting worse. Missing → `400`.
 
-**6. Limits.** Max **50** facts per call, **500** characters per fact. `notes` is a
-MySQL `TEXT` column (~64 KB) and some conversations have already been re-extracted 30
-times, so when an append would exceed **60,000** characters Tenafy returns
-`413 notes_limit_reached` rather than truncating. Silently truncating an audit trail
+**6. Limits.** Max **50** facts per call, **500** characters per fact, `summary` 2,000
+characters. `notes` is a MySQL `TEXT` column capped at 65,535 **bytes** — not characters —
+so the limit is measured in UTF-8 bytes: an append taking it past **60,000 bytes** returns
+`413 notes_limit_reached` rather than truncating. This matters here: Chinese text is 3 bytes
+per character in `utf8mb4`, so a Cantonese conversation reaches the ceiling in roughly a
+third of the characters an English one would. Silently truncating an audit trail
 is worse than refusing to add to it.
 
 **7. Error envelope** mirrors the success shape, with `code` equal to the HTTP status:
@@ -412,8 +417,18 @@ retry, the payload is wrong. `429` and `5xx` → retry with backoff, reusing the
 moving away from is silence: extraction stops, inquiries stop updating, nothing is
 logged. After step 5 that gets worse, because Tenafy no longer holds transcripts to
 fall back on. So TaneChat sends at least one call per active conversation per day — an empty
-`facts: []` no-op is fine — and Tenafy alerts when an **active** conversation has had
-no delivery for 48 hours.
+`facts: []` no-op is fine — and Tenafy alerts when deliveries stop.
+
+**Two corrections to how Tenafy detects this, from building it.** First, the alert is
+**delivery-based, not inbound-based**: after cutover TaneChat stops calling `/chat/log`, so
+`chat_message` stops being written and Tenafy can no longer see inbound activity at all —
+an inbound-based rule would go permanently quiet exactly when it became load-bearing.
+Second, the alert is **org-level, not per-conversation**: since you only heartbeat
+conversations with inbound activity in the last 3 days, a single conversation going quiet is
+the normal end of a lead, and alerting on it would fire for every closed enquiry until the
+alert got muted. Tenafy therefore alarms when **every** tracked conversation goes silent, or
+when there is delivery history but nothing at all inside the window — which is what a dead
+emitter, a bad deploy or a revoked key looks like.
 
 **"Active" must mean the same thing on both sides or the alert is useless.** Agreed
 definition: an inquiry exists, and the conversation had inbound activity **within the

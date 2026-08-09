@@ -1,4 +1,7 @@
 const cron = require('node-cron');
+const {
+  assessFactDeliveryHealth, STALE_HOURS, LOOKBACK_DAYS,
+} = require('../utils/inquiryFactHealth');
 const { sendMail } = require('../config/mailer');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
@@ -906,6 +909,86 @@ async function reExtractInquiriesForOrg(pool, orgId) {
   return { processed, updated, errors };
 }
 
+
+// ---------------------------------------------------------------------------
+// Job: TaneChat fact-delivery health (per org)
+//
+// TaneChat now extracts inquiry facts and posts them to /api/public/inquiry/facts,
+// sending a daily heartbeat per active conversation even when nothing changed. If
+// their emitter dies, inquiries silently stop being updated — and after cutover
+// Tenafy has no transcripts to fall back on. This job is the detector.
+//
+// Deliberately DELIVERY-based rather than inbound-based: post-cutover TaneChat stops
+// calling /chat/log, so chat_message stops being written and "had inbound activity
+// recently" becomes unanswerable here. See utils/inquiryFactHealth.js.
+// ---------------------------------------------------------------------------
+const FACT_SILENCE_TITLE = 'TaneChat has stopped sending inquiry updates';
+
+async function checkFactDeliveryHealthForOrg(pool, orgId) {
+  let sessions;
+  try {
+    const [rows] = await pool.execute(
+      `SELECT cs.id AS session_id, cs.channel, cs.channel_user_id, cs.inquiry_id,
+              MAX(d.created_at) AS last_delivery_at,
+              COUNT(*)          AS deliveries_in_lookback
+         FROM chat_session cs
+         JOIN inquiry_fact_delivery d ON d.inquiry_id = cs.inquiry_id
+        WHERE cs.inquiry_id IS NOT NULL
+          AND d.org_id = ?
+          AND d.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+        GROUP BY cs.id`,
+      [orgId, LOOKBACK_DAYS]
+    );
+    sessions = rows;
+  } catch (err) {
+    // inquiry_fact_delivery absent on an un-migrated org — nothing to check.
+    if (err.code === 'ER_NO_SUCH_TABLE' || err.code === 'ER_BAD_FIELD_ERROR') {
+      return { tracked: 0, stale: 0, orgSilent: false };
+    }
+    throw err;
+  }
+
+  // Needed so an outage lasting longer than the lookback window still alarms.
+  const [[hist]] = await pool.execute(
+    'SELECT COUNT(*) AS total FROM inquiry_fact_delivery WHERE org_id = ?', [orgId]
+  );
+  const health = assessFactDeliveryHealth({
+    sessions, historicalTotal: Number(hist ? hist.total : 0), nowMs: Date.now(),
+  });
+
+  if (health.orgSilent) {
+    // Don't stack an identical alarm every morning for the length of an outage.
+    const [[open]] = await pool.execute(
+      `SELECT COUNT(*) AS n FROM notification
+        WHERE org_id = ? AND title = ? AND is_read = 0
+          AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`,
+      [orgId, FACT_SILENCE_TITLE]
+    );
+    if (Number(open ? open.n : 0) > 0) {
+      console.log(`[Scheduler][org:${orgId}] factDeliveryHealth: silence alert already open, not repeating`);
+      return { tracked: health.tracked, stale: health.stale.length, orgSilent: true };
+    }
+    await createNotification(pool, {
+      orgId,
+      type: 'error',
+      title: FACT_SILENCE_TITLE,
+      message: `No fact deliveries for any of ${health.tracked} active conversation(s) in the last `
+        + `${STALE_HOURS} hours. Inquiries are no longer being updated from chat. Check TaneChat's `
+        + `emitter and that its API key is still valid.`,
+      link: '/inquiries',
+    });
+  }
+  // NOTE: deliberately no per-conversation alert. TaneChat only heartbeats
+  // conversations with inbound activity in the last 3 days, so a conversation going
+  // quiet is the NORMAL end of a lead, not a fault. Alerting on it would fire for
+  // every closed enquiry, and an alert that cries wolf daily gets muted — which is
+  // how the silent-failure mode we are guarding against comes back.
+
+  console.log(`[Scheduler][org:${orgId}] factDeliveryHealth: ${health.tracked} tracked, `
+    + `${health.stale.length} stale, orgSilent=${health.orgSilent}`);
+  return { tracked: health.tracked, stale: health.stale.length, orgSilent: health.orgSilent };
+}
+
 // ---------------------------------------------------------------------------
 // Start scheduler
 // ---------------------------------------------------------------------------
@@ -987,6 +1070,12 @@ function startScheduler() {
   cron.schedule('0 23 * * *', () => {
     console.log('[Scheduler] Re-extracting WhatsApp inquiries...');
     runForAllOrgs('inquiryReExtract', reExtractInquiriesForOrg);
+  }, { timezone: 'Asia/Hong_Kong' });
+
+  // Daily at 04:00 HK - TaneChat fact-delivery health (their heartbeat lands 02:00)
+  cron.schedule('0 4 * * *', () => {
+    console.log('[Scheduler] Checking TaneChat fact-delivery health...');
+    runForAllOrgs('factDeliveryHealth', checkFactDeliveryHealthForOrg);
   }, { timezone: 'Asia/Hong_Kong' });
 
   // Run once at startup to fix stale statuses

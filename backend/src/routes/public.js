@@ -54,7 +54,9 @@ function inquiryFactResponse({ inquiryId = null, created = false, applied = fals
   };
 }
 
-function validateInquiryFactRequest(body, { requireIsInquiry = false } = {}) {
+const MAX_SUMMARY_CHARS = 2000;
+
+function validateInquiryFactRequest(body, { requireIsInquiry = false, allowFacts = true } = {}) {
   const b = body || {};
   for (const field of ['schema_version', 'channel', 'channel_user_id', 'occurred_at', 'idempotency_key']) {
     if (b[field] === undefined || b[field] === null || b[field] === '') {
@@ -76,6 +78,15 @@ function validateInquiryFactRequest(body, { requireIsInquiry = false } = {}) {
   for (const fact of facts) {
     if (String(fact).length > MAX_FACT_CHARS) return { ok: false, error: 'fact_too_long' };
   }
+  // from-chat has no notes-append path, so accepting facts there would validate them
+  // and then silently drop them while returning applied:true. Refuse instead.
+  if (!allowFacts && facts.length) return { ok: false, error: 'facts_not_allowed_here' };
+  // summary lands in a TEXT column. Unvalidated, an object becomes the literal
+  // "[object Object]" and a huge string 500s the INSERT.
+  if (b.summary !== undefined && b.summary !== null) {
+    if (typeof b.summary !== 'string') return { ok: false, error: 'invalid_summary' };
+    if (b.summary.length > MAX_SUMMARY_CHARS) return { ok: false, error: 'summary_too_long' };
+  }
   const fieldsResult = validateFields(b.fields);
   if (!fieldsResult.ok) return { ok: false, error: fieldsResult.error };
   return { ok: true, facts, fields: fieldsResult.fields };
@@ -84,11 +95,13 @@ function validateInquiryFactRequest(body, { requireIsInquiry = false } = {}) {
 async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
   await conn.execute(
     `UPDATE inquiry_fact_delivery
-        SET inquiry_id = ?, applied = ?, reason = ?
+        SET inquiry_id = ?, applied = ?, created = ?, superseded_inquiry_id = ?, reason = ?
       WHERE org_id = ? AND idempotency_key = ?`,
     [
       outcome.inquiryId == null ? null : outcome.inquiryId,
       outcome.applied ? 1 : 0,
+      outcome.created ? 1 : 0,
+      outcome.supersededInquiryId == null ? null : outcome.supersededInquiryId,
       outcome.reason || null,
       orgId,
       idempotencyKey,
@@ -108,7 +121,7 @@ async function claimInquiryFactDelivery(conn, orgId, idempotencyKey, hash) {
   } catch (e) {
     if (e.code !== 'ER_DUP_ENTRY') throw e;
     const [[prior]] = await conn.execute(
-      `SELECT inquiry_id, applied, reason, payload_hash
+      `SELECT inquiry_id, applied, created, superseded_inquiry_id, reason, payload_hash
          FROM inquiry_fact_delivery
         WHERE org_id = ? AND idempotency_key = ?
         LIMIT 1`,
@@ -214,7 +227,7 @@ async function applyFieldsAndSummaryToInquiry(conn, orgId, row, fields, summary)
 
 // POST /api/public/inquiry/from-chat
 router.post('/inquiry/from-chat', async (req, res) => {
-  const checked = validateInquiryFactRequest(req.body, { requireIsInquiry: true });
+  const checked = validateInquiryFactRequest(req.body, { requireIsInquiry: true, allowFacts: false });
   if (!checked.ok) return fail(res, checked.error, 400);
 
   let conn;
@@ -235,9 +248,10 @@ router.post('/inquiry/from-chat', async (req, res) => {
       if (prior.payload_hash !== hash) return fail(res, 'idempotency_key_conflict', 409);
       return ok(res, inquiryFactResponse({
         inquiryId: prior.inquiry_id,
-        created: false,
+        created: Number(prior.created) === 1,
         applied: Number(prior.applied) === 1,
         reason: prior.reason || null,
+        supersededInquiryId: prior.superseded_inquiry_id,
       }));
     }
 
@@ -303,6 +317,8 @@ router.post('/inquiry/from-chat', async (req, res) => {
     await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
       inquiryId: outcome.inquiry_id,
       applied: outcome.applied,
+      created: outcome.created,
+      supersededInquiryId: outcome.superseded_inquiry_id,
       reason: outcome.reason,
     });
     await conn.commit();
@@ -339,9 +355,10 @@ router.post('/inquiry/facts', async (req, res) => {
       if (prior.payload_hash !== hash) return fail(res, 'idempotency_key_conflict', 409);
       return ok(res, inquiryFactResponse({
         inquiryId: prior.inquiry_id,
-        created: false,
+        created: Number(prior.created) === 1,
         applied: Number(prior.applied) === 1,
         reason: prior.reason || null,
+        supersededInquiryId: prior.superseded_inquiry_id,
       }));
     }
 
@@ -404,7 +421,7 @@ router.post('/inquiry/facts', async (req, res) => {
     const params = [];
     if (checked.facts.length) {
       const notes = appendFactsToNotes(row.notes, checked.facts, hkDate(b.occurred_at));
-      if (notes.length > MAX_NOTES_CHARS) {
+      if (Buffer.byteLength(notes, 'utf8') > MAX_NOTES_CHARS) {
         const limitErr = new Error('notes_limit_reached');
         limitErr.publicStatus = 413;
         throw limitErr;

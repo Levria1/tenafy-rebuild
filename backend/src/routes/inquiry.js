@@ -410,20 +410,23 @@ router.put('/:id', async (req, res) => {
     if (req.body.reminder_date !== undefined) {
       sets.push('reminder_sent_at = NULL');
     }
+    // A human editing one of the API-writable fields must drop it from
+    // api_set_fields permanently, so the API can never overwrite their value.
+    //
+    // Done with JSON_REMOVE inside the UPDATE rather than SELECT-then-rewrite: the
+    // old shape read the column outside any lock and then rewrote it whole, so a
+    // /inquiry/facts transaction committing in between had its provenance clobbered
+    // — permanently locking the API out of a field the human never touched.
     const humanFields = Object.keys(req.body || {}).filter(f => API_WRITABLE_INQUIRY_FIELDS.has(f));
     if (humanFields.length) {
-      const [[current]] = await req.pool.execute(
-        `SELECT api_set_fields
-           FROM inquiry
-          WHERE id = ? AND org_id = ? AND deleted_at IS NULL
-          LIMIT 1`,
-        [req.params.id, orgId]
-      );
-      const remove = new Set(humanFields);
-      const reduced = parseApiSetFields(current ? current.api_set_fields : null)
-        .filter(field => !remove.has(field));
-      sets.push('api_set_fields = ?');
-      params.push(JSON.stringify(reduced));
+      let expr = 'api_set_fields';
+      for (const field of humanFields) {
+        // JSON_SEARCH returns NULL when absent, and JSON_REMOVE(x, NULL) is NULL —
+        // so COALESCE back to the untouched value for fields not in the list.
+        expr = `COALESCE(JSON_REMOVE(${expr}, JSON_UNQUOTE(JSON_SEARCH(${expr}, 'one', ?))), ${expr})`;
+        params.push(field);
+      }
+      sets.push(`api_set_fields = ${expr}`);
     }
     if (!sets.length) return fail(res, 'No fields to update', 400);
     params.push(req.params.id, orgId);

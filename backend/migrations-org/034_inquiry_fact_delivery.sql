@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS inquiry_fact_delivery (
   payload_hash     CHAR(64)     NOT NULL,
   inquiry_id       BIGINT       DEFAULT NULL,
   applied          TINYINT      NOT NULL DEFAULT 0,
+  created          TINYINT      NOT NULL DEFAULT 0,
+  superseded_inquiry_id BIGINT  DEFAULT NULL,
   reason           VARCHAR(64)  DEFAULT NULL,
   created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
