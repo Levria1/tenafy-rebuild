@@ -20,7 +20,10 @@ const { searchUnits } = require('./unitSearch');
 const { validateSelect, runReadOnly } = require('./askDataService');
 const taneChatClient = require('./taneChatClient');
 const { traceAmounts } = require('./paymentMatchService');
-const { CHAT_SOURCE_CHANNELS, routeChatSearch, mapTaneChatResult } = require('../utils/chatSearchMap');
+const {
+  CHAT_SOURCE_CHANNELS, routeChatSearch, mapTaneChatResult,
+  looksLikePhone, normalizePhone, buildTaneChatSearchParams,
+} = require('../utils/chatSearchMap');
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -1388,16 +1391,19 @@ const search_chats = {
     function: {
       name: 'search_chats',
       description:
-        'INTERNAL search of conversation transcripts (staff only). Prospect conversations are searched LIVE in TaneChat and need keyword. ' +
-        'Staff-assistant conversations are searched locally. Finds what was actually SAID. ' +
-        'Use for "find chats mentioning X", "what did <person> say about Y", "who asked about <unit>". ' +
+        'INTERNAL search of conversation transcripts (staff only). Prospect conversations are searched LIVE in TaneChat; ' +
+        'staff-assistant conversations are searched locally. Finds what was actually SAID. ' +
+        'Use for "find chats mentioning X", "what did <person> say about Y", "who asked about <unit>", ' +
+        'and "show me everything <person> said" (pass them as `prospect`, with no keyword). ' +
         'Returns matching message snippets with prospect, channel and date; TaneChat results include conversation_id for get_conversation. ' +
+        'Check `notices` on the result — it says when a filter could not be applied. An empty message list with a notice ' +
+        'does NOT mean the person never said it. ' +
         'For the extracted prospect summary (name/budget/move-in) use search_inquiries instead.',
       parameters: {
         type: 'object',
         properties: {
-          keyword:  { type: 'string',  description: 'Text to find inside message content. Required for LIVE TaneChat prospect conversations.' },
-          prospect: { type: 'string',  description: 'Filter by who the conversation is with — matches viewer name, email, phone, or channel user id.' },
+          keyword:  { type: 'string',  description: 'Text to find inside message content. Optional if `prospect` is given.' },
+          prospect: { type: 'string',  description: 'Who the conversation is with. A phone number filters LIVE TaneChat results directly; a name is resolved to a phone from our own records first, and fails if we have none on file.' },
           source:   { type: 'string',  description: "'tanechat' searches LIVE prospect chats; 'tenafy' searches local staff assistants. Default: both." },
           channel:  { type: 'string',  description: "Exact channel: whatsapp | email | web | staff-test | staff-internal. Overrides `source`." },
           since:    { type: 'string',  description: 'Only messages on/after this date (YYYY-MM-DD).' },
@@ -1482,15 +1488,42 @@ const search_chats = {
       }));
     };
 
+    // TaneChat keys contacts on phone, so a `prospect` given as a name has to be
+    // turned into one before their API can honour it. We hold that mapping: every
+    // prospect they tell us about becomes an inquiry, and the chat_session rows
+    // carry the channel identifier. Conversations from before the cutover were
+    // never mirrored here, so a name we have no record of stays unresolvable.
+    const resolveProspectPhones = async (prospect) => {
+      if (looksLikePhone(prospect)) return [normalizePhone(prospect)];
+      const like = '%' + String(prospect).trim() + '%';
+      const [rows] = await ctx.pool.execute(
+        `SELECT phone FROM (
+            SELECT i.phone AS phone
+              FROM inquiry i
+             WHERE i.phone IS NOT NULL AND i.phone <> ''
+               AND (CONCAT_WS(' ', i.first_name, i.last_name) LIKE ? OR i.email LIKE ?)
+            UNION
+            SELECT COALESCE(NULLIF(s.viewer_phone, ''), s.channel_user_id) AS phone
+              FROM chat_session s
+             WHERE s.channel = 'whatsapp'
+               AND (s.viewer_name LIKE ? OR s.viewer_email LIKE ?)
+         ) p
+         WHERE p.phone IS NOT NULL AND p.phone <> ''
+         LIMIT 5`,
+        [like, like, like, like]
+      );
+      const seen = new Set();
+      for (const r of rows) {
+        const digits = normalizePhone(r.phone);
+        if (digits.length >= 7) seen.add(digits);
+      }
+      return [...seen].slice(0, 3);
+    };
+
     const searchTaneChat = async (notices) => {
       const keyword = args.keyword == null ? '' : String(args.keyword).trim();
-      if (!keyword) {
-        notices.push({
-          unavailable: 'tanechat_requires_keyword',
-          note: 'TaneChat search needs a keyword. Supply `keyword`, or use get_conversation with a conversation_id.',
-        });
-        return [];
-      }
+      const hasProspect = args.prospect != null && String(args.prospect).trim() !== '';
+
       if (!taneChatClient.isConfigured()) {
         notices.push({
           unavailable: 'tanechat_unreachable',
@@ -1499,27 +1532,59 @@ const search_chats = {
         return [];
       }
 
-      try {
-        const resp = await taneChatClient.searchMessages({ q: keyword, limit, since: args.since });
-        const rows = Array.isArray(resp.results) ? resp.results : [];
-        return rows.map(r => {
-          const mapped = mapTaneChatResult(r);
-          return { ...mapped, said: snippet(mapped.said, keyword) };
+      let phones = [];
+      if (hasProspect) {
+        try {
+          phones = await resolveProspectPhones(args.prospect);
+        } catch (e) {
+          phones = [];
+        }
+        if (!phones.length) {
+          notices.push({
+            unavailable: 'tanechat_prospect_unresolved',
+            note: `No phone number on file for "${String(args.prospect).trim()}", so TaneChat could not be filtered by ` +
+                  'contact — its results below are unfiltered. Search by phone number, or use get_conversation ' +
+                  'with a conversation_id.',
+          });
+        }
+      }
+
+      // Their API needs a keyword OR a phone. With neither there is nothing to ask.
+      if (!keyword && !phones.length) {
+        notices.push({
+          unavailable: 'tanechat_requires_keyword_or_phone',
+          note: 'TaneChat search needs either a keyword or a contact that resolves to a phone number. ' +
+                'Supply `keyword`, pass a phone number as `prospect`, or use get_conversation with a conversation_id.',
         });
-      } catch (e) {
-        notices.push({ unavailable: 'tanechat_unreachable', note: e.message });
         return [];
       }
+
+      const queries = phones.length
+        ? phones.map(phone => buildTaneChatSearchParams({ keyword, phone, since: args.since, until: args.until, limit }))
+        : [buildTaneChatSearchParams({ keyword, since: args.since, until: args.until, limit })];
+
+      const out = [];
+      for (const params of queries) {
+        if (!params) continue;
+        try {
+          const resp = await taneChatClient.searchMessages(params);
+          const rows = Array.isArray(resp.results) ? resp.results : [];
+          for (const r of rows) {
+            const mapped = mapTaneChatResult(r);
+            out.push({ ...mapped, said: snippet(mapped.said, keyword) });
+          }
+        } catch (e) {
+          notices.push({ unavailable: 'tanechat_unreachable', note: e.message });
+        }
+      }
+      // Several phones for one name arrive as separate newest-first lists; merge
+      // them back into one ordering so the model does not read them as sequential.
+      out.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+      return out.slice(0, limit);
     };
 
     const route = routeChatSearch(args);
     const notices = [];
-    if ((route === 'tanechat' || route === 'both') && args.prospect) {
-      notices.push({
-        unavailable: 'tanechat_prospect_filter',
-        note: 'The prospect filter applies to local staff-assistant results only; TaneChat search ignores it.',
-      });
-    }
 
     const localMessages = route === 'local' || route === 'both' ? await searchLocal(route === 'both') : [];
     const taneChatMessages = route === 'tanechat' || route === 'both' ? await searchTaneChat(notices) : [];
@@ -1548,8 +1613,9 @@ const search_whatsapp = {
         'TaneChat integration API, not the local Tenafy chat-session mirror used by search_chats. ' +
         'Use for "who paid this amount", matching bank-statement amounts to WhatsApp/email messages, ' +
         'or finding exact live message text with deep links back to TaneChat. ' +
-        'REQUIRES a content filter — amount, amount_min/amount_max, or q. phone/from/to/direction only ' +
-        'narrow the search and cannot be used alone. Amount search is tuned for recall and only matches ' +
+        'REQUIRES a selector — amount, amount_min/amount_max, q, or phone. A phone alone returns that ' +
+        "contact's messages newest-first. from/to/direction only narrow a search and cannot be used " +
+        'alone. Amount search is tuned for recall and only matches ' +
         'amounts written literally in the text, so expect incidental hits: rank them by how close the ' +
         'message date is to the payment date (±14 days is high-signal) and cite the deep_link.',
       parameters: {
@@ -1570,16 +1636,13 @@ const search_whatsapp = {
   },
   async execute(ctx, args = {}) {
     const has = (v) => v != null && String(v).trim() !== '';
-    // TaneChat requires a CONTENT filter (amount / amount range / q). `phone`,
-    // `from`, `to` and `direction` only narrow a search — on their own the API
-    // answers 400. Reject here with actionable guidance instead of spending a
-    // call (and a tool-loop iteration) on a known-bad request.
-    if (![args.amount, args.amount_min, args.amount_max, args.q].some(has)) {
+    // TaneChat requires a selector: amount / amount range / q / phone. `from`,
+    // `to` and `direction` only narrow a search — on their own the API answers
+    // 400. Reject here with actionable guidance instead of spending a call (and a
+    // tool-loop iteration) on a known-bad request.
+    if (![args.amount, args.amount_min, args.amount_max, args.q, args.phone].some(has)) {
       return {
-        error: has(args.phone)
-          ? 'A phone number alone is not a searchable filter. Add a content filter: amount (e.g. 13800) ' +
-            'or q (e.g. "transferred", "paid").'
-          : 'Provide at least one search filter: amount, amount_min, amount_max, or q.',
+        error: 'Provide at least one search filter: amount, amount_min, amount_max, q, or phone.',
       };
     }
     if (!taneChatClient.isConfigured()) {

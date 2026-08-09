@@ -193,7 +193,9 @@ Response:
     "inquiry_id": "1786…",
     "created": true,
     "applied": true,
-    "superseded_inquiry_id": "1699…"
+    "superseded_inquiry_id": "1699…",
+    "skipped_fields": [],
+    "summary_applied": true
   }
 }
 ```
@@ -223,14 +225,32 @@ Response:
 
 ```json
 { "code": 200, "data": { "inquiry_id": "1786…", "created": false, "applied": true,
-                         "reason": null, "superseded_inquiry_id": null } }
+                         "reason": null, "superseded_inquiry_id": null,
+                         "skipped_fields": ["budget"], "summary_applied": false } }
 ```
 
-**Both endpoints always return all five keys**, `null` where not applicable, so one
-parser handles either response.
+**Both endpoints always return the same seven keys**, `null` or empty where not
+applicable, so one parser handles either response.
+
+### `applied: true` does not mean anything changed
+
+`applied` means the delivery was accepted and processed. Two things can still be
+declined without it being an error, and both used to be invisible:
+
+- **`skipped_fields`** — fields Tenafy refused to overwrite because they already
+  carry a value it did not set (a human edit, or Tenafy's own pre-cutover
+  extraction). Re-sending the same value will not help; the field is a human's
+  until a human clears it.
+- **`summary_applied`** — whether `summary` was used. It only ever seeds *empty*
+  notes, so a conversation that already has notes keeps them. On
+  `/inquiry/facts` a summary is recorded but never applied (that endpoint appends
+  dated fact lines instead), so `summary_applied` is always `false` there.
+
+Both are recorded on the delivery row, so the parallel-run report can show them.
 
 **On a replay** (same key, same payload) the original outcome is returned in full,
-including `created` and `superseded_inquiry_id` — the delivery row stores all five values.
+including `created`, `superseded_inquiry_id` and `skipped_fields` — the delivery row
+stores every value it reported.
 
 **Call `from-chat` once per conversation first.** Tenafy will not create an inquiry
 from a bare fact list — that would manufacture records from conversations nobody
@@ -392,7 +412,8 @@ retry, the payload is wrong. `429` and `5xx` → retry with backoff, reusing the
    same facts would bake weeks of duplicate lines into an audit trail kept forever,
    and no later cleanup could tell them apart.
 3. **Compare and sign off**, on a criterion agreed up front rather than by eyeball.
-   Over **50 conversations across 2 weeks**:
+   Over **50 conversations across one month** (9 Aug – 9 Sep 2026; extended from two
+   weeks at TaneChat's request):
    - field-level match on `budget` and `desired_start_date` against the staged output;
    - every **intent shift** the staged output found is also present in TaneChat's facts;
    - **free-form narrative facts are OUT of scope for v1 sign-off.** Tenafy's extractor

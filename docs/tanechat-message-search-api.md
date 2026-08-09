@@ -57,6 +57,24 @@ GET /api/search/messages
 `amount` and `q` are both optional but at least one is required. When both are
 given, treat as AND.
 
+**Shipped 2026-08-09 — `phone` is now a selector in its own right.** Originally a
+keyword was mandatory: `{phone}`, `{contact}` and `{conversation_id}` all answered
+`400 at least one of amount, amount_min, amount_max, or q is required`, so "show me
+everything this person said" could not be expressed. `phone` alone now returns that
+contact's messages newest-first. Verified live.
+
+Two things to keep in mind against this endpoint:
+
+- **It keys on phone, not name.** Tenafy resolves a name to a phone from its own
+  `inquiry` / `chat_session` records before calling. Conversations from before the
+  cutover were never mirrored to Tenafy, so a name with no local record stays
+  unresolvable — `search_chats` says so in `notices` rather than returning an empty
+  list.
+- **Date bounds are `from` / `to`.** `since` and `until` are **silently ignored** —
+  not rejected — so a date filter under the wrong name returns everything and old
+  messages read as current. Verified: `{phone, from: '2026-08-09'}` returned 6 of 8
+  messages, `{phone, since: '2026-08-09'}` returned all 8.
+
 **Response**
 
 ```json

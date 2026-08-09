@@ -44,13 +44,25 @@ const MAX_FACT_CHARS = 500;
 const MAX_NOTES_CHARS = 60000;
 const INQUIRY_FACT_FIELDS = ['first_name', 'last_name', 'email', 'phone', 'budget', 'desired_start_date'];
 
-function inquiryFactResponse({ inquiryId = null, created = false, applied = false, reason = null, supersededInquiryId = null }) {
+// `applied` means the delivery was ACCEPTED and processed — not that any field
+// changed. A field already carrying a human (or pre-cutover Tenafy) value is
+// declined by provenance, and a summary is only used to seed empty notes. Both
+// are silent from the caller's side, so they are reported explicitly:
+// `skipped_fields` lists fields we refused to overwrite, and `summary_applied`
+// says whether the summary was used. Additive keys — the original five are
+// always present and unchanged.
+function inquiryFactResponse({
+  inquiryId = null, created = false, applied = false, reason = null, supersededInquiryId = null,
+  skippedFields = [], summaryApplied = false,
+}) {
   return {
     inquiry_id: inquiryId == null ? null : String(inquiryId),
     created,
     applied,
     reason,
     superseded_inquiry_id: supersededInquiryId == null ? null : String(supersededInquiryId),
+    skipped_fields: Array.isArray(skippedFields) ? skippedFields : [],
+    summary_applied: !!summaryApplied,
   };
 }
 
@@ -96,7 +108,7 @@ async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
   await conn.execute(
     `UPDATE inquiry_fact_delivery
         SET inquiry_id = ?, applied = ?, created = ?, superseded_inquiry_id = ?, reason = ?,
-            facts_json = ?, fields_json = ?
+            facts_json = ?, fields_json = ?, summary_text = ?, summary_applied = ?, skipped_json = ?
       WHERE org_id = ? AND idempotency_key = ?`,
     [
       outcome.inquiryId == null ? null : outcome.inquiryId,
@@ -106,6 +118,9 @@ async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
       outcome.reason || null,
       JSON.stringify(Array.isArray(outcome.facts) ? outcome.facts : []),
       JSON.stringify(outcome.fields && typeof outcome.fields === 'object' ? outcome.fields : {}),
+      outcome.summary == null || outcome.summary === '' ? null : String(outcome.summary),
+      outcome.summaryApplied ? 1 : 0,
+      JSON.stringify(Array.isArray(outcome.skippedFields) ? outcome.skippedFields : []),
       orgId,
       idempotencyKey,
     ]
@@ -124,7 +139,8 @@ async function claimInquiryFactDelivery(conn, orgId, idempotencyKey, hash) {
   } catch (e) {
     if (e.code !== 'ER_DUP_ENTRY') throw e;
     const [[prior]] = await conn.execute(
-      `SELECT inquiry_id, applied, created, superseded_inquiry_id, reason, payload_hash
+      `SELECT inquiry_id, applied, created, superseded_inquiry_id, reason, payload_hash,
+              summary_applied, skipped_json
          FROM inquiry_fact_delivery
         WHERE org_id = ? AND idempotency_key = ?
         LIMIT 1`,
@@ -132,6 +148,24 @@ async function claimInquiryFactDelivery(conn, orgId, idempotencyKey, hash) {
     );
     return prior;
   }
+}
+
+// A replay must report the SAME outcome the first delivery reported, including
+// which fields were declined — otherwise a retry looks like a different result.
+function priorDeliveryResponse(prior) {
+  let skipped = prior.skipped_json;
+  if (typeof skipped === 'string') {
+    try { skipped = JSON.parse(skipped); } catch (e) { skipped = []; }
+  }
+  return inquiryFactResponse({
+    inquiryId: prior.inquiry_id,
+    created: Number(prior.created) === 1,
+    applied: Number(prior.applied) === 1,
+    reason: prior.reason || null,
+    supersededInquiryId: prior.superseded_inquiry_id,
+    skippedFields: Array.isArray(skipped) ? skipped : [],
+    summaryApplied: Number(prior.summary_applied) === 1,
+  });
 }
 
 async function loadLockedInquiryForFacts(conn, orgId, inquiryId) {
@@ -167,7 +201,7 @@ function buildFieldAssignments(fields, currentRow) {
   const resolved = resolveWritableFields(fields, currentRow, currentRow ? currentRow.api_set_fields : null);
   const writtenNames = Object.keys(resolved.writable);
   const apiSetFields = mergeApiSetFields(currentRow ? currentRow.api_set_fields : null, writtenNames);
-  return { writable: resolved.writable, writtenNames, apiSetFields };
+  return { writable: resolved.writable, writtenNames, apiSetFields, skipped: resolved.skipped };
 }
 
 async function createInquiryFromFactPayload(conn, orgId, session, channel, fields, summary) {
@@ -206,14 +240,17 @@ async function createInquiryFromFactPayload(conn, orgId, session, channel, field
       WHERE id = ?`,
     [inquiryId, session.id]
   );
-  return inquiryId;
+  // A brand-new row has nothing to overwrite, so nothing can be declined and the
+  // summary always lands.
+  return { inquiryId, skipped: [], summaryApplied: !!summary };
 }
 
 async function applyFieldsAndSummaryToInquiry(conn, orgId, row, fields, summary) {
   const sets = [];
   const params = [];
-  const { writable, writtenNames, apiSetFields } = buildFieldAssignments(fields, row);
-  if (summary && !(row.notes && String(row.notes).trim())) {
+  const { writable, writtenNames, apiSetFields, skipped } = buildFieldAssignments(fields, row);
+  const summaryApplied = !!(summary && !(row.notes && String(row.notes).trim()));
+  if (summaryApplied) {
     sets.push('notes = ?');
     params.push(String(summary));
   }
@@ -225,7 +262,7 @@ async function applyFieldsAndSummaryToInquiry(conn, orgId, row, fields, summary)
   }
   sets.push('updated_at = NOW()');
   await conn.execute(`UPDATE inquiry SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, [...params, row.id, orgId]);
-  return writtenNames;
+  return { writtenNames, skipped, summaryApplied };
 }
 
 // POST /api/public/inquiry/from-chat
@@ -249,13 +286,7 @@ router.post('/inquiry/from-chat', async (req, res) => {
     if (prior) {
       await conn.commit();
       if (prior.payload_hash !== hash) return fail(res, 'idempotency_key_conflict', 409);
-      return ok(res, inquiryFactResponse({
-        inquiryId: prior.inquiry_id,
-        created: Number(prior.created) === 1,
-        applied: Number(prior.applied) === 1,
-        reason: prior.reason || null,
-        supersededInquiryId: prior.superseded_inquiry_id,
-      }));
+      return ok(res, priorDeliveryResponse(prior));
     }
 
     await conn.execute(
@@ -287,6 +318,7 @@ router.post('/inquiry/from-chat', async (req, res) => {
         reason: 'not_inquiry',
         facts: checked.facts,
         fields: checked.fields,
+        summary: b.summary,
       });
       await conn.commit();
       return ok(res, outcome);
@@ -294,20 +326,28 @@ router.post('/inquiry/from-chat', async (req, res) => {
 
     let outcome;
     if (!session.inquiry_id) {
-      const inquiryId = await createInquiryFromFactPayload(conn, orgId, session, channel, checked.fields, b.summary);
-      outcome = inquiryFactResponse({ inquiryId, created: true, applied: true });
+      const made = await createInquiryFromFactPayload(conn, orgId, session, channel, checked.fields, b.summary);
+      outcome = inquiryFactResponse({
+        inquiryId: made.inquiryId, created: true, applied: true,
+        skippedFields: made.skipped, summaryApplied: made.summaryApplied,
+      });
     } else {
       const gate = await loadLockedInquiryForFacts(conn, orgId, session.inquiry_id);
       if (!gate.reason) {
-        await applyFieldsAndSummaryToInquiry(conn, orgId, gate.row, checked.fields, b.summary);
-        outcome = inquiryFactResponse({ inquiryId: gate.row.id, created: false, applied: true });
-      } else if (gate.reason === 'inquiry_closed' || gate.reason === 'inquiry_converted') {
-        const inquiryId = await createInquiryFromFactPayload(conn, orgId, session, channel, checked.fields, b.summary);
+        const applied = await applyFieldsAndSummaryToInquiry(conn, orgId, gate.row, checked.fields, b.summary);
         outcome = inquiryFactResponse({
-          inquiryId,
+          inquiryId: gate.row.id, created: false, applied: true,
+          skippedFields: applied.skipped, summaryApplied: applied.summaryApplied,
+        });
+      } else if (gate.reason === 'inquiry_closed' || gate.reason === 'inquiry_converted') {
+        const made = await createInquiryFromFactPayload(conn, orgId, session, channel, checked.fields, b.summary);
+        outcome = inquiryFactResponse({
+          inquiryId: made.inquiryId,
           created: true,
           applied: true,
           supersededInquiryId: session.inquiry_id,
+          skippedFields: made.skipped,
+          summaryApplied: made.summaryApplied,
         });
       } else {
         outcome = inquiryFactResponse({
@@ -327,6 +367,9 @@ router.post('/inquiry/from-chat', async (req, res) => {
       reason: outcome.reason,
       facts: checked.facts,
       fields: checked.fields,
+      summary: b.summary,
+      summaryApplied: outcome.summary_applied,
+      skippedFields: outcome.skipped_fields,
     });
     await conn.commit();
     return ok(res, outcome);
@@ -360,13 +403,7 @@ router.post('/inquiry/facts', async (req, res) => {
     if (prior) {
       await conn.commit();
       if (prior.payload_hash !== hash) return fail(res, 'idempotency_key_conflict', 409);
-      return ok(res, inquiryFactResponse({
-        inquiryId: prior.inquiry_id,
-        created: Number(prior.created) === 1,
-        applied: Number(prior.applied) === 1,
-        reason: prior.reason || null,
-        supersededInquiryId: prior.superseded_inquiry_id,
-      }));
+      return ok(res, priorDeliveryResponse(prior));
     }
 
     const [[session]] = await conn.execute(
@@ -385,6 +422,7 @@ router.post('/inquiry/facts', async (req, res) => {
         reason: 'no_session',
         facts: checked.facts,
         fields: checked.fields,
+        summary: b.summary,
       });
       await conn.commit();
       return ok(res, outcome);
@@ -405,6 +443,7 @@ router.post('/inquiry/facts', async (req, res) => {
         reason: 'no_inquiry',
         facts: checked.facts,
         fields: checked.fields,
+        summary: b.summary,
       });
       await conn.commit();
       return ok(res, outcome);
@@ -424,6 +463,7 @@ router.post('/inquiry/facts', async (req, res) => {
         reason: gate.reason,
         facts: checked.facts,
         fields: checked.fields,
+        summary: b.summary,
       });
       await conn.commit();
       return ok(res, outcome);
@@ -443,7 +483,7 @@ router.post('/inquiry/facts', async (req, res) => {
       params.push(notes);
     }
 
-    const { writable, writtenNames, apiSetFields } = buildFieldAssignments(checked.fields, row);
+    const { writable, writtenNames, apiSetFields, skipped } = buildFieldAssignments(checked.fields, row);
     if (writtenNames.length) {
       sets.push('api_set_fields = ?');
       params.push(JSON.stringify(apiSetFields));
@@ -461,13 +501,23 @@ router.post('/inquiry/facts', async (req, res) => {
       );
     }
 
-    const outcome = inquiryFactResponse({ inquiryId: row.id, created: false, applied: true });
+    // This endpoint appends dated fact lines; it never seeds notes from `summary`
+    // (that is first-contact behaviour, and here it would fight the append). A
+    // summary sent to /facts is therefore recorded but NOT applied — reported as
+    // summary_applied:false rather than dropped in silence.
+    const outcome = inquiryFactResponse({
+      inquiryId: row.id, created: false, applied: true,
+      skippedFields: skipped, summaryApplied: false,
+    });
     await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
       inquiryId: row.id,
       applied: true,
       reason: null,
       facts: checked.facts,
       fields: checked.fields,
+      summary: b.summary,
+      summaryApplied: false,
+      skippedFields: skipped,
     });
     await conn.commit();
     return ok(res, outcome);

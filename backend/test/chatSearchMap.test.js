@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { routeChatSearch, mapTaneChatResult } = require('../src/utils/chatSearchMap');
+const {
+  routeChatSearch, mapTaneChatResult,
+  looksLikePhone, normalizePhone, buildTaneChatSearchParams,
+} = require('../src/utils/chatSearchMap');
 
 test('routeChatSearch defaults to both', () => {
   assert.equal(routeChatSearch({}), 'both');
@@ -62,4 +65,60 @@ test('mapTaneChatResult falls back to whatsapp channel without contact', () => {
   const mapped = mapTaneChatResult({ contact: null });
   assert.equal(mapped.channel, 'whatsapp');
   assert.equal(mapped.prospect, '');
+});
+
+// ── phone-selector search (TaneChat shipped keyword-less lookup by phone) ─────
+
+test('looksLikePhone accepts numbers in common written forms', () => {
+  assert.equal(looksLikePhone('85366369171'), true);
+  assert.equal(looksLikePhone('+852 6636 9171'), true);
+  assert.equal(looksLikePhone('(852) 6636-9171'), true);
+});
+
+test('looksLikePhone rejects names, emails and short digit strings', () => {
+  assert.equal(looksLikePhone('Virginia'), false);
+  assert.equal(looksLikePhone('eric@example.com'), false);
+  assert.equal(looksLikePhone('5B'), false);
+  assert.equal(looksLikePhone('123456'), false);
+  assert.equal(looksLikePhone(''), false);
+  assert.equal(looksLikePhone(null), false);
+});
+
+test('normalizePhone strips punctuation and keeps digits', () => {
+  assert.equal(normalizePhone('+852 6636-9171'), '85266369171');
+  assert.equal(normalizePhone(null), '');
+});
+
+test('buildTaneChatSearchParams needs a keyword or a phone', () => {
+  assert.equal(buildTaneChatSearchParams({ limit: 25 }), null);
+  assert.equal(buildTaneChatSearchParams({ keyword: '   ', limit: 25 }), null);
+});
+
+test('buildTaneChatSearchParams sends phone alone', () => {
+  assert.deepEqual(
+    buildTaneChatSearchParams({ phone: '+852 6636 9171', limit: 10 }),
+    { limit: 10, phone: '85266369171' }
+  );
+});
+
+test('buildTaneChatSearchParams sends keyword and phone together', () => {
+  const p = buildTaneChatSearchParams({ keyword: ' deposit ', phone: '85366369171', limit: 5 });
+  assert.equal(p.q, 'deposit');
+  assert.equal(p.phone, '85366369171');
+});
+
+// Their API accepts from/to and silently IGNORES since/until, so a date bound
+// passed under the wrong name would drop and old messages would look current.
+test('buildTaneChatSearchParams maps since/until onto from/to', () => {
+  const p = buildTaneChatSearchParams({ keyword: 'x', since: '2026-08-01', until: '2026-08-09', limit: 5 });
+  assert.equal(p.from, '2026-08-01');
+  assert.equal(p.to, '2026-08-09');
+  assert.equal('since' in p, false);
+  assert.equal('until' in p, false);
+});
+
+test('buildTaneChatSearchParams ignores malformed dates', () => {
+  const p = buildTaneChatSearchParams({ keyword: 'x', since: 'last week', until: '2026-8-9', limit: 5 });
+  assert.equal('from' in p, false);
+  assert.equal('to' in p, false);
 });

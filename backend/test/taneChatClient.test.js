@@ -125,20 +125,24 @@ test('search_whatsapp rejects calls with no filters', async () => {
   assert.match(r.error, /at least one search filter/);
 });
 
-// TaneChat 400s on a phone-only query (phone merely narrows a content search).
-// We must catch that locally rather than spend a call + tool-loop iteration.
-test('search_whatsapp rejects a phone-only search without calling TaneChat', async () => {
+// TaneChat used to 400 on a phone-only query, so we rejected it locally. They
+// shipped keyword-less lookup by phone on 2026-08-09 (verified live), which is
+// what "show me everything this person said" needs — so it must now go through.
+test('search_whatsapp sends a phone-only search to TaneChat', async () => {
   const tool = chatTools.ALL_BY_NAME.search_whatsapp;
   const origSearch = taneChat.searchMessages;
-  let called = false;
-  taneChat.searchMessages = async () => { called = true; return { results: [] }; };
+  const origConfigured = taneChat.isConfigured;
+  let seen = null;
+  taneChat.isConfigured = () => true;
+  taneChat.searchMessages = async (params) => { seen = params; return { results: [] }; };
   try {
     const r = await tool.execute({}, { phone: '+85290001234' });
-    assert.match(r.error, /phone number alone/i);
-    assert.match(r.error, /amount|q/, 'error should tell the model what to add');
-    assert.equal(called, false, 'must not hit the API for a known-400 request');
+    assert.equal(r.error, undefined, 'phone alone is a valid selector now');
+    assert.equal(seen.phone, '+85290001234');
+    assert.equal(r.count, 0);
   } finally {
     taneChat.searchMessages = origSearch;
+    taneChat.isConfigured = origConfigured;
   }
 });
 
@@ -219,4 +223,115 @@ test('search_whatsapp is internal-only: absent from prospect tools and present i
   assert.ok(chatTools.INTERNAL_ONLY.has('search_whatsapp'));
   assert.ok(!prospect.byName.search_whatsapp);
   assert.ok(internal.byName.search_whatsapp);
+});
+
+// ── search_chats: prospect → phone resolution against the live TaneChat API ──
+
+function fakePool(phoneRows) {
+  return {
+    execute: async () => [phoneRows, []],
+    query: async () => [[], []],
+  };
+}
+
+test('search_chats sends a phone-shaped prospect straight through, no keyword', async () => {
+  const tool = chatTools.ALL_BY_NAME.search_chats;
+  const origSearch = taneChat.searchMessages;
+  const origConfigured = taneChat.isConfigured;
+  let seen = null;
+  taneChat.isConfigured = () => true;
+  taneChat.searchMessages = async (params) => {
+    seen = params;
+    return { results: [{ conversation_id: 'c1', timestamp: '2026-08-09T10:00:00.000Z',
+                         direction: 'inbound', content: 'Hello', contact: { name: 'Eric', phone: '+8615069758263' } }] };
+  };
+  try {
+    const r = await tool.execute({ pool: fakePool([]) }, { source: 'tanechat', prospect: '+8615069758263' });
+    assert.equal(seen.phone, '8615069758263');
+    assert.equal('q' in seen, false, 'no keyword was given, so none should be sent');
+    assert.equal(r.count, 1);
+    assert.equal(r.messages[0].conversation_id, 'c1');
+    assert.equal(r.messages[0].who, 'prospect');
+    assert.equal(r.notices, undefined, 'a resolvable contact needs no notice');
+  } finally {
+    taneChat.searchMessages = origSearch;
+    taneChat.isConfigured = origConfigured;
+  }
+});
+
+test('search_chats resolves a name to a phone from our own records', async () => {
+  const tool = chatTools.ALL_BY_NAME.search_chats;
+  const origSearch = taneChat.searchMessages;
+  const origConfigured = taneChat.isConfigured;
+  let seen = null;
+  taneChat.isConfigured = () => true;
+  taneChat.searchMessages = async (params) => { seen = params; return { results: [] }; };
+  try {
+    await tool.execute({ pool: fakePool([{ phone: '+852 6636 9171' }]) },
+                       { source: 'tanechat', prospect: 'Virginia' });
+    assert.equal(seen.phone, '85266369171');
+  } finally {
+    taneChat.searchMessages = origSearch;
+    taneChat.isConfigured = origConfigured;
+  }
+});
+
+// The failure that matters: an unfilterable search must not look like an answer.
+test('search_chats notices an unresolvable name instead of returning a bare empty list', async () => {
+  const tool = chatTools.ALL_BY_NAME.search_chats;
+  const origSearch = taneChat.searchMessages;
+  const origConfigured = taneChat.isConfigured;
+  let called = 0;
+  taneChat.isConfigured = () => true;
+  taneChat.searchMessages = async () => { called++; return { results: [] }; };
+  try {
+    const r = await tool.execute({ pool: fakePool([]) }, { source: 'tanechat', prospect: 'Nobody We Know' });
+    assert.equal(called, 0, 'no keyword and no phone means nothing to ask');
+    assert.ok(Array.isArray(r.notices) && r.notices.length >= 1);
+    const codes = r.notices.map(n => n.unavailable);
+    assert.ok(codes.includes('tanechat_prospect_unresolved'));
+    assert.ok(codes.includes('tanechat_requires_keyword_or_phone'));
+  } finally {
+    taneChat.searchMessages = origSearch;
+    taneChat.isConfigured = origConfigured;
+  }
+});
+
+test('search_chats still searches by keyword when the name is unresolvable', async () => {
+  const tool = chatTools.ALL_BY_NAME.search_chats;
+  const origSearch = taneChat.searchMessages;
+  const origConfigured = taneChat.isConfigured;
+  let seen = null;
+  taneChat.isConfigured = () => true;
+  taneChat.searchMessages = async (params) => { seen = params; return { results: [] }; };
+  try {
+    const r = await tool.execute({ pool: fakePool([]) },
+                                 { source: 'tanechat', prospect: 'Nobody', keyword: 'deposit' });
+    assert.equal(seen.q, 'deposit');
+    assert.equal('phone' in seen, false);
+    const codes = (r.notices || []).map(n => n.unavailable);
+    assert.ok(codes.includes('tanechat_prospect_unresolved'), 'must say the results are unfiltered');
+  } finally {
+    taneChat.searchMessages = origSearch;
+    taneChat.isConfigured = origConfigured;
+  }
+});
+
+test('search_chats maps since/until to the date bounds TaneChat honours', async () => {
+  const tool = chatTools.ALL_BY_NAME.search_chats;
+  const origSearch = taneChat.searchMessages;
+  const origConfigured = taneChat.isConfigured;
+  let seen = null;
+  taneChat.isConfigured = () => true;
+  taneChat.searchMessages = async (params) => { seen = params; return { results: [] }; };
+  try {
+    await tool.execute({ pool: fakePool([]) },
+                       { source: 'tanechat', keyword: 'deposit', since: '2026-08-01', until: '2026-08-09' });
+    assert.equal(seen.from, '2026-08-01');
+    assert.equal(seen.to, '2026-08-09');
+    assert.equal('since' in seen, false, 'TaneChat ignores `since` — it must be sent as `from`');
+  } finally {
+    taneChat.searchMessages = origSearch;
+    taneChat.isConfigured = origConfigured;
+  }
 });
