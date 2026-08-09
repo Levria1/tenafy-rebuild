@@ -6,7 +6,10 @@ Tenafy the **transcript** and having Tenafy extract them.
 
 **Direction:** TaneChat calls Tenafy. All endpoints are under `/api/public` and
 require the org's `X-API-Key` header (the `pk_...` key from Tenafy master →
-API Keys). The key must NOT be read-only — these are writes.
+API Keys). **Use the same write-capable key as `/chat/log` (`Tane Chatbot`, or
+`TaneChat Test` for staging).** Two read-only keys also exist — `TaneChat Lookups
+(read-only)` and `Website (read-only)` — and either would make every one of these
+calls fail with `403`, since `read_only` blocks all non-GET methods.
 
 **Division of labour after this change:**
 
@@ -57,7 +60,11 @@ whether anything **new or changed** was revealed. Extract:
 - new **desired start date**, or a change to it
 - new **preferences** — bedrooms, neighbourhood, parking, pets, lease length
 - **contact details** not already known — name, email, phone
-- **intent shifts** — "no longer looking", "found a place", "budget went up"
+- **intent shifts** — "no longer looking", "found a place", "budget went up".
+  **Required in v1**, not deferrable: this is the highest-value signal in the feature,
+  because it tells staff a lead is dead without anyone reading the thread. It does not
+  need free-form narrative extraction — a change in the conversation's stage/status on
+  your side is enough to emit a deterministic sentence.
 
 Real example of what Tenafy produces today, and what it should keep looking like:
 
@@ -87,6 +94,11 @@ under three different keys, the inquiry gets three identical lines.
 So TaneChat must track what it has already sent per conversation and send only
 genuinely new or changed facts. This is the one obligation that cannot move to
 Tenafy — only you know what you extracted last time.
+
+**Advance that last-sent snapshot only on a `2xx`.** If a delivery fails and the
+snapshot has already moved on, the next diff sees no change and those facts are lost
+permanently, with nothing to detect it. A retry on the next inbound or heartbeat only
+recovers them if the snapshot still shows them as unsent.
 
 ### 3. Keep serving conversation search
 
@@ -159,8 +171,10 @@ recreated on your side, the newest id replaces the old. It is never used for mat
 3. Session has no inquiry → creates one, with `source` set from `channel`.
 4. Session has an inquiry that is **still live** (passes the Rule 2 gate) → returns
    it, applying `fields` and `summary` per Rules 3 and 4.
-5. Session has an inquiry that is **not live** — closed, converted, or with a
-   confirmed viewing → **creates a NEW inquiry** and re-points the session at it.
+5. Session has an inquiry that is **closed or converted** → **creates a NEW inquiry**
+   and re-points the session at it. A `viewing_active` inquiry is deliberately NOT
+   superseded — a viewing is human-managed and a "running late" message must not spawn
+   a duplicate deal; Tenafy just keeps rejecting until the viewing resolves.
    This is the returning-prospect case: someone enquires in March, views, goes quiet,
    then comes back in October. Without it the session points at a dead record forever
    and every later fact is rejected.
@@ -203,16 +217,27 @@ Response:
 Response:
 
 ```json
-{ "code": 200, "data": { "inquiry_id": "1786…", "applied": true, "reason": null } }
+{ "code": 200, "data": { "inquiry_id": "1786…", "created": false, "applied": true,
+                         "reason": null, "superseded_inquiry_id": null } }
 ```
+
+**Both endpoints always return all five keys**, `null` where not applicable, so one
+parser handles either response.
 
 **Call `from-chat` once per conversation first.** Tenafy will not create an inquiry
 from a bare fact list — that would manufacture records from conversations nobody
 classified as enquiries.
 
-**`applied: false` is a normal outcome, not an error.** Do not retry it. The fact is
-discarded, notes included. If you judge it still relevant later — say a viewing was
-cancelled and the inquiry reopened — re-send under a **new** idempotency key.
+**`applied: false` is a normal outcome, not an error.** Do not retry the same
+delivery. The fact is discarded, notes included.
+
+**But keep sending on `viewing_active`.** Do not stop delivering for a conversation
+just because the gate is closed. A viewing can be cancelled, which makes the inquiry
+live again — and if you have stopped sending, nothing tells you that happened, so
+updates never resume. Sending into a rejection is cheap and makes resumption
+automatic. (Do NOT auto-reopen a new inquiry on `viewing_active` — a "running late"
+message must not spawn a duplicate deal. Superseding is only for
+`inquiry_closed` / `inquiry_converted`.)
 
 `reason` is one of:
 
@@ -237,6 +262,19 @@ that extraction — a message id, or `conversation_id:message_id`. A repeat retu
 Send the same key with a *different* payload and Tenafy returns
 **`409 idempotency_key_conflict`** rather than silently replaying the old result and
 dropping the new facts. Do not retry a 409 — fix the key.
+
+⚠️ **The key must NOT be a hash of the content alone.** A content fingerprint makes
+identical facts collide across time, and two flows depend on being able to send the
+same sentence twice:
+
+- **Re-engagement.** A fact rejected with `applied: false` on a dead inquiry, then
+  re-sent after `from-chat` supersedes it, has identical content. A content-hash key
+  replays the stored rejection and the fact never reaches the new inquiry.
+- **Value reversions.** Budget 18k → 25k → back to 18k emits "Budget set to
+  HK$18,000" a second time, legitimately. A content-hash key drops it.
+
+Include something monotonic: `<conversation_id>:facts:<message_id>` (preferred), or
+put `occurred_at` in the hash input alongside the content.
 
 *Tenafy build note:* no idempotency store exists yet. It needs:
 
@@ -343,10 +381,21 @@ retry, the payload is wrong. `429` and `5xx` → retry with backoff, reusing the
    not to `notes`** — two extractors appending differently-worded versions of the
    same facts would bake weeks of duplicate lines into an audit trail kept forever,
    and no later cleanup could tell them apart.
-3. **Compare and sign off**, on a criterion agreed up front rather than by eyeball:
-   over **50 conversations across 2 weeks**, TaneChat's output matches the staged
-   output on `budget` and `desired_start_date` at field level, and recalls at least
-   the same facts in notes. One named person each side signs it off.
+3. **Compare and sign off**, on a criterion agreed up front rather than by eyeball.
+   Over **50 conversations across 2 weeks**:
+   - field-level match on `budget` and `desired_start_date` against the staged output;
+   - every **intent shift** the staged output found is also present in TaneChat's facts;
+   - **free-form narrative facts are OUT of scope for v1 sign-off.** Tenafy's extractor
+     produces them today (e.g. "Will be working at Four Seasons Hong Kong by IFC mall")
+     and TaneChat's v1 emits a deterministic set instead, so requiring notes-line parity
+     would make sign-off unpassable by construction. They are a v2 item and need a date,
+     not an open end.
+   - during the window, TaneChat also reports extractions **suppressed by confidence
+     gating** — otherwise a suppressed fact looks identical to "nothing changed" and the
+     comparison reads as agreement where it is really silence on both sides.
+
+   Sign-off is a single named person; on this project that is the same individual for
+   both sides, which is accepted deliberately rather than by oversight.
 4. **Tenafy** disables its own extraction — the 23:00 job and the auto-create inside
    `/chat/log`. `/chat/log` keeps returning `200` but **discards** the payload, so
    nothing is written that no longer has a reader.
@@ -357,10 +406,17 @@ retry, the payload is wrong. `429` and `5xx` → retry with backoff, reusing the
 **The heartbeat is part of the deal, not an optional extra.** The failure mode we are
 moving away from is silence: extraction stops, inquiries stop updating, nothing is
 logged. After step 5 that gets worse, because Tenafy no longer holds transcripts to
-fall back on. So TaneChat sends at least one call per active conversation per day —
-an empty `facts: []` no-op is fine — and Tenafy alerts when a conversation with
-recent inbound messages has had no delivery for 48 hours. Without this we have moved
-the silent failure, not removed it.
+fall back on. So TaneChat sends at least one call per active conversation per day — an empty
+`facts: []` no-op is fine — and Tenafy alerts when an **active** conversation has had
+no delivery for 48 hours.
+
+**"Active" must mean the same thing on both sides or the alert is useless.** Agreed
+definition: an inquiry exists, and the conversation had inbound activity **within the
+last 3 days**. TaneChat stops heartbeating outside that window and Tenafy stops
+alerting on it — otherwise Tenafy alarms on conversations TaneChat has correctly
+stopped sending, and a noisy alert gets muted, which is how this failure mode returns.
+
+Without the heartbeat we have moved the silent failure, not removed it.
 
 ---
 
