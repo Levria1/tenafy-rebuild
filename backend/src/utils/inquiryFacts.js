@@ -139,6 +139,13 @@ function payloadHash(body) {
   return crypto.createHash('sha256').update(JSON.stringify(canonical(relevant))).digest('hex');
 }
 
+// 'staging' only when explicitly enabled; anything else (unset, typo, empty) must
+// mean 'notes', because defaulting to staging would silently stop inquiry notes
+// being updated in production.
+function resolveExtractMode(raw) {
+  return raw === 'staging' ? 'staging' : 'notes';
+}
+
 module.exports = {
   hkDate,
   MAX_FIELD_CHARS,
@@ -147,4 +154,5 @@ module.exports = {
   mergeApiSetFields,
   validateFields,
   payloadHash,
+  resolveExtractMode,
 };

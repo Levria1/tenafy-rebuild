@@ -6,6 +6,7 @@ const { sendMail } = require('../config/mailer');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
+const config = require('../config');
 const inquiryExtractor = require('./inquiryExtractor');
 const {
   sendInvoiceToTenant,
@@ -29,6 +30,10 @@ async function getAllActiveOrgs() {
   const masterPool = getMasterPool();
   const [orgs] = await masterPool.execute('SELECT id, db_name FROM organizations WHERE status = 1');
   return orgs;
+}
+
+function newId() {
+  return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
 
 async function createNotification(pool, { orgId, type, title, message, link }) {
@@ -885,11 +890,21 @@ async function reExtractInquiriesForOrg(pool, orgId) {
 
       const { diff } = await inquiryExtractor.extractDiff(newMsgs, inq);
       if (diff && diff.length) {
-        const newNotes = inquiryExtractor.appendDiffToNotes(inq.notes, diff);
-        await pool.execute(
-          `UPDATE inquiry SET notes = ?, updated_at = NOW() WHERE id = ?`,
-          [newNotes, r.inquiry_id]
-        );
+        if (config.inquiryExtractMode === 'staging') {
+          for (const line of diff) {
+            await pool.execute(
+              `INSERT INTO inquiry_fact_staging (id, org_id, inquiry_id, session_id, fact_line, occurred_on)
+               VALUES (?, ?, ?, ?, ?, CURDATE())`,
+              [newId(), orgId, r.inquiry_id, r.session_id, String(line)]
+            );
+          }
+        } else {
+          const newNotes = inquiryExtractor.appendDiffToNotes(inq.notes, diff);
+          await pool.execute(
+            `UPDATE inquiry SET notes = ?, updated_at = NOW() WHERE id = ?`,
+            [newNotes, r.inquiry_id]
+          );
+        }
         updated++;
       }
       await pool.execute(

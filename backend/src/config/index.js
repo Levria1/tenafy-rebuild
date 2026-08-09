@@ -1,5 +1,6 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
+const { resolveExtractMode } = require('../utils/inquiryFacts');
 
 module.exports = {
   port: process.env.PORT || 3001,
@@ -27,6 +28,11 @@ module.exports = {
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
   appUrl: process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000',
   googleServiceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '',
+  // Parallel-run mode for the TaneChat cutover. 'notes' (default) = the nightly
+  // inquiry re-extraction appends to inquiry.notes as it always has. 'staging' =
+  // it writes to inquiry_fact_staging instead, so TaneChat's facts and ours can be
+  // compared for sign-off without both writing to the same append-only field.
+  inquiryExtractMode: resolveExtractMode(process.env.INQUIRY_EXTRACT_MODE),
   chat: {
     enabled: process.env.CHAT_ENABLED !== 'false', // default on; set CHAT_ENABLED=false to globally disable
     maxToolIterations: parseInt(process.env.CHAT_MAX_TOOL_ITERATIONS || '6'),

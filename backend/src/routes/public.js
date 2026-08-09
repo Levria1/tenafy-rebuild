@@ -95,7 +95,8 @@ function validateInquiryFactRequest(body, { requireIsInquiry = false, allowFacts
 async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
   await conn.execute(
     `UPDATE inquiry_fact_delivery
-        SET inquiry_id = ?, applied = ?, created = ?, superseded_inquiry_id = ?, reason = ?
+        SET inquiry_id = ?, applied = ?, created = ?, superseded_inquiry_id = ?, reason = ?,
+            facts_json = ?, fields_json = ?
       WHERE org_id = ? AND idempotency_key = ?`,
     [
       outcome.inquiryId == null ? null : outcome.inquiryId,
@@ -103,6 +104,8 @@ async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
       outcome.created ? 1 : 0,
       outcome.supersededInquiryId == null ? null : outcome.supersededInquiryId,
       outcome.reason || null,
+      JSON.stringify(Array.isArray(outcome.facts) ? outcome.facts : []),
+      JSON.stringify(outcome.fields && typeof outcome.fields === 'object' ? outcome.fields : {}),
       orgId,
       idempotencyKey,
     ]
@@ -282,6 +285,8 @@ router.post('/inquiry/from-chat', async (req, res) => {
         inquiryId: null,
         applied: false,
         reason: 'not_inquiry',
+        facts: checked.facts,
+        fields: checked.fields,
       });
       await conn.commit();
       return ok(res, outcome);
@@ -320,6 +325,8 @@ router.post('/inquiry/from-chat', async (req, res) => {
       created: outcome.created,
       supersededInquiryId: outcome.superseded_inquiry_id,
       reason: outcome.reason,
+      facts: checked.facts,
+      fields: checked.fields,
     });
     await conn.commit();
     return ok(res, outcome);
@@ -376,6 +383,8 @@ router.post('/inquiry/facts', async (req, res) => {
         inquiryId: null,
         applied: false,
         reason: 'no_session',
+        facts: checked.facts,
+        fields: checked.fields,
       });
       await conn.commit();
       return ok(res, outcome);
@@ -394,6 +403,8 @@ router.post('/inquiry/facts', async (req, res) => {
         inquiryId: null,
         applied: false,
         reason: 'no_inquiry',
+        facts: checked.facts,
+        fields: checked.fields,
       });
       await conn.commit();
       return ok(res, outcome);
@@ -411,6 +422,8 @@ router.post('/inquiry/facts', async (req, res) => {
         inquiryId: session.inquiry_id,
         applied: false,
         reason: gate.reason,
+        facts: checked.facts,
+        fields: checked.fields,
       });
       await conn.commit();
       return ok(res, outcome);
@@ -453,6 +466,8 @@ router.post('/inquiry/facts', async (req, res) => {
       inquiryId: row.id,
       applied: true,
       reason: null,
+      facts: checked.facts,
+      fields: checked.fields,
     });
     await conn.commit();
     return ok(res, outcome);
