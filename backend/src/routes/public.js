@@ -104,6 +104,14 @@ function validateInquiryFactRequest(body, { requireIsInquiry = false, allowFacts
   // date on the audit trail Rule 4 exists to protect.
   if (!hkDate(b.occurred_at)) return { ok: false, error: 'invalid_occurred_at' };
   if (!FACT_CHANNELS.has(String(b.channel))) return { ok: false, error: 'unsupported_channel' };
+  // channel_user_id IS the session identity — UNIQUE(channel, channel_user_id). A
+  // whitespace-only or absurd value is not a 500 waiting to happen, it is a COLLAPSE:
+  // every caller without a real identity lands on the same session and inherits a
+  // stranger's inquiry. The presence check above stops '' but not '   '. 255 is the
+  // column width, and sql_mode is STRICT, so an over-length value would 500.
+  const cuid = String(b.channel_user_id).trim();
+  if (!cuid) return { ok: false, error: 'channel_user_id is required' };
+  if (cuid.length > 255) return { ok: false, error: 'channel_user_id_too_long' };
   if (b.facts !== undefined && !Array.isArray(b.facts)) return { ok: false, error: 'facts_must_be_array' };
   const facts = Array.isArray(b.facts) ? b.facts : [];
   if (facts.length > MAX_FACTS) return { ok: false, error: 'too_many_facts' };
