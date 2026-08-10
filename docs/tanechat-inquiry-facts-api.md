@@ -117,14 +117,16 @@ running: it is what currently keeps inquiries updated.
 
 ## Identity — how Tenafy matches a conversation
 
-`channel` + `channel_user_id` is the identity, and **Tenafy does not normalise it.**
-Two different normalisations on your side become two sessions and two inquiries for
-one person, so the format is fixed here:
+`channel` + `channel_user_id` is the identity. **`channel` is normalised** (trimmed and
+lowercased, see below). **`channel_user_id` is only trimmed** — never case-folded, never
+reformatted — so two different normalisations on your side become two sessions and two
+inquiries for one person. The format is therefore fixed here:
 
 | channel | `channel_user_id` format |
 |---|---|
 | `whatsapp` | E.164 **digits only** — no `+`, no spaces: `85291234567` |
 | `email` | the full address, **lowercased**: `alice@example.com` |
+| OTA (`airbnb`, …) | reservation code where one exists, else the conversation id, prefixed: `airbnb:HMABC123` — unique per conversation and **frozen on first delivery** |
 
 Send `conversation_id` too. Tenafy stores it on the session
 (`chat_session.external_conversation_id`, added for this) so the internal assistant
@@ -394,7 +396,8 @@ it. Making "unknown" stick needs a UI-level lock, which is out of scope here.
 Only these keys are accepted under `fields`:
 
 ```
-first_name, last_name, email, phone, budget, desired_start_date
+first_name, last_name, email, phone,
+budget, desired_start_date, desired_end_date, nightly_rate, stay_total
 ```
 
 Anything else — `status`, `tenant_id`, `org_id`, `deleted_at`, or an unknown name —
@@ -402,8 +405,50 @@ is rejected with `400 unknown_field`. `org_id` always comes from the API key and
 never read from the body. Without that whitelist a leaked `pk_` could set `status` or
 `tenant_id` directly and walk straight through the Rule 2 gate.
 
-`budget` is a number in **HKD**, no symbol or separators, `>= 0`, max two decimals.
-`desired_start_date` is `YYYY-MM-DD`.
+All money fields are numbers in **HKD** — no symbol, no thousands separators, `>= 0`,
+max two decimals. Dates are `YYYY-MM-DD`.
+
+#### Short stays: `nightly_rate` and `stay_total`, never `budget`
+
+**`budget` means a MONTHLY figure, always.** It is compared against unit rent and summed
+in reports, so a nightly rate placed there is not merely mislabelled — it makes an
+HK$18,000-a-month guest read as an HK$590-a-month prospect, and it silently corrupts any
+total that mixes the two. Send `budget` only when the prospect is talking about a monthly
+amount.
+
+For a per-night stay send instead:
+
+| field | meaning |
+|---|---|
+| `nightly_rate` | the per-night figure, HKD |
+| `stay_total` | the total for the whole stay, HKD |
+| `desired_start_date` | check-in |
+| `desired_end_date` | check-out |
+
+Nights are **derived** by Tenafy as `desired_end_date - desired_start_date`; do not send a
+night count.
+
+**`stay_total` is NOT `nightly_rate × nights`, so it must be sent, not computed.** A real
+example from this integration: a 16-night stay quoted at HK$590/night had a total of
+HK$8,361, not HK$9,440 — a long-stay discount. Deriving the total would have overstated it
+by 13%. Send what the platform actually charges.
+
+`desired_end_date` is useful well beyond OTA — a lettings prospect saying "Aug 14th until
+around Jan 1st" has an intended term, and we had nowhere to put it.
+
+#### Do not attribute a price we set to the prospect
+
+`nightly_rate` on an inbound OTA request is **our listing price**, not something the guest
+stated. An extractor that emits `"Budget set to HK$590"` from it is asserting the guest said
+something she never said, which is worse than a unit error because it survives into a record
+staff act on. State the source:
+
+```
+Airbnb listing price HK$590/night · 16 nights · HK$8,361 total
+```
+
+Where the prospect genuinely states a figure, say so plainly — `"Budget raised to
+HK$25,000"` — and send `budget`.
 
 **4. Tenafy owns note formatting; the DATE comes from `occurred_at`.** Send the
 sentence only — Tenafy prefixes the date and manages the `── Updates from chat ──`
