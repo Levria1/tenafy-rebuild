@@ -135,6 +135,36 @@ recreated on your side, the newest id replaces the old. It is never used for mat
 
 ## Endpoints Tenafy will expose
 
+### `channel` — open, but shaped, and it is half the session identity
+
+**No allow-list to agree in advance.** Any channel matching `^[a-z0-9-]{2,20}$` is accepted,
+registered on first sight, and staff are notified once. So a new source — `booking`,
+`agoda` — works with no change and no deploy on our side. The value is trimmed and
+lowercased, so `" Airbnb "` and `airbnb` are the same channel and cannot fork into two.
+
+- **20 characters max** — the width of both `chat_session.channel` and `inquiry.source`.
+- **`booking.com` is rejected.** Dots, underscores, spaces and non-ASCII all fail the shape
+  and return `400 unsupported_channel`. Send the provider name, not the domain.
+- **`staff-*` is reserved** — `400 reserved_channel`. Those channels are Tenafy's internal
+  assistant namespace and are treated as trusted/local by staff search; an external caller
+  must not be able to write into them.
+
+The first delivery on an unseen channel raises a staff notification. That is deliberate: a
+typo'd channel is accepted rather than refused, so it must be *visible*. Sessions created
+under `bookng` are a separate identity from `booking`, and once real conversations land there
+the only fix is a manual merge — so correct a typo at source the same day.
+
+**A channel does not by itself separate conversations.** Session identity is
+`(channel, channel_user_id)`. `conversation_id` is stored but is not part of any key. Any
+source whose messages share one sender address — OTA mail from `automated@airbnb.com`, a
+forwarding relay — must send a `channel_user_id` that is unique per conversation, and
+**stable** for it: an identifier that changes between deliveries fragments one conversation
+into several inquiries, which is the same bug as collapsing them, only harder to see.
+
+On `whatsapp` we derive `phone` from `channel_user_id`, and on `email` we derive `email`.
+On any other channel neither is derived — correct when the identifier is a reservation
+rather than a contact.
+
 ### 1. `POST /api/public/inquiry/from-chat` — first contact
 
 ```json

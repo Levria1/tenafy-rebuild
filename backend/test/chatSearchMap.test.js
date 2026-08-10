@@ -17,6 +17,8 @@ test('routeChatSearch routes explicit source', () => {
 test('routeChatSearch routes explicit channel', () => {
   assert.equal(routeChatSearch({ channel: 'staff-internal' }), 'local');
   assert.equal(routeChatSearch({ channel: 'whatsapp' }), 'tanechat');
+  assert.equal(routeChatSearch({ channel: 'booking' }), 'tanechat');
+  assert.equal(routeChatSearch({ channel: ' AIRBNB ' }), 'tanechat');
 });
 
 test('routeChatSearch lets channel override source', () => {

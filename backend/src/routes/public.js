@@ -19,6 +19,8 @@ const {
   validateFields,
   payloadHash,
 } = require('../utils/inquiryFacts');
+const { validateChannel } = require('../utils/chatChannel');
+const { createNotification } = require('../services/scheduler');
 const config = require('../config');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
@@ -38,19 +40,6 @@ function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
 
-// Channels the fact API accepts. Deliberately a closed set: a typo'd channel would
-// otherwise open a parallel set of sessions keyed on (channel, channel_user_id) and
-// quietly duplicate every prospect on it.
-//
-// `airbnb` exists because OTA mail all arrives from one shared sender
-// (automated@airbnb.com). Under `email` we derive the prospect's address from
-// channel_user_id, so every reservation collapsed onto ONE session and one inquiry
-// with the relay recorded as the guest's email. On `airbnb` neither the email nor
-// the phone auto-fill applies — the identifier is a reservation, not a contact — and
-// `inquiry.source` reads 'airbnb', which keeps already-booked stays out of the
-// lettings win-rate. The caller must still make channel_user_id unique per
-// reservation; the channel alone does not fix the collapse.
-const FACT_CHANNELS = new Set(['whatsapp', 'email', 'airbnb']);
 const MAX_FACTS = 50;
 const MAX_FACT_CHARS = 500;
 // BYTES, not characters: `inquiry.notes` is TEXT (65,535 bytes) and utf8mb4
@@ -103,7 +92,8 @@ function validateInquiryFactRequest(body, { requireIsInquiry = false, allowFacts
   // which would append note lines prefixed with a bare ": " and quietly destroy the
   // date on the audit trail Rule 4 exists to protect.
   if (!hkDate(b.occurred_at)) return { ok: false, error: 'invalid_occurred_at' };
-  if (!FACT_CHANNELS.has(String(b.channel))) return { ok: false, error: 'unsupported_channel' };
+  const channelResult = validateChannel(b.channel);
+  if (!channelResult.ok) return { ok: false, error: channelResult.error };
   // channel_user_id IS the session identity — UNIQUE(channel, channel_user_id). A
   // whitespace-only or absurd value is not a 500 waiting to happen, it is a COLLAPSE:
   // every caller without a real identity lands on the same session and inherits a
@@ -129,7 +119,29 @@ function validateInquiryFactRequest(body, { requireIsInquiry = false, allowFacts
   }
   const fieldsResult = validateFields(b.fields);
   if (!fieldsResult.ok) return { ok: false, error: fieldsResult.error };
-  return { ok: true, facts, fields: fieldsResult.fields };
+  return { ok: true, channel: channelResult.channel, facts, fields: fieldsResult.fields };
+}
+
+async function registerChannel(conn, orgId, channel) {
+  const [result] = await conn.execute(
+    `INSERT INTO chat_channel (id, org_id, channel, delivery_count)
+     VALUES (?, ?, ?, 1)
+     ON DUPLICATE KEY UPDATE delivery_count = delivery_count + 1`,
+    [newId(), orgId, channel]
+  );
+  return Number(result.affectedRows) === 1;
+}
+
+async function notifyNewChannel(conn, orgId, channel) {
+  await createNotification(conn, {
+    orgId,
+    type: 'warning',
+    title: `New chat channel: ${channel}`,
+    message:
+      `A conversation arrived on channel "${channel}", which has never been seen before. ` +
+      'It has been accepted and registered. If this name looks like a typo, correct it at source promptly because sessions created under it are a separate identity from the corrected name.',
+    link: '/chatbot/sessions',
+  });
 }
 
 async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
@@ -306,8 +318,8 @@ router.post('/inquiry/from-chat', async (req, res) => {
   let conn;
   try {
     const orgId = req.apiKey.orgId;
-    const b = req.body || {};
-    const channel = String(b.channel);
+    const b = { ...(req.body || {}), channel: checked.channel };
+    const channel = checked.channel;
     const channelUserId = String(b.channel_user_id);
     const idempotencyKey = String(b.idempotency_key);
     const hash = payloadHash(b);
@@ -321,6 +333,9 @@ router.post('/inquiry/from-chat', async (req, res) => {
       if (prior.payload_hash !== hash) return fail(res, 'idempotency_key_conflict', 409);
       return ok(res, priorDeliveryResponse(prior));
     }
+
+    const firstChannelSeen = await registerChannel(conn, orgId, channel);
+    if (firstChannelSeen) await notifyNewChannel(conn, orgId, channel);
 
     await conn.execute(
       `INSERT INTO chat_session (id, channel, channel_user_id, status, created_at, updated_at)
@@ -423,8 +438,8 @@ router.post('/inquiry/facts', async (req, res) => {
   let conn;
   try {
     const orgId = req.apiKey.orgId;
-    const b = req.body || {};
-    const channel = String(b.channel);
+    const b = { ...(req.body || {}), channel: checked.channel };
+    const channel = checked.channel;
     const channelUserId = String(b.channel_user_id);
     const idempotencyKey = String(b.idempotency_key);
     const hash = payloadHash(b);
@@ -438,6 +453,9 @@ router.post('/inquiry/facts', async (req, res) => {
       if (prior.payload_hash !== hash) return fail(res, 'idempotency_key_conflict', 409);
       return ok(res, priorDeliveryResponse(prior));
     }
+
+    const firstChannelSeen = await registerChannel(conn, orgId, channel);
+    if (firstChannelSeen) await notifyNewChannel(conn, orgId, channel);
 
     const [[session]] = await conn.execute(
       `SELECT id, channel, channel_user_id, inquiry_id

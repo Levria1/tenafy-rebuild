@@ -23,6 +23,18 @@ const CHANNEL_LABELS = {
   'staff-internal': { label: 'Internal (staff)', color: 'geekblue' },
 };
 
+function channelLabel(value) {
+  const channel = value == null ? '' : String(value).trim().toLowerCase();
+  if (!channel) return '';
+  const label = channel.replace(/-+/g, ' ');
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function channelInfo(value) {
+  const key = value == null ? '' : String(value).trim().toLowerCase();
+  return CHANNEL_LABELS[key] || { label: channelLabel(key), color: 'default' };
+}
+
 export default function ChatSessionsPage() {
   const { isMobile } = useIsMobile();
   const [rows, setRows] = useState([]);
@@ -90,7 +102,7 @@ export default function ChatSessionsPage() {
       dataIndex: 'channel',
       width: 120,
       render: (c) => {
-        const info = CHANNEL_LABELS[c] || { label: c, color: 'default' };
+        const info = channelInfo(c);
         return <Tag color={info.color}>{info.label}</Tag>;
       },
     },
@@ -236,8 +248,8 @@ export default function ChatSessionsPage() {
                     {r.viewer_email || r.channel_user_id}
                   </div>
                   <div style={{ marginTop: 6 }}>
-                    <Tag color={CHANNEL_LABELS[r.channel]?.color}>
-                      {CHANNEL_LABELS[r.channel]?.label}
+                    <Tag color={channelInfo(r.channel).color}>
+                      {channelInfo(r.channel).label}
                     </Tag>
                     {r.booking_count > 0 && <Tag color="green">{r.booking_count} booking{r.booking_count > 1 ? 's' : ''}</Tag>}
                     {r.bot_disabled ? <Tag color="red">Takeover</Tag> : null}

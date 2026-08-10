@@ -1,13 +1,14 @@
+const { normalizeChannel } = require('./chatChannel');
+
 const CHAT_SOURCE_CHANNELS = {
   tenafy: ['staff-test', 'staff-internal'],
-  // 'airbnb' is an OTA channel TaneChat owns like any other prospect conversation —
-  // without it here, routeChatSearch treats it as unknown and probes the local
-  // mirror as well as the live API.
+  // Known prospect channels remain listed for callers that display the mapping,
+  // but routing treats any non-staff explicit channel as TaneChat.
   tanechat: ['whatsapp', 'email', 'web', 'airbnb'],
 };
 
 function norm(value) {
-  return value == null ? '' : String(value).trim().toLowerCase();
+  return normalizeChannel(value);
 }
 
 // Decide where a search_chats call should go.
@@ -15,7 +16,7 @@ function norm(value) {
 function routeChatSearch(args = {}) {
   const channel = norm(args.channel);
   if (CHAT_SOURCE_CHANNELS.tenafy.includes(channel)) return 'local';
-  if (CHAT_SOURCE_CHANNELS.tanechat.includes(channel)) return 'tanechat';
+  if (channel) return 'tanechat';
 
   const source = norm(args.source);
   if (source === 'tenafy') return 'local';
