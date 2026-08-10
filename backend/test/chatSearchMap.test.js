@@ -122,3 +122,7 @@ test('buildTaneChatSearchParams ignores malformed dates', () => {
   assert.equal('from' in p, false);
   assert.equal('to' in p, false);
 });
+
+test('routeChatSearch treats the airbnb OTA channel as a TaneChat channel', () => {
+  assert.equal(routeChatSearch({ channel: 'airbnb' }), 'tanechat');
+});

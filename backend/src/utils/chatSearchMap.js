@@ -1,6 +1,9 @@
 const CHAT_SOURCE_CHANNELS = {
   tenafy: ['staff-test', 'staff-internal'],
-  tanechat: ['whatsapp', 'email', 'web'],
+  // 'airbnb' is an OTA channel TaneChat owns like any other prospect conversation —
+  // without it here, routeChatSearch treats it as unknown and probes the local
+  // mirror as well as the live API.
+  tanechat: ['whatsapp', 'email', 'web', 'airbnb'],
 };
 
 function norm(value) {

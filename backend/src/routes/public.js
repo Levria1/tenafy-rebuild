@@ -38,7 +38,19 @@ function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
 
-const FACT_CHANNELS = new Set(['whatsapp', 'email']);
+// Channels the fact API accepts. Deliberately a closed set: a typo'd channel would
+// otherwise open a parallel set of sessions keyed on (channel, channel_user_id) and
+// quietly duplicate every prospect on it.
+//
+// `airbnb` exists because OTA mail all arrives from one shared sender
+// (automated@airbnb.com). Under `email` we derive the prospect's address from
+// channel_user_id, so every reservation collapsed onto ONE session and one inquiry
+// with the relay recorded as the guest's email. On `airbnb` neither the email nor
+// the phone auto-fill applies — the identifier is a reservation, not a contact — and
+// `inquiry.source` reads 'airbnb', which keeps already-booked stays out of the
+// lettings win-rate. The caller must still make channel_user_id unique per
+// reservation; the channel alone does not fix the collapse.
+const FACT_CHANNELS = new Set(['whatsapp', 'email', 'airbnb']);
 const MAX_FACTS = 50;
 const MAX_FACT_CHARS = 500;
 // BYTES, not characters: `inquiry.notes` is TEXT (65,535 bytes) and utf8mb4

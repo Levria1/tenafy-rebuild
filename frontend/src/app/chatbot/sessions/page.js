@@ -18,6 +18,7 @@ const CHANNEL_LABELS = {
   'web': { label: 'Web', color: 'blue' },
   'whatsapp': { label: 'WhatsApp', color: 'green' },
   'email': { label: 'Email', color: 'purple' },
+  'airbnb': { label: 'Airbnb', color: 'red' },
   'staff-test': { label: 'Bookings (staff)', color: 'default' },
   'staff-internal': { label: 'Internal (staff)', color: 'geekblue' },
 };
@@ -204,6 +205,7 @@ export default function ChatSessionsPage() {
               { value: 'staff-internal', label: 'Internal (staff)' },
               { value: 'whatsapp', label: 'WhatsApp' },
               { value: 'email', label: 'Email' },
+              { value: 'airbnb', label: 'Airbnb' },
               { value: 'web', label: 'Web widget' },
             ]}
           />
