@@ -253,6 +253,10 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   // Booking & Commission
   settingsChildren.push({ key: '/settings?tab=bookingPlatforms', label: <Link href="/settings?tab=bookingPlatforms">Booking & Commission</Link> });
 
+  // Calendar Sync — per-unit iCal feed URLs pasted into Airbnb listings. Sits next to
+  // Booking & Commission because it is the same OTA-distribution job.
+  settingsChildren.push({ key: '/settings/ical', label: <Link href="/settings/ical">Calendar Sync (iCal)</Link> });
+
   // Lease Templates — own route (not part of the settings Tabs system).
   // Gated by the same permission as email templates for now; can be split later.
   if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) {
