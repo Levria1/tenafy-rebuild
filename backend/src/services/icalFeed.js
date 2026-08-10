@@ -85,18 +85,34 @@ function buildUnitCalendar({ calendarName, blocks, now, dtstamp }) {
 
   for (const block of blocks || []) {
     const start = compareYmd(block.start_date, now) < 0 ? now : block.start_date;
-    const end = clampEnd(block.end_date, horizon);
+    // Did the caller give us a real end, or are we cutting the lease off at the window?
+    const clamped = block.end_date == null || block.end_date === ''
+      || compareYmd(block.end_date, horizon) > 0;
+    const end = clamped ? horizon : block.end_date;
 
-    if (compareYmd(end, now) < 0) continue;
+    // DTEND is EXCLUSIVE, and what it should be differs by case:
+    //
+    // A real `end_date` is the HANDOVER day, not the last night slept. Same-day move-ins
+    // are allowed here — 45% of consecutive tenancies on a unit start on the exact day the
+    // previous one ends (709 of 1,582 pairs) — so the handover day must stay BOOKABLE.
+    // DTEND = end_date, making the last blocked night the day before. Adding a day here
+    // silently costs one lettable night on every turnover.
+    //
+    // A horizon-clamped end is not a handover day, just where the 365-day window stops,
+    // so it is blocked inclusively: DTEND = horizon + 1.
+    const dtEnd = clamped ? addDaysYmd(end, 1) : end;
+
     if (compareYmd(start, horizon) > 0) continue;
-    if (compareYmd(start, end) > 0) continue;
+    // Empty window: a lease whose handover is today or already past occupies no remaining
+    // night, and a zero-length VEVENT is invalid anyway.
+    if (compareYmd(dtEnd, start) <= 0) continue;
 
     lines.push(
       'BEGIN:VEVENT',
       `UID:lease-${escapeText(block.uid)}@tenafy`,
       `DTSTAMP:${dtstamp}`,
       `DTSTART;VALUE=DATE:${toIcalDate(start)}`,
-      `DTEND;VALUE=DATE:${toIcalDate(addDaysYmd(end, 1))}`,
+      `DTEND;VALUE=DATE:${toIcalDate(dtEnd)}`,
       'SUMMARY:Unavailable',
       'END:VEVENT'
     );

@@ -10,7 +10,11 @@ const {
 const NOW = '2026-08-10';
 const DTSTAMP = '20260810T010203Z';
 
-test('single closed block emits date-only DTSTART and exclusive DTEND', () => {
+// `end_date` is the HANDOVER day, not the last night slept — same-day move-ins are
+// allowed and 45% of consecutive tenancies start the day the previous one ends. So the
+// handover day must stay bookable: DTEND (exclusive) equals end_date, and the last
+// blocked night is the day before. Adding a day here costs a lettable night per turnover.
+test('a real end_date leaves the handover day bookable', () => {
   const body = buildUnitCalendar({
     calendarName: 'Unit 5B',
     blocks: [{ uid: '123', start_date: '2026-08-12', end_date: '2026-08-28' }],
@@ -19,9 +23,44 @@ test('single closed block emits date-only DTSTART and exclusive DTEND', () => {
   });
 
   assert.match(body, /DTSTART;VALUE=DATE:20260812\r\n/);
-  // DTEND is exclusive; an off-by-one here loses a lettable night per booking.
-  assert.match(body, /DTEND;VALUE=DATE:20260829\r\n/);
+  assert.match(body, /DTEND;VALUE=DATE:20260828\r\n/, 'DTEND must equal end_date, not end_date + 1');
+  assert.doesNotMatch(body, /DTEND;VALUE=DATE:20260829\r\n/, 'the handover day must not be blocked');
   assert.match(body, /UID:lease-123@tenafy\r\n/);
+});
+
+// The real case that prompted the change: 12-B6 Pearl City Unit 22.
+test('Unit 22: lease ending 2027-01-03 frees the 3rd for check-in', () => {
+  const body = buildUnitCalendar({
+    calendarName: 'Unit 22',
+    blocks: [{ uid: 'u22', start_date: '2026-07-10', end_date: '2027-01-03' }],
+    now: NOW,
+    dtstamp: DTSTAMP,
+  });
+  assert.match(body, /DTEND;VALUE=DATE:20270103\r\n/);
+});
+
+test('a lease handing over TOMORROW still blocks tonight', () => {
+  const body = buildUnitCalendar({
+    calendarName: 'x',
+    blocks: [{ uid: 't', start_date: '2026-01-01', end_date: '2026-08-11' }],
+    now: '2026-08-10',
+    dtstamp: DTSTAMP,
+  });
+  assert.match(body, /DTSTART;VALUE=DATE:20260810\r\n/);
+  assert.match(body, /DTEND;VALUE=DATE:20260811\r\n/);
+});
+
+// Handover today means no remaining night is occupied, and a zero-length VEVENT is
+// invalid iCal, so the event must be omitted entirely rather than emitted empty.
+test('a lease handing over TODAY produces no event', () => {
+  const body = buildUnitCalendar({
+    calendarName: 'x',
+    blocks: [{ uid: 't', start_date: '2026-01-01', end_date: '2026-08-10' }],
+    now: '2026-08-10',
+    dtstamp: DTSTAMP,
+  });
+  assert.doesNotMatch(body, /BEGIN:VEVENT/);
+  assert.match(body, /END:VCALENDAR/);
 });
 
 test('open-ended block is clamped to now plus 365 days and remains present', () => {
