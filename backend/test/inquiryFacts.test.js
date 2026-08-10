@@ -78,19 +78,99 @@ test('validateFields rejects unsafe and unknown fields', () => {
 });
 
 test('validateFields validates budget', () => {
-  assert.equal(validateFields({ budget: -1 }).ok, false);
+  assert.deepEqual(validateFields({ budget: -1 }), { ok: false, error: 'invalid_budget' });
   assert.equal(validateFields({ budget: 18.001 }).ok, false);
   assert.equal(validateFields({ budget: '18,000' }).ok, false);
   assert.deepEqual(validateFields({ budget: 18000 }), { ok: true, fields: { budget: 18000 } });
   assert.deepEqual(validateFields({ budget: 18000.50 }), { ok: true, fields: { budget: 18000.50 } });
 });
 
-test('validateFields validates desired_start_date and lowercases email', () => {
+test('validateFields validates short-stay money fields', () => {
+  assert.deepEqual(validateFields({ nightly_rate: 590 }), { ok: true, fields: { nightly_rate: 590 } });
+  assert.deepEqual(validateFields({ stay_total: 8361.5 }), { ok: true, fields: { stay_total: 8361.5 } });
+  assert.deepEqual(
+    validateFields({
+      nightly_rate: 590,
+      stay_total: 8361.5,
+      desired_start_date: '2026-08-12',
+      desired_end_date: '2026-08-28',
+    }),
+    {
+      ok: true,
+      fields: {
+        nightly_rate: 590,
+        stay_total: 8361.5,
+        desired_start_date: '2026-08-12',
+        desired_end_date: '2026-08-28',
+      },
+    }
+  );
+});
+
+test('validateFields rejects invalid nightly_rate values', () => {
+  for (const nightly_rate of [-1, '590', 590.123, Infinity]) {
+    assert.deepEqual(validateFields({ nightly_rate }), { ok: false, error: 'invalid_nightly_rate' });
+  }
+});
+
+test('validateFields rejects invalid stay_total values', () => {
+  for (const stay_total of [-1, '590', 590.123, Infinity]) {
+    assert.deepEqual(validateFields({ stay_total }), { ok: false, error: 'invalid_stay_total' });
+  }
+});
+
+test('validateFields validates desired_start_date, desired_end_date and lowercases email', () => {
   assert.equal(validateFields({ desired_start_date: '2026-9-20' }).ok, false);
   assert.equal(validateFields({ desired_start_date: '20/09/2026' }).ok, false);
   assert.deepEqual(
+    validateFields({ desired_end_date: '2026-08-28' }),
+    { ok: true, fields: { desired_end_date: '2026-08-28' } }
+  );
+  assert.deepEqual(
+    validateFields({ desired_end_date: '28-08-2026' }),
+    { ok: false, error: 'invalid_desired_end_date' }
+  );
+  assert.deepEqual(
+    validateFields({ desired_end_date: 20260828 }),
+    { ok: false, error: 'invalid_desired_end_date' }
+  );
+  assert.deepEqual(
     validateFields({ desired_start_date: '2026-09-20', email: 'ALICE@EXAMPLE.COM' }),
     { ok: true, fields: { desired_start_date: '2026-09-20', email: 'alice@example.com' } }
+  );
+});
+
+test('validateFields accepts discounted stay_total without deriving arithmetic', () => {
+  // Long-stay discounts mean stay_total is sent by the source, not computed as
+  // nightly_rate times derived nights.
+  assert.deepEqual(
+    validateFields({
+      nightly_rate: 590,
+      stay_total: 8361,
+      desired_start_date: '2026-08-12',
+      desired_end_date: '2026-08-28',
+    }),
+    {
+      ok: true,
+      fields: {
+        nightly_rate: 590,
+        stay_total: 8361,
+        desired_start_date: '2026-08-12',
+        desired_end_date: '2026-08-28',
+      },
+    }
+  );
+});
+
+test('validateFields accepts desired_end_date before desired_start_date', () => {
+  // Cross-field validation is deliberately absent: a correction may carry only
+  // the field that changed, or dates may arrive in separate deliveries.
+  assert.deepEqual(
+    validateFields({ desired_start_date: '2026-08-28', desired_end_date: '2026-08-12' }),
+    {
+      ok: true,
+      fields: { desired_start_date: '2026-08-28', desired_end_date: '2026-08-12' },
+    }
   );
 });
 

@@ -45,7 +45,18 @@ const MAX_FACT_CHARS = 500;
 // BYTES, not characters: `inquiry.notes` is TEXT (65,535 bytes) and utf8mb4
 // Chinese costs 3 bytes per character. Compared with Buffer.byteLength.
 const MAX_NOTES_BYTES = 60000;
-const INQUIRY_FACT_FIELDS = ['first_name', 'last_name', 'email', 'phone', 'budget', 'desired_start_date'];
+const MONEY_FACT_FIELDS = new Set(['budget', 'nightly_rate', 'stay_total']);
+const INQUIRY_FACT_FIELDS = [
+  'first_name',
+  'last_name',
+  'email',
+  'phone',
+  'budget',
+  'desired_start_date',
+  'desired_end_date',
+  'nightly_rate',
+  'stay_total',
+];
 
 // `applied` means the delivery was ACCEPTED and processed — not that any field
 // changed. A field already carrying a human (or pre-cutover Tenafy) value is
@@ -216,8 +227,9 @@ function priorDeliveryResponse(prior) {
 async function loadLockedInquiryForFacts(conn, orgId, inquiryId) {
   const [[row]] = await conn.execute(
     `SELECT i.id, i.status, i.tenant_id, i.notes, i.api_set_fields,
-            i.first_name, i.last_name, i.email, i.phone, i.budget,
+            i.first_name, i.last_name, i.email, i.phone, i.budget, i.nightly_rate, i.stay_total,
             DATE_FORMAT(i.desired_start_date, '%Y-%m-%d') AS desired_start_date,
+            DATE_FORMAT(i.desired_end_date, '%Y-%m-%d') AS desired_end_date,
             i.deleted_at
        FROM inquiry i
       WHERE i.id = ? AND i.org_id = ?
@@ -258,13 +270,17 @@ async function createInquiryFromFactPayload(conn, orgId, session, channel, field
     phone: fields.phone || (channel === 'whatsapp' ? String(session.channel_user_id) : null),
     budget: fields.budget != null ? Number(fields.budget) : null,
     desired_start_date: fields.desired_start_date || null,
+    desired_end_date: fields.desired_end_date || null,
+    nightly_rate: fields.nightly_rate != null ? Number(fields.nightly_rate) : null,
+    stay_total: fields.stay_total != null ? Number(fields.stay_total) : null,
   };
   const written = INQUIRY_FACT_FIELDS.filter(field => values[field] !== null && values[field] !== undefined && values[field] !== '');
   await conn.execute(
     `INSERT INTO inquiry
        (id, org_id, inquiry_date, first_name, last_name, email, phone,
-        notes, api_set_fields, source, status, desired_start_date, budget)
-     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        notes, api_set_fields, source, status, desired_start_date, desired_end_date,
+        budget, nightly_rate, stay_total)
+     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
     [
       inquiryId,
       orgId,
@@ -276,7 +292,10 @@ async function createInquiryFromFactPayload(conn, orgId, session, channel, field
       JSON.stringify(written),
       channel,
       values.desired_start_date,
+      values.desired_end_date,
       values.budget,
+      values.nightly_rate,
+      values.stay_total,
     ]
   );
   await conn.execute(
@@ -303,7 +322,7 @@ async function applyFieldsAndSummaryToInquiry(conn, orgId, row, fields, summary)
   params.push(JSON.stringify(apiSetFields));
   for (const field of writtenNames) {
     sets.push(`${field} = ?`);
-    params.push(field === 'budget' ? Number(writable[field]) : writable[field]);
+    params.push(MONEY_FACT_FIELDS.has(field) ? Number(writable[field]) : writable[field]);
   }
   sets.push('updated_at = NOW()');
   await conn.execute(`UPDATE inquiry SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, [...params, row.id, orgId]);
@@ -556,7 +575,7 @@ router.post('/inquiry/facts', async (req, res) => {
       params.push(JSON.stringify(apiSetFields));
       for (const field of writtenNames) {
         sets.push(`${field} = ?`);
-        params.push(field === 'budget' ? Number(writable[field]) : writable[field]);
+        params.push(MONEY_FACT_FIELDS.has(field) ? Number(writable[field]) : writable[field]);
       }
     }
 

@@ -50,14 +50,10 @@ function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
 
-const API_WRITABLE_INQUIRY_FIELDS = new Set([
-  'first_name',
-  'last_name',
-  'email',
-  'phone',
-  'budget',
-  'desired_start_date',
-]);
+// Derived, never duplicated: this must stay identical to what the public fact API
+// is allowed to write, or a human edit to a field missing from this list would not
+// drop it from api_set_fields and the API could later overwrite the correction.
+const { API_WRITABLE_FIELDS: API_WRITABLE_INQUIRY_FIELDS } = require('../utils/inquiryFacts');
 
 function parseApiSetFields(apiSetFields) {
   if (Array.isArray(apiSetFields)) return apiSetFields.filter(f => typeof f === 'string');
@@ -392,7 +388,8 @@ router.put('/:id', async (req, res) => {
     const fields = [
       'inquiry_date', 'lead_source_id', 'first_name', 'last_name',
       'email', 'phone', 'notes', 'unit_id', 'property_id', 'status',
-      'desired_start_date', 'budget', 'reminder_date', 'screenshot_url',
+      'desired_start_date', 'desired_end_date', 'budget', 'nightly_rate', 'stay_total',
+      'reminder_date', 'screenshot_url',
     ];
     const sets = [];
     const params = [];

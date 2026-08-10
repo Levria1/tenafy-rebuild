@@ -13,6 +13,9 @@ const FIELD_WHITELIST = new Set([
   'phone',
   'budget',
   'desired_start_date',
+  'desired_end_date',
+  'nightly_rate',
+  'stay_total',
 ]);
 
 function hkDate(isoString) {
@@ -136,6 +139,10 @@ function hasMaxTwoDecimals(value) {
   return Math.abs(value * 100 - Math.round(value * 100)) < Number.EPSILON * 100;
 }
 
+function isValidMoneyFieldValue(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && hasMaxTwoDecimals(value);
+}
+
 function validateFields(fields) {
   if (fields == null) return { ok: true, fields: {} };
   if (typeof fields !== 'object' || Array.isArray(fields)) {
@@ -145,14 +152,12 @@ function validateFields(fields) {
   const out = {};
   for (const [field, value] of Object.entries(fields)) {
     if (!FIELD_WHITELIST.has(field)) return { ok: false, error: `unknown_field: ${field}` };
-    if (field === 'budget') {
-      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || !hasMaxTwoDecimals(value)) {
-        return { ok: false, error: 'invalid_budget' };
-      }
+    if (field === 'budget' || field === 'nightly_rate' || field === 'stay_total') {
+      if (!isValidMoneyFieldValue(value)) return { ok: false, error: `invalid_${field}` };
       out[field] = value;
-    } else if (field === 'desired_start_date') {
+    } else if (field === 'desired_start_date' || field === 'desired_end_date') {
       if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-        return { ok: false, error: 'invalid_desired_start_date' };
+        return { ok: false, error: `invalid_${field}` };
       }
       out[field] = value;
     } else {
@@ -200,6 +205,12 @@ function resolveExtractMode(raw) {
 
 module.exports = {
   hkDate,
+  // The single source of truth for which inquiry fields the public fact API may
+  // write. `routes/inquiry.js` uses it to decide which fields a HUMAN edit must
+  // drop from api_set_fields — it previously kept its own hard-coded copy, which
+  // silently missed nightly_rate/stay_total/desired_end_date when they were added
+  // and would have let the API overwrite a human's correction to them.
+  API_WRITABLE_FIELDS: FIELD_WHITELIST,
   MAX_FIELD_CHARS,
   appendFactsToNotes,
   resolveWritableFields,
