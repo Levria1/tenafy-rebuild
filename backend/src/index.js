@@ -51,6 +51,7 @@ app.use('/api/public', require('./routes/public'));
 app.use('/api/integrations/xero', require('./routes/xero'));
 app.use('/api/viewing-public', require('./routes/viewingPublic'));
 app.use('/api/viewing', require('./routes/viewing'));
+app.use('/api/ical', require('./routes/ical'));
 app.use('/api/inquiry', require('./routes/inquiry'));
 app.use('/api/advertising', require('./routes/advertising'));
 app.use('/api/lease-template', require('./routes/leaseTemplate'));

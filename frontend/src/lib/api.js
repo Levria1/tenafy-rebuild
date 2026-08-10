@@ -661,6 +661,11 @@ export const viewingApi = {
   updateRoster: (entries) => api.put('/api/viewing/roster', { entries }),
 };
 
+export const icalApi = {
+  listTokens: () => api.get('/api/ical/tokens'),
+  rotateToken: (unitId) => api.post(`/api/ical/tokens/${unitId}/rotate`),
+};
+
 export const advertisingApi = {
   // Advertising → Vacancy: units whose current lease is expiring within its
   // renewal-intent lead window (NR 45d / UC 30d / else 20d), soonest first.
