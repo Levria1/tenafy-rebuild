@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold } = require('../services/advertisingTemplate');
+const { DAY_NAMES, weekdayOf, postsOnDay, parseDays, validateDays, dayLabel } = require('../utils/advertisingSchedule');
+const { hkDate } = require('../utils/inquiryFacts');
 
 // Snowflake id (same pattern used across the app).
 function newId() {
@@ -843,6 +845,15 @@ router.delete('/scheduler/urgent/:id', authenticate, async (req, res) => {
 const ROTATION_WINDOW_DAYS = 7;   // don't reuse a forum for a property within a week
 const PHOTO_ROOT = process.env.ADVERTISING_PHOTO_ROOT || '~/tenafy-photos';
 
+// The default plan date must be the HONG KONG date, not the server's. Prod runs UTC
+// (Etc/UTC), so from HK midnight until 08:00 the server's local date is still
+// YESTERDAY — and since this feature keys the forum set off the weekday, an operator
+// posting early morning HK would be handed the wrong day's forums entirely. Reuse the
+// existing hkDate() rather than a second conversion.
+function todayYmd() {
+  return hkDate(new Date().toISOString());
+}
+
 // Render a bundle's post text. The shared first line + body are rendered from the
 // LOWEST-priced unit's values (so "…and Up" quotes the cheapest of a bundle), then
 // one per-unit line per unit (in bundle order), then the webpage link, then the
@@ -947,7 +958,9 @@ router.put('/settings', authenticate, async (req, res) => {
 router.get('/posting-plan', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    // The plan is always "now" — the rotation window is relative to CURDATE().
+    const planDate = req.query.date ? String(req.query.date) : todayYmd();
+    const weekday = weekdayOf(planDate);
+    if (weekday == null) return res.status(400).json({ code: 400, message: 'invalid_date' });
     const settings = await loadSettings(req.pool, orgId);
     const { vacancies } = await computeVacancies(req.pool, orgId);
     const bundles = buildBundles(vacancies);
@@ -955,17 +968,19 @@ router.get('/posting-plan', authenticate, async (req, res) => {
     // Forums + their member accounts (only forums that HAVE a member are usable).
     const [forumRows] = await req.pool.execute(
       `SELECT f.id AS forum_id, f.name AS forum_name, f.url,
+              f.post_days,
               a.id AS account_id, a.name AS account_name, a.email AS account_email
          FROM advertising_forum f
          JOIN advertising_forum_account fa ON fa.forum_id = f.id AND fa.org_id = f.org_id
          JOIN advertising_account a ON a.id = fa.account_id AND a.org_id = f.org_id AND a.deleted_at IS NULL AND a.status = 1
-        WHERE f.org_id = ? AND f.deleted_at IS NULL AND f.status = 1`,
+        WHERE f.org_id = ? AND f.deleted_at IS NULL AND f.status = 1
+        ORDER BY f.name, a.email`,
       [orgId]
     );
-    const forums = new Map(); // forum_id → { forum_id, forum_name, url, accounts: [] }
+    const forums = new Map(); // forum_id → { forum_id, forum_name, url, post_days, accounts: [] }
     for (const r of forumRows) {
       const k = String(r.forum_id);
-      if (!forums.has(k)) forums.set(k, { forum_id: k, forum_name: r.forum_name, url: r.url, accounts: [] });
+      if (!forums.has(k)) forums.set(k, { forum_id: k, forum_name: r.forum_name, url: r.url, post_days: r.post_days || '', accounts: [] });
       forums.get(k).accounts.push({ id: String(r.account_id), name: r.account_name, email: r.account_email });
     }
 
@@ -973,8 +988,9 @@ router.get('/posting-plan', authenticate, async (req, res) => {
     const [recent] = await req.pool.execute(
       `SELECT DISTINCT property_id, forum_id FROM advertising_post_log
         WHERE org_id = ? AND status = 'posted' AND forum_id IS NOT NULL
-          AND post_date >= DATE_SUB(CURDATE(), INTERVAL ${ROTATION_WINDOW_DAYS} DAY)`,
-      [orgId]
+          AND post_date >= DATE_SUB(?, INTERVAL ${ROTATION_WINDOW_DAYS} DAY)
+          AND post_date <= ?`,
+      [orgId, planDate, planDate]
     );
     const usedByProperty = new Map(); // property_id → Set(forum_id)
     for (const r of recent) {
@@ -984,6 +1000,8 @@ router.get('/posting-plan', authenticate, async (req, res) => {
     }
 
     const allForumIds = [...forums.keys()];
+    const scheduledForumIds = allForumIds.filter(fid => postsOnDay(forums.get(fid).post_days, planDate));
+    const unscheduledForumCount = allForumIds.filter(fid => parseDays(forums.get(fid).post_days).length === 0).length;
     const usedTodayForums = new Set();      // don't use a forum twice in this plan
     const accountUseCount = new Map();      // balance account load across the plan
     const templateCache = new Map();        // template_id → row (many bundles share one)
@@ -1014,10 +1032,10 @@ router.get('/posting-plan', authenticate, async (req, res) => {
       const rendered = await renderBundle(req.pool, orgId, b, tpl, settings.footer);
 
       // Candidate forums: this property hasn't used in the window AND not used yet
-      // in this plan. Fall back to any-unused-today if the window rules out all.
+      // in this plan. Fall back to any-unused-today only inside the requested day.
       const used = usedByProperty.get(String(b.property_id)) || new Set();
-      let candidates = allForumIds.filter(fid => !used.has(fid) && !usedTodayForums.has(fid));
-      if (!candidates.length) candidates = allForumIds.filter(fid => !usedTodayForums.has(fid));
+      let candidates = scheduledForumIds.filter(fid => !used.has(fid) && !usedTodayForums.has(fid));
+      if (!candidates.length) candidates = scheduledForumIds.filter(fid => !usedTodayForums.has(fid));
 
       let forum = null, account = null;
       if (candidates.length) {
@@ -1034,14 +1052,15 @@ router.get('/posting-plan', authenticate, async (req, res) => {
       posts.push({
         ...bundleSummary(b),
         status: forum ? 'ready' : 'no_forum',
+        reason: forum ? null : `No forum scheduled for ${dayLabel(weekday)} still available`,
         template_id: String(b.template_id), template_name: b.template_name,
         post_text: rendered ? rendered.text : null,
         rendered,
         forum, account,
         image_hint: b.units.map(u => `${b.property_name}/${u.unit_name}`),
         // Other forums the human/agent could swap to (every usable forum except
-        // the chosen one), each with its member accounts.
-        alternatives: allForumIds
+        // the chosen one) scheduled for this day, each with its member accounts.
+        alternatives: scheduledForumIds
           .filter(fid => !forum || fid !== forum.forum_id)
           .map(fid => { const f = forums.get(fid); return { forum_id: f.forum_id, forum_name: f.forum_name, url: f.url, accounts: f.accounts }; }),
       });
@@ -1050,9 +1069,13 @@ router.get('/posting-plan', authenticate, async (req, res) => {
     res.json({
       code: 200,
       data: {
-        date: new Date().toISOString().slice(0, 10),
+        date: planDate,
+        weekday,
+        day_name: dayLabel(weekday),
         photo_root: settings.photo_root,
         forum_count: forums.size,
+        scheduled_forum_count: scheduledForumIds.length,
+        unscheduled_forum_count: unscheduledForumCount,
         posts,
       },
     });
@@ -1363,11 +1386,58 @@ router.delete('/accounts/:id', authenticate, async (req, res) => {
 });
 
 // ---- Forums ---- (list includes member account ids for the membership editor)
+router.get('/schedule-grid', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [rows] = await req.pool.execute(
+      `SELECT f.id AS forum_id, f.name AS forum_name, f.url, f.post_days,
+              a.id AS account_id, a.name AS account_name, a.email AS account_email
+         FROM advertising_forum f
+         LEFT JOIN advertising_forum_account fa ON fa.forum_id = f.id AND fa.org_id = f.org_id
+         LEFT JOIN advertising_account a ON a.id = fa.account_id AND a.org_id = f.org_id AND a.deleted_at IS NULL AND a.status = 1
+        WHERE f.org_id = ? AND f.deleted_at IS NULL AND f.status = 1
+        ORDER BY f.name, a.email`,
+      [orgId]
+    );
+    const forums = new Map();
+    for (const r of rows) {
+      const k = String(r.forum_id);
+      if (!forums.has(k)) {
+        forums.set(k, {
+          forum_id: k,
+          forum_name: r.forum_name,
+          url: r.url,
+          post_days: r.post_days || '',
+          accounts: [],
+        });
+      }
+      if (r.account_id) {
+        forums.get(k).accounts.push({ id: String(r.account_id), name: r.account_name, email: r.account_email });
+      }
+    }
+    const list = [...forums.values()];
+    const days = DAY_NAMES.map((name, day) => ({
+      day,
+      name,
+      forums: list
+        .filter(f => parseDays(f.post_days).includes(day))
+        .map(f => ({ forum_id: f.forum_id, forum_name: f.forum_name, url: f.url, accounts: f.accounts })),
+    }));
+    const unscheduled = list
+      .filter(f => parseDays(f.post_days).length === 0)
+      .map(f => ({ forum_id: f.forum_id, forum_name: f.forum_name }));
+    res.json({ code: 200, data: { days, unscheduled } });
+  } catch (err) {
+    console.error('[advertising/schedule-grid] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load schedule grid' });
+  }
+});
+
 router.get('/forums', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [forums] = await req.pool.execute(
-      `SELECT id, name, url, notes, status FROM advertising_forum
+      `SELECT id, name, url, notes, status, post_days FROM advertising_forum
         WHERE org_id = ? AND deleted_at IS NULL ORDER BY name`,
       [orgId]
     );
@@ -1385,7 +1455,7 @@ router.get('/forums', authenticate, async (req, res) => {
       byForum.get(k).push({ id: String(m.account_id), name: m.account_name, email: m.account_email });
     }
     res.json({ code: 200, data: forums.map(f => ({
-      id: String(f.id), name: f.name, url: f.url, notes: f.notes, status: f.status,
+      id: String(f.id), name: f.name, url: f.url, notes: f.notes, status: f.status, post_days: f.post_days || '',
       accounts: byForum.get(String(f.id)) || [],
     })) });
   } catch (err) {
@@ -1399,14 +1469,17 @@ router.post('/forums', authenticate, async (req, res) => {
     const { name, url, notes } = req.body || {};
     const bt = nonStringField(req.body || {}, ['name', 'url', 'notes']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
+    const dayInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'post_days') ? req.body.post_days : '1,2,3,4,5,6';
+    const days = validateDays(dayInput);
+    if (!days.ok) return res.status(400).json({ code: 400, message: days.error });
     if (!name || !String(name).trim()) return res.status(400).json({ code: 400, message: 'Forum name is required' });
     const lenErr = lengthError({ name, url }, FORUM_LIMITS);
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     const id = newId();
     await req.pool.execute(
-      `INSERT INTO advertising_forum (id, org_id, name, url, notes, status, created_at)
-       VALUES (?, ?, ?, ?, ?, 1, NOW())`,
-      [id, req.user.orgId, String(name).trim(), url || null, notes || null]
+      `INSERT INTO advertising_forum (id, org_id, name, url, notes, post_days, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, NOW())`,
+      [id, req.user.orgId, String(name).trim(), url || null, notes || null, days.value]
     );
     res.json({ code: 200, data: { id } });
   } catch (err) {
@@ -1431,6 +1504,12 @@ router.put('/forums/:id', authenticate, async (req, res) => {
     if (name !== undefined) { fields.push('name = ?'); params.push(String(name).trim()); }
     if (url !== undefined) { fields.push('url = ?'); params.push(url || null); }
     if (notes !== undefined) { fields.push('notes = ?'); params.push(notes || null); }
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'post_days')) {
+      const days = validateDays(req.body.post_days);
+      if (!days.ok) return res.status(400).json({ code: 400, message: days.error });
+      fields.push('post_days = ?');
+      params.push(days.value);
+    }
     if (status !== undefined) { fields.push('status = ?'); params.push(Number(status) ? 1 : 0); }
     if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
     params.push(req.params.id, orgId);

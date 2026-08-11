@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import dayjs from 'dayjs';
 import {
   Table, Card, Typography, Space, Tag, message, Button, Modal, Form,
-  Select, Input, Popconfirm, Divider, Empty, Tooltip,
+  Select, Input, Popconfirm, Empty, Tooltip, DatePicker, Alert,
 } from 'antd';
 import {
   SoundOutlined, ReloadOutlined, ThunderboltOutlined, PlusOutlined, DeleteOutlined,
@@ -12,12 +13,17 @@ import MainLayout from '../../../components/Layout';
 import { advertisingApi } from '../../../lib/api';
 
 const { Title, Text } = Typography;
+const DAY_ORDER = [1, 2, 3, 4, 5, 6];
 
 export default function SchedulerPage() {
   const [slots, setSlots] = useState([]);
   const [urgent, setUrgent] = useState([]);
   const [meta, setMeta] = useState({ filled: 0, overflow: 0, slot_count: 20 });
   const [loading, setLoading] = useState(true);
+  const [planLoading, setPlanLoading] = useState(true);
+  const [planDate, setPlanDate] = useState(dayjs());
+  const [plan, setPlan] = useState(null);
+  const [grid, setGrid] = useState({ days: [], unscheduled: [] });
   const [properties, setProperties] = useState([]); // for the urgent picker
 
   // Urgent add modal
@@ -28,7 +34,11 @@ export default function SchedulerPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await advertisingApi.getScheduler();
+      const [res, gridRes] = await Promise.all([
+        advertisingApi.getScheduler(),
+        advertisingApi.scheduleGrid(),
+      ]);
+      if (gridRes.data.code === 200) setGrid(gridRes.data.data || { days: [], unscheduled: [] });
       if (res.data.code === 200) {
         const d = res.data.data;
         setSlots(d.slots || []);
@@ -49,6 +59,21 @@ export default function SchedulerPage() {
   };
 
   useEffect(() => { load(); }, []);
+
+  const loadPlan = async (date) => {
+    setPlanLoading(true);
+    try {
+      const res = await advertisingApi.postingPlan(date.format('YYYY-MM-DD'));
+      if (res.data.code === 200) setPlan(res.data.data);
+      else message.error(res.data.message || 'Failed to load posting plan');
+    } catch (e) {
+      message.error('Failed to load posting plan');
+    } finally {
+      setPlanLoading(false);
+    }
+  };
+
+  useEffect(() => { loadPlan(planDate); }, [planDate]);
 
   const addUrgent = async () => {
     try {
@@ -111,6 +136,48 @@ export default function SchedulerPage() {
     },
   ];
 
+  const planColumns = [
+    {
+      title: 'Property',
+      dataIndex: 'property_name',
+      key: 'property_name',
+      render: (v, r) => (
+        <div>
+          <Text strong>{v}</Text>
+          <div>
+            <Space size={[4, 4]} wrap>{(r.unit_names || []).map(u => <Tag key={u}>{u}</Tag>)}</Space>
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      width: 150,
+      render: (v, r) => {
+        if (v === 'ready') return <Tag color="green">ready</Tag>;
+        if (v === 'no_forum') return <Tooltip title={r.reason}><Tag color="red">no forum</Tag></Tooltip>;
+        return <Tooltip title={r.reason}><Tag color="orange">{v}</Tag></Tooltip>;
+      },
+    },
+    {
+      title: 'Forum',
+      key: 'forum',
+      render: (_, r) => r.forum
+        ? <a href={r.forum.url || '#'} target="_blank" rel="noreferrer">{r.forum.forum_name}</a>
+        : <Text type="secondary">—</Text>,
+    },
+    {
+      title: 'Account',
+      key: 'account',
+      width: 220,
+      render: (_, r) => r.account ? (r.account.name || r.account.email) : <Text type="secondary">—</Text>,
+    },
+  ];
+
+  const scheduledDays = DAY_ORDER.map(day => (grid.days || []).find(d => d.day === day) || { day, name: '', forums: [] });
+
   return (
     <MainLayout>
       <div style={{ padding: 24 }}>
@@ -125,6 +192,86 @@ export default function SchedulerPage() {
             and carry their own forum rule.
           </Text>
         </div>
+
+        <Card
+          title={<Space><Text strong>Posting Plan</Text>{plan?.day_name && <Tag color="blue">{plan.day_name}</Tag>}</Space>}
+          extra={
+            <Space>
+              <DatePicker
+                value={planDate}
+                onChange={(d) => d && setPlanDate(d)}
+                allowClear={false}
+              />
+              <a onClick={() => loadPlan(planDate)}><ReloadOutlined /> Refresh</a>
+            </Space>
+          }
+          styles={{ body: { padding: 16 } }}
+          style={{ borderColor: '#e8e8e8', marginBottom: 24 }}
+        >
+          {plan?.unscheduled_forum_count > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`${plan.unscheduled_forum_count} active forum${plan.unscheduled_forum_count === 1 ? '' : 's'} have no posting days set`}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          <Space size={[8, 8]} wrap style={{ marginBottom: 12 }}>
+            <Tag>{plan?.date || planDate.format('YYYY-MM-DD')}</Tag>
+            <Tag color="geekblue">{plan?.scheduled_forum_count || 0} scheduled forums</Tag>
+            <Tag>{plan?.forum_count || 0} usable forums</Tag>
+          </Space>
+          <Table
+            rowKey={(r) => `${r.property_id || 'missing'}-${(r.unit_ids || []).join('-')}`}
+            columns={planColumns}
+            dataSource={plan?.posts || []}
+            loading={planLoading}
+            pagination={false}
+            size="small"
+            locale={{ emptyText: <Empty description="No posts in this plan" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          />
+        </Card>
+
+        <Card
+          title={<Text strong>Posting Sheet</Text>}
+          styles={{ body: { padding: 16 } }}
+          style={{ borderColor: '#e8e8e8', marginBottom: 24 }}
+        >
+          <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(180px, 1fr))', gap: 12, minWidth: 1080 }}>
+              {scheduledDays.map(day => (
+                <div key={day.day} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, minHeight: 120 }}>
+                  <Text strong>{day.name}</Text>
+                  <div style={{ marginTop: 8 }}>
+                    {day.forums.length ? (
+                      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                        {day.forums.map(f => (
+                          <div key={f.forum_id} style={{ borderBottom: '1px solid #f5f5f5', paddingBottom: 6 }}>
+                            <Text>{f.forum_name}</Text>
+                            <div>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                {(f.accounts || []).length} account{(f.accounts || []).length === 1 ? '' : 's'}
+                              </Text>
+                            </div>
+                          </div>
+                        ))}
+                      </Space>
+                    ) : <Text type="secondary">—</Text>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          {(grid.unscheduled || []).length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message="Forums with no days set"
+              description={<Space size={[4, 4]} wrap>{grid.unscheduled.map(f => <Tag key={f.forum_id} color="warning">{f.forum_name}</Tag>)}</Space>}
+              style={{ marginTop: 12 }}
+            />
+          )}
+        </Card>
 
         <Card
           title={<Space><Text strong>Roster</Text><Tag color="blue">{meta.filled}/{meta.slot_count} filled</Tag>{meta.overflow > 0 && <Tooltip title="Vacancies beyond the 20 slots"><Tag color="orange">+{meta.overflow} waiting</Tag></Tooltip>}</Space>}

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import {
   Table, Card, Tabs, Button, Space, Typography, Modal, Form, Input, message,
-  Tag, Popconfirm, Select, Empty,
+  Tag, Popconfirm, Select, Empty, Checkbox,
 } from 'antd';
 import {
   SoundOutlined, PlusOutlined, EditOutlined, DeleteOutlined, TeamOutlined, LinkOutlined,
@@ -12,6 +12,30 @@ import MainLayout from '../../../components/Layout';
 import { advertisingApi } from '../../../lib/api';
 
 const { Title, Text } = Typography;
+const DAY_OPTIONS = [
+  { label: 'Mon', value: 1 },
+  { label: 'Tue', value: 2 },
+  { label: 'Wed', value: 3 },
+  { label: 'Thu', value: 4 },
+  { label: 'Fri', value: 5 },
+  { label: 'Sat', value: 6 },
+  { label: 'Sun', value: 0 },
+];
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function parsePostDays(value) {
+  if (!value) return [];
+  return String(value).split(',')
+    .map(s => Number(s.trim()))
+    .filter(n => Number.isInteger(n) && n >= 0 && n <= 6)
+    .sort((a, b) => a - b);
+}
+
+function dayTags(value) {
+  const days = parsePostDays(value);
+  if (!days.length) return <Tag color="warning">No days set</Tag>;
+  return <Space size={[4, 4]} wrap>{days.map(d => <Tag key={d}>{DAY_NAMES[d]}</Tag>)}</Space>;
+}
 
 export default function ForumsPage() {
   const [forums, setForums] = useState([]);
@@ -56,7 +80,9 @@ export default function ForumsPage() {
   // ---- Forum create/edit ----
   const openForum = (row) => {
     setForumModal({ mode: row ? 'edit' : 'new', row });
-    forumForm.setFieldsValue(row ? { name: row.name, url: row.url, notes: row.notes } : { name: '', url: '', notes: '' });
+    forumForm.setFieldsValue(row
+      ? { name: row.name, url: row.url, notes: row.notes, post_days: parsePostDays(row.post_days) }
+      : { name: '', url: '', notes: '', post_days: [1, 2, 3, 4, 5, 6] });
   };
   const saveForum = async () => {
     try {
@@ -118,6 +144,7 @@ export default function ForumsPage() {
         ? <Space size={[4, 4]} wrap>{r.accounts.map(a => <Tag key={a.id} color="geekblue">{acctLabel(a)}</Tag>)}</Space>
         : <Text type="secondary">— none set —</Text>
     ) },
+    { title: 'Posting days', key: 'post_days', width: 210, render: (_, r) => dayTags(r.post_days) },
     { title: 'Actions', key: 'act', width: 240, render: (_, r) => (
       <Space size="small">
         <Button size="small" icon={<TeamOutlined />} onClick={() => openMembers(r)}>Members</Button>
@@ -210,6 +237,9 @@ export default function ForumsPage() {
           </Form.Item>
           <Form.Item name="url" label="Facebook group URL">
             <Input placeholder="https://www.facebook.com/groups/…" />
+          </Form.Item>
+          <Form.Item name="post_days" label="Posting days">
+            <Checkbox.Group options={DAY_OPTIONS} />
           </Form.Item>
           <Form.Item name="notes" label="Notes"><Input.TextArea rows={2} /></Form.Item>
         </Form>

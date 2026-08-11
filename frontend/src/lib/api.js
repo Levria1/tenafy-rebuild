@@ -699,6 +699,8 @@ export const advertisingApi = {
   deleteUrgent: (id) => api.delete(`/api/advertising/scheduler/urgent/${id}`),
 
   // Advertising → Posting plan (consumed by the PC agent).
+  scheduleGrid: () => api.get('/api/advertising/schedule-grid'),
+  postingPlan: (date) => api.get('/api/advertising/posting-plan', { params: date ? { date } : {} }),
   getPostingPlan: (date) => api.get('/api/advertising/posting-plan', { params: date ? { date } : {} }),
   markPosted: (data) => api.post('/api/advertising/posting-plan/mark', data),
 
