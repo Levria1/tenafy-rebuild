@@ -255,21 +255,38 @@ test('buildRouting: vacant unit (no tenant phone) → tenant phone null, no cras
 });
 
 // ── stale reaper pure decisions ──────────────────────────────────────────────
-const reminderCfg = { reminderHours: 12, staleHours: 24 };
+// 4h is the live cadence (VIEWING_REMINDER_HOURS): a viewing request unanswered
+// longer than that is already costing the booking.
+const reminderCfg = { reminderHours: 4, staleHours: 24 };
 const RT = (row) => reminderTarget(row, reminderCfg);
 
 test('reminderTarget: nudges prospect or tenant only in the reminder window', () => {
-  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 13 }), 'prospect');
-  assert.equal(RT({ awaiting: 'tenant', reminder_sent_at: null, hoursIdle: 13 }), 'tenant');
+  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 5 }), 'prospect');
+  assert.equal(RT({ awaiting: 'tenant', reminder_sent_at: null, hoursIdle: 5 }), 'tenant');
+  // The boundary is inclusive: the cron runs hourly, so a row that has just crossed
+  // 4h must be picked up by that same sweep or it waits another hour.
+  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 4 }), 'prospect');
+  // Still inside the window right up to the escalation cutoff.
+  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 23 }), 'prospect');
 });
 
 test('reminderTarget: does not nudge staff-owned, early, stale, already-reminded, or unawaited rows', () => {
-  assert.equal(RT({ awaiting: 'staff', reminder_sent_at: null, hoursIdle: 13 }), null);
-  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 6 }), null);
+  assert.equal(RT({ awaiting: 'staff', reminder_sent_at: null, hoursIdle: 5 }), null);
+  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 3 }), null);
   assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 25 }), null);
-  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: new Date(), hoursIdle: 13 }), null);
+  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: new Date(), hoursIdle: 5 }), null);
   assert.equal(RT({ awaiting: 'tenant', reminder_sent_at: new Date(), hoursIdle: 20 }), null);
-  assert.equal(RT({ awaiting: null, reminder_sent_at: null, hoursIdle: 13 }), null);
+  assert.equal(RT({ awaiting: null, reminder_sent_at: null, hoursIdle: 5 }), null);
+});
+
+test('reminderTarget: a reminder window at or past the stale cutoff can never fire', () => {
+  // Misconfiguration guard: if VIEWING_REMINDER_HOURS >= VIEWING_STALE_HOURS the
+  // window is empty and the nudge silently never sends. viewingNegotiation.js warns
+  // at boot; this pins the behaviour so the warning cannot be removed as harmless.
+  const bad = { reminderHours: 24, staleHours: 24 };
+  for (const idle of [23, 24, 25, 100]) {
+    assert.equal(reminderTarget({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: idle }, bad), null);
+  }
 });
 
 test('activeNegotiationPayload: NEEDS_STAFF is visible but not routable or active by itself', () => {

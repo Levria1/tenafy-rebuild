@@ -977,8 +977,23 @@ async function proceedNegotiation(pool, orgId, neg) {
 // escalated to NEEDS_STAFF so an abandoned/looping conversation doesn't sit open
 // forever. A single nudge is sent at REMINDER_HOURS, guarded by reminder_sent_at.
 // Guarded for pre-migration orgs.
-const STALE_HOURS = 24;
-const REMINDER_HOURS = 12;
+//
+// Both are env-tunable so the cadence can be changed without a deploy. 4h is the
+// business requirement: a viewing request that sits unanswered longer than that is
+// already costing the booking. The cron runs hourly, so the real nudge lands
+// somewhere in [4h, 5h) — a tighter target than that needs a tighter cron, not a
+// smaller number here.
+const STALE_HOURS = Math.max(1, parseInt(process.env.VIEWING_STALE_HOURS || '24', 10) || 24);
+const REMINDER_HOURS = Math.max(1, parseInt(process.env.VIEWING_REMINDER_HOURS || '4', 10) || 4);
+// A reminder window that starts at or after the escalation cutoff can never select a
+// row (the query needs updated_at in [REMINDER_HOURS, STALE_HOURS)), so the nudge
+// would silently never fire. Fail loudly at boot instead of at 3am in six weeks.
+if (REMINDER_HOURS >= STALE_HOURS) {
+  console.warn(
+    `[viewingNegotiation] VIEWING_REMINDER_HOURS (${REMINDER_HOURS}) >= VIEWING_STALE_HOURS ` +
+    `(${STALE_HOURS}) — no reminder can ever be sent. Lower the reminder or raise the stale window.`
+  );
+}
 
 function isSchemaMissingError(err) {
   return /doesn't exist|Unknown column|Unknown table/i.test(err && err.message);
@@ -1010,7 +1025,10 @@ async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
       );
       for (const neg of reminders) {
         try {
-          const party = reminderTarget(neg);
+          // Pass the configured thresholds explicitly. The helper has its own
+          // defaults, and letting them apply here would mean the SQL selected on one
+          // window while the guard rejected on another — nothing would ever be sent.
+          const party = reminderTarget(neg, { reminderHours: REMINDER_HOURS, staleHours: STALE_HOURS });
           if (!party) continue;
           const ctx = await loadContext(pool, neg);
           const toPhone = party === 'tenant' ? ctx.tenant_phone : neg.prospect_phone;

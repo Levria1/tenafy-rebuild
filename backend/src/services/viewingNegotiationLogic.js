@@ -163,7 +163,10 @@ function buildRouting(negRow, tenantPhone) {
   return { parties, awaiting_phone };
 }
 
-function reminderTarget(row, { reminderHours = 12, staleHours = 24 } = {}) {
+// Defaults mirror VIEWING_REMINDER_HOURS / VIEWING_STALE_HOURS in viewingNegotiation.js.
+// Callers there pass the configured values explicitly; these are only for tests and
+// any caller that genuinely wants the stock cadence.
+function reminderTarget(row, { reminderHours = 4, staleHours = 24 } = {}) {
   if (!row || row.reminder_sent_at) return null;
   if (!['prospect', 'tenant'].includes(row.awaiting)) return null;
   const hoursIdle = Number(row.hoursIdle);

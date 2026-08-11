@@ -169,11 +169,17 @@ new replies into them. `active` remains the routing gate: it is true only when a
 least one matched negotiation has `routable:true`.
 
 Open relay negotiations that sit silent get one light reminder to the party
-Tenafy is awaiting after 12 hours. After 24 hours with no activity, Tenafy flips
+Tenafy is awaiting after **4 hours** — a viewing request unanswered longer than
+that is already costing the booking. After 24 hours with no activity, Tenafy flips
 the negotiation to `NEEDS_STAFF`, notifies staff once for the hourly sweep, and
 sends the standard escalation message to the prospect and tenant when present.
-In manual relay mode, both the 12-hour reminder and the 24-hour escalation are
-queued as drafts for staff approval.
+In manual relay mode, both the reminder and the escalation are queued as drafts
+for staff approval.
+
+The sweep runs hourly, so the reminder actually lands somewhere in [4h, 5h). Both
+thresholds are env-tunable (`VIEWING_REMINDER_HOURS`, `VIEWING_STALE_HOURS`), so
+the cadence can change without a deploy — treat the exact hour as configuration,
+not contract. Only one reminder is ever sent per negotiation.
 
 ---
 
