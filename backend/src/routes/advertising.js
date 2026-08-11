@@ -3,6 +3,8 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold } = require('../services/advertisingTemplate');
 const { DAY_NAMES, weekdayOf, postsOnDay, parseDays, validateDays, dayLabel } = require('../utils/advertisingSchedule');
+const { slotLabel, findRepeatViolations, suggestReplacements, forumWeeklyLoad,
+  gapIsAdvertisable, priorityOf, sortByPriority, assignBundlesToSlots } = require('../utils/advertisingPlan');
 const { hkDate } = require('../utils/inquiryFacts');
 
 // Snowflake id (same pattern used across the app).
@@ -27,8 +29,9 @@ function lengthError(body, limits = FIELD_LIMITS) {
 // ---------------------------------------------------------------------------
 // Advertising → Vacancy
 // Units that need advertising, in two categories:
-//   1. VACANT NOW  — active unit with no current lease AND no upcoming lease
-//      (a tenant left, or a brand-new unit never leased). The MOST urgent.
+//   1. VACANT NOW  — active unit with NO CURRENT LEASE. The human-facing page
+//      shows every such unit. The scheduler advertises it only when there is no
+//      next lease or the free gap meets the configured minimum.
 //   2. EXPIRING    — a current lease is ending within its renewal-intent lead
 //      window and no replacement is lined up.
 //
@@ -37,12 +40,9 @@ function lengthError(body, limits = FIELD_LIMITS) {
 // Keyed off DATE-COMPUTED lease status (start_date/end_date/CURDATE()), NOT the
 // stored `leasing.status` column — that column is not maintained on expiry.
 //
-// Expiring window: a FLAT 60 days for ALL renewal intents (any current lease
-// ending within 60 days shows up, regardless of NR/UC/MR/MTM/unset). The renewal
-// intent is displayed as a badge only — it no longer changes the window.
-// (Was per-intent NR 60 / UC 30 / others 20; flattened per request 2026-08-03.)
-// Sorted by urgency: longest-vacant first, then soonest-to-expire, then
-// never-leased units last.
+// The human-facing page keeps its flat 60-day window. The scheduler queries the
+// wider configured lead window, filters each row through priorityOf(), and sorts
+// by priority tier before urgency.
 // ---------------------------------------------------------------------------
 
 const EXPIRING_WINDOW = 60;   // days before lease end, all intents
@@ -71,9 +71,6 @@ const NO_CURRENT_LEASE = `NOT EXISTS (
   SELECT 1 FROM leasing lc
    WHERE lc.unit_id = u.id AND lc.deleted_at IS NULL
      AND lc.start_date <= CURDATE() AND (lc.end_date IS NULL OR lc.end_date >= CURDATE()))`;
-const NO_UPCOMING_LEASE = `NOT EXISTS (
-  SELECT 1 FROM leasing lu
-   WHERE lu.unit_id = u.id AND lu.deleted_at IS NULL AND lu.start_date > CURDATE())`;
 
 // Exclude placeholder/test units by name (unit or property). Substring match —
 // catches "Test Unit 1", "6A Test", "Test Property 2".
@@ -87,10 +84,15 @@ const NOT_TEST = `LOWER(u.name) NOT LIKE '%test%' AND LOWER(p.display_name) NOT 
 //     (so it still advertises a re-let-then-vacant gap). Empty-today units with a
 //     short upcoming lease therefore move OUT of expiring and INTO vacant on the
 //     page (shown as "vacant now + next move-in").
-//   - VACANT: page includes units that are empty TODAY even if a move-in is
-//     booked; the scheduler stays "truly open" (no upcoming) so it never
-//     advertises a unit that is already filling.
-async function computeVacancies(pool, orgId, { page = false } = {}) {
+//   - VACANT: the page includes every unit empty today. The scheduler filters a
+//     booked next move-in through the minimum-gap setting; `days_to_move_in`
+//     carries the length of that window and `gap_ok` records the decision.
+async function computeVacancies(pool, orgId, { page = false, minGapDays, settings: suppliedSettings } = {}) {
+    const settings = suppliedSettings || (page ? null : await loadSettings(pool, orgId));
+    const effectiveMinGapDays = page ? 40 : (minGapDays ?? settings.min_gap_days);
+    const expiringWindow = page
+      ? EXPIRING_WINDOW
+      : Math.max(settings.lead_days_nr, settings.lead_days_other);
     // 1. EXPIRING — the unit's LATEST lease (current OR a future one) ends within
     //    the window and nothing follows it. We intentionally do NOT require the
     //    lease to have started: a unit re-let with a SHORT upcoming lease (e.g.
@@ -119,7 +121,7 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
          ${page ? 'AND l.start_date <= CURDATE()' : ''}
          AND l.end_date IS NOT NULL
          AND l.end_date >= CURDATE()
-         AND DATEDIFF(l.end_date, CURDATE()) <= ${EXPIRING_WINDOW}
+         AND DATEDIFF(l.end_date, CURDATE()) <= ${expiringWindow}
          AND ${NOT_TEST}
          AND NOT EXISTS (
            -- a replacement/continuation lease that keeps the unit occupied past
@@ -138,7 +140,7 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
       [orgId]
     );
 
-    // 2. VACANT NOW — active unit with no current AND no upcoming lease. Pull the
+    // 2. VACANT NOW — active unit with no current lease. Pull the
     // most-recent ended lease (for "vacant since" + last tenant/rent reference);
     // NULL for a never-leased unit.
     const [vacant] = await pool.execute(
@@ -151,7 +153,7 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
           DATE_FORMAT(ll.end_date, '%Y-%m-%d') AS vacant_since,
           DATEDIFF(CURDATE(), ll.end_date) AS days_vacant,
           ll.amount AS rent, ll.deposit, ll.contract_type,
-          t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name${page ? ',' + NEXT_MOVE_IN_COLS : ''}
+          t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name,${NEXT_MOVE_IN_COLS}
        FROM unit u
        JOIN property p ON u.property_id = p.id
        LEFT JOIN advertising_template at ON at.id = u.advertising_template_id AND at.deleted_at IS NULL
@@ -160,12 +162,11 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
            WHERE le.unit_id = u.id AND le.deleted_at IS NULL
              AND le.end_date IS NOT NULL AND le.end_date < CURDATE()
            ORDER BY le.end_date DESC, le.id DESC LIMIT 1)
-       LEFT JOIN tenant t ON t.id = ll.tenant_id${page ? NEXT_MOVE_IN_JOIN : ''}
+       LEFT JOIN tenant t ON t.id = ll.tenant_id${NEXT_MOVE_IN_JOIN}
        WHERE p.org_id = ?
          AND u.active_status = 1
          AND ${NOT_TEST}
-         AND ${NO_CURRENT_LEASE}
-         ${page ? '' : 'AND ' + NO_UPCOMING_LEASE}`,
+         AND ${NO_CURRENT_LEASE}`,
       [orgId]
     );
 
@@ -208,7 +209,13 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
       }
     }
 
-    const expiringRows = expiring.map(r => ({
+    const expiringRows = expiring.map(r => {
+      const priority = priorityOf({
+        is_vacant: false,
+        contract_type: r.contract_type,
+        days_left: r.days_left != null ? Number(r.days_left) : null,
+      }, settings || {});
+      return ({
       status: 'expiring',
       lease_id: String(r.lease_id),
       contract_type: r.contract_type,
@@ -234,18 +241,26 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
       moved_out_early: !!moveoutByLease[String(r.lease_id)]?.moved_out_early,
       // Expiring rows are (page) NOT re-let, so there is no upcoming move-in.
       next_move_in_date: null, days_to_move_in: null, next_tenant_id: null, next_tenant_name: null,
-    }));
+      tier: priority.tier,
+      priority_reason: priority.reason,
+    });
+    }).filter(row => page || priorityOf({
+      is_vacant: false, contract_type: row.contract_type, days_left: row.days_left,
+    }, settings).advertisable);
 
     const vacantRows = vacant.map(r => {
       // days_vacant computed by the DB (DATEDIFF) so it agrees with CURDATE()/
       // end_date and can't drift a day from server-vs-DB timezone.
       const daysVacant = r.days_vacant != null ? Number(r.days_vacant) : null;
+      const daysToMoveIn = r.days_to_move_in != null ? Number(r.days_to_move_in) : null;
+      const gapOk = gapIsAdvertisable(daysToMoveIn, effectiveMinGapDays);
+      const priority = priorityOf({ is_vacant: true, gap_ok: gapOk, days_left: daysVacant != null ? -daysVacant : null }, settings || {});
       return {
         status: 'vacant',
         lease_id: null,
-        contract_type: null,
+        contract_type: r.contract_type,
         notice_period_days: null,   // no current lease → no notice period
-        intent: null,
+        intent: INTENT[r.contract_type] || 'Unset',
         // Negative = already vacant N days; null = never leased.
         days_left: daysVacant != null ? -daysVacant : null,
         days_vacant: daysVacant,
@@ -268,21 +283,25 @@ async function computeVacancies(pool, orgId, { page = false } = {}) {
         moved_out_early: !!moveoutByLease[String(r.last_lease_id)]?.moved_out_early,
         // Next upcoming lease (a booked move-in even though it's empty today).
         next_move_in_date: r.next_move_in_date || null,
-        days_to_move_in: r.days_to_move_in != null ? Number(r.days_to_move_in) : null,
+        days_to_move_in: daysToMoveIn,
+        gap_ok: gapOk,
+        tier: priority.tier,
+        priority_reason: priority.reason,
         next_tenant_id: r.next_tenant_id ? String(r.next_tenant_id) : null,
         next_tenant_name: (r.next_tenant_name || '').trim() || null,
       };
-    });
+    }).filter(row => page || row.gap_ok);
 
     // Urgency sort: longest-vacant (most negative) → soonest-expiring (small
     // positive) → later-expiring → never-leased (no date) last.
     const NEVER_LEASED = Number.POSITIVE_INFINITY;
     const sortKey = (x) => (x.days_left == null ? NEVER_LEASED : x.days_left);
-    const vacancies = [...vacantRows, ...expiringRows].sort((a, b) => {
+    const urgencySorted = [...vacantRows, ...expiringRows].sort((a, b) => {
       const ka = sortKey(a), kb = sortKey(b);
       if (ka !== kb) return ka - kb;
       return (a.property_name || '').localeCompare(b.property_name || '');
     });
+    const vacancies = page ? urgencySorted : sortByPriority([...vacantRows, ...expiringRows]);
 
     return { vacancies, vacant_count: vacantRows.length, expiring_count: expiringRows.length };
 }
@@ -646,26 +665,31 @@ function buildBundles(vacancies) {
     groups.get(key).units.push({
       unit_id: v.unit_id, unit_name: v.unit_name, status: v.status,
       days_left: v.days_left, available_date: availableDate,
+      tier: v.tier, intent: v.intent, priority_reason: v.priority_reason,
       rent_price_min: v.rent_price_min, rent_price_max: v.rent_price_max,
     });
   }
   const bundles = [];
   for (const g of groups.values()) {
     for (let i = 0; i < g.units.length; i += MAX_BUNDLE_UNITS) {
+      const units = g.units.slice(i, i + MAX_BUNDLE_UNITS);
+      const leadUnit = units.reduce((best, unit) => Number(unit.tier) < Number(best.tier) ? unit : best, units[0]);
       bundles.push({
         property_id: g.property_id, property_name: g.property_name,
         template_id: g.template_id, template_name: g.template_name,
-        units: g.units.slice(i, i + MAX_BUNDLE_UNITS),
+        tier: leadUnit.tier, intent: leadUnit.intent,
+        units,
       });
     }
   }
   const urgency = (b) => Math.min(...b.units.map(u => (u.days_left == null ? Number.POSITIVE_INFINITY : u.days_left)));
-  bundles.sort((a, b) => {
-    const ka = urgency(a), kb = urgency(b);
-    if (ka !== kb) return ka - kb;
-    return (a.property_name || '').localeCompare(b.property_name || '');
-  });
-  return bundles;
+  const ordered = sortByPriority(bundles.map((item, index) => ({
+    tier: item.tier,
+    days_left: urgency(item),
+    property_name: item.property_name,
+    index,
+  })));
+  return ordered.map(item => bundles[item.index]);
 }
 
 router.get('/scheduler', authenticate, async (req, res) => {
@@ -836,10 +860,10 @@ router.delete('/scheduler/urgent/:id', authenticate, async (req, res) => {
 
 // ===========================================================================
 // Advertising → Posting plan
-// The daily instructions the PC agent calls: each bundle rendered (shared body +
-// a per-unit line for each unit) and paired with a forum + a member account,
-// rotated so a property doesn't reuse a forum within the week and no forum is
-// used twice in the same plan. Reads/writes advertising_post_log.
+// The daily instructions the PC agent calls: each vacancy bundle rendered
+// (shared body + a per-unit line for each unit) and assigned positionally to the
+// operator's slot schedule for that weekday. advertising_post_log remains the
+// audit trail for posted/skipped actions, but forum choice is schedule-driven.
 // ===========================================================================
 
 const ROTATION_WINDOW_DAYS = 7;   // don't reuse a forum for a property within a week
@@ -913,9 +937,33 @@ async function renderBundle(pool, orgId, bundle, template, footer) {
 
 // Org-wide advertising settings (shared footer + photo root).
 async function loadSettings(pool, orgId) {
-  const [[row]] = await pool.execute(
-    `SELECT footer, photo_root FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
-  return { footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT };
+  const defaults = { footer: null, photo_root: PHOTO_ROOT, min_gap_days: 40, lead_days_nr: 60, lead_days_other: 45 };
+  try {
+    const [[row]] = await pool.execute(
+      `SELECT footer, photo_root, min_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+    return {
+      footer: row?.footer || null,
+      photo_root: row?.photo_root || PHOTO_ROOT,
+      min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+      lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
+      lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
+    };
+  } catch (err) {
+    try {
+      const [[row]] = await pool.execute(
+        `SELECT footer, photo_root, min_gap_days FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+      return {
+        ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT,
+        min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+      };
+    } catch {
+      try {
+        const [[row]] = await pool.execute(
+          `SELECT footer, photo_root FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+        return { ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT };
+      } catch { return defaults; }
+    }
+  }
 }
 
 router.get('/settings', authenticate, async (req, res) => {
@@ -931,22 +979,32 @@ router.get('/settings', authenticate, async (req, res) => {
 router.put('/settings', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { footer, photo_root } = req.body || {};
+    const { footer, photo_root, min_gap_days, lead_days_nr, lead_days_other } = req.body || {};
     const bt = nonStringField(req.body || {}, ['footer', 'photo_root']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     const lenErr = lengthError({ photo_root }, { photo_root: 255 });   // column is VARCHAR(255)
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    for (const field of ['min_gap_days', 'lead_days_nr', 'lead_days_other']) {
+      if (req.body?.[field] !== undefined
+          && (!Number.isInteger(req.body[field]) || req.body[field] < 0 || req.body[field] > 365)) {
+        return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
+      }
+    }
     // PARTIAL upsert — only touch the fields actually sent, so the footer editor
     // (Templates) and photo-root (Forums) can't overwrite each other.
     const setClauses = [];
     if (footer !== undefined) setClauses.push('footer = VALUES(footer)');
     if (photo_root !== undefined) setClauses.push('photo_root = VALUES(photo_root)');
+    if (min_gap_days !== undefined) setClauses.push('min_gap_days = VALUES(min_gap_days)');
+    if (lead_days_nr !== undefined) setClauses.push('lead_days_nr = VALUES(lead_days_nr)');
+    if (lead_days_other !== undefined) setClauses.push('lead_days_other = VALUES(lead_days_other)');
     if (!setClauses.length) return res.json({ code: 200, data: { ok: true } });
     await req.pool.execute(
-      `INSERT INTO advertising_setting (org_id, footer, photo_root, created_at)
-       VALUES (?, ?, ?, NOW())
+      `INSERT INTO advertising_setting (org_id, footer, photo_root, min_gap_days, lead_days_nr, lead_days_other, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW())
        ON DUPLICATE KEY UPDATE ${setClauses.join(', ')}`,
-      [orgId, footer !== undefined ? (footer || null) : null, photo_root !== undefined ? (photo_root || null) : null]
+      [orgId, footer !== undefined ? (footer || null) : null, photo_root !== undefined ? (photo_root || null) : null,
+        min_gap_days ?? 40, lead_days_nr ?? 60, lead_days_other ?? 45]
     );
     res.json({ code: 200, data: { ok: true } });
   } catch (err) {
@@ -955,67 +1013,64 @@ router.put('/settings', authenticate, async (req, res) => {
   }
 });
 
-router.get('/posting-plan', authenticate, async (req, res) => {
-  try {
-    const orgId = req.user.orgId;
-    const planDate = req.query.date ? String(req.query.date) : todayYmd();
+async function buildPostingPlan(pool, orgId, { date } = {}) {
+    const planDate = date ? String(date) : todayYmd();
     const weekday = weekdayOf(planDate);
-    if (weekday == null) return res.status(400).json({ code: 400, message: 'invalid_date' });
-    const settings = await loadSettings(req.pool, orgId);
-    const { vacancies } = await computeVacancies(req.pool, orgId);
+    if (weekday == null) { const error = new Error('invalid_date'); error.httpStatus = 400; throw error; }
+    const settings = await loadSettings(pool, orgId);
+    const { vacancies } = await computeVacancies(pool, orgId, { settings });
     const bundles = buildBundles(vacancies);
 
-    // Forums + their member accounts (only forums that HAVE a member are usable).
-    const [forumRows] = await req.pool.execute(
-      `SELECT f.id AS forum_id, f.name AS forum_name, f.url,
-              f.post_days,
+    const [scheduleRows] = await pool.execute(
+      `SELECT s.id, s.weekday, s.slot_kind, s.slot_no, s.position,
+              f.id AS forum_id, f.name AS forum_name, f.url, f.is_owned,
               a.id AS account_id, a.name AS account_name, a.email AS account_email
-         FROM advertising_forum f
-         JOIN advertising_forum_account fa ON fa.forum_id = f.id AND fa.org_id = f.org_id
-         JOIN advertising_account a ON a.id = fa.account_id AND a.org_id = f.org_id AND a.deleted_at IS NULL AND a.status = 1
-        WHERE f.org_id = ? AND f.deleted_at IS NULL AND f.status = 1
-        ORDER BY f.name, a.email`,
-      [orgId]
+         FROM advertising_schedule s
+         JOIN advertising_forum f ON f.id = s.forum_id AND f.org_id = s.org_id
+          AND f.deleted_at IS NULL AND f.status = 1
+         JOIN advertising_account a ON a.id = s.account_id AND a.org_id = s.org_id
+          AND a.deleted_at IS NULL AND a.status = 1
+         JOIN advertising_forum_account fa ON fa.org_id = s.org_id
+          AND fa.forum_id = s.forum_id AND fa.account_id = s.account_id
+        WHERE s.org_id = ? AND s.weekday = ? AND s.deleted_at IS NULL AND s.status = 1
+        ORDER BY s.position`,
+      [orgId, weekday]
     );
-    const forums = new Map(); // forum_id → { forum_id, forum_name, url, post_days, accounts: [] }
-    for (const r of forumRows) {
-      const k = String(r.forum_id);
-      if (!forums.has(k)) forums.set(k, { forum_id: k, forum_name: r.forum_name, url: r.url, post_days: r.post_days || '', accounts: [] });
-      forums.get(k).accounts.push({ id: String(r.account_id), name: r.account_name, email: r.account_email });
-    }
-
-    // Forums each property used in the rotation window (avoid reusing them).
-    const [recent] = await req.pool.execute(
-      `SELECT DISTINCT property_id, forum_id FROM advertising_post_log
-        WHERE org_id = ? AND status = 'posted' AND forum_id IS NOT NULL
-          AND post_date >= DATE_SUB(?, INTERVAL ${ROTATION_WINDOW_DAYS} DAY)
-          AND post_date <= ?`,
-      [orgId, planDate, planDate]
-    );
-    const usedByProperty = new Map(); // property_id → Set(forum_id)
-    for (const r of recent) {
-      const k = String(r.property_id);
-      if (!usedByProperty.has(k)) usedByProperty.set(k, new Set());
-      usedByProperty.get(k).add(String(r.forum_id));
-    }
-
-    const allForumIds = [...forums.keys()];
-    const scheduledForumIds = allForumIds.filter(fid => postsOnDay(forums.get(fid).post_days, planDate));
-    const unscheduledForumCount = allForumIds.filter(fid => parseDays(forums.get(fid).post_days).length === 0).length;
-    const usedTodayForums = new Set();      // don't use a forum twice in this plan
-    const accountUseCount = new Map();      // balance account load across the plan
+    const slots = scheduleRows.map(r => ({
+      id: String(r.id),
+      weekday: Number(r.weekday),
+      slot_kind: r.slot_kind,
+      slot_no: Number(r.slot_no),
+      slot_label: slotLabel(r),
+      position: Number(r.position),
+      forum: {
+        forum_id: String(r.forum_id),
+        forum_name: r.forum_name,
+        url: r.url,
+        is_owned: Number(r.is_owned) === 1 ? 1 : 0,
+      },
+      account: {
+        id: String(r.account_id),
+        name: r.account_name,
+        email: r.account_email,
+      },
+    }));
+    const allocation = assignBundlesToSlots(bundles, slots, { tierOf: b => b.tier });
     const templateCache = new Map();        // template_id → row (many bundles share one)
     const posts = [];
 
-    for (const b of bundles) {
+    for (const { bundle: b, slot, extra } of allocation.assignments) {
       if (!b.template_id) {
         posts.push({ ...bundleSummary(b), status: 'needs_template',
-          reason: 'Assign a template before this can be posted', forum: null, account: null });
+          reason: 'Assign a template before this can be posted',
+          extra,
+          slot_id: slot.id, slot_label: slot.slot_label, slot_kind: slot.slot_kind, slot_no: slot.slot_no, position: slot.position,
+          forum: slot.forum, account: slot.account });
         continue;
       }
       let tpl = templateCache.get(b.template_id);
       if (tpl === undefined) {
-        const [[row]] = await req.pool.execute(
+        const [[row]] = await pool.execute(
           `SELECT id, name, title, body, per_unit_line, unit_line_id, webpage_link FROM advertising_template
             WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
           [b.template_id, orgId]
@@ -1026,60 +1081,78 @@ router.get('/posting-plan', authenticate, async (req, res) => {
       // Template vanished between vacancy-compute and now → don't emit an empty post.
       if (!tpl) {
         posts.push({ ...bundleSummary(b), status: 'needs_template',
-          reason: 'Template was deleted', forum: null, account: null });
+          reason: 'Template was deleted',
+          extra,
+          slot_id: slot.id, slot_label: slot.slot_label, slot_kind: slot.slot_kind, slot_no: slot.slot_no, position: slot.position,
+          forum: slot.forum, account: slot.account });
         continue;
       }
-      const rendered = await renderBundle(req.pool, orgId, b, tpl, settings.footer);
-
-      // Candidate forums: this property hasn't used in the window AND not used yet
-      // in this plan. Fall back to any-unused-today only inside the requested day.
-      const used = usedByProperty.get(String(b.property_id)) || new Set();
-      let candidates = scheduledForumIds.filter(fid => !used.has(fid) && !usedTodayForums.has(fid));
-      if (!candidates.length) candidates = scheduledForumIds.filter(fid => !usedTodayForums.has(fid));
-
-      let forum = null, account = null;
-      if (candidates.length) {
-        const chosenId = candidates[0];
-        const f = forums.get(chosenId);
-        forum = { forum_id: f.forum_id, forum_name: f.forum_name, url: f.url };
-        // Least-used member account, for balance.
-        account = [...f.accounts].sort((x, y) =>
-          (accountUseCount.get(x.id) || 0) - (accountUseCount.get(y.id) || 0))[0] || null;
-        if (account) accountUseCount.set(account.id, (accountUseCount.get(account.id) || 0) + 1);
-        usedTodayForums.add(chosenId);
-      }
+      const rendered = await renderBundle(pool, orgId, b, tpl, settings.footer);
 
       posts.push({
         ...bundleSummary(b),
-        status: forum ? 'ready' : 'no_forum',
-        reason: forum ? null : `No forum scheduled for ${dayLabel(weekday)} still available`,
+        status: 'ready',
+        reason: null,
+        extra,
+        slot_id: slot.id,
+        slot_label: slot.slot_label,
+        slot_kind: slot.slot_kind,
+        slot_no: slot.slot_no,
+        position: slot.position,
         template_id: String(b.template_id), template_name: b.template_name,
         post_text: rendered ? rendered.text : null,
         rendered,
-        forum, account,
-        image_hint: b.units.map(u => `${b.property_name}/${u.unit_name}`),
-        // Other forums the human/agent could swap to (every usable forum except
-        // the chosen one) scheduled for this day, each with its member accounts.
-        alternatives: scheduledForumIds
-          .filter(fid => !forum || fid !== forum.forum_id)
-          .map(fid => { const f = forums.get(fid); return { forum_id: f.forum_id, forum_name: f.forum_name, url: f.url, accounts: f.accounts }; }),
+        forum: slot.forum,
+        account: slot.account,
       });
     }
+    for (const b of allocation.overflow) {
+      posts.push({ ...bundleSummary(b), status: 'no_slot', extra: false,
+        reason: `No slot left on ${dayLabel(weekday)} — add a row to the schedule`,
+        forum: null, account: null });
+    }
+    const unfilledReason = bundles.length === 0
+      ? 'nothing to advertise'
+      : 'every available property already posts to this group today';
+    const unfilledSlots = allocation.unfilled.map(slot => ({
+      id: slot.id,
+      weekday: slot.weekday,
+      slot_kind: slot.slot_kind,
+      slot_no: slot.slot_no,
+      slot_label: slot.slot_label,
+      position: slot.position,
+      forum: slot.forum,
+      account: slot.account,
+      reason: unfilledReason,
+    }));
 
-    res.json({
-      code: 200,
-      data: {
+    const tier_counts = {
+      vacant: vacancies.filter(v => v.tier === 1).length,
+      nr: vacancies.filter(v => v.tier === 2).length,
+      other: vacancies.filter(v => v.tier === 3).length,
+    };
+    return {
         date: planDate,
         weekday,
         day_name: dayLabel(weekday),
         photo_root: settings.photo_root,
-        forum_count: forums.size,
-        scheduled_forum_count: scheduledForumIds.length,
-        unscheduled_forum_count: unscheduledForumCount,
+        min_gap_days: settings.min_gap_days,
+        lead_days_nr: settings.lead_days_nr,
+        lead_days_other: settings.lead_days_other,
+        tier_counts,
+        slot_count: slots.length,
+        extra_count: allocation.assignments.filter(a => a.extra).length,
+        unfilled_slots: unfilledSlots,
         posts,
-      },
-    });
+      };
+}
+
+router.get('/posting-plan', authenticate, async (req, res) => {
+  try {
+    const data = await buildPostingPlan(req.pool, req.user.orgId, { date: req.query.date });
+    res.json({ code: 200, data });
   } catch (err) {
+    if (err.httpStatus === 400) return res.status(400).json({ code: 400, message: err.message });
     console.error('[advertising/posting-plan] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to build posting plan' });
   }
@@ -1091,15 +1164,16 @@ function bundleSummary(b) {
     property_name: b.property_name,
     unit_ids: b.units.map(u => String(u.unit_id)),
     unit_names: b.units.map(u => u.unit_name),
+    tier: b.tier,
+    intent: b.intent,
+    image_hint: b.units.map(u => `${b.property_name}/${u.unit_name}`),
   };
 }
 
 // Log a post (or skip) — idempotency + rotation history. The agent calls this
 // after it (or the human) posts, so the next plan won't reuse that forum.
-router.post('/posting-plan/mark', authenticate, async (req, res) => {
-  try {
-    const orgId = req.user.orgId;
-    const b = req.body || {};
+async function markPostingPlan(pool, orgId, body) {
+    const b = body || {};
     const status = b.status === 'skipped' ? 'skipped' : 'posted';
     const source = b.source === 'urgent' ? 'urgent' : 'roster';
     // A given post_date is honoured only if valid; otherwise defaulted from the DB
@@ -1111,7 +1185,7 @@ router.post('/posting-plan/mark', authenticate, async (req, res) => {
     // rotation history (mark a property as having used a forum it never did).
     const check = async (table, id) => {
       if (!id) return null;
-      const [[row]] = await req.pool.execute(
+      const [[row]] = await pool.execute(
         `SELECT id FROM ${table} WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
         [String(id), orgId]
       );
@@ -1124,12 +1198,18 @@ router.post('/posting-plan/mark', authenticate, async (req, res) => {
     const accountId = await check('advertising_account', b.account_id);
 
     const id = newId();
-    await req.pool.execute(
+    await pool.execute(
       `INSERT INTO advertising_post_log (id, org_id, post_date, property_id, template_id, forum_id, account_id, unit_ids, source, status, created_at)
        VALUES (?, ?, COALESCE(?, CURDATE()), ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [id, orgId, post_date, propertyId, templateId, forumId, accountId, unit_ids, source, status]
     );
-    res.json({ code: 200, data: { id } });
+    return { id };
+}
+
+router.post('/posting-plan/mark', authenticate, async (req, res) => {
+  try {
+    const data = await markPostingPlan(req.pool, req.user.orgId, req.body);
+    res.json({ code: 200, data });
   } catch (err) {
     if (err.httpStatus === 400) return res.status(400).json({ code: 400, message: err.message });
     console.error('[advertising/posting-plan mark] error:', err);
@@ -1156,6 +1236,25 @@ function nonStringField(body, keys) {
     if (v != null && typeof v !== 'string') return k;
   }
   return null;
+}
+
+function parseForumFlags(body, { partial = false } = {}) {
+  const out = {};
+  if (!partial || Object.prototype.hasOwnProperty.call(body, 'is_owned')) {
+    const raw = body.is_owned == null ? 0 : Number(body.is_owned);
+    if (!(raw === 0 || raw === 1)) return { ok: false, error: 'is_owned must be 0 or 1' };
+    out.is_owned = raw;
+  }
+  if (!partial || Object.prototype.hasOwnProperty.call(body, 'max_per_week')) {
+    if (body.max_per_week === null || body.max_per_week === '' || body.max_per_week === undefined) {
+      out.max_per_week = null;
+    } else {
+      const raw = Number(body.max_per_week);
+      if (!Number.isInteger(raw) || raw < 0) return { ok: false, error: 'max_per_week must be a non-negative integer or null' };
+      out.max_per_week = raw;
+    }
+  }
+  return { ok: true, value: out };
 }
 
 // ---- Unit-line presets ----
@@ -1385,12 +1484,172 @@ router.delete('/accounts/:id', authenticate, async (req, res) => {
   }
 });
 
+async function loadScheduleRows(pool, orgId) {
+  const [rows] = await pool.execute(
+    `SELECT s.id, s.weekday, s.slot_kind, s.slot_no, s.position,
+            f.id AS forum_id, f.name AS forum_name, f.url, f.is_owned, f.max_per_week,
+            a.id AS account_id, a.name AS account_name, a.email AS account_email
+       FROM advertising_schedule s
+       JOIN advertising_forum f ON f.id = s.forum_id AND f.org_id = s.org_id
+        AND f.deleted_at IS NULL
+       JOIN advertising_account a ON a.id = s.account_id AND a.org_id = s.org_id
+        AND a.deleted_at IS NULL
+      WHERE s.org_id = ? AND s.deleted_at IS NULL AND s.status = 1
+      ORDER BY s.weekday, s.position`,
+    [orgId]
+  );
+  return rows.map(r => ({
+    id: String(r.id),
+    weekday: Number(r.weekday),
+    slot_kind: r.slot_kind,
+    slot_no: Number(r.slot_no),
+    slot_key: `${r.slot_kind}:${Number(r.slot_no)}`,
+    slot_label: slotLabel(r),
+    position: Number(r.position),
+    forum_id: String(r.forum_id),
+    forum_name: r.forum_name,
+    url: r.url,
+    is_owned: Number(r.is_owned) === 1 ? 1 : 0,
+    max_per_week: r.max_per_week == null ? null : Number(r.max_per_week),
+    account_id: String(r.account_id),
+    account_name: r.account_name,
+    account_email: r.account_email,
+  }));
+}
+
+async function loadForumsWithAccounts(pool, orgId) {
+  const [rows] = await pool.execute(
+    `SELECT f.id AS forum_id, f.name AS forum_name, f.url, f.is_owned, f.max_per_week,
+            a.id AS account_id, a.email AS account_email
+       FROM advertising_forum f
+       LEFT JOIN advertising_forum_account fa ON fa.forum_id = f.id AND fa.org_id = f.org_id
+       LEFT JOIN advertising_account a ON a.id = fa.account_id AND a.org_id = f.org_id
+        AND a.deleted_at IS NULL AND a.status = 1
+      WHERE f.org_id = ? AND f.deleted_at IS NULL AND f.status = 1
+      ORDER BY f.name, a.email`,
+    [orgId]
+  );
+  const forums = new Map();
+  for (const r of rows) {
+    const key = String(r.forum_id);
+    if (!forums.has(key)) {
+      forums.set(key, {
+        forum_id: key,
+        forum_name: r.forum_name,
+        url: r.url,
+        is_owned: Number(r.is_owned) === 1 ? 1 : 0,
+        max_per_week: r.max_per_week == null ? null : Number(r.max_per_week),
+        accounts: [],
+      });
+    }
+    if (r.account_id) forums.get(key).accounts.push({ id: String(r.account_id), email: r.account_email });
+  }
+  return [...forums.values()];
+}
+
+async function validateForumAccountMember(pool, orgId, forumId, accountId) {
+  const [[row]] = await pool.execute(
+    `SELECT 1 FROM advertising_forum_account fa
+      JOIN advertising_forum f ON f.id = fa.forum_id AND f.org_id = fa.org_id
+       AND f.deleted_at IS NULL AND f.status = 1
+      JOIN advertising_account a ON a.id = fa.account_id AND a.org_id = fa.org_id
+       AND a.deleted_at IS NULL AND a.status = 1
+     WHERE fa.org_id = ? AND fa.forum_id = ? AND fa.account_id = ?
+     LIMIT 1`,
+    [orgId, forumId, accountId]
+  );
+  return !!row;
+}
+
+router.get('/schedule', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [rows, forums] = await Promise.all([
+      loadScheduleRows(req.pool, orgId),
+      loadForumsWithAccounts(req.pool, orgId),
+    ]);
+    const days = DAY_NAMES.map((name, weekday) => ({
+      weekday,
+      name,
+      slots: rows.filter(r => r.weekday === weekday).map(r => ({
+        id: r.id,
+        weekday: r.weekday,
+        slot_kind: r.slot_kind,
+        slot_no: r.slot_no,
+        slot_label: r.slot_label,
+        position: r.position,
+        forum: {
+          forum_id: r.forum_id,
+          forum_name: r.forum_name,
+          url: r.url,
+          is_owned: r.is_owned,
+        },
+        account: {
+          id: r.account_id,
+          name: r.account_name,
+          email: r.account_email,
+        },
+      })),
+    }));
+    res.json({ code: 200, data: { days, weekly_totals: forumWeeklyLoad(rows, forums) } });
+  } catch (err) {
+    console.error('[advertising/schedule] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load schedule' });
+  }
+});
+
+router.get('/schedule-violations', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [rows, forums] = await Promise.all([
+      loadScheduleRows(req.pool, orgId),
+      loadForumsWithAccounts(req.pool, orgId),
+    ]);
+    const violations = findRepeatViolations(rows).map(v => ({
+      ...v,
+      rows: rows
+        .filter(r => r.slot_key === v.slot_key && r.forum_id === v.forum_id)
+        .map(r => ({ id: r.id, weekday: r.weekday, day_name: dayLabel(r.weekday), position: r.position })),
+      suggestions: suggestReplacements(v, rows, forums),
+    }));
+    res.json({ code: 200, data: { violations } });
+  } catch (err) {
+    console.error('[advertising/schedule-violations] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load schedule violations' });
+  }
+});
+
+router.put('/schedule/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[existing]] = await req.pool.execute(
+      `SELECT id, forum_id, account_id FROM advertising_schedule
+        WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!existing) return res.status(404).json({ code: 404, message: 'Schedule row not found' });
+    const forumId = req.body && req.body.forum_id !== undefined ? String(req.body.forum_id) : String(existing.forum_id);
+    const accountId = req.body && req.body.account_id !== undefined ? String(req.body.account_id) : String(existing.account_id);
+    if (!(await validateForumAccountMember(req.pool, orgId, forumId, accountId))) {
+      return res.status(400).json({ code: 400, message: 'Selected account is not a member of that forum' });
+    }
+    await req.pool.execute(
+      `UPDATE advertising_schedule SET forum_id = ?, account_id = ? WHERE id = ? AND org_id = ?`,
+      [forumId, accountId, req.params.id, orgId]
+    );
+    res.json({ code: 200, data: { id: String(req.params.id) } });
+  } catch (err) {
+    console.error('[advertising/schedule update] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to update schedule row' });
+  }
+});
+
 // ---- Forums ---- (list includes member account ids for the membership editor)
 router.get('/schedule-grid', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [rows] = await req.pool.execute(
-      `SELECT f.id AS forum_id, f.name AS forum_name, f.url, f.post_days,
+      `SELECT f.id AS forum_id, f.name AS forum_name, f.url, f.post_days, f.is_owned, f.max_per_week,
               a.id AS account_id, a.name AS account_name, a.email AS account_email
          FROM advertising_forum f
          LEFT JOIN advertising_forum_account fa ON fa.forum_id = f.id AND fa.org_id = f.org_id
@@ -1408,6 +1667,8 @@ router.get('/schedule-grid', authenticate, async (req, res) => {
           forum_name: r.forum_name,
           url: r.url,
           post_days: r.post_days || '',
+          is_owned: Number(r.is_owned) === 1 ? 1 : 0,
+          max_per_week: r.max_per_week == null ? null : Number(r.max_per_week),
           accounts: [],
         });
       }
@@ -1437,7 +1698,7 @@ router.get('/forums', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [forums] = await req.pool.execute(
-      `SELECT id, name, url, notes, status, post_days FROM advertising_forum
+      `SELECT id, name, url, notes, status, post_days, is_owned, max_per_week FROM advertising_forum
         WHERE org_id = ? AND deleted_at IS NULL ORDER BY name`,
       [orgId]
     );
@@ -1456,6 +1717,8 @@ router.get('/forums', authenticate, async (req, res) => {
     }
     res.json({ code: 200, data: forums.map(f => ({
       id: String(f.id), name: f.name, url: f.url, notes: f.notes, status: f.status, post_days: f.post_days || '',
+      is_owned: Number(f.is_owned) === 1 ? 1 : 0,
+      max_per_week: f.max_per_week == null ? null : Number(f.max_per_week),
       accounts: byForum.get(String(f.id)) || [],
     })) });
   } catch (err) {
@@ -1472,14 +1735,16 @@ router.post('/forums', authenticate, async (req, res) => {
     const dayInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'post_days') ? req.body.post_days : '1,2,3,4,5,6';
     const days = validateDays(dayInput);
     if (!days.ok) return res.status(400).json({ code: 400, message: days.error });
+    const flags = parseForumFlags(req.body || {});
+    if (!flags.ok) return res.status(400).json({ code: 400, message: flags.error });
     if (!name || !String(name).trim()) return res.status(400).json({ code: 400, message: 'Forum name is required' });
     const lenErr = lengthError({ name, url }, FORUM_LIMITS);
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     const id = newId();
     await req.pool.execute(
-      `INSERT INTO advertising_forum (id, org_id, name, url, notes, post_days, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, NOW())`,
-      [id, req.user.orgId, String(name).trim(), url || null, notes || null, days.value]
+      `INSERT INTO advertising_forum (id, org_id, name, url, notes, post_days, is_owned, max_per_week, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+      [id, req.user.orgId, String(name).trim(), url || null, notes || null, days.value, flags.value.is_owned, flags.value.max_per_week]
     );
     res.json({ code: 200, data: { id } });
   } catch (err) {
@@ -1500,6 +1765,8 @@ router.put('/forums/:id', authenticate, async (req, res) => {
     if (name !== undefined && !String(name).trim()) return res.status(400).json({ code: 400, message: 'Forum name is required' });
     const lenErr = lengthError({ name, url }, FORUM_LIMITS);
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
+    const flags = parseForumFlags(req.body || {}, { partial: true });
+    if (!flags.ok) return res.status(400).json({ code: 400, message: flags.error });
     const fields = [], params = [];
     if (name !== undefined) { fields.push('name = ?'); params.push(String(name).trim()); }
     if (url !== undefined) { fields.push('url = ?'); params.push(url || null); }
@@ -1510,6 +1777,8 @@ router.put('/forums/:id', authenticate, async (req, res) => {
       fields.push('post_days = ?');
       params.push(days.value);
     }
+    if (Object.prototype.hasOwnProperty.call(flags.value, 'is_owned')) { fields.push('is_owned = ?'); params.push(flags.value.is_owned); }
+    if (Object.prototype.hasOwnProperty.call(flags.value, 'max_per_week')) { fields.push('max_per_week = ?'); params.push(flags.value.max_per_week); }
     if (status !== undefined) { fields.push('status = ?'); params.push(Number(status) ? 1 : 0); }
     if (!fields.length) return res.json({ code: 200, data: { id: String(req.params.id) } });
     params.push(req.params.id, orgId);
@@ -1588,3 +1857,5 @@ router.post('/forums/:id/members', authenticate, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.buildPostingPlan = buildPostingPlan;
+module.exports.markPostingPlan = markPostingPlan;

@@ -25,12 +25,38 @@ const { resolveUnit } = require('../services/unitResolver');
 const { validateChannel } = require('../utils/chatChannel');
 const { createNotification } = require('../services/scheduler');
 const config = require('../config');
+const { buildPostingPlan, markPostingPlan } = require('./advertising');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
 // The middleware attaches req.pool (scoped to the caller's org DB) and
 // req.apiKey.{id, orgId, name}. Every query below filters by req.apiKey.orgId
 // AND runs against req.pool, so multi-tenant isolation is enforced in two places.
 router.use(authenticateApiKey);
+
+// Static advertising automation routes must precede the dynamic resource routes.
+// Read-only API keys are allowed to fetch a plan; authenticateApiKey rejects the
+// mark write for such keys before this handler runs.
+router.get('/posting-plan', async (req, res) => {
+  try {
+    const data = await buildPostingPlan(req.pool, req.apiKey.orgId, { date: req.query.date });
+    res.json({ code: 200, data });
+  } catch (err) {
+    if (err.httpStatus === 400) return res.status(400).json({ code: 400, message: err.message });
+    console.error('[public/posting-plan] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to build posting plan' });
+  }
+});
+
+router.post('/posting-plan/mark', async (req, res) => {
+  try {
+    const data = await markPostingPlan(req.pool, req.apiKey.orgId, req.body);
+    res.json({ code: 200, data });
+  } catch (err) {
+    if (err.httpStatus === 400) return res.status(400).json({ code: 400, message: err.message });
+    console.error('[public/posting-plan mark] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to log post' });
+  }
+});
 
 // Helper: consistent JSON response
 function ok(res, data, meta) {

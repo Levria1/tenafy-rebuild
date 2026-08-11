@@ -142,6 +142,50 @@ All endpoints return JSON in this shape:
 | GET | `/cleaning/cleaners` | | All cleaners |
 | GET | `/cleaning/schedule` | `?week_of=YYYY-MM-DD` (required) | Cleaning schedule for week |
 
+### Advertising posting plan
+
+#### `GET /posting-plan`
+
+Requires `X-API-Key`; read-only keys are allowed. The optional `date=YYYY-MM-DD`
+query parameter selects the schedule date (today by default). The response `data`
+matches the Advertising Scheduler plan and includes `date`, `weekday`, `day_name`,
+`photo_root`, `min_gap_days`, `lead_days_nr`, `lead_days_other`, `tier_counts`,
+`slot_count`, `extra_count`, `unfilled_slots`, and `posts`. Each post includes its
+property and units, `tier`, `intent`, status, assigned forum/account, rendered post
+text when ready, and `image_hint`. Each `image_hint` entry is `Property/Unit`
+relative to `photo_root`, so local automation can locate the photo folder.
+
+```json
+{
+  "code": 200,
+  "data": {
+    "date": "2026-08-11",
+    "weekday": 2,
+    "day_name": "Tuesday",
+    "photo_root": "/photos",
+    "min_gap_days": 40,
+    "lead_days_nr": 60,
+    "lead_days_other": 45,
+    "tier_counts": { "vacant": 2, "nr": 1, "other": 3 },
+    "slot_count": 7,
+    "extra_count": 1,
+    "unfilled_slots": [],
+    "posts": [{ "tier": 1, "intent": "Unset", "image_hint": ["Property/Unit"] }]
+  }
+}
+```
+
+#### `POST /posting-plan/mark`
+
+Requires a write-enabled `X-API-Key`; read-only keys receive `403`. Send the IDs
+from a plan post (`property_id`, `template_id`, `forum_id`, `account_id`, and
+`unit_ids`) plus optional `post_date` (`YYYY-MM-DD`), `source` (`roster` or
+`urgent`), and `status` (`posted` or `skipped`). The response is
+`{ "code": 200, "data": { "id": "POST_LOG_ID" } }`. Recording the result builds
+the rotation history used by later plans. Call this endpoint after every posting;
+otherwise rotation history never accumulates and the seven-day rotation cannot
+work.
+
 ---
 
 ## Field Reference (commonly-needed enums)

@@ -700,6 +700,9 @@ export const advertisingApi = {
 
   // Advertising → Posting plan (consumed by the PC agent).
   scheduleGrid: () => api.get('/api/advertising/schedule-grid'),
+  schedule: () => api.get('/api/advertising/schedule'),
+  scheduleViolations: () => api.get('/api/advertising/schedule-violations'),
+  updateScheduleRow: (id, data) => api.put(`/api/advertising/schedule/${id}`, data),
   postingPlan: (date) => api.get('/api/advertising/posting-plan', { params: date ? { date } : {} }),
   getPostingPlan: (date) => api.get('/api/advertising/posting-plan', { params: date ? { date } : {} }),
   markPosted: (data) => api.post('/api/advertising/posting-plan/mark', data),

@@ -13,7 +13,9 @@ import MainLayout from '../../../components/Layout';
 import { advertisingApi } from '../../../lib/api';
 
 const { Title, Text } = Typography;
-const DAY_ORDER = [1, 2, 3, 4, 5, 6];
+// Mon–Sat first, then Sunday last. Sunday MUST be included: the seeded schedule puts
+// slots 16–20 there, and a Mon–Sat-only view would silently hide them.
+const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 
 export default function SchedulerPage() {
   const [slots, setSlots] = useState([]);
@@ -24,6 +26,11 @@ export default function SchedulerPage() {
   const [planDate, setPlanDate] = useState(dayjs());
   const [plan, setPlan] = useState(null);
   const [grid, setGrid] = useState({ days: [], unscheduled: [] });
+  const [week, setWeek] = useState({ days: [], weekly_totals: [] });
+  const [violations, setViolations] = useState([]);
+  // Per-violation pending choice: { [slot_key]: { forum_id, account_id } }
+  const [fixChoice, setFixChoice] = useState({});
+  const [applyingKey, setApplyingKey] = useState(null);
   const [properties, setProperties] = useState([]); // for the urgent picker
 
   // Urgent add modal
@@ -34,11 +41,15 @@ export default function SchedulerPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [res, gridRes] = await Promise.all([
+      const [res, gridRes, weekRes, violRes] = await Promise.all([
         advertisingApi.getScheduler(),
         advertisingApi.scheduleGrid(),
+        advertisingApi.schedule(),
+        advertisingApi.scheduleViolations(),
       ]);
       if (gridRes.data.code === 200) setGrid(gridRes.data.data || { days: [], unscheduled: [] });
+      if (weekRes.data.code === 200) setWeek(weekRes.data.data || { days: [], weekly_totals: [] });
+      if (violRes.data.code === 200) setViolations(violRes.data.data?.violations || []);
       if (res.data.code === 200) {
         const d = res.data.data;
         setSlots(d.slots || []);
@@ -92,6 +103,35 @@ export default function SchedulerPage() {
     }
   };
 
+  // Apply a suggested replacement group/account to every row of a violating slot.
+  // A violation spans 2-3 scheduled rows (the repeats); rewriting the surplus ones is
+  // what removes the repeat, so leave the FIRST row alone and change the rest.
+  const applyFix = async (v) => {
+    const choice = fixChoice[v.slot_key];
+    if (!choice?.forum_id || !choice?.account_id) {
+      message.warning('Pick a replacement group and account first');
+      return;
+    }
+    setApplyingKey(v.slot_key);
+    try {
+      const surplus = (v.rows || []).slice(1);
+      for (const row of surplus) {
+        await advertisingApi.updateScheduleRow(row.id, {
+          forum_id: choice.forum_id,
+          account_id: choice.account_id,
+        });
+      }
+      const target = (v.suggestions || []).find(s => String(s.forum_id) === String(choice.forum_id));
+      message.success(`${v.slot_label}: ${surplus.length} posting${surplus.length === 1 ? '' : 's'} moved to ${target?.forum_name || 'the selected group'}`);
+      setFixChoice(prev => ({ ...prev, [v.slot_key]: undefined }));
+      await Promise.all([load(), loadPlan(planDate)]);
+    } catch (e) {
+      message.error(e?.response?.data?.message || e.message || 'Failed to apply the change');
+    } finally {
+      setApplyingKey(null);
+    }
+  };
+
   const slotColumns = [
     {
       title: '#',
@@ -138,6 +178,13 @@ export default function SchedulerPage() {
 
   const planColumns = [
     {
+      title: 'Slot',
+      dataIndex: 'slot_label',
+      key: 'slot_label',
+      width: 100,
+      render: (v) => v ? <Tag color={String(v).startsWith('Urgent') ? 'gold' : 'default'}>{v}</Tag> : <Text type="secondary">—</Text>,
+    },
+    {
       title: 'Property',
       dataIndex: 'property_name',
       key: 'property_name',
@@ -177,6 +224,11 @@ export default function SchedulerPage() {
   ];
 
   const scheduledDays = DAY_ORDER.map(day => (grid.days || []).find(d => d.day === day) || { day, name: '', forums: [] });
+  // The slot-level sheet: this is what the operator actually works from (slot -> group
+  // -> account), so it drives the week view. `grid` is still loaded because it is the
+  // only source of the "forums with no days set" warning below.
+  const weekDays = DAY_ORDER.map(day => (week.days || []).find(d => d.weekday === day)
+    || { weekday: day, name: '', slots: [] });
 
   return (
     <MainLayout>
@@ -230,6 +282,23 @@ export default function SchedulerPage() {
             size="small"
             locale={{ emptyText: <Empty description="No posts in this plan" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
           />
+          {(plan?.unfilled_slots || []).length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Spare capacity — {plan.unfilled_slots.length} slot{plan.unfilled_slots.length === 1 ? '' : 's'} scheduled
+                for {plan.day_name} with no vacancy to fill:
+              </Text>
+              <div style={{ marginTop: 6 }}>
+                <Space size={[4, 4]} wrap>
+                  {plan.unfilled_slots.map(s => (
+                    <Tooltip key={s.id || `${s.slot_label}-${s.position}`} title={`${s.forum?.forum_name || ''} · ${s.account?.email || ''}`}>
+                      <Tag>{s.slot_label}</Tag>
+                    </Tooltip>
+                  ))}
+                </Space>
+              </div>
+            </div>
+          )}
         </Card>
 
         <Card
@@ -238,21 +307,24 @@ export default function SchedulerPage() {
           style={{ borderColor: '#e8e8e8', marginBottom: 24 }}
         >
           <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(180px, 1fr))', gap: 12, minWidth: 1080 }}>
-              {scheduledDays.map(day => (
-                <div key={day.day} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, minHeight: 120 }}>
-                  <Text strong>{day.name}</Text>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(200px, 1fr))', gap: 12, minWidth: 1400 }}>
+              {weekDays.map(day => (
+                <div key={day.weekday} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, minHeight: 120 }}>
+                  <Space size={6}>
+                    <Text strong>{day.name || scheduledDays.find(d => d.day === day.weekday)?.name || ''}</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{day.slots.length}</Text>
+                  </Space>
                   <div style={{ marginTop: 8 }}>
-                    {day.forums.length ? (
+                    {day.slots.length ? (
                       <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                        {day.forums.map(f => (
-                          <div key={f.forum_id} style={{ borderBottom: '1px solid #f5f5f5', paddingBottom: 6 }}>
-                            <Text>{f.forum_name}</Text>
-                            <div>
-                              <Text type="secondary" style={{ fontSize: 12 }}>
-                                {(f.accounts || []).length} account{(f.accounts || []).length === 1 ? '' : 's'}
-                              </Text>
-                            </div>
+                        {day.slots.map(s => (
+                          <div key={s.id} style={{ borderBottom: '1px solid #f5f5f5', paddingBottom: 6 }}>
+                            <Space size={4} wrap>
+                              <Tag color={s.slot_kind === 'urgent' ? 'gold' : 'default'} style={{ marginInlineEnd: 0 }}>{s.slot_label}</Tag>
+                              {Number(s.forum?.is_owned) === 1 && <Tag color="green" style={{ marginInlineEnd: 0 }}>owned</Tag>}
+                            </Space>
+                            <div><Text style={{ fontSize: 12 }}>{s.forum?.forum_name}</Text></div>
+                            <Text type="secondary" style={{ fontSize: 11 }}>{s.account?.email}</Text>
                           </div>
                         ))}
                       </Space>
@@ -262,6 +334,25 @@ export default function SchedulerPage() {
               ))}
             </div>
           </div>
+          {(week.weekly_totals || []).length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>Posts per group per week</Text>
+              <div style={{ marginTop: 6 }}>
+                <Space size={[6, 6]} wrap>
+                  {week.weekly_totals.map(t => (
+                    <Tag
+                      key={t.forum_id}
+                      color={t.over_cap ? 'red' : (Number(t.is_owned) === 1 ? 'green' : 'default')}
+                    >
+                      {t.forum_name}: {t.count}
+                      {t.max_per_week != null ? ` / ${t.max_per_week}` : ''}
+                      {t.over_cap ? ' — over cap' : ''}
+                    </Tag>
+                  ))}
+                </Space>
+              </div>
+            </div>
+          )}
           {(grid.unscheduled || []).length > 0 && (
             <Alert
               type="warning"
@@ -272,6 +363,75 @@ export default function SchedulerPage() {
             />
           )}
         </Card>
+
+        {violations.length > 0 && (
+          <Card
+            title={
+              <Space>
+                <Text strong>Same property repeating in one group</Text>
+                <Tag color="orange">{violations.length}</Tag>
+              </Space>
+            }
+            styles={{ body: { padding: 16 } }}
+            style={{ borderColor: '#e8e8e8', marginBottom: 24 }}
+          >
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              A slot posts the same property into the same group more than once a week. Repeated
+              impressions on one audience are worth less than the same effort spread across several,
+              so pointing the surplus at another group costs nothing and widens reach.
+            </Text>
+            <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+              {violations.map(v => {
+                const choice = fixChoice[v.slot_key] || {};
+                const chosen = (v.suggestions || []).find(s => String(s.forum_id) === String(choice.forum_id));
+                return (
+                  <div key={v.slot_key} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12 }}>
+                    <Space size={6} wrap style={{ marginBottom: 8 }}>
+                      <Tag color={v.slot_label?.startsWith('Urgent') ? 'gold' : 'default'}>{v.slot_label}</Tag>
+                      <Text strong>{v.forum_name}</Text>
+                      <Tag color="red">×{v.count}</Tag>
+                      {Number(v.is_owned) === 1
+                        ? <Tag color="green">owned</Tag>
+                        : <Tooltip title="Someone else's group, so frequency matters more here"><Tag color="volcano">external</Tag></Tooltip>}
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {(v.rows || []).map(r => r.day_name).join(', ')}
+                      </Text>
+                    </Space>
+                    <Space wrap>
+                      <Select
+                        style={{ minWidth: 280 }}
+                        placeholder="Move the surplus posting(s) to…"
+                        value={choice.forum_id}
+                        onChange={(forum_id) => setFixChoice(prev => ({ ...prev, [v.slot_key]: { forum_id } }))}
+                        options={(v.suggestions || []).map(s => ({
+                          value: s.forum_id,
+                          label: `${s.forum_name}${Number(s.is_owned) === 1 ? ' (owned)' : ''} — ${s.weekly_count}/wk`,
+                        }))}
+                      />
+                      <Select
+                        style={{ minWidth: 240 }}
+                        placeholder="Account"
+                        value={choice.account_id}
+                        disabled={!chosen}
+                        onChange={(account_id) => setFixChoice(prev => ({ ...prev, [v.slot_key]: { ...prev[v.slot_key], account_id } }))}
+                        options={(chosen?.accounts || []).map(a => ({ value: a.id, label: a.email }))}
+                      />
+                      <Button
+                        type="primary"
+                        size="small"
+                        loading={applyingKey === v.slot_key}
+                        disabled={!choice.forum_id || !choice.account_id}
+                        onClick={() => applyFix(v)}
+                      >
+                        Apply
+                      </Button>
+                    </Space>
+                  </div>
+                );
+              })}
+            </Space>
+          </Card>
+        )}
 
         <Card
           title={<Space><Text strong>Roster</Text><Tag color="blue">{meta.filled}/{meta.slot_count} filled</Tag>{meta.overflow > 0 && <Tooltip title="Vacancies beyond the 20 slots"><Tag color="orange">+{meta.overflow} waiting</Tag></Tooltip>}</Space>}
