@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting,
+  reminderTarget, activeNegotiationPayload,
 } = require('../src/services/viewingNegotiationLogic');
 
 // A fixed far-future weekday base so "in the past" never trips these tests.
@@ -251,4 +252,39 @@ test('buildRouting: vacant unit (no tenant phone) → tenant phone null, no cras
   const r = buildRouting({ prospect_phone: '+85261234567', awaiting: 'staff' }, null);
   assert.equal(r.parties.tenant.phone, null);
   assert.equal(r.awaiting_phone, null); // awaiting=staff → nobody to route to
+});
+
+// ── stale reaper pure decisions ──────────────────────────────────────────────
+const reminderCfg = { reminderHours: 12, staleHours: 24 };
+const RT = (row) => reminderTarget(row, reminderCfg);
+
+test('reminderTarget: nudges prospect or tenant only in the reminder window', () => {
+  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 13 }), 'prospect');
+  assert.equal(RT({ awaiting: 'tenant', reminder_sent_at: null, hoursIdle: 13 }), 'tenant');
+});
+
+test('reminderTarget: does not nudge staff-owned, early, stale, already-reminded, or unawaited rows', () => {
+  assert.equal(RT({ awaiting: 'staff', reminder_sent_at: null, hoursIdle: 13 }), null);
+  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 6 }), null);
+  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: null, hoursIdle: 25 }), null);
+  assert.equal(RT({ awaiting: 'prospect', reminder_sent_at: new Date(), hoursIdle: 13 }), null);
+  assert.equal(RT({ awaiting: 'tenant', reminder_sent_at: new Date(), hoursIdle: 20 }), null);
+  assert.equal(RT({ awaiting: null, reminder_sent_at: null, hoursIdle: 13 }), null);
+});
+
+test('activeNegotiationPayload: NEEDS_STAFF is visible but not routable or active by itself', () => {
+  const escalatedOnly = activeNegotiationPayload([
+    { id: '1', state: 'NEEDS_STAFF', awaiting: 'staff', prospect_digits: '61234567', tenant_digits: '' },
+  ], '61234567');
+  assert.equal(escalatedOnly.active, false);
+  assert.deepEqual(escalatedOnly.negotiations, [
+    { negotiation_id: '1', party: 'prospect', state: 'NEEDS_STAFF', awaiting: 'staff', routable: false },
+  ]);
+
+  const mixed = activeNegotiationPayload([
+    { id: '1', state: 'NEEDS_STAFF', awaiting: 'staff', prospect_digits: '61234567', tenant_digits: '' },
+    { id: '2', state: 'ASK_PROSPECT_DAY', awaiting: 'prospect', prospect_digits: '61234567', tenant_digits: '' },
+  ], '61234567');
+  assert.equal(mixed.active, true);
+  assert.deepEqual(mixed.negotiations.map(n => [n.negotiation_id, n.routable]), [['2', true], ['1', false]]);
 });

@@ -163,4 +163,36 @@ function buildRouting(negRow, tenantPhone) {
   return { parties, awaiting_phone };
 }
 
-module.exports = { DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting };
+function reminderTarget(row, { reminderHours = 12, staleHours = 24 } = {}) {
+  if (!row || row.reminder_sent_at) return null;
+  if (!['prospect', 'tenant'].includes(row.awaiting)) return null;
+  const hoursIdle = Number(row.hoursIdle);
+  if (!Number.isFinite(hoursIdle)) return null;
+  if (hoursIdle < Number(reminderHours)) return null;
+  if (hoursIdle >= Number(staleHours)) return null;
+  return row.awaiting;
+}
+
+function activeNegotiationPayload(rows, targetDigits) {
+  const matches = [];
+  for (const r of rows || []) {
+    if (r.prospect_digits === targetDigits) {
+      const routable = r.state !== 'NEEDS_STAFF';
+      matches.push({ negotiation_id: String(r.id), party: 'prospect', state: r.state, awaiting: r.awaiting, routable });
+    }
+    if (r.tenant_digits && r.tenant_digits === targetDigits) {
+      const routable = r.state !== 'NEEDS_STAFF';
+      matches.push({ negotiation_id: String(r.id), party: 'tenant', state: r.state, awaiting: r.awaiting, routable });
+    }
+  }
+  matches.sort((a, b) => {
+    if (a.routable !== b.routable) return a.routable ? -1 : 1;
+    return (b.awaiting === b.party ? 1 : 0) - (a.awaiting === a.party ? 1 : 0);
+  });
+  return { active: matches.some(m => m.routable), negotiations: matches };
+}
+
+module.exports = {
+  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting,
+  reminderTarget, activeNegotiationPayload,
+};

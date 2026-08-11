@@ -147,7 +147,7 @@ PARSED reply as a structured `intent`. See the design doc:
   → `{ negotiation_id, state, events }`. (Idempotent per open unit+phone.)
 - `POST /viewing-negotiation/:id/prospect-reply` `{ intent, text }`
 - `POST /viewing-negotiation/:id/tenant-reply` `{ intent, text }`
-- `GET  /viewing-negotiation/active?phone=` → `{ active, negotiation_id, party, state, awaiting }`
+- `GET  /viewing-negotiation/active?phone=` → `{ active, negotiations:[{ negotiation_id, party, state, awaiting, routable }] }`
   — call this on ANY inbound WhatsApp to route it to the right negotiation/party.
 
 **`intent` shapes (what the bot parses the reply into):**
@@ -160,6 +160,20 @@ PARSED reply as a structured `intent`. See the design doc:
 Tenafy decides the next message and (in auto mode) sends it; in manual mode it
 queues a draft for staff to approve on the dashboard. The bot does NOT send the
 tenant anything — Tenafy relays both sides. Times are Hong Kong wall-clock.
+
+### `/viewing-negotiation/active` and staff handoff
+
+`NEEDS_STAFF` negotiations now appear in the `negotiations` list, but with
+`routable:false`. TaneChat should show/track them as handed to a human, not post
+new replies into them. `active` remains the routing gate: it is true only when at
+least one matched negotiation has `routable:true`.
+
+Open relay negotiations that sit silent get one light reminder to the party
+Tenafy is awaiting after 12 hours. After 24 hours with no activity, Tenafy flips
+the negotiation to `NEEDS_STAFF`, notifies staff once for the hourly sweep, and
+sends the standard escalation message to the prospect and tenant when present.
+In manual relay mode, both the 12-hour reminder and the 24-hour escalation are
+queued as drafts for staff approval.
 
 ---
 

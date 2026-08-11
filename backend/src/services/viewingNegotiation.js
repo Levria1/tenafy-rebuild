@@ -29,6 +29,7 @@ const { loadTemplate, substituteVariables } = require('./emailService');
 const { KIND_ACTION, KIND_MANAGE } = require('../middleware/viewingTokenAuth');
 const {
   DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting,
+  reminderTarget, activeNegotiationPayload,
 } = require('./viewingNegotiationLogic');
 const { findActiveLeaseForUnit } = require('./viewingBooking');
 const { resolveUnit, optionsText } = require('./unitResolver');
@@ -232,6 +233,13 @@ const FALLBACKS = {
   'Viewing-Confirm-Time': `Just to confirm — a viewing of %Unit Name% at %Property Name% on %Proposed Time%? Reply YES to confirm, or send a different day and time.`,
   'Viewing-Relay-Confirmed': `Great news — your viewing of %Unit Name% is confirmed for %Proposed Time%. See you then!`,
   'Viewing-Relay-Escalated': `Thanks for your patience — our team will follow up with you shortly to finalise the viewing.`,
+  // Deliberately names no unit. The reminder is the ONE outbound that can fire while
+  // the unit is still unresolved (a negotiation parked in RESOLVE_UNIT is exactly the
+  // kind that goes quiet), so %Unit Name%/%Property Name% may both be empty and a
+  // template built around them would send "your viewing of  at ". The WhatsApp thread
+  // already names the unit above this message. If an org customises this template,
+  // keep it unit-agnostic for the same reason.
+  'Viewing-Relay-Reminder': `Just checking in on this viewing request. Reply when you're ready, and we'll keep things moving.`,
   'Viewing-Hold-OffWindow': `Thanks for your interest in %Unit Name%! Let me check with our team and get back to you about arranging a viewing.`,
   'Viewing-Confirm-Unit': `Just to confirm — you'd like to view %Unit Full Name%? Reply YES, or tell me the correct unit.`,
   'Viewing-Choose-Unit': `Which unit would you like to view?\n%Unit Options%\n\nReply with the number or the unit name.`,
@@ -967,22 +975,121 @@ async function proceedNegotiation(pool, orgId, neg) {
 
 // Reaper (hourly cron): open negotiations with no activity for STALE_HOURS are
 // escalated to NEEDS_STAFF so an abandoned/looping conversation doesn't sit open
-// forever or pollute the /active phone routing. Guarded for pre-migration orgs.
+// forever. A single nudge is sent at REMINDER_HOURS, guarded by reminder_sent_at.
+// Guarded for pre-migration orgs.
 const STALE_HOURS = 24;
+const REMINDER_HOURS = 12;
+
+function isSchemaMissingError(err) {
+  return /doesn't exist|Unknown column|Unknown table/i.test(err && err.message);
+}
+
+function viewingNegotiationVars(ctx) {
+  return {
+    '%Unit Name%': (ctx && ctx.unit_name) || '',
+    '%Property Name%': (ctx && ctx.property_name) || '',
+  };
+}
+
 async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
   try {
-    const [result] = await pool.execute(
-      `UPDATE viewing_negotiation SET state = 'NEEDS_STAFF', awaiting = 'staff'
+    const setting = await getSetting(pool, orgId);
+
+    try {
+      const [reminders] = await pool.execute(
+        `SELECT id, org_id, unit_id, property_id, tenant_id, prospect_name, prospect_phone,
+                awaiting, reminder_sent_at, TIMESTAMPDIFF(HOUR, updated_at, NOW()) AS hoursIdle
+           FROM viewing_negotiation
+          WHERE state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')
+            AND reminder_sent_at IS NULL
+            AND awaiting IN ('prospect', 'tenant')
+            AND updated_at < DATE_SUB(NOW(), INTERVAL ${REMINDER_HOURS} HOUR)
+            AND updated_at >= DATE_SUB(NOW(), INTERVAL ${STALE_HOURS} HOUR)
+          ORDER BY updated_at ASC
+          LIMIT 200`
+      );
+      for (const neg of reminders) {
+        try {
+          const party = reminderTarget(neg);
+          if (!party) continue;
+          const ctx = await loadContext(pool, neg);
+          const toPhone = party === 'tenant' ? ctx.tenant_phone : neg.prospect_phone;
+          if (!toPhone) {
+            console.warn(`[Scheduler] viewing reminder skipped: negotiation ${neg.id} has no ${party} phone`);
+            continue;
+          }
+          // Claim the reminder before dispatch. reminder_sent_at is the only
+          // resend guard, so a missed nudge is preferable to hourly duplicates.
+          const [claim] = await pool.execute(
+            `UPDATE viewing_negotiation
+                SET reminder_sent_at = NOW(), updated_at = updated_at
+              WHERE id = ?
+                AND reminder_sent_at IS NULL
+                AND state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')`,
+            [neg.id]
+          );
+          if (claim.affectedRows === 0) continue;
+          await dispatchOutbounds(pool, orgId, neg.id, setting, [{
+            party,
+            to_phone: toPhone,
+            templateType: 'Viewing-Relay-Reminder',
+            vars: viewingNegotiationVars(ctx),
+          }]);
+        } catch (err) {
+          if (isSchemaMissingError(err)) throw err;
+          console.error(`[Scheduler] viewing reminder failed for negotiation ${neg.id}:`, err.message);
+        }
+      }
+    } catch (err) {
+      if (!isSchemaMissingError(err)) throw err;
+    }
+
+    const [stale] = await pool.execute(
+      `SELECT id, org_id, unit_id, property_id, tenant_id, prospect_name, prospect_phone,
+              current_proposed_datetime
+         FROM viewing_negotiation
         WHERE state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')
-          AND updated_at < DATE_SUB(NOW(), INTERVAL ${STALE_HOURS} HOUR)`
+          AND updated_at < DATE_SUB(NOW(), INTERVAL ${STALE_HOURS} HOUR)
+        ORDER BY updated_at ASC
+        LIMIT 200`
     );
-    if (result.affectedRows > 0) {
-      console.log(`[Scheduler] Escalated ${result.affectedRows} stale viewing negotiation(s) to staff`);
+    let escalated = 0;
+    for (const neg of stale) {
+      try {
+        const [claim] = await pool.execute(
+          `UPDATE viewing_negotiation
+              SET state = 'NEEDS_STAFF', awaiting = 'staff', needs_staff_reason = 'stale'
+            WHERE id = ?
+              AND state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')`,
+          [neg.id]
+        );
+        if (claim.affectedRows === 0) continue;
+        escalated += 1;
+
+        const ctx = await loadContext(pool, neg);
+        const vars = {
+          ...viewingNegotiationVars(ctx),
+          '%Proposed Time%': formatWhen(neg.current_proposed_datetime),
+        };
+        const outbounds = [
+          { party: 'prospect', to_phone: neg.prospect_phone, templateType: 'Viewing-Relay-Escalated', vars },
+        ];
+        if (ctx.hasTenant && ctx.tenant_phone) {
+          outbounds.push({ party: 'tenant', to_phone: ctx.tenant_phone, templateType: 'Viewing-Relay-Escalated', vars });
+        }
+        await dispatchOutbounds(pool, orgId, neg.id, setting, outbounds);
+      } catch (err) {
+        if (isSchemaMissingError(err)) throw err;
+        console.error(`[Scheduler] stale viewing escalation failed for negotiation ${neg.id}:`, err.message);
+      }
+    }
+    if (escalated > 0) {
+      console.log(`[Scheduler] Escalated ${escalated} stale viewing negotiation(s) to staff`);
       notifyStaff(pool, orgId, 'Viewing requests need staff',
-        `${result.affectedRows} viewing request(s) had no activity for ${STALE_HOURS}h and were handed to your team.`);
+        `${escalated} viewing request(s) had no activity for ${STALE_HOURS}h and were handed to your team.`);
     }
   } catch (err) {
-    if (!/doesn't exist|Unknown column|Unknown table/i.test(err.message)) {
+    if (!isSchemaMissingError(err)) {
       console.error('[Scheduler] stale-negotiation reap failed:', err.message);
     }
   }
@@ -991,6 +1098,7 @@ async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
 module.exports = {
   // pure / helpers (tested)
   nextStep, combineDateTime, withinWindow, viewingWindow, minutesOf,
+  reminderTarget, activeNegotiationPayload,
   // orchestration
   getSetting, startNegotiation, startNegotiationFromText, handleReply, loadNegotiation,
   resolveStaffOfDay, loadStaffById, checkStaffFree, confirmNegotiation,

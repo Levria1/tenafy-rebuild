@@ -1170,8 +1170,13 @@ router.post('/viewing-negotiation/:id/draft-sent', async (req, res) => {
 // Routing helper: given an inbound WhatsApp phone, find EVERY open negotiation it
 // belongs to (as prospect and/or tenant), so TaneChat can tag the reply — and
 // disambiguate when a number is in more than one active negotiation (multi-unit).
-// → { active:bool, negotiations:[{ negotiation_id, party, state, awaiting }, ...] }
-//   ordered newest-first, with the negotiation actually awaiting that party first.
+// NEEDS_STAFF rows are returned for visibility with routable:false: a human owns
+// them, so TaneChat must not post replies into them. `active` therefore means
+// "there is at least one routable negotiation", which is intentionally narrower
+// than "the returned list is non-empty".
+// → { active:bool, negotiations:[{ negotiation_id, party, state, awaiting, routable }, ...] }
+//   ordered routable-first, then newest-first with the negotiation actually
+//   awaiting that party first within each group.
 router.get('/viewing-negotiation/active', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
@@ -1181,27 +1186,16 @@ router.get('/viewing-negotiation/active', async (req, res) => {
       `SELECT n.id, n.state, n.awaiting, n.prospect_phone, t.phone AS tenant_phone
          FROM viewing_negotiation n
          LEFT JOIN tenant t ON t.id = n.tenant_id
-        WHERE n.state NOT IN ('CONFIRMED','CANCELLED','NEEDS_STAFF')
+        WHERE n.state NOT IN ('CONFIRMED','CANCELLED')
         ORDER BY n.updated_at DESC LIMIT 200`,
       []
     );
-    // Collect every negotiation this phone appears in (as prospect and/or tenant).
-    // Rows are newest-first; prefer the one actually WAITING on that party so a
-    // phone reused across negotiations (or that is both a tenant and a prospect)
-    // routes to the negotiation expecting its reply.
-    const matches = [];
-    for (const r of rows) {
-      if (normPhoneDigits(r.prospect_phone) === target) {
-        matches.push({ negotiation_id: String(r.id), party: 'prospect', state: r.state, awaiting: r.awaiting });
-      }
-      if (r.tenant_phone && normPhoneDigits(r.tenant_phone) === target) {
-        matches.push({ negotiation_id: String(r.id), party: 'tenant', state: r.state, awaiting: r.awaiting });
-      }
-    }
-    if (!matches.length) return ok(res, { active: false, negotiations: [] });
-    // Put the negotiation actually awaiting this party first (rows already newest-first).
-    matches.sort((a, b) => (b.awaiting === b.party ? 1 : 0) - (a.awaiting === a.party ? 1 : 0));
-    return ok(res, { active: true, negotiations: matches });
+    const shapedRows = rows.map(r => ({
+      ...r,
+      prospect_digits: normPhoneDigits(r.prospect_phone),
+      tenant_digits: normPhoneDigits(r.tenant_phone),
+    }));
+    return ok(res, viewingNegotiation.activeNegotiationPayload(shapedRows, target));
   } catch (err) {
     console.error('Public viewing-negotiation/active error:', err);
     fail(res, 'Failed to look up negotiation');
