@@ -12,6 +12,14 @@ const UNITS = [
 ];
 const R = (q) => scoreUnits(q, UNITS);
 
+const FIVE_5B_UNITS = [
+  { id: 'gb-5b', name: '5B', property_id: 'gb', property_name: "Gilman's Bazaar", district: 'Central', city: 'Hong Kong', marketable: true },
+  { id: 'mercer-5b', name: '5B', property_id: 'mercer', property_name: 'Mercer', district: 'Sheung Wan', city: 'Hong Kong', marketable: true },
+  { id: 'hollywood-5b', name: '5B', property_id: 'hollywood', property_name: 'Hollywood', district: 'Sheung Wan', city: 'Hong Kong', marketable: true },
+  { id: 'mk-5b', name: '5B', property_id: 'mk', property_name: 'Mong Kok', district: 'Mong Kok', city: 'Kowloon', marketable: true },
+  { id: 'poplar-5b', name: '5B', property_id: 'poplar', property_name: 'Poplar', district: 'Prince Edward', city: 'Kowloon', marketable: true },
+];
+
 test('resolver: confident match despite a stray "Test" suffix (no rename)', () => {
   const r = R('mongkok 6a');
   assert.equal(r.status, 'confident');
@@ -103,4 +111,67 @@ test('resolver: "Unit N" names resolve on the number (single confident + multi e
   ];
   assert.equal(scoreUnits('pearl city unit 22', U).status, 'confident');
   assert.equal(scoreUnits('pearl city unit 22 and 23', U).status, 'multi_unit');
+});
+
+test('resolver: district signal resolves the live Central 5B negotiation', () => {
+  // This is the negotiation that stalled in RESOLVE_UNIT on 2026-08-10.
+  const r = scoreUnits('central studio 5b', FIVE_5B_UNITS);
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'gb-5b');
+  assert.equal(r.match.label, "Gilman's Bazaar 5B");
+});
+
+test('resolver: district signal narrows Sheung Wan 5B to the two matching properties', () => {
+  const r = scoreUnits('sheung wan 5b', FIVE_5B_UNITS);
+  assert.equal(r.status, 'ambiguous');
+  assert.deepEqual(
+    r.candidates.map(c => c.property_name).sort(),
+    ['Hollywood', 'Mercer']
+  );
+});
+
+test('resolver: city signal narrows Kowloon 5B to Mong Kok and Poplar', () => {
+  const r = scoreUnits('kowloon 5b', FIVE_5B_UNITS);
+  assert.equal(r.status, 'ambiguous');
+  assert.deepEqual(
+    r.candidates.map(c => c.property_name).sort(),
+    ['Mong Kok', 'Poplar']
+  );
+});
+
+test('resolver: property name beats a conflicting district signal', () => {
+  const U = [
+    { id: 'nph-12b', name: '12B', property_id: 'nph', property_name: 'Nam Pak Hong', district: 'Sheung Wan', city: 'Hong Kong', marketable: true },
+    { id: 'central-12b', name: '12B', property_id: 'central', property_name: 'Other', district: 'Central', city: 'Hong Kong', marketable: true },
+  ];
+  const r = scoreUnits('pak central 12b', U);
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'nph-12b');
+});
+
+test('resolver: units with no district or city stay backwards-compatible', () => {
+  const withoutLocation = FIVE_5B_UNITS.map(({ district, city, ...u }) => u);
+  const r = scoreUnits('central studio 5b', withoutLocation);
+  assert.equal(r.status, 'ambiguous');
+  assert.deepEqual(
+    r.candidates.map(c => c.unit_id).sort(),
+    ['gb-5b', 'hollywood-5b', 'mercer-5b', 'mk-5b', 'poplar-5b']
+  );
+});
+
+test('resolver: null empty and short location values contribute nothing', () => {
+  const U = [
+    { id: 'short-1', name: '5B', property_id: 's1', property_name: 'Alpha', district: null, city: 'HK', marketable: true },
+    { id: 'short-2', name: '5B', property_id: 's2', property_name: 'Beta', district: '', city: '', marketable: true },
+    { id: 'short-3', name: '5B', property_id: 's3', property_name: 'Gamma', district: 'NT', city: null, marketable: true },
+  ];
+  const r = scoreUnits('hk 5b', U);
+  assert.equal(r.status, 'ambiguous');
+  assert.deepEqual(r.candidates.map(c => c.unit_id).sort(), ['short-1', 'short-2', 'short-3']);
+});
+
+test('resolver: district matching property display name does not double-count', () => {
+  const r = scoreUnits('mong kok 5b', FIVE_5B_UNITS);
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'mk-5b');
 });

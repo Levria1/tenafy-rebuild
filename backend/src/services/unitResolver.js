@@ -53,11 +53,21 @@ function editDistance(a, b, max) {
 
 // Score one unit against the pre-normalized query pieces.
 // Full match requires prop>0 AND unit>0.
+function locationMatchScore(value, score, qSquish, qTokens) {
+  const lSquish = squish(value);
+  if (lSquish.length < 3) return 0;
+  if (qSquish.includes(lSquish)) return score;
+  const lTokens = toTokens(value);
+  if (lTokens.length === 1 && qTokens.includes(lTokens[0])) return score;
+  return 0;
+}
+
 function scoreOne(qSquish, qTokens, unit) {
   const pName = unit.property_name || '';
   const pSquish = squish(pName);
   const pInit = initials(pName);
   let prop = 0;
+  let nameProp = 0;
   if (pSquish && qSquish.includes(pSquish)) prop = 3;                          // "mongkok" in "mongkok6a"
   else if (pInit.length >= 2 && qTokens.includes(pInit)) prop = 3;            // alias "mk"
   else {
@@ -66,13 +76,19 @@ function scoreOne(qSquish, qTokens, unit) {
     else if (pSquish.length >= 4 &&
              qTokens.some(t => t.length >= 4 && editDistance(t, pSquish, 1) <= 1)) prop = 2; // typo "mongok"
   }
+  nameProp = prop;
+  prop = Math.max(
+    prop,
+    locationMatchScore(unit.district, 2, qSquish, qTokens),
+    locationMatchScore(unit.city, 1, qSquish, qTokens)
+  );
   const core = unitCore(unit.name);
   let u = 0;
   if (core) {
     if (qTokens.includes(core)) u = 3;                                        // exact unit token "6a"
     else if (qTokens.some(t => t.length >= 2 && (t.startsWith(core) || core.startsWith(t)))) u = 2; // "6" ~ "6a"
   }
-  return { prop, unit: u, total: prop + u };
+  return { prop, nameProp, unit: u, total: prop + u };
 }
 
 function unitOut(u) {
@@ -117,7 +133,14 @@ function scoreUnits(text, units) {
     return { status: 'multi_unit', match: null, candidates: candidateList(exactUnitRows), query: norm(text) };
   }
 
-  const full = rows.filter(r => r.s.prop > 0 && r.s.unit > 0).sort((a, b) => b.s.total - a.s.total);
+  const fullRows = rows.filter(r => r.s.prop > 0 && r.s.unit > 0).sort((a, b) => b.s.total - a.s.total);
+  // Naming a BUILDING beats merely naming its area. If any full match got there via
+  // the property name, location-only matches are discarded rather than ranked below
+  // it — otherwise "mercer 5b" at a Sheung Wan property would stay 'ambiguous'
+  // against every other Sheung Wan 5B, and the prospect gets asked a question they
+  // already answered. Location only ever decides when NO name matched at all.
+  const namedFull = fullRows.filter(r => r.s.nameProp > 0);
+  const full = namedFull.length ? namedFull : fullRows;
   const propMatched = rows.filter(r => r.s.prop > 0).sort((a, b) => b.s.prop - a.s.prop);
   const unitMatched = rows.filter(r => r.s.unit > 0).sort((a, b) => b.s.unit - a.s.unit);
 
@@ -140,7 +163,7 @@ function scoreUnits(text, units) {
 // vacant with an active host link — i.e. what resolveMarketedUnit would accept).
 async function loadUnitsWithMarketable(pool, orgId) {
   const [rows] = await pool.execute(
-    `SELECT u.id, u.name, u.property_id, p.display_name AS property_name,
+    `SELECT u.id, u.name, u.property_id, p.display_name AS property_name, p.district, p.city,
             (SELECT l.viewing_enabled FROM leasing l
                WHERE l.unit_id = u.id AND l.deleted_at IS NULL
                  AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
@@ -157,6 +180,7 @@ async function loadUnitsWithMarketable(pool, orgId) {
   );
   return rows.map(r => ({
     id: r.id, name: r.name, property_id: r.property_id, property_name: r.property_name,
+    district: r.district, city: r.city,
     marketable: (Number(r.has_lease) > 0 && Number(r.cur_ve) === 1) || (Number(r.has_lease) === 0 && Number(r.host_links) > 0),
   }));
 }
