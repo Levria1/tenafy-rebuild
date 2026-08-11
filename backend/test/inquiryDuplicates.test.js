@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   normalizeName,
+  normalizeReservationCode,
   pairKey,
   isDuplicateCandidate,
   mergeFieldPlan,
@@ -25,6 +26,12 @@ test('normalizeName trims, collapses whitespace, lowercases, and handles nullish
   assert.equal(normalizeName('\tChiamaka\nOkafor '), 'chiamaka okafor');
   assert.equal(normalizeName(null), '');
   assert.equal(normalizeName(undefined), '');
+});
+
+test('normalizeReservationCode trims, uppercases, and handles nullish values', () => {
+  assert.equal(normalizeReservationCode('  hmqk4qjk9m  '), 'HMQK4QJK9M');
+  assert.equal(normalizeReservationCode(null), '');
+  assert.equal(normalizeReservationCode(undefined), '');
 });
 
 test('pairKey is order-independent and compares Snowflake ids as strings', () => {
@@ -106,6 +113,78 @@ test('isDuplicateCandidate compares unit ids as strings', () => {
   assert.deepEqual(result, { isCandidate: true, reason: 'name_and_unit_match' });
 });
 
+test('isDuplicateCandidate accepts same reservation code without matching name or both units', () => {
+  // Reservation code outranks both heuristics because it is an identifier, and
+  // the enquiry thread usually has no unit yet while the later OTA thread does.
+  const result = isDuplicateCandidate(
+    inquiry({ id: '1', first_name: 'Chiamaka', unit_id: null, reservation_code: 'HMQK4QJK9M' }),
+    inquiry({ id: '2', first_name: 'Anna', unit_id: '123', reservation_code: 'HMQK4QJK9M' })
+  );
+  assert.deepEqual(result, { isCandidate: true, reason: 'reservation_code_match' });
+});
+
+test('isDuplicateCandidate vetoes different reservation codes before name and unit', () => {
+  // Same guest name and same flat can be two genuine bookings; different
+  // reservation identifiers must never be offered for merge.
+  const result = isDuplicateCandidate(
+    inquiry({ id: '1', first_name: 'Victor', unit_id: '123', reservation_code: 'HMQK4QJK9M' }),
+    inquiry({ id: '2', first_name: 'Victor', unit_id: '123', reservation_code: 'ABCD1234EF' })
+  );
+  assert.deepEqual(result, { isCandidate: false, reason: 'different_reservation_code' });
+});
+
+test('isDuplicateCandidate matches reservation codes case-insensitively after trim', () => {
+  const result = isDuplicateCandidate(
+    inquiry({ id: '1', reservation_code: '  hmqk4qjk9m ' }),
+    inquiry({ id: '2', first_name: 'Anna', unit_id: null, reservation_code: 'HMQK4QJK9M' })
+  );
+  assert.deepEqual(result, { isCandidate: true, reason: 'reservation_code_match' });
+});
+
+test('isDuplicateCandidate falls through when only one side has a reservation code', () => {
+  assert.deepEqual(
+    isDuplicateCandidate(
+      inquiry({ id: '1', first_name: 'Chiamaka', unit_id: '123', reservation_code: 'HMQK4QJK9M' }),
+      inquiry({ id: '2', first_name: 'Chiamaka', unit_id: '123', reservation_code: null })
+    ),
+    { isCandidate: true, reason: 'name_and_unit_match' }
+  );
+  assert.deepEqual(
+    isDuplicateCandidate(
+      inquiry({ id: '1', first_name: 'Chiamaka', unit_id: '123', reservation_code: 'HMQK4QJK9M' }),
+      inquiry({ id: '2', first_name: 'Anna', unit_id: '123', reservation_code: null })
+    ),
+    { isCandidate: false, reason: 'different_first_name' }
+  );
+});
+
+test('isDuplicateCandidate treats empty reservation codes as missing and falls through', () => {
+  assert.deepEqual(
+    isDuplicateCandidate(
+      inquiry({ id: '1', reservation_code: '' }),
+      inquiry({ id: '2', reservation_code: '   ' })
+    ),
+    { isCandidate: true, reason: 'name_and_unit_match' }
+  );
+});
+
+test('isDuplicateCandidate keeps not_open and deleted ahead of reservation-code matches', () => {
+  assert.deepEqual(
+    isDuplicateCandidate(
+      inquiry({ id: '1', reservation_code: 'HMQK4QJK9M' }),
+      inquiry({ id: '2', status: 2, reservation_code: 'HMQK4QJK9M' })
+    ),
+    { isCandidate: false, reason: 'not_open' }
+  );
+  assert.deepEqual(
+    isDuplicateCandidate(
+      inquiry({ id: '1', reservation_code: 'HMQK4QJK9M' }),
+      inquiry({ id: '2', deleted_at: '2026-08-11', reservation_code: 'HMQK4QJK9M' })
+    ),
+    { isCandidate: false, reason: 'deleted' }
+  );
+});
+
 test('mergeFieldPlan fills only empty survivor fields and preserves populated values', () => {
   const result = mergeFieldPlan(
     {
@@ -113,6 +192,7 @@ test('mergeFieldPlan fills only empty survivor fields and preserves populated va
       last_name: 'Survivor',
       email: null,
       phone: undefined,
+      reservation_code: '',
       budget: '0.00',
       desired_start_date: '',
       desired_end_date: '2026-08-30',
@@ -126,6 +206,7 @@ test('mergeFieldPlan fills only empty survivor fields and preserves populated va
       last_name: 'Loser',
       email: 'guest@example.com',
       phone: '5555',
+      reservation_code: 'HMQK4QJK9M',
       budget: '25000.00',
       desired_start_date: '2026-08-21',
       desired_end_date: '2026-09-01',
@@ -139,10 +220,20 @@ test('mergeFieldPlan fills only empty survivor fields and preserves populated va
     first_name: 'Chiamaka',
     email: 'guest@example.com',
     phone: '5555',
+    reservation_code: 'HMQK4QJK9M',
     desired_start_date: '2026-08-21',
     property_id: '789',
   });
-  assert.deepEqual(result.filled, ['first_name', 'email', 'phone', 'desired_start_date', 'property_id']);
+  assert.deepEqual(result.filled, ['first_name', 'email', 'phone', 'reservation_code', 'desired_start_date', 'property_id']);
+});
+
+test('mergeFieldPlan never overwrites survivor reservation_code', () => {
+  const result = mergeFieldPlan(
+    { reservation_code: 'SURVIVOR1', first_name: 'Survivor' },
+    { reservation_code: 'LOSER999', first_name: 'Loser' }
+  );
+  assert.equal(result.values.reservation_code, undefined);
+  assert.equal(result.filled.includes('reservation_code'), false);
 });
 
 test('buildMergedNotes appends under the exact header and preserves survivor notes', () => {

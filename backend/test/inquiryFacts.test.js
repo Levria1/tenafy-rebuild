@@ -9,6 +9,7 @@ const {
   validateUnitText,
   shouldApplyUnitResolution,
   payloadHash,
+  API_WRITABLE_FIELDS,
 } = require('../src/utils/inquiryFacts');
 
 test('hkDate returns the Hong Kong calendar date of an instant', () => {
@@ -140,6 +141,28 @@ test('validateFields validates desired_start_date, desired_end_date and lowercas
     validateFields({ desired_start_date: '2026-09-20', email: 'ALICE@EXAMPLE.COM' }),
     { ok: true, fields: { desired_start_date: '2026-09-20', email: 'alice@example.com' } }
   );
+});
+
+test('validateFields accepts and uppercases reservation_code', () => {
+  assert.deepEqual(
+    validateFields({ reservation_code: 'hmqk4qjk9m' }),
+    { ok: true, fields: { reservation_code: 'HMQK4QJK9M' } }
+  );
+});
+
+test('validateFields rejects invalid reservation_code values', () => {
+  for (const reservation_code of ['ABC', 'A'.repeat(33), 'HMQK 4QJK9M', 'HMQK4QJK@M', 42]) {
+    assert.deepEqual(validateFields({ reservation_code }), { ok: false, error: 'invalid_reservation_code' });
+  }
+});
+
+test('validateFields treats blank reservation_code as null', () => {
+  assert.deepEqual(validateFields({ reservation_code: '' }), { ok: true, fields: { reservation_code: null } });
+  assert.deepEqual(validateFields({ reservation_code: '   ' }), { ok: true, fields: { reservation_code: null } });
+});
+
+test('reservation_code is API-writable for human-edit provenance removal', () => {
+  assert.equal(API_WRITABLE_FIELDS.has('reservation_code'), true);
 });
 
 test('validateFields accepts discounted stay_total without deriving arithmetic', () => {

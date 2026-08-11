@@ -73,6 +73,20 @@ export default function InquiryDetailPage() {
     return start || end || null;
   };
   const duplicateTitle = duplicates.length === 1 ? 'Possible duplicate' : `${duplicates.length} possible duplicates`;
+  const duplicateReasonTag = (reason) => (
+    reason === 'reservation_code_match'
+      ? <Tag color="red">Same reservation</Tag>
+      : <Tag>Same name & unit</Tag>
+  );
+  const mergeDescription = (candidate, created) => {
+    const base = `The record ${created ? `created ${created}` : `id ${candidate.id}`} will be CLOSED `
+      + 'and its notes copied into this one. Empty fields here will be filled from it; '
+      + 'nothing already filled in is overwritten. This cannot be undone.';
+    if (candidate.reason === 'reservation_code_match') {
+      return `These two records share reservation code ${candidate.reservation_code}. ${base}`;
+    }
+    return base;
+  };
 
   const onMergeDuplicate = async (candidate) => {
     setMergeLoadingId(candidate.id);
@@ -186,7 +200,9 @@ export default function InquiryDetailPage() {
                     >
                       <Space size={8} wrap>
                         <a onClick={() => router.push(`/inquiries/${candidate.id}`)}>{candidateName}</a>
+                        {duplicateReasonTag(candidate.reason)}
                         {candidate.source && <Tag>{candidate.source}</Tag>}
+                        {candidate.reservation_code && <Tag color="volcano">{candidate.reservation_code}</Tag>}
                         <Text>{unitText}</Text>
                         {dates && <Text type="secondary">{dates}</Text>}
                         {created && <Text type="secondary">Created {created}</Text>}
@@ -198,9 +214,7 @@ export default function InquiryDetailPage() {
                           // rule — so the name cannot tell staff which one they are closing.
                           // Lead with when it was created, and keep the id for the audit trail.
                           description={
-                            `The record ${created ? `created ${created}` : `id ${candidate.id}`} will be CLOSED `
-                            + 'and its notes copied into this one. Empty fields here will be filled from it; '
-                            + 'nothing already filled in is overwritten. This cannot be undone.'
+                            mergeDescription(candidate, created)
                           }
                           okText="Merge"
                           cancelText="Cancel"
@@ -240,6 +254,9 @@ export default function InquiryDetailPage() {
             <Descriptions.Item label="Last Name">{data.last_name || '—'}</Descriptions.Item>
             <Descriptions.Item label="Email">{data.email || '—'}</Descriptions.Item>
             <Descriptions.Item label="Phone">{data.phone || '—'}</Descriptions.Item>
+            {data.reservation_code && (
+              <Descriptions.Item label="Reservation code">{data.reservation_code}</Descriptions.Item>
+            )}
             <Descriptions.Item label="Desired Start">
               {data.desired_start_date ? dayjs(data.desired_start_date).format('YYYY-MM-DD') : '—'}
             </Descriptions.Item>

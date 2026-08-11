@@ -5,13 +5,14 @@ const MAX_FACT_CHARS = 500;
 const MAX_NOTES_CHARS = 60000;
 const MAX_UNIT_TEXT_CHARS = 255;
 // Column widths in `inquiry` — validate here so an oversized value is a 400, not a 500.
-const MAX_FIELD_CHARS = { first_name: 255, last_name: 255, email: 255, phone: 50 };
+const MAX_FIELD_CHARS = { first_name: 255, last_name: 255, email: 255, phone: 50, reservation_code: 32 };
 const UPDATES_HEADING = '── Updates from chat ──';
 const FIELD_WHITELIST = new Set([
   'first_name',
   'last_name',
   'email',
   'phone',
+  'reservation_code',
   'budget',
   'desired_start_date',
   'desired_end_date',
@@ -161,6 +162,19 @@ function validateFields(fields) {
         return { ok: false, error: `invalid_${field}` };
       }
       out[field] = value;
+    } else if (field === 'reservation_code') {
+      if (value == null) { out[field] = null; continue; }
+      if (typeof value !== 'string') return { ok: false, error: 'invalid_reservation_code' };
+      const trimmed = value.trim().toUpperCase();
+      if (trimmed === '') { out[field] = null; continue; }
+      // The 4-character floor matters because this is treated as an identity key;
+      // a 1-2 character value would group unrelated inquiries together.
+      //
+      // The pattern is intentionally wider than Airbnb's current 10-character
+      // alphanumeric format so a format change is not an outage, while still
+      // refusing punctuation and whitespace that would signal a mis-parse.
+      if (!/^[A-Z0-9-]{4,32}$/.test(trimmed)) return { ok: false, error: 'invalid_reservation_code' };
+      out[field] = trimmed;
     } else {
       // Strings must be strings. Without this an object or an over-long value
       // reaches MySQL and comes back as a 500 ("Data too long"/coercion) where a

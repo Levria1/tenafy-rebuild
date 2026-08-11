@@ -54,6 +54,7 @@ const INQUIRY_FACT_FIELDS = [
   'last_name',
   'email',
   'phone',
+  'reservation_code',
   'budget',
   'desired_start_date',
   'desired_end_date',
@@ -273,6 +274,7 @@ function priorDeliveryResponse(prior) {
 async function loadLockedInquiryForFacts(conn, orgId, inquiryId) {
   const [[row]] = await conn.execute(
     `SELECT i.id, i.status, i.tenant_id, i.notes, i.api_set_fields, i.unit_id, i.property_id,
+            i.reservation_code,
             i.first_name, i.last_name, i.email, i.phone, i.budget, i.nightly_rate, i.stay_total,
             DATE_FORMAT(i.desired_start_date, '%Y-%m-%d') AS desired_start_date,
             DATE_FORMAT(i.desired_end_date, '%Y-%m-%d') AS desired_end_date,
@@ -314,6 +316,7 @@ async function createInquiryFromFactPayload(conn, orgId, session, channel, field
     last_name: fields.last_name || null,
     email: fields.email || (channel === 'email' ? String(session.channel_user_id).toLowerCase() : null),
     phone: fields.phone || (channel === 'whatsapp' ? String(session.channel_user_id) : null),
+    reservation_code: fields.reservation_code || null,
     budget: fields.budget != null ? Number(fields.budget) : null,
     desired_start_date: fields.desired_start_date || null,
     desired_end_date: fields.desired_end_date || null,
@@ -328,8 +331,8 @@ async function createInquiryFromFactPayload(conn, orgId, session, channel, field
     `INSERT INTO inquiry
        (id, org_id, inquiry_date, first_name, last_name, email, phone,
         notes, api_set_fields, source, status, desired_start_date, desired_end_date,
-        budget, nightly_rate, stay_total, unit_id, property_id)
-     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+        budget, nightly_rate, stay_total, reservation_code, unit_id, property_id)
+     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       inquiryId,
       orgId,
@@ -345,6 +348,7 @@ async function createInquiryFromFactPayload(conn, orgId, session, channel, field
       values.budget,
       values.nightly_rate,
       values.stay_total,
+      values.reservation_code,
       unitId,
       propertyId,
     ]

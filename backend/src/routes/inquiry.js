@@ -19,6 +19,7 @@ const visionClient = require('../services/visionClient');
 const llmClient = require('../services/llmClient');
 const {
   pairKey,
+  normalizeReservationCode,
   isDuplicateCandidate,
   mergeFieldPlan,
   buildMergedNotes,
@@ -59,7 +60,10 @@ function newId() {
 // Derived, never duplicated: this must stay identical to what the public fact API
 // is allowed to write, or a human edit to a field missing from this list would not
 // drop it from api_set_fields and the API could later overwrite the correction.
-const { API_WRITABLE_FIELDS: API_WRITABLE_INQUIRY_FIELDS } = require('../utils/inquiryFacts');
+const {
+  API_WRITABLE_FIELDS: API_WRITABLE_INQUIRY_FIELDS,
+  validateFields,
+} = require('../utils/inquiryFacts');
 const MAX_MERGED_NOTES_BYTES = 60000;
 
 function parseApiSetFields(apiSetFields) {
@@ -82,6 +86,12 @@ function snowflakeStringCompare(a, b) {
 
 function collapsePreview(value) {
   return value == null ? '' : String(value).replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+function normalizeOptionalReservationCode(value) {
+  const result = validateFields({ reservation_code: value });
+  if (!result.ok) return { ok: false, error: result.error };
+  return { ok: true, value: result.fields.reservation_code };
 }
 
 function normalizeLockedInquiryRow(row) {
@@ -321,7 +331,7 @@ router.get('/:id/possible-duplicates', async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [subjectRows] = await req.pool.execute(
-      `SELECT id, first_name, last_name, unit_id, status, deleted_at
+      `SELECT id, first_name, last_name, unit_id, reservation_code, status, deleted_at
        FROM inquiry
        WHERE id = ? AND org_id = ? AND deleted_at IS NULL
        LIMIT 1`,
@@ -330,7 +340,11 @@ router.get('/:id/possible-duplicates', async (req, res) => {
     if (!subjectRows.length) return fail(res, 'Inquiry not found', 404);
 
     const subject = normalizeLockedInquiryRow(subjectRows[0]);
-    if (subject.unit_id === null || subject.unit_id === undefined || subject.unit_id === '') {
+    const subjectUnitId = subject.unit_id === null || subject.unit_id === undefined || subject.unit_id === ''
+      ? null
+      : subject.unit_id;
+    const subjectReservationCode = normalizeReservationCode(subject.reservation_code) || null;
+    if (subjectUnitId === null && subjectReservationCode === null) {
       return ok(res, { candidates: [] });
     }
 
@@ -339,7 +353,7 @@ router.get('/:id/possible-duplicates', async (req, res) => {
               i.created_at, i.inquiry_date,
               DATE_FORMAT(i.desired_start_date, '%Y-%m-%d') AS desired_start_date,
               DATE_FORMAT(i.desired_end_date, '%Y-%m-%d') AS desired_end_date,
-              i.nightly_rate, i.stay_total, i.unit_id, i.property_id, i.notes,
+              i.nightly_rate, i.stay_total, i.unit_id, i.property_id, i.reservation_code, i.notes,
               i.deleted_at,
               un.name AS unit_name,
               p.display_name AS property_name
@@ -349,10 +363,11 @@ router.get('/:id/possible-duplicates', async (req, res) => {
        WHERE i.org_id = ?
          AND i.deleted_at IS NULL
          AND i.status = 0
-         AND i.unit_id = ?
+         AND ( (? IS NOT NULL AND i.unit_id = ?)
+            OR (? IS NOT NULL AND i.reservation_code = ?) )
          AND i.id <> ?
        ORDER BY i.inquiry_date DESC`,
-      [orgId, subject.unit_id, req.params.id]
+      [orgId, subjectUnitId, subjectUnitId, subjectReservationCode, subjectReservationCode, req.params.id]
     );
 
     const candidates = [];
@@ -372,11 +387,13 @@ router.get('/:id/possible-duplicates', async (req, res) => {
       const candidate = normalizeLockedInquiryRow(row);
       const key = pairKey(subject.id, candidate.id);
       if (dismissedKeys.has(key)) continue;
-      if (!isDuplicateCandidate(subject, candidate).isCandidate) continue;
+      const duplicateResult = isDuplicateCandidate(subject, candidate);
+      if (!duplicateResult.isCandidate) continue;
       const { notes, deleted_at, property_id, ...out } = candidate;
       candidates.push({
         ...out,
         property_id,
+        reason: duplicateResult.reason,
         notes_preview: collapsePreview(notes),
       });
     }
@@ -407,6 +424,7 @@ router.post('/:id/merge', async (req, res) => {
     for (const inquiryId of lockOrder) {
       const [rows] = await conn.execute(
         `SELECT id, org_id, first_name, last_name, email, phone, notes, unit_id, property_id,
+                reservation_code,
                 tenant_id, status, deleted_at, budget,
                 DATE_FORMAT(desired_start_date, '%Y-%m-%d') AS desired_start_date,
                 DATE_FORMAT(desired_end_date, '%Y-%m-%d') AS desired_end_date,
@@ -606,12 +624,14 @@ router.post('/', async (req, res) => {
     const {
       inquiry_date, lead_source_id, first_name, last_name,
       email, phone, notes, unit_id, property_id, source,
-      desired_start_date, budget, reminder_date, screenshot_url,
+      desired_start_date, budget, reminder_date, screenshot_url, reservation_code,
     } = req.body || {};
 
     if (!first_name && !last_name && !email && !phone) {
       return fail(res, 'At least one of name, email, or phone is required', 400);
     }
+    const reservationCodeResult = validateFields({ reservation_code });
+    if (!reservationCodeResult.ok) return fail(res, reservationCodeResult.error, 400);
 
     const id = newId();
     await req.pool.execute(
@@ -619,8 +639,8 @@ router.post('/', async (req, res) => {
          (id, org_id, inquiry_date, lead_source_id,
           first_name, last_name, email, phone, notes,
           unit_id, property_id, created_by_user_id, source, status,
-          desired_start_date, budget, reminder_date, screenshot_url)
-       VALUES (?, ?, COALESCE(?, NOW()), ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, 0,  ?, ?, ?, ?)`,
+          desired_start_date, budget, reminder_date, screenshot_url, reservation_code)
+       VALUES (?, ?, COALESCE(?, NOW()), ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, 0,  ?, ?, ?, ?, ?)`,
       [
         id, orgId, inquiry_date || null, lead_source_id || null,
         first_name || null, last_name || null,
@@ -632,6 +652,7 @@ router.post('/', async (req, res) => {
         budget !== undefined && budget !== '' && budget !== null ? Number(budget) : null,
         reminder_date || null,
         screenshot_url || null,
+        reservationCodeResult.fields.reservation_code,
       ]
     );
 
@@ -652,6 +673,7 @@ router.put('/:id', async (req, res) => {
     const fields = [
       'inquiry_date', 'lead_source_id', 'first_name', 'last_name',
       'email', 'phone', 'notes', 'unit_id', 'property_id', 'status',
+      'reservation_code',
       'desired_start_date', 'desired_end_date', 'budget', 'nightly_rate', 'stay_total',
       'reminder_date', 'screenshot_url',
     ];
@@ -662,6 +684,11 @@ router.put('/:id', async (req, res) => {
         sets.push(`${f} = ?`);
         let v = req.body[f];
         if (f === 'email' && v) v = String(v).trim().toLowerCase();
+        else if (f === 'reservation_code') {
+          const reservationCodeResult = normalizeOptionalReservationCode(v);
+          if (!reservationCodeResult.ok) return fail(res, reservationCodeResult.error, 400);
+          v = reservationCodeResult.value;
+        }
         else if (f === 'budget' && v !== '' && v !== null && v !== undefined) v = Number(v);
         else if (v === '' || v === undefined) v = null;
         params.push(v);

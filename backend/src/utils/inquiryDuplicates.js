@@ -3,6 +3,11 @@ function normalizeName(value) {
   return String(value).trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+function normalizeReservationCode(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).trim().toUpperCase();
+}
+
 function compareSnowflakeStrings(a, b) {
   const sa = String(a);
   const sb = String(b);
@@ -30,6 +35,16 @@ function isDuplicateCandidate(a, b) {
   // silently disable every suggestion — a failure with no error and no output.
   if (Number(a.status) !== 0 || Number(b.status) !== 0) return { isCandidate: false, reason: 'not_open' };
   if (a.deleted_at || b.deleted_at) return { isCandidate: false, reason: 'deleted' };
+
+  const aReservationCode = normalizeReservationCode(a.reservation_code);
+  const bReservationCode = normalizeReservationCode(b.reservation_code);
+  if (aReservationCode && bReservationCode) {
+    if (aReservationCode === bReservationCode) {
+      return { isCandidate: true, reason: 'reservation_code_match' };
+    }
+    return { isCandidate: false, reason: 'different_reservation_code' };
+  }
+
   if (isEmptyId(a.unit_id) || isEmptyId(b.unit_id)) return { isCandidate: false, reason: 'no_unit' };
   if (String(a.unit_id) !== String(b.unit_id)) return { isCandidate: false, reason: 'different_unit' };
 
@@ -50,6 +65,7 @@ const MERGE_FIELDS = [
   'last_name',
   'email',
   'phone',
+  'reservation_code',
   'budget',
   'desired_start_date',
   'desired_end_date',
@@ -97,6 +113,7 @@ function buildMergedNotes(survivorNotes, loserNotes, loserInquiryId, dateStr) {
 
 module.exports = {
   normalizeName,
+  normalizeReservationCode,
   pairKey,
   isDuplicateCandidate,
   mergeFieldPlan,
