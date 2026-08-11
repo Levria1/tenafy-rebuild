@@ -866,7 +866,11 @@ router.delete('/scheduler/urgent/:id', authenticate, async (req, res) => {
 // audit trail for posted/skipped actions, but forum choice is schedule-driven.
 // ===========================================================================
 
-const ROTATION_WINDOW_DAYS = 7;   // don't reuse a forum for a property within a week
+// No ROTATION_WINDOW_DAYS any more. Forum choice used to avoid reusing a forum for
+// a property within 7 days, read out of advertising_post_log; the slot schedule now
+// decides it outright, so that constant was left unreferenced and only misled
+// readers into thinking rotation was still live. `mark` still writes post_log as an
+// audit trail, but nothing reads it back.
 const PHOTO_ROOT = process.env.ADVERTISING_PHOTO_ROOT || '~/tenafy-photos';
 
 // The default plan date must be the HONG KONG date, not the server's. Prod runs UTC
