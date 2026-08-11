@@ -17,6 +17,12 @@ const { authenticate } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const visionClient = require('../services/visionClient');
 const llmClient = require('../services/llmClient');
+const {
+  pairKey,
+  isDuplicateCandidate,
+  mergeFieldPlan,
+  buildMergedNotes,
+} = require('../utils/inquiryDuplicates');
 
 router.use(authenticate);
 
@@ -54,6 +60,7 @@ function newId() {
 // is allowed to write, or a human edit to a field missing from this list would not
 // drop it from api_set_fields and the API could later overwrite the correction.
 const { API_WRITABLE_FIELDS: API_WRITABLE_INQUIRY_FIELDS } = require('../utils/inquiryFacts');
+const MAX_MERGED_NOTES_BYTES = 60000;
 
 function parseApiSetFields(apiSetFields) {
   if (Array.isArray(apiSetFields)) return apiSetFields.filter(f => typeof f === 'string');
@@ -64,6 +71,25 @@ function parseApiSetFields(apiSetFields) {
   } catch {
     return [];
   }
+}
+
+function snowflakeStringCompare(a, b) {
+  const sa = String(a);
+  const sb = String(b);
+  if (sa.length !== sb.length) return sa.length - sb.length;
+  return sa < sb ? -1 : (sa > sb ? 1 : 0);
+}
+
+function collapsePreview(value) {
+  return value == null ? '' : String(value).replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+function normalizeLockedInquiryRow(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    status: Number(row.status),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +311,244 @@ router.post('/parse', (req, res, next) => {
   } catch (err) {
     console.error('[inquiry] parse error:', err);
     fail(res, 'Failed to parse inquiry');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /:id/possible-duplicates
+// ---------------------------------------------------------------------------
+router.get('/:id/possible-duplicates', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [subjectRows] = await req.pool.execute(
+      `SELECT id, first_name, last_name, unit_id, status, deleted_at
+       FROM inquiry
+       WHERE id = ? AND org_id = ? AND deleted_at IS NULL
+       LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!subjectRows.length) return fail(res, 'Inquiry not found', 404);
+
+    const subject = normalizeLockedInquiryRow(subjectRows[0]);
+    if (subject.unit_id === null || subject.unit_id === undefined || subject.unit_id === '') {
+      return ok(res, { candidates: [] });
+    }
+
+    const [rows] = await req.pool.execute(
+      `SELECT i.id, i.first_name, i.last_name, i.email, i.phone, i.source, i.status,
+              i.created_at, i.inquiry_date,
+              DATE_FORMAT(i.desired_start_date, '%Y-%m-%d') AS desired_start_date,
+              DATE_FORMAT(i.desired_end_date, '%Y-%m-%d') AS desired_end_date,
+              i.nightly_rate, i.stay_total, i.unit_id, i.property_id, i.notes,
+              i.deleted_at,
+              un.name AS unit_name,
+              p.display_name AS property_name
+       FROM inquiry i
+       LEFT JOIN unit un ON i.unit_id = un.id
+       LEFT JOIN property p ON i.property_id = p.id
+       WHERE i.org_id = ?
+         AND i.deleted_at IS NULL
+         AND i.status = 0
+         AND i.unit_id = ?
+         AND i.id <> ?
+       ORDER BY i.inquiry_date DESC`,
+      [orgId, subject.unit_id, req.params.id]
+    );
+
+    const candidates = [];
+    const pairKeys = rows.map(row => pairKey(subject.id, row.id));
+    const dismissedKeys = new Set();
+    if (pairKeys.length) {
+      const [dismissedRows] = await req.pool.execute(
+        `SELECT pair_key
+         FROM inquiry_duplicate_dismissal
+         WHERE org_id = ? AND pair_key IN (${pairKeys.map(() => '?').join(', ')})`,
+        [orgId, ...pairKeys]
+      );
+      for (const row of dismissedRows) dismissedKeys.add(row.pair_key);
+    }
+
+    for (const row of rows) {
+      const candidate = normalizeLockedInquiryRow(row);
+      const key = pairKey(subject.id, candidate.id);
+      if (dismissedKeys.has(key)) continue;
+      if (!isDuplicateCandidate(subject, candidate).isCandidate) continue;
+      const { notes, deleted_at, property_id, ...out } = candidate;
+      candidates.push({
+        ...out,
+        property_id,
+        notes_preview: collapsePreview(notes),
+      });
+    }
+
+    ok(res, { candidates });
+  } catch (err) {
+    console.error('[inquiry] possible-duplicates error:', err);
+    fail(res, 'Failed to load possible duplicates');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/merge
+// ---------------------------------------------------------------------------
+router.post('/:id/merge', async (req, res) => {
+  const survivorId = String(req.params.id);
+  const loserId = req.body?.from_inquiry_id != null ? String(req.body.from_inquiry_id) : '';
+  if (!loserId) return fail(res, 'from_inquiry_id is required', 400);
+  if (loserId === survivorId) return fail(res, 'Cannot merge an inquiry into itself', 400);
+
+  const orgId = req.user.orgId;
+  const conn = await req.pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const locked = new Map();
+    const lockOrder = [survivorId, loserId].sort(snowflakeStringCompare);
+    for (const inquiryId of lockOrder) {
+      const [rows] = await conn.execute(
+        `SELECT id, org_id, first_name, last_name, email, phone, notes, unit_id, property_id,
+                tenant_id, status, deleted_at, budget,
+                DATE_FORMAT(desired_start_date, '%Y-%m-%d') AS desired_start_date,
+                DATE_FORMAT(desired_end_date, '%Y-%m-%d') AS desired_end_date,
+                nightly_rate, stay_total
+         FROM inquiry
+         WHERE id = ? AND org_id = ? AND deleted_at IS NULL
+         LIMIT 1
+         FOR UPDATE`,
+        [inquiryId, orgId]
+      );
+      if (rows.length) locked.set(inquiryId, normalizeLockedInquiryRow(rows[0]));
+    }
+
+    const survivor = locked.get(survivorId);
+    const loser = locked.get(loserId);
+    if (!survivor || !loser) {
+      await conn.rollback();
+      return fail(res, 'Inquiry not found', 404);
+    }
+    if (survivor.status !== 0 || loser.status !== 0) {
+      await conn.rollback();
+      return fail(res, 'Both inquiries must be open to merge', 409);
+    }
+    if (survivor.tenant_id !== null || loser.tenant_id !== null) {
+      await conn.rollback();
+      return fail(res, 'Converted inquiries cannot be merged', 409);
+    }
+
+    const candidate = isDuplicateCandidate(survivor, loser);
+    if (!candidate.isCandidate) {
+      await conn.rollback();
+      return fail(res, `Inquiries are not duplicate candidates: ${candidate.reason}`, 409);
+    }
+
+    const [[dateRow]] = await conn.execute("SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today");
+    const dateStr = dateRow.today;
+    const fieldPlan = mergeFieldPlan(survivor, loser);
+    const notesPlan = buildMergedNotes(survivor.notes, loser.notes, loserId, dateStr);
+    let notesAppended = false;
+    if (notesPlan.appended) {
+      if (Buffer.byteLength(notesPlan.notes, 'utf8') <= MAX_MERGED_NOTES_BYTES) {
+        fieldPlan.values.notes = notesPlan.notes;
+        notesAppended = true;
+      } else {
+        console.warn(`[inquiry/merge] notes append skipped for ${loserId} into ${survivorId}: merged notes exceed ${MAX_MERGED_NOTES_BYTES} bytes`);
+      }
+    }
+
+    const survivorSets = Object.keys(fieldPlan.values);
+    if (survivorSets.length) {
+      await conn.execute(
+        `UPDATE inquiry SET ${survivorSets.map(f => `${f} = ?`).join(', ')}
+         WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+        [...survivorSets.map(f => fieldPlan.values[f]), survivorId, orgId]
+      );
+    }
+
+    const [sessionResult] = await conn.execute(
+      'UPDATE chat_session SET inquiry_id = ? WHERE inquiry_id = ?',
+      [survivorId, loserId]
+    );
+    const sessionsMoved = sessionResult.affectedRows || 0;
+
+    // Closing the loser is the load-bearing half; the breadcrumb is a nicety. Cap it the
+    // same way the survivor's notes are capped, so an inquiry with a full notes column
+    // still merges instead of dying on "Data too long" and rolling the whole thing back.
+    const loserLine = `Merged into inquiry ${survivorId} on ${dateStr}`;
+    const loserNotes = loser.notes == null || loser.notes === ''
+      ? loserLine
+      : `${String(loser.notes).trimEnd()}\n\n${loserLine}`;
+    const loserNotesFit = Buffer.byteLength(loserNotes, 'utf8') <= MAX_MERGED_NOTES_BYTES;
+    if (!loserNotesFit) {
+      console.warn(`[inquiry/merge] breadcrumb skipped on ${loserId}: notes at capacity`);
+    }
+    await conn.execute(
+      loserNotesFit
+        ? `UPDATE inquiry SET status = 2, notes = ? WHERE id = ? AND org_id = ? AND deleted_at IS NULL`
+        : `UPDATE inquiry SET status = 2 WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+      loserNotesFit ? [loserNotes, loserId, orgId] : [loserId, orgId]
+    );
+
+    // An explicit shim, not `{ ...req }`: spreading an Express request copies only own
+    // enumerable properties, so what logActivity receives depends on Node internals.
+    // `conn` rather than the pool keeps the audit row inside the merge transaction.
+    await logActivity(
+      { pool: conn, user: req.user, headers: req.headers },
+      'MERGE',
+      'INQUIRY',
+      survivorId,
+      `Merged inquiry ${loserId} into ${survivorId}`
+    );
+    await conn.commit();
+
+    ok(res, {
+      survivor_id: survivorId,
+      merged_from_id: loserId,
+      filled_fields: fieldPlan.filled,
+      notes_appended: notesAppended,
+      sessions_moved: sessionsMoved,
+    });
+  } catch (err) {
+    try { await conn.rollback(); } catch { /* already rolled back */ }
+    console.error('[inquiry] merge error:', err);
+    fail(res, 'Failed to merge inquiries');
+  } finally {
+    conn.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/dismiss-duplicate
+// ---------------------------------------------------------------------------
+router.post('/:id/dismiss-duplicate', async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const otherId = req.body?.other_inquiry_id != null ? String(req.body.other_inquiry_id) : '';
+    if (!otherId) return fail(res, 'other_inquiry_id is required', 400);
+    // IN (?, ?) with the same id twice returns one row, which would surface as a
+    // confusing 404 rather than the real problem.
+    if (otherId === String(req.params.id)) return fail(res, 'Cannot dismiss an inquiry against itself', 400);
+
+    const [rows] = await req.pool.execute(
+      `SELECT id
+       FROM inquiry
+       WHERE org_id = ? AND deleted_at IS NULL AND id IN (?, ?)`,
+      [orgId, req.params.id, otherId]
+    );
+    if (rows.length !== 2) return fail(res, 'Inquiry not found', 404);
+
+    const key = pairKey(req.params.id, otherId);
+    await req.pool.execute(
+      `INSERT INTO inquiry_duplicate_dismissal
+         (id, org_id, pair_key, inquiry_id, other_inquiry_id, dismissed_by_user_id)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE id = id`,
+      [newId(), orgId, key, req.params.id, otherId, req.user.id || null]
+    );
+
+    ok(res, { dismissed: true, pair_key: key });
+  } catch (err) {
+    console.error('[inquiry] dismiss-duplicate error:', err);
+    fail(res, 'Failed to dismiss duplicate');
   }
 });
 

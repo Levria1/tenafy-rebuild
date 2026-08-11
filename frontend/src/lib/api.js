@@ -370,6 +370,9 @@ export const inquiry = {
   update: (id, data) => api.put(`/api/inquiry/${id}`, data),
   delete: (id) => api.delete(`/api/inquiry/${id}`),
   linkContact: (id, tenantId) => api.post(`/api/inquiry/${id}/link-contact`, { tenant_id: String(tenantId) }),
+  possibleDuplicates: (id) => api.get(`/api/inquiry/${id}/possible-duplicates`),
+  merge: (id, fromInquiryId) => api.post(`/api/inquiry/${id}/merge`, { from_inquiry_id: String(fromInquiryId) }),
+  dismissDuplicate: (id, otherInquiryId) => api.post(`/api/inquiry/${id}/dismiss-duplicate`, { other_inquiry_id: String(otherInquiryId) }),
   // Smart-extract: POST multipart with `text` and/or `image`. Returns
   // { fields: {...}, screenshot_url, raw_text }. The fields prefill the
   // form; screenshot_url is stored alongside the inquiry on save.

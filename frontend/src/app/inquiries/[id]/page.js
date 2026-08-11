@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import {
   Card, Descriptions, Button, Space, Tag, message, Spin, Empty, List, Typography,
-  Popconfirm,
+  Popconfirm, Alert,
 } from 'antd';
 import {
   UserAddOutlined, CalendarOutlined, ArrowLeftOutlined, EditOutlined,
@@ -28,12 +28,28 @@ export default function InquiryDetailPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [viewingModalOpen, setViewingModalOpen] = useState(false);
+  const [duplicates, setDuplicates] = useState([]);
+  const [mergeLoadingId, setMergeLoadingId] = useState(null);
+  const [dismissLoadingId, setDismissLoadingId] = useState(null);
+
+  const loadDuplicates = async () => {
+    if (!id) return;
+    try {
+      const r = await inquiry.possibleDuplicates(id);
+      if (r.data?.code === 200) setDuplicates(r.data.data?.candidates || []);
+    } catch (e) {
+      message.error('Failed to load possible duplicates');
+    }
+  };
 
   const load = async () => {
     setLoading(true);
     try {
       const r = await inquiry.get(id);
-      if (r.data?.code === 200) setData(r.data.data);
+      if (r.data?.code === 200) {
+        setData(r.data.data);
+        await loadDuplicates();
+      }
     } catch (e) {
       message.error('Failed to load inquiry');
     } finally {
@@ -42,6 +58,51 @@ export default function InquiryDetailPage() {
   };
 
   useEffect(() => { if (id) load(); }, [id]);
+
+  const formatName = (record) => [record.first_name, record.last_name].filter(Boolean).join(' ') || '(no name)';
+  const formatDate = (value, withTime = false) => {
+    if (!value) return null;
+    const d = dayjs(value);
+    if (!d.isValid()) return String(value);
+    return d.format(withTime ? 'YYYY-MM-DD HH:mm' : 'YYYY-MM-DD');
+  };
+  const formatCandidateDates = (candidate) => {
+    const start = formatDate(candidate.desired_start_date);
+    const end = formatDate(candidate.desired_end_date);
+    if (start && end) return `${start} to ${end}`;
+    return start || end || null;
+  };
+  const duplicateTitle = duplicates.length === 1 ? 'Possible duplicate' : `${duplicates.length} possible duplicates`;
+
+  const onMergeDuplicate = async (candidate) => {
+    setMergeLoadingId(candidate.id);
+    try {
+      const r = await inquiry.merge(id, candidate.id);
+      const result = r.data?.data || {};
+      const fields = result.filled_fields || [];
+      const fieldText = fields.length ? `Filled ${fields.join(', ')}.` : 'No empty fields were filled.';
+      const notesText = result.notes_appended ? 'Notes were appended.' : 'Notes were not appended.';
+      message.success(`${fieldText} ${notesText}`);
+      await load();
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Failed to merge duplicate');
+    } finally {
+      setMergeLoadingId(null);
+    }
+  };
+
+  const onDismissDuplicate = async (candidate) => {
+    setDismissLoadingId(candidate.id);
+    try {
+      await inquiry.dismissDuplicate(id, candidate.id);
+      setDuplicates((current) => current.filter((item) => String(item.id) !== String(candidate.id)));
+      message.success('Duplicate suggestion dismissed');
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Failed to dismiss duplicate');
+    } finally {
+      setDismissLoadingId(null);
+    }
+  };
 
   const onConvertToContact = () => {
     const params = new URLSearchParams({ inquiry_id: String(id) });
@@ -98,6 +159,76 @@ export default function InquiryDetailPage() {
             </Popconfirm>
           </Space>
         </div>
+
+        {duplicates.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            message={duplicateTitle}
+            style={{ marginBottom: 16 }}
+            description={
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {duplicates.map((candidate) => {
+                  const candidateName = formatName(candidate);
+                  const unitText = [candidate.unit_name, candidate.property_name].filter(Boolean).join(' · ') || 'No unit name';
+                  const dates = formatCandidateDates(candidate);
+                  const created = formatDate(candidate.created_at || candidate.inquiry_date, true);
+                  return (
+                    <div
+                      key={candidate.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: 12,
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <Space size={8} wrap>
+                        <a onClick={() => router.push(`/inquiries/${candidate.id}`)}>{candidateName}</a>
+                        {candidate.source && <Tag>{candidate.source}</Tag>}
+                        <Text>{unitText}</Text>
+                        {dates && <Text type="secondary">{dates}</Text>}
+                        {created && <Text type="secondary">Created {created}</Text>}
+                      </Space>
+                      <Space>
+                        <Popconfirm
+                          title={`Merge ${candidateName} into this inquiry?`}
+                          // Both records share a first name by definition — that is the match
+                          // rule — so the name cannot tell staff which one they are closing.
+                          // Lead with when it was created, and keep the id for the audit trail.
+                          description={
+                            `The record ${created ? `created ${created}` : `id ${candidate.id}`} will be CLOSED `
+                            + 'and its notes copied into this one. Empty fields here will be filled from it; '
+                            + 'nothing already filled in is overwritten. This cannot be undone.'
+                          }
+                          okText="Merge"
+                          cancelText="Cancel"
+                          onConfirm={() => onMergeDuplicate(candidate)}
+                        >
+                          <Button
+                            size="small"
+                            type="primary"
+                            loading={mergeLoadingId === candidate.id}
+                          >
+                            Merge
+                          </Button>
+                        </Popconfirm>
+                        <Button
+                          size="small"
+                          loading={dismissLoadingId === candidate.id}
+                          onClick={() => onDismissDuplicate(candidate)}
+                        >
+                          Not a duplicate
+                        </Button>
+                      </Space>
+                    </div>
+                  );
+                })}
+              </div>
+            }
+          />
+        )}
 
         <Card style={{ marginBottom: 16 }}>
           <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered>
