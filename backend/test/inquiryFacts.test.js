@@ -6,6 +6,8 @@ const {
   resolveWritableFields,
   mergeApiSetFields,
   validateFields,
+  validateUnitText,
+  shouldApplyUnitResolution,
   payloadHash,
 } = require('../src/utils/inquiryFacts');
 
@@ -206,6 +208,74 @@ test('payloadHash is stable by key order and includes changed facts and occurred
   assert.equal(a, b);
   assert.notEqual(a, changedFact);
   assert.notEqual(a, changedOccurredAt);
+});
+
+test('payloadHash differs when unit_text differs', () => {
+  const base = {
+    fields: { budget: 18000 },
+    facts: ['Budget set to HK$18,000'],
+    summary: 'Summary',
+    is_inquiry: true,
+    occurred_at: '2026-08-07T14:12:00+08:00',
+    unit_text: 'Mong Kok Luxury Studio 5C',
+  };
+  const changed = { ...base, unit_text: 'COSY CAUSEWAY BAY STUDIO 105' };
+  // Without this, adding a listing to an already-seen idempotency key is swallowed.
+  assert.notEqual(payloadHash(base), payloadHash(changed));
+});
+
+test('payloadHash ignores irrelevant keys and remains stable by nested key order', () => {
+  const a = payloadHash({
+    fields: { email: 'a@example.com', budget: 18000 },
+    facts: ['Budget set to HK$18,000'],
+    summary: 'Summary',
+    unit_text: 'Mong Kok Luxury Studio 5C',
+    is_inquiry: true,
+    occurred_at: '2026-08-07T14:12:00+08:00',
+    ignored: 'x',
+  });
+  const b = payloadHash({
+    occurred_at: '2026-08-07T14:12:00+08:00',
+    is_inquiry: true,
+    unit_text: 'Mong Kok Luxury Studio 5C',
+    summary: 'Summary',
+    facts: ['Budget set to HK$18,000'],
+    fields: { budget: 18000, email: 'a@example.com' },
+    another_ignored: 'y',
+  });
+  assert.equal(a, b);
+});
+
+test('validateUnitText accepts absent and blank values as null', () => {
+  assert.deepEqual(validateUnitText(undefined), { ok: true, unitText: null });
+  assert.deepEqual(validateUnitText(null), { ok: true, unitText: null });
+  assert.deepEqual(validateUnitText(''), { ok: true, unitText: null });
+  assert.deepEqual(validateUnitText('   '), { ok: true, unitText: null });
+});
+
+test('validateUnitText trims titles and rejects unsafe values', () => {
+  assert.deepEqual(validateUnitText('  Mong Kok Luxury Studio 5C  '), {
+    ok: true,
+    unitText: 'Mong Kok Luxury Studio 5C',
+  });
+  assert.deepEqual(validateUnitText('x'.repeat(256)), { ok: false, error: 'unit_text_too_long' });
+  assert.deepEqual(validateUnitText(42), { ok: false, error: 'invalid_unit_text' });
+  assert.deepEqual(validateUnitText({ title: 'Mong Kok Luxury Studio 5C' }), { ok: false, error: 'invalid_unit_text' });
+});
+
+test('shouldApplyUnitResolution only allows confident matches with empty or API-owned unit_id', () => {
+  assert.equal(shouldApplyUnitResolution({ status: 'confident', currentUnitId: null, apiSetFields: [] }), true);
+  assert.equal(shouldApplyUnitResolution({ status: 'confident', currentUnitId: '123', apiSetFields: [] }), false);
+  assert.equal(shouldApplyUnitResolution({ status: 'confident', currentUnitId: '123', apiSetFields: ['unit_id'] }), true);
+  assert.equal(shouldApplyUnitResolution({ status: 'confident', currentUnitId: '123', apiSetFields: '["unit_id"]' }), true);
+  for (const status of ['ambiguous', 'property_only', 'multi_unit', 'none']) {
+    assert.equal(shouldApplyUnitResolution({ status, currentUnitId: null, apiSetFields: ['unit_id'] }), false);
+  }
+});
+
+test('shouldApplyUnitResolution treats numeric and string zero unit ids as set', () => {
+  assert.equal(shouldApplyUnitResolution({ status: 'confident', currentUnitId: '0', apiSetFields: [] }), false);
+  assert.equal(shouldApplyUnitResolution({ status: 'confident', currentUnitId: 0, apiSetFields: [] }), false);
 });
 
 // ── regression tests for defects found reviewing the generated code ──────────

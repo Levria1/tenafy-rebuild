@@ -17,8 +17,11 @@ const {
   resolveWritableFields,
   mergeApiSetFields,
   validateFields,
+  validateUnitText,
+  shouldApplyUnitResolution,
   payloadHash,
 } = require('../utils/inquiryFacts');
+const { resolveUnit } = require('../services/unitResolver');
 const { validateChannel } = require('../utils/chatChannel');
 const { createNotification } = require('../services/scheduler');
 const config = require('../config');
@@ -72,6 +75,7 @@ const INQUIRY_FACT_FIELDS = [
 function inquiryFactResponse({
   inquiryId = null, created = false, applied = false, reason = null, supersededInquiryId = null,
   skippedFields = [], summaryApplied = false, factsApplied = 0, factsSkipped = 0,
+  unitResolution = null,
 }) {
   return {
     inquiry_id: inquiryId == null ? null : String(inquiryId),
@@ -83,6 +87,7 @@ function inquiryFactResponse({
     summary_applied: !!summaryApplied,
     facts_applied: factsApplied,
     facts_skipped: factsSkipped,
+    unit_resolution: unitResolution,
   };
 }
 
@@ -130,7 +135,44 @@ function validateInquiryFactRequest(body, { requireIsInquiry = false, allowFacts
   }
   const fieldsResult = validateFields(b.fields);
   if (!fieldsResult.ok) return { ok: false, error: fieldsResult.error };
-  return { ok: true, channel: channelResult.channel, facts, fields: fieldsResult.fields };
+  const unitTextResult = validateUnitText(b.unit_text);
+  if (!unitTextResult.ok) return { ok: false, error: unitTextResult.error };
+  return { ok: true, channel: channelResult.channel, facts, fields: fieldsResult.fields, unitText: unitTextResult.unitText };
+}
+
+function unitResolutionResponse(resolution, applied) {
+  if (!resolution) return null;
+  const match = resolution.match || null;
+  const candidates = ['ambiguous', 'property_only', 'multi_unit'].includes(resolution.status)
+    ? (resolution.candidates || []).map(c => ({
+        unit_id: c && c.unit_id != null ? String(c.unit_id) : null,
+        label: c ? c.label || null : null,
+      }))
+    : [];
+  return {
+    status: resolution.status,
+    unit_id: match && match.unit_id != null ? String(match.unit_id) : null,
+    property_id: match && match.property_id != null ? String(match.property_id) : null,
+    label: match ? match.label || null : null,
+    applied: !!applied,
+    candidates,
+  };
+}
+
+// Hand back the stored response object untouched, so a retry is byte-identical to
+// the first answer. Rebuilding it from scalars cannot work: for an `ambiguous`
+// resolution the payload the caller actually needs IS the candidate list.
+function priorUnitResolutionResponse(prior) {
+  if (!prior || prior.unit_resolution_json == null) return null;
+  if (typeof prior.unit_resolution_json === 'object') return prior.unit_resolution_json;
+  try {
+    return JSON.parse(prior.unit_resolution_json);
+  } catch {
+    // A JSON column cannot normally hold unparseable text, but a null-vs-garbage
+    // surprise must not turn a replay into a 500 — the delivery already happened.
+    console.warn('[inquiry-facts] unreadable unit_resolution_json on replay');
+    return null;
+  }
 }
 
 async function registerChannel(conn, orgId, channel) {
@@ -160,7 +202,7 @@ async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
     `UPDATE inquiry_fact_delivery
         SET inquiry_id = ?, applied = ?, created = ?, superseded_inquiry_id = ?, reason = ?,
             facts_json = ?, fields_json = ?, summary_text = ?, summary_applied = ?, skipped_json = ?,
-            facts_applied = ?, facts_skipped = ?
+            facts_applied = ?, facts_skipped = ?, unit_text = ?, unit_resolution_json = ?
       WHERE org_id = ? AND idempotency_key = ?`,
     [
       outcome.inquiryId == null ? null : outcome.inquiryId,
@@ -175,6 +217,8 @@ async function updateDeliveryOutcome(conn, orgId, idempotencyKey, outcome) {
       JSON.stringify(Array.isArray(outcome.skippedFields) ? outcome.skippedFields : []),
       Number(outcome.factsApplied) || 0,
       Number(outcome.factsSkipped) || 0,
+      outcome.unitText == null ? null : String(outcome.unitText),
+      outcome.unitResolution == null ? null : JSON.stringify(outcome.unitResolution),
       orgId,
       idempotencyKey,
     ]
@@ -194,7 +238,8 @@ async function claimInquiryFactDelivery(conn, orgId, idempotencyKey, hash) {
     if (e.code !== 'ER_DUP_ENTRY') throw e;
     const [[prior]] = await conn.execute(
       `SELECT inquiry_id, applied, created, superseded_inquiry_id, reason, payload_hash,
-              summary_applied, skipped_json, facts_applied, facts_skipped
+              summary_applied, skipped_json, facts_applied, facts_skipped,
+              unit_text, unit_resolution_json
          FROM inquiry_fact_delivery
         WHERE org_id = ? AND idempotency_key = ?
         LIMIT 1`,
@@ -221,12 +266,13 @@ function priorDeliveryResponse(prior) {
     summaryApplied: Number(prior.summary_applied) === 1,
     factsApplied: Number(prior.facts_applied) || 0,
     factsSkipped: Number(prior.facts_skipped) || 0,
+    unitResolution: priorUnitResolutionResponse(prior),
   });
 }
 
 async function loadLockedInquiryForFacts(conn, orgId, inquiryId) {
   const [[row]] = await conn.execute(
-    `SELECT i.id, i.status, i.tenant_id, i.notes, i.api_set_fields,
+    `SELECT i.id, i.status, i.tenant_id, i.notes, i.api_set_fields, i.unit_id, i.property_id,
             i.first_name, i.last_name, i.email, i.phone, i.budget, i.nightly_rate, i.stay_total,
             DATE_FORMAT(i.desired_start_date, '%Y-%m-%d') AS desired_start_date,
             DATE_FORMAT(i.desired_end_date, '%Y-%m-%d') AS desired_end_date,
@@ -261,7 +307,7 @@ function buildFieldAssignments(fields, currentRow) {
   return { writable: resolved.writable, writtenNames, apiSetFields, skipped: resolved.skipped };
 }
 
-async function createInquiryFromFactPayload(conn, orgId, session, channel, fields, summary) {
+async function createInquiryFromFactPayload(conn, orgId, session, channel, fields, summary, unitAssignment = null) {
   const inquiryId = newId();
   const values = {
     first_name: fields.first_name || null,
@@ -274,13 +320,16 @@ async function createInquiryFromFactPayload(conn, orgId, session, channel, field
     nightly_rate: fields.nightly_rate != null ? Number(fields.nightly_rate) : null,
     stay_total: fields.stay_total != null ? Number(fields.stay_total) : null,
   };
+  const unitId = unitAssignment && unitAssignment.unit_id != null ? unitAssignment.unit_id : null;
+  const propertyId = unitAssignment && unitAssignment.property_id != null ? unitAssignment.property_id : null;
   const written = INQUIRY_FACT_FIELDS.filter(field => values[field] !== null && values[field] !== undefined && values[field] !== '');
+  if (unitId != null) written.push('unit_id');
   await conn.execute(
     `INSERT INTO inquiry
        (id, org_id, inquiry_date, first_name, last_name, email, phone,
         notes, api_set_fields, source, status, desired_start_date, desired_end_date,
-        budget, nightly_rate, stay_total)
-     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+        budget, nightly_rate, stay_total, unit_id, property_id)
+     VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
     [
       inquiryId,
       orgId,
@@ -296,6 +345,8 @@ async function createInquiryFromFactPayload(conn, orgId, session, channel, field
       values.budget,
       values.nightly_rate,
       values.stay_total,
+      unitId,
+      propertyId,
     ]
   );
   await conn.execute(
@@ -309,24 +360,36 @@ async function createInquiryFromFactPayload(conn, orgId, session, channel, field
   return { inquiryId, skipped: [], summaryApplied: !!summary };
 }
 
-async function applyFieldsAndSummaryToInquiry(conn, orgId, row, fields, summary) {
+async function applyFieldsAndSummaryToInquiry(conn, orgId, row, fields, summary, unitResolution = null) {
   const sets = [];
   const params = [];
   const { writable, writtenNames, apiSetFields, skipped } = buildFieldAssignments(fields, row);
+  let nextApiSetFields = apiSetFields;
+  let unitApplied = false;
   const summaryApplied = !!(summary && !(row.notes && String(row.notes).trim()));
   if (summaryApplied) {
     sets.push('notes = ?');
     params.push(String(summary));
   }
+  if (unitResolution && shouldApplyUnitResolution({
+    status: unitResolution.status,
+    currentUnitId: row.unit_id,
+    apiSetFields: row.api_set_fields,
+  })) {
+    unitApplied = true;
+    nextApiSetFields = mergeApiSetFields(nextApiSetFields, ['unit_id']);
+    sets.push('unit_id = ?', 'property_id = ?');
+    params.push(unitResolution.match.unit_id, unitResolution.match.property_id);
+  }
   sets.push('api_set_fields = ?');
-  params.push(JSON.stringify(apiSetFields));
+  params.push(JSON.stringify(nextApiSetFields));
   for (const field of writtenNames) {
     sets.push(`${field} = ?`);
     params.push(MONEY_FACT_FIELDS.has(field) ? Number(writable[field]) : writable[field]);
   }
   sets.push('updated_at = NOW()');
   await conn.execute(`UPDATE inquiry SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, [...params, row.id, orgId]);
-  return { writtenNames, skipped, summaryApplied };
+  return { writtenNames, skipped, summaryApplied, unitApplied };
 }
 
 // POST /api/public/inquiry/from-chat
@@ -393,21 +456,55 @@ router.post('/inquiry/from-chat', async (req, res) => {
 
     let outcome;
     if (!session.inquiry_id) {
-      const made = await createInquiryFromFactPayload(conn, orgId, session, channel, checked.fields, b.summary);
+      let unitResolution = null;
+      if (checked.unitText) unitResolution = await resolveUnit(conn, orgId, checked.unitText);
+      const unitApplied = unitResolution && shouldApplyUnitResolution({
+        status: unitResolution.status,
+        currentUnitId: null,
+        apiSetFields: null,
+      });
+      const made = await createInquiryFromFactPayload(
+        conn,
+        orgId,
+        session,
+        channel,
+        checked.fields,
+        b.summary,
+        unitApplied ? unitResolution.match : null
+      );
       outcome = inquiryFactResponse({
         inquiryId: made.inquiryId, created: true, applied: true,
         skippedFields: made.skipped, summaryApplied: made.summaryApplied,
+        unitResolution: unitResolutionResponse(unitResolution, unitApplied),
       });
     } else {
       const gate = await loadLockedInquiryForFacts(conn, orgId, session.inquiry_id);
       if (!gate.reason) {
-        const applied = await applyFieldsAndSummaryToInquiry(conn, orgId, gate.row, checked.fields, b.summary);
+        let unitResolution = null;
+        if (checked.unitText) unitResolution = await resolveUnit(conn, orgId, checked.unitText);
+        const applied = await applyFieldsAndSummaryToInquiry(conn, orgId, gate.row, checked.fields, b.summary, unitResolution);
         outcome = inquiryFactResponse({
           inquiryId: gate.row.id, created: false, applied: true,
           skippedFields: applied.skipped, summaryApplied: applied.summaryApplied,
+          unitResolution: unitResolutionResponse(unitResolution, applied.unitApplied),
         });
       } else if (gate.reason === 'inquiry_closed' || gate.reason === 'inquiry_converted') {
-        const made = await createInquiryFromFactPayload(conn, orgId, session, channel, checked.fields, b.summary);
+        let unitResolution = null;
+        if (checked.unitText) unitResolution = await resolveUnit(conn, orgId, checked.unitText);
+        const unitApplied = unitResolution && shouldApplyUnitResolution({
+          status: unitResolution.status,
+          currentUnitId: null,
+          apiSetFields: null,
+        });
+        const made = await createInquiryFromFactPayload(
+          conn,
+          orgId,
+          session,
+          channel,
+          checked.fields,
+          b.summary,
+          unitApplied ? unitResolution.match : null
+        );
         outcome = inquiryFactResponse({
           inquiryId: made.inquiryId,
           created: true,
@@ -415,6 +512,7 @@ router.post('/inquiry/from-chat', async (req, res) => {
           supersededInquiryId: session.inquiry_id,
           skippedFields: made.skipped,
           summaryApplied: made.summaryApplied,
+          unitResolution: unitResolutionResponse(unitResolution, unitApplied),
         });
       } else {
         outcome = inquiryFactResponse({
@@ -437,6 +535,8 @@ router.post('/inquiry/from-chat', async (req, res) => {
       summary: b.summary,
       summaryApplied: outcome.summary_applied,
       skippedFields: outcome.skipped_fields,
+      unitText: checked.unitText,
+      unitResolution: outcome.unit_resolution,
     });
     await conn.commit();
     return ok(res, outcome);
@@ -542,9 +642,12 @@ router.post('/inquiry/facts', async (req, res) => {
     const row = gate.row;
     const sets = [];
     const params = [];
+    let unitResolution = null;
+    let unitApplied = false;
     let factsApplied = 0;
     let factsSkipped = 0;
     let notesReason = null;
+    if (checked.unitText) unitResolution = await resolveUnit(conn, orgId, checked.unitText);
     if (checked.facts.length) {
       const appended = appendFactsToNotes(row.notes, checked.facts, hkDate(b.occurred_at));
       // A full notes column must NOT become a dead end. Throwing here rolled the
@@ -570,9 +673,20 @@ router.post('/inquiry/facts', async (req, res) => {
     }
 
     const { writable, writtenNames, apiSetFields, skipped } = buildFieldAssignments(checked.fields, row);
-    if (writtenNames.length) {
+    let nextApiSetFields = apiSetFields;
+    if (unitResolution && shouldApplyUnitResolution({
+      status: unitResolution.status,
+      currentUnitId: row.unit_id,
+      apiSetFields: row.api_set_fields,
+    })) {
+      unitApplied = true;
+      nextApiSetFields = mergeApiSetFields(nextApiSetFields, ['unit_id']);
+      sets.push('unit_id = ?', 'property_id = ?');
+      params.push(unitResolution.match.unit_id, unitResolution.match.property_id);
+    }
+    if (writtenNames.length || unitApplied) {
       sets.push('api_set_fields = ?');
-      params.push(JSON.stringify(apiSetFields));
+      params.push(JSON.stringify(nextApiSetFields));
       for (const field of writtenNames) {
         sets.push(`${field} = ?`);
         params.push(MONEY_FACT_FIELDS.has(field) ? Number(writable[field]) : writable[field]);
@@ -595,6 +709,7 @@ router.post('/inquiry/facts', async (req, res) => {
       inquiryId: row.id, created: false, applied: true,
       skippedFields: skipped, summaryApplied: false,
       factsApplied, factsSkipped, reason: notesReason,
+      unitResolution: unitResolutionResponse(unitResolution, unitApplied),
     });
     await updateDeliveryOutcome(conn, orgId, idempotencyKey, {
       inquiryId: row.id,
@@ -607,6 +722,8 @@ router.post('/inquiry/facts', async (req, res) => {
       skippedFields: skipped,
       factsApplied,
       factsSkipped,
+      unitText: checked.unitText,
+      unitResolution: outcome.unit_resolution,
     });
     await conn.commit();
     return ok(res, outcome);

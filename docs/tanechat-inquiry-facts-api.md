@@ -177,6 +177,7 @@ rather than a contact.
   "conversation_id": "conv_456",
   "occurred_at": "2026-08-07T14:12:00+08:00",
   "is_inquiry": true,
+  "unit_text": "Mong Kok Luxury Studio 5C",
   "fields": {
     "first_name": "Alice",
     "last_name": "Wong",
@@ -225,9 +226,20 @@ Response:
     "inquiry_id": "1786…",
     "created": true,
     "applied": true,
+    "reason": null,
     "superseded_inquiry_id": "1699…",
     "skipped_fields": [],
-    "summary_applied": true
+    "summary_applied": true,
+    "facts_applied": 0,
+    "facts_skipped": 0,
+    "unit_resolution": {
+      "status": "confident",
+      "unit_id": "1785…",
+      "property_id": "1772…",
+      "label": "Mong Kok Luxury Studio 5C",
+      "applied": true,
+      "candidates": []
+    }
   }
 }
 ```
@@ -243,6 +255,7 @@ Response:
   "channel_user_id": "85291234567",
   "conversation_id": "conv_456",
   "occurred_at": "2026-08-07T14:12:00+08:00",
+  "unit_text": "COSY CAUSEWAY BAY STUDIO 105",
   "facts": [
     "Move-in date set for September 20, 2026",
     "Move-out date set for November 21, 2026",
@@ -258,11 +271,61 @@ Response:
 ```json
 { "code": 200, "data": { "inquiry_id": "1786…", "created": false, "applied": true,
                          "reason": null, "superseded_inquiry_id": null,
-                         "skipped_fields": ["budget"], "summary_applied": false } }
+                         "skipped_fields": ["budget"], "summary_applied": false,
+                         "facts_applied": 3, "facts_skipped": 0,
+                         "unit_resolution": null } }
 ```
 
-**Both endpoints always return the same nine keys**, `null`, `0` or empty where not
+**Both endpoints always return the same ten keys**, `null`, `0` or empty where not
 applicable, so one parser handles either response.
+
+### Optional `unit_text`
+
+Send `unit_text` as a top-level request field when the source knows the exact listing
+title the guest is asking about. This is common for Airbnb/OTA arrivals. Send the
+listing title verbatim, for example `"Mong Kok Luxury Studio 5C"` or
+`"COSY CAUSEWAY BAY STUDIO 105"`. It is optional, trimmed by Tenafy, empty strings are
+treated as absent, and the trimmed value is capped at 255 characters.
+
+Do **not** send `unit_id` inside `fields`. `unit_id` is not a writable fact field; it
+requires text resolution and provenance checks. A payload with
+`"fields": { "unit_id": "..." }` is rejected with `400 unknown_field: unit_id`.
+
+When `unit_text` is present and the delivery reaches a live inquiry/create path,
+Tenafy resolves it to a unit using the same resolver as the viewing relay. Only
+`status: "confident"` can write `inquiry.unit_id` and `inquiry.property_id`. The
+statuses `ambiguous`, `property_only`, `multi_unit` and `none` never write a unit.
+
+`unit_resolution` is always present in the response. It is `null` when no `unit_text`
+was processed, including early-return paths such as `no_session`, `no_inquiry`,
+`inquiry_closed`, `inquiry_converted`, `inquiry_deleted` and `is_inquiry: false`.
+When processed, it has this shape:
+
+```json
+{
+  "status": "ambiguous",
+  "unit_id": null,
+  "property_id": null,
+  "label": null,
+  "applied": false,
+  "candidates": [
+    { "unit_id": "1785…", "label": "Mong Kok Luxury Studio 5C" },
+    { "unit_id": "1786…", "label": "Mong Kok Luxury Studio 6C" }
+  ]
+}
+```
+
+For a confident match, `unit_id`, `property_id` and `label` describe the matched
+unit and `candidates` is empty. `applied: false` with `status: "confident"` means
+the resolver found a unit, but Tenafy refused to overwrite an existing human-owned
+`unit_id`. Treat that differently from `ambiguous`: the listing text was understood,
+but the inquiry record was intentionally left unchanged.
+
+**`unit_text` is part of the payload hash.** Adding a listing to a fact set you have
+already delivered therefore needs a **NEW `idempotency_key`** — re-sending the old key
+with `unit_text` added returns `409 idempotency_key_conflict`, by design, because the
+payload is genuinely different. A replay of the *same* key returns the original
+`unit_resolution` verbatim, candidate list included.
 
 `facts_applied` and `facts_skipped` complete the picture `skipped_fields` started: facts
 can be dropped for reasons the caller cannot see. **A fact already recorded is not written

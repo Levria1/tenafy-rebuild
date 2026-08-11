@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const MAX_FACTS = 50;
 const MAX_FACT_CHARS = 500;
 const MAX_NOTES_CHARS = 60000;
+const MAX_UNIT_TEXT_CHARS = 255;
 // Column widths in `inquiry` — validate here so an oversized value is a 400, not a 500.
 const MAX_FIELD_CHARS = { first_name: 255, last_name: 255, email: 255, phone: 50 };
 const UPDATES_HEADING = '── Updates from chat ──';
@@ -174,6 +175,20 @@ function validateFields(fields) {
   return { ok: true, fields: out };
 }
 
+function validateUnitText(value) {
+  if (value === undefined || value === null) return { ok: true, unitText: null };
+  if (typeof value !== 'string') return { ok: false, error: 'invalid_unit_text' };
+  const unitText = value.trim();
+  if (!unitText) return { ok: true, unitText: null };
+  if (unitText.length > MAX_UNIT_TEXT_CHARS) return { ok: false, error: 'unit_text_too_long' };
+  return { ok: true, unitText };
+}
+
+function shouldApplyUnitResolution({ status, currentUnitId, apiSetFields }) {
+  if (status !== 'confident') return false;
+  return isEmptyCurrentValue(currentUnitId) || parseApiSetFields(apiSetFields).includes('unit_id');
+}
+
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') {
@@ -190,6 +205,7 @@ function payloadHash(body) {
     facts: body ? body.facts : undefined,
     fields: body ? body.fields : undefined,
     summary: body ? body.summary : undefined,
+    unit_text: body ? body.unit_text : undefined,
     is_inquiry: body ? body.is_inquiry : undefined,
     occurred_at: body ? body.occurred_at : undefined,
   };
@@ -216,6 +232,8 @@ module.exports = {
   resolveWritableFields,
   mergeApiSetFields,
   validateFields,
+  validateUnitText,
+  shouldApplyUnitResolution,
   payloadHash,
   resolveExtractMode,
 };
