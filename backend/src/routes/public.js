@@ -26,7 +26,14 @@ const { validateChannel } = require('../utils/chatChannel');
 const { createNotification } = require('../services/scheduler');
 const config = require('../config');
 const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings } = require('./advertising');
-const { vacancyToPublicShape, formatLocalDate, vacancyFit, compareVacancyFit } = require('../utils/advertisingPlan');
+const {
+  vacancyToPublicShape,
+  formatLocalDate,
+  vacancyFit,
+  exceedsHardGapCap,
+  vacancyNoMatchReason,
+  compareVacancyFit,
+} = require('../utils/advertisingPlan');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
 // The middleware attaches req.pool (scoped to the caller's org DB) and
@@ -63,7 +70,7 @@ const CERTAIN_AVAILABILITY_PHRASE = '{units} available from {date}';
 const UNCERTAIN_AVAILABILITY_PHRASE = "We may also have {units} available, however the tenant may renew, they're not sure";
 // Offered instead of hiding a poor fit: suppressing the unit forfeits the
 // negotiation that could remove the vacancy entirely.
-const EARLIER_AVAILABILITY_PHRASE = '{units} is free from {date} — would you be able to start a little earlier?';
+const EARLIER_AVAILABILITY_PHRASE = '{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long.';
 
 function clampInteger(value, fallback, min, max) {
   const parsed = Number(value);
@@ -95,25 +102,32 @@ router.get('/vacancies', async (req, res) => {
       return res.status(400).json({ code: 400, message: 'target_date must be in YYYY-MM-DD format' });
     }
 
-    const settings = hasTargetDate ? await loadSettings(req.pool, req.apiKey.orgId) : null;
+    const settings = await loadSettings(req.pool, req.apiKey.orgId);
     const { vacancies } = await computeVacancies(
       req.pool,
       req.apiKey.orgId,
-      hasTargetDate ? { page: false, settings } : { page: false }
+      { page: false, settings }
     );
     let rows = vacancies
       .filter(row => Number(row.tier) <= maxTier)
       .filter(row => !propertyId || String(row.property_id) === propertyId);
+    let hiddenByGapCap = 0;
 
     if (hasTargetDate) {
       const today = formatLocalDate(new Date());
       rows = rows
         .map(vacancyToPublicShape)
         .map(row => ({ ...row, ...vacancyFit(row, targetDate, { maxGapDays: settings.max_gap_days, today }) }))
-        // Rank by fit, never filter by fit. A long positive gap is still better
-        // than losing the lead entirely; stated dates are soft or absent for many
-        // inquiries; and a hard cap can return zero options, protecting revenue
-        // that is then never earned.
+        .filter(row => {
+          // Rank by fit; filter ONLY on the explicit hard cap, and never a
+          // tier-1 unit. Already-vacant units are sunk vacancy cost, so hiding
+          // them from someone who might start early is backwards.
+          // Negative gaps mean available after target, which costs no rent.
+          // Null gaps have no known lease-end date, so there is no gap to judge.
+          if (!exceedsHardGapCap(row, settings.hard_max_gap_days)) return true;
+          hiddenByGapCap += 1;
+          return false;
+        })
         .sort(compareVacancyFit)
         .slice(0, limit);
     } else {
@@ -125,6 +139,9 @@ router.get('/vacancies', async (req, res) => {
     const data = {
       vacancies: rows,
       count: rows.length,
+      hard_max_gap_days: settings.hard_max_gap_days,
+      hidden_by_gap_cap: hiddenByGapCap,
+      no_match_reason: vacancyNoMatchReason(rows.length, hiddenByGapCap),
       phrasing: {
         certain: CERTAIN_AVAILABILITY_PHRASE,
         uncertain: UNCERTAIN_AVAILABILITY_PHRASE,

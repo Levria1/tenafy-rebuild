@@ -226,7 +226,7 @@ const EMPTY_VACANCY_FIT = {
  * Returns { gap_days, gap_warning, available_after_target } — or all null when
  * there is nothing to compare.
  */
-function vacancyFit(row, targetDate, { maxGapDays = 14, today } = {}) {
+function vacancyFit(row, targetDate, { maxGapDays = 10, today } = {}) {
   const target = parseYmdStrict(targetDate);
   if (!target) return { ...EMPTY_VACANCY_FIT };
 
@@ -248,7 +248,7 @@ function vacancyFit(row, targetDate, { maxGapDays = 14, today } = {}) {
   // negative = the unit is free after the target, so the prospect waits instead.
   const gapDays = Math.round((target.time - available.time) / 86400000);
   const configuredMax = Number(maxGapDays);
-  const threshold = Number.isFinite(configuredMax) ? Math.trunc(configuredMax) : 14;
+  const threshold = Number.isFinite(configuredMax) ? Math.trunc(configuredMax) : 10;
   const availableAfterTarget = gapDays < 0;
 
   // A negative gap costs no rent; it is exposed separately so the caller can say
@@ -258,6 +258,26 @@ function vacancyFit(row, targetDate, { maxGapDays = 14, today } = {}) {
     gap_warning: gapDays > threshold,
     available_after_target: availableAfterTarget,
   };
+}
+
+// Should this unit be withheld from an inquiry answer?
+function exceedsHardGapCap(unit, hardMaxGapDays) {
+  const configuredCap = Number(hardMaxGapDays);
+  if (!Number.isFinite(configuredCap)) return false;
+
+  const gapDays = Number(unit?.gap_days);
+  if (!Number.isFinite(gapDays)) return false;
+  if (Number(unit?.tier) === PRIORITY_VACANT) return false;
+  if (unit?.available_after_target === true || gapDays < 0) return false;
+
+  return gapDays > Math.trunc(configuredCap);
+}
+
+// A caller may act on this to forward the inquiry, so this must describe only
+// observable route decisions and never infer why a unit was unavailable.
+function vacancyNoMatchReason(returnedCount, hiddenByGapCap) {
+  if (Number(returnedCount) > 0) return null;
+  return Number(hiddenByGapCap) > 0 ? 'all_beyond_hard_cap' : 'no_vacancies';
 }
 
 function fitRank(row) {
@@ -389,6 +409,8 @@ module.exports = {
   vacancyToPublicShape,
   formatLocalDate,
   vacancyFit,
+  exceedsHardGapCap,
+  vacancyNoMatchReason,
   compareVacancyFit,
   priorityOf,
   sortByPriority,

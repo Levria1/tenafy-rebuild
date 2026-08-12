@@ -197,10 +197,13 @@ caveat instead of stating them as firm availability.
     "phrasing": {
       "certain": "{units} available from {date}",
       "uncertain": "We may also have {units} available, however the tenant may renew, they're not sure",
-      "earlier": "{units} is free from {date} — would you be able to start a little earlier?"
+      "earlier": "{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long."
     },
     "target_date": "2026-10-15",
-    "max_gap_days": 14
+    "max_gap_days": 10,
+    "hard_max_gap_days": 20,
+    "hidden_by_gap_cap": 0,
+    "no_match_reason": null
   }
 }
 ```
@@ -217,9 +220,10 @@ If a non-vacant row has no `end_date`, `available_from` is `null` and
 `certain` is `false`.
 
 When `target_date` is supplied, each row also includes move-in fit fields and the
-result order is re-ranked by best fit. No unit is filtered out because of fit.
-The endpoint still returns every row that passed the normal vacancy logic,
-`max_tier`, `property_id`, and `limit` handling.
+result order is re-ranked by best fit. `max_gap_days` is advisory only: it sets
+`gap_warning` but does not hide the unit. The endpoint filters only on
+`hard_max_gap_days`, after normal vacancy logic plus `max_tier` and
+`property_id`, and before `limit`.
 
 Fit fields:
 
@@ -233,6 +237,33 @@ Positive `gap_days` means the unit would sit empty before the prospect arrives,
 so it is the lost-rent case. `0` is an exact fit. Negative `gap_days` means the
 unit is not free until after the requested date; that is not a lost-rent warning,
 but callers should explain the wait.
+
+Hard gap cap fields:
+
+| Field | Meaning |
+|---|---|
+| `hard_max_gap_days` | Positive gaps greater than this are hidden from inquiry answers |
+| `hidden_by_gap_cap` | Count of rows removed by the hard cap; `0` when no `target_date` was supplied |
+| `no_match_reason` | `null` when at least one unit is returned; otherwise one of the values below |
+
+`no_match_reason` values:
+
+| Value | Meaning |
+|---|---|
+| `all_beyond_hard_cap` | The endpoint had candidate vacancies, but the hard cap removed them all |
+| `no_vacancies` | There were no candidate vacancies to offer |
+
+Tier 1 (`VACANT`) rows are never hidden by `hard_max_gap_days`, even when their
+positive gap is larger than the cap. Already-vacant units are sunk vacancy cost
+and remain the most urgent units to offer. Rows with negative `gap_days` and rows
+with `gap_days=null` are also not hidden by the cap.
+
+Advertising settings expose `min_gap_days`, `max_gap_days`, `hard_max_gap_days`,
+`lead_days_nr`, and `lead_days_other`. `PUT /advertising/settings` validates
+each numeric gap/lead field as an integer from `0` to `365`, treats absent fields
+as unchanged, and rejects merged settings where `max_gap_days >
+hard_max_gap_days` because the warning threshold would sit above the hide
+threshold.
 
 #### `GET /units/available` (deprecated)
 

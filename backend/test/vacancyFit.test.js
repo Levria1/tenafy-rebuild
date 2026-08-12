@@ -2,6 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   vacancyFit,
+  exceedsHardGapCap,
+  vacancyNoMatchReason,
   compareVacancyFit,
   vacancyToPublicShape,
 } = require('../src/utils/advertisingPlan');
@@ -145,7 +147,66 @@ test('compareVacancyFit orders positive gaps, after-target rows, then nulls with
   assert.deepEqual(rows.map(row => row.unit_name), before);
 });
 
-test('GET /vacancies without target_date keeps the old response shape and order', async () => {
+test('exceedsHardGapCap withholds non-vacant positive gaps beyond the cap', () => {
+  assert.equal(exceedsHardGapCap({ tier: 2, gap_days: 21, available_after_target: false }, 20), true);
+});
+
+test('exceedsHardGapCap keeps the inclusive boundary', () => {
+  assert.equal(exceedsHardGapCap({ tier: 2, gap_days: 20, available_after_target: false }, 20), false);
+});
+
+test('exceedsHardGapCap always keeps tier-1 vacant units', () => {
+  // An already-vacant unit is the one the operator most wants to offer.
+  assert.equal(exceedsHardGapCap({ tier: 1, gap_days: 61, available_after_target: false }, 20), false);
+});
+
+test('exceedsHardGapCap withholds tier-3 positive gaps beyond the cap', () => {
+  assert.equal(exceedsHardGapCap({ tier: 3, gap_days: 30, available_after_target: false }, 20), true);
+});
+
+test('exceedsHardGapCap keeps rows available after the target', () => {
+  assert.equal(exceedsHardGapCap({ tier: 2, gap_days: -17, available_after_target: true }, 20), false);
+});
+
+test('exceedsHardGapCap keeps rows without a judged gap', () => {
+  assert.equal(exceedsHardGapCap({ tier: 2, gap_days: null, available_after_target: null }, 20), false);
+});
+
+test('exceedsHardGapCap fails open when the hard cap setting is missing or invalid', () => {
+  assert.equal(exceedsHardGapCap({ tier: 2, gap_days: 30, available_after_target: false }), false);
+  assert.equal(exceedsHardGapCap({ tier: 2, gap_days: 30, available_after_target: false }, Number.NaN), false);
+});
+
+test('hard cap applies to the operator move-in scenario while preserving warnings', () => {
+  // Operator scenario: requested 2026-10-12, today 2026-08-12. Gap-9 is a clean
+  // offer, gap-30 is hidden, and the already-vacant tier-1 row is still offered
+  // and warned because it is the unit most urgent to fill.
+  const targetDate = '2026-10-12';
+  const options = { maxGapDays: 10, today: '2026-08-12' };
+  const rows = [
+    vacancySourceRow({ unit_id: 'u-gap-9', unit_name: '9', tier: 2, end_date: '2026-10-02' }),
+    vacancySourceRow({ unit_id: 'u-gap-30', unit_name: '30', tier: 2, end_date: '2026-09-11' }),
+    vacancySourceRow({ unit_id: 'u-vacant', unit_name: 'V', tier: 1, end_date: null }),
+  ].map(vacancyToPublicShape)
+    .map(row => ({ ...row, ...vacancyFit(row, targetDate, options) }));
+
+  const returned = rows.filter(row => !exceedsHardGapCap(row, 20));
+
+  assert.equal(rows.find(row => row.unit_id === 'u-gap-9').gap_days, 9);
+  assert.equal(rows.find(row => row.unit_id === 'u-gap-9').gap_warning, false);
+  assert.equal(exceedsHardGapCap(rows.find(row => row.unit_id === 'u-gap-30'), 20), true);
+  assert.equal(rows.find(row => row.unit_id === 'u-vacant').gap_days, 61);
+  assert.equal(rows.find(row => row.unit_id === 'u-vacant').gap_warning, true);
+  assert.deepEqual(returned.map(row => row.unit_id).sort(), ['u-gap-9', 'u-vacant']);
+});
+
+test('vacancyNoMatchReason distinguishes capped results from no vacancies', () => {
+  assert.equal(vacancyNoMatchReason(0, 3), 'all_beyond_hard_cap');
+  assert.equal(vacancyNoMatchReason(0, 0), 'no_vacancies');
+  assert.equal(vacancyNoMatchReason(1, 3), null);
+});
+
+test('GET /vacancies without target_date keeps order and reports no cap filtering', async () => {
   const advertising = require('../src/routes/advertising');
   const originalComputeVacancies = advertising.computeVacancies;
   const originalLoadSettings = advertising.loadSettings;
@@ -162,7 +223,7 @@ test('GET /vacancies without target_date keeps the old response shape and order'
   };
   advertising.loadSettings = async () => {
     loadSettingsCalls += 1;
-    return { max_gap_days: 14 };
+    return { max_gap_days: 10, hard_max_gap_days: 20 };
   };
 
   try {
@@ -180,6 +241,9 @@ test('GET /vacancies without target_date keeps the old response shape and order'
           vacancyToPublicShape(vacancySourceRow({ unit_id: 'u2', unit_name: '2B', property_id: 'p2', property_name: 'Beta', tier: 2, days_left: 34, end_date: '2026-09-15' })),
         ],
         count: 2,
+        hard_max_gap_days: 20,
+        hidden_by_gap_cap: 0,
+        no_match_reason: null,
         phrasing: {
           certain: '{units} available from {date}',
           uncertain: "We may also have {units} available, however the tenant may renew, they're not sure",
@@ -189,19 +253,19 @@ test('GET /vacancies without target_date keeps the old response shape and order'
 
     assert.equal(result.statusCode, 200);
     assert.equal(JSON.stringify(result.body), JSON.stringify(expected));
-    assert.deepEqual(computeOptions, { page: false });
-    assert.equal(loadSettingsCalls, 0);
+    assert.deepEqual(computeOptions, { page: false, settings: { max_gap_days: 10, hard_max_gap_days: 20 } });
+    assert.equal(loadSettingsCalls, 1);
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
     advertising.loadSettings = originalLoadSettings;
   }
 });
 
-test('GET /vacancies with target_date ranks and warns without filtering on fit', async () => {
+test('GET /vacancies with target_date ranks and warns without filtering on max_gap_days', async () => {
   const advertising = require('../src/routes/advertising');
   const originalComputeVacancies = advertising.computeVacancies;
   const originalLoadSettings = advertising.loadSettings;
-  advertising.loadSettings = async () => ({ footer: null, photo_root: '/photos', min_gap_days: 40, max_gap_days: 14, lead_days_nr: 60, lead_days_other: 45 });
+  advertising.loadSettings = async () => ({ footer: null, photo_root: '/photos', min_gap_days: 40, max_gap_days: 14, hard_max_gap_days: 365, lead_days_nr: 60, lead_days_other: 45 });
   advertising.computeVacancies = async () => ({
     vacancies: [
       vacancySourceRow({ unit_id: 'u-gap', unit_name: '8B', property_name: 'Harbour Court', end_date: '2026-09-14', days_left: 33 }),
@@ -226,11 +290,59 @@ test('GET /vacancies with target_date ranks and warns without filtering on fit',
     assert.equal(result.body.data.count, 3);
     assert.equal(result.body.data.target_date, '2026-10-15');
     assert.equal(result.body.data.max_gap_days, 14);
+    assert.equal(result.body.data.hard_max_gap_days, 365);
+    assert.equal(result.body.data.hidden_by_gap_cap, 0);
+    assert.equal(result.body.data.no_match_reason, null);
     assert.equal(typeof result.body.data.phrasing.earlier, 'string');
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
     advertising.loadSettings = originalLoadSettings;
   }
+});
+
+test('PUT /advertising/settings rejects hard_max_gap_days outside the allowed range', async () => {
+  const advertising = require('../src/routes/advertising');
+  const handler = advertising.stack
+    .find(layer => layer.route?.path === '/settings' && layer.route.methods.put)
+    .route.stack.at(-1).handle;
+
+  const result = await callSettingsPutHandler(handler, { hard_max_gap_days: 366 }, { execute: async () => {
+    throw new Error('pool should not be used for invalid scalar input');
+  } });
+
+  assert.equal(result.statusCode, 400);
+  assert.match(result.body.message, /hard_max_gap_days must be an integer between 0 and 365/);
+});
+
+test('PUT /advertising/settings validates max_gap_days against merged hard_max_gap_days', async () => {
+  const advertising = require('../src/routes/advertising');
+  const handler = advertising.stack
+    .find(layer => layer.route?.path === '/settings' && layer.route.methods.put)
+    .route.stack.at(-1).handle;
+  const executed = [];
+  const pool = {
+    execute: async (sql, params) => {
+      executed.push({ sql, params });
+      if (/SELECT footer, photo_root, min_gap_days, max_gap_days, hard_max_gap_days/.test(sql)) {
+        return [[{
+          footer: null,
+          photo_root: '/photos',
+          min_gap_days: 40,
+          max_gap_days: 10,
+          hard_max_gap_days: 20,
+          lead_days_nr: 60,
+          lead_days_other: 45,
+        }]];
+      }
+      throw new Error('upsert should not run after cross-field validation fails');
+    },
+  };
+
+  const result = await callSettingsPutHandler(handler, { max_gap_days: 21 }, pool);
+
+  assert.equal(result.statusCode, 400);
+  assert.match(result.body.message, /warning threshold above the hide threshold/);
+  assert.equal(executed.length, 1);
 });
 
 function vacancySourceRow(overrides = {}) {
@@ -269,4 +381,23 @@ async function callVacanciesHandler(handler, query) {
 
   await handler(req, res);
   return { statusCode, body };
+}
+
+async function callSettingsPutHandler(handler, body, pool) {
+  let statusCode = 200;
+  let responseBody = null;
+  const req = { body, pool, user: { orgId: 'org1' } };
+  const res = {
+    status(code) {
+      statusCode = code;
+      return this;
+    },
+    json(value) {
+      responseBody = value;
+      return this;
+    },
+  };
+
+  await handler(req, res);
+  return { statusCode, body: responseBody };
 }

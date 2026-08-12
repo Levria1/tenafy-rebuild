@@ -271,6 +271,13 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
     settingsChildren.push({ key: '/settings/landlord-signatures', label: <Link href="/settings/landlord-signatures">Landlord Signatures</Link> });
   }
 
+  // Leasing → Availability: the gap thresholds that decide which units get offered
+  // in answer to an inquiry. Gated on the same permission as the vacancy views, since
+  // it is the same letting decision expressed as a rule rather than a list.
+  if (hasPermission('LANDLORD/PROPERTY_LIST')) {
+    settingsChildren.push({ key: '/settings?tab=leasing', label: <Link href="/settings?tab=leasing">Leasing</Link> });
+  }
+
   // API Keys — super admin only
   if (isSuperAdmin) {
     settingsChildren.push({ key: '/settings?tab=apiKeys', label: <Link href="/settings?tab=apiKeys">API Keys</Link> });
