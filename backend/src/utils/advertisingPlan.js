@@ -280,6 +280,16 @@ function vacancyNoMatchReason(returnedCount, hiddenByGapCap) {
   return Number(hiddenByGapCap) > 0 ? 'all_beyond_hard_cap' : 'no_vacancies';
 }
 
+// { applies, message } for the partner-forward block. `applies` is only about
+// the returned count; no_match_reason is internal reporting, not caller logic.
+function partnerForwardBlock(returnedCount, storedMessage) {
+  const text = storedMessage == null ? null : String(storedMessage);
+  return {
+    applies: Number(returnedCount) === 0,
+    message: text && text.trim() ? text : null,
+  };
+}
+
 function fitRank(row) {
   const gapDays = row?.gap_days;
   if (typeof gapDays === 'number' && Number.isFinite(gapDays)) {
@@ -411,6 +421,7 @@ module.exports = {
   vacancyFit,
   exceedsHardGapCap,
   vacancyNoMatchReason,
+  partnerForwardBlock,
   compareVacancyFit,
   priorityOf,
   sortByPriority,

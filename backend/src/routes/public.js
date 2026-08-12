@@ -32,6 +32,7 @@ const {
   vacancyFit,
   exceedsHardGapCap,
   vacancyNoMatchReason,
+  partnerForwardBlock,
   compareVacancyFit,
 } = require('../utils/advertisingPlan');
 
@@ -136,12 +137,18 @@ router.get('/vacancies', async (req, res) => {
         .map(vacancyToPublicShape);
     }
 
+    const noMatchReason = vacancyNoMatchReason(rows.length, hiddenByGapCap);
     const data = {
       vacancies: rows,
       count: rows.length,
       hard_max_gap_days: settings.hard_max_gap_days,
       hidden_by_gap_cap: hiddenByGapCap,
-      no_match_reason: vacancyNoMatchReason(rows.length, hiddenByGapCap),
+      no_match_reason: noMatchReason,
+      // Caller branch point for partner agency forwarding. Use this flag rather
+      // than string-matching no_match_reason: the reason is internal reporting.
+      // The message is operator-authored outward-facing content; null means the
+      // operator has not authored it, so the caller must send nothing.
+      partner_forward: partnerForwardBlock(rows.length, settings.partner_forward_message),
       phrasing: {
         certain: CERTAIN_AVAILABILITY_PHRASE,
         uncertain: UNCERTAIN_AVAILABILITY_PHRASE,

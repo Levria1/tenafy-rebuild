@@ -4,6 +4,7 @@ const {
   vacancyFit,
   exceedsHardGapCap,
   vacancyNoMatchReason,
+  partnerForwardBlock,
   compareVacancyFit,
   vacancyToPublicShape,
 } = require('../src/utils/advertisingPlan');
@@ -206,6 +207,52 @@ test('vacancyNoMatchReason distinguishes capped results from no vacancies', () =
   assert.equal(vacancyNoMatchReason(1, 3), null);
 });
 
+test('partnerForwardBlock applies to empty returned vacancies and returns stored text verbatim', () => {
+  assert.deepEqual(partnerForwardBlock(0, 'Please contact the prospect.'), {
+    applies: true,
+    message: 'Please contact the prospect.',
+  });
+});
+
+test('partnerForwardBlock keeps message visible when vacancies are returned', () => {
+  assert.deepEqual(partnerForwardBlock(3, 'Please contact the prospect.'), {
+    applies: false,
+    message: 'Please contact the prospect.',
+  });
+});
+
+test('partnerForwardBlock has no default for an unauthored message', () => {
+  // The caller must send nothing here: this is the unauthored case and the
+  // reason the API must not invent a default.
+  assert.deepEqual(partnerForwardBlock(0, null), {
+    applies: true,
+    message: null,
+  });
+});
+
+test('partnerForwardBlock treats blank messages as unauthored', () => {
+  assert.equal(partnerForwardBlock(0, '').message, null);
+  assert.equal(partnerForwardBlock(0, '   ').message, null);
+});
+
+test('partnerForwardBlock returns placeholders unsubstituted', () => {
+  // Substitution is the caller's job; a half-filled template must never reach a
+  // partner agency from server-side partial substitution.
+  const result = partnerForwardBlock(0, 'Please help {customer_name} for {target_date}.');
+
+  assert.equal(result.message, 'Please help {customer_name} for {target_date}.');
+  assert.match(result.message, /\{customer_name\}/);
+  assert.match(result.message, /\{target_date\}/);
+});
+
+test('partnerForwardBlock applies by returned count, not no_match_reason', () => {
+  for (const hiddenByGapCap of [0, 2]) {
+    const reason = vacancyNoMatchReason(0, hiddenByGapCap);
+    assert.ok(['no_vacancies', 'all_beyond_hard_cap'].includes(reason));
+    assert.equal(partnerForwardBlock(0, 'Forward this inquiry.').applies, true);
+  }
+});
+
 test('GET /vacancies without target_date keeps order and reports no cap filtering', async () => {
   const advertising = require('../src/routes/advertising');
   const originalComputeVacancies = advertising.computeVacancies;
@@ -223,7 +270,7 @@ test('GET /vacancies without target_date keeps order and reports no cap filterin
   };
   advertising.loadSettings = async () => {
     loadSettingsCalls += 1;
-    return { max_gap_days: 10, hard_max_gap_days: 20 };
+    return { max_gap_days: 10, hard_max_gap_days: 20, partner_forward_message: null };
   };
 
   try {
@@ -244,6 +291,10 @@ test('GET /vacancies without target_date keeps order and reports no cap filterin
         hard_max_gap_days: 20,
         hidden_by_gap_cap: 0,
         no_match_reason: null,
+        partner_forward: {
+          applies: false,
+          message: null,
+        },
         phrasing: {
           certain: '{units} available from {date}',
           uncertain: "We may also have {units} available, however the tenant may renew, they're not sure",
@@ -253,7 +304,7 @@ test('GET /vacancies without target_date keeps order and reports no cap filterin
 
     assert.equal(result.statusCode, 200);
     assert.equal(JSON.stringify(result.body), JSON.stringify(expected));
-    assert.deepEqual(computeOptions, { page: false, settings: { max_gap_days: 10, hard_max_gap_days: 20 } });
+    assert.deepEqual(computeOptions, { page: false, settings: { max_gap_days: 10, hard_max_gap_days: 20, partner_forward_message: null } });
     assert.equal(loadSettingsCalls, 1);
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
@@ -265,7 +316,7 @@ test('GET /vacancies with target_date ranks and warns without filtering on max_g
   const advertising = require('../src/routes/advertising');
   const originalComputeVacancies = advertising.computeVacancies;
   const originalLoadSettings = advertising.loadSettings;
-  advertising.loadSettings = async () => ({ footer: null, photo_root: '/photos', min_gap_days: 40, max_gap_days: 14, hard_max_gap_days: 365, lead_days_nr: 60, lead_days_other: 45 });
+  advertising.loadSettings = async () => ({ footer: null, photo_root: '/photos', partner_forward_message: 'Forward message', min_gap_days: 40, max_gap_days: 14, hard_max_gap_days: 365, lead_days_nr: 60, lead_days_other: 45 });
   advertising.computeVacancies = async () => ({
     vacancies: [
       vacancySourceRow({ unit_id: 'u-gap', unit_name: '8B', property_name: 'Harbour Court', end_date: '2026-09-14', days_left: 33 }),
@@ -293,6 +344,7 @@ test('GET /vacancies with target_date ranks and warns without filtering on max_g
     assert.equal(result.body.data.hard_max_gap_days, 365);
     assert.equal(result.body.data.hidden_by_gap_cap, 0);
     assert.equal(result.body.data.no_match_reason, null);
+    assert.deepEqual(result.body.data.partner_forward, { applies: false, message: 'Forward message' });
     assert.equal(typeof result.body.data.phrasing.earlier, 'string');
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
@@ -323,10 +375,11 @@ test('PUT /advertising/settings validates max_gap_days against merged hard_max_g
   const pool = {
     execute: async (sql, params) => {
       executed.push({ sql, params });
-      if (/SELECT footer, photo_root, min_gap_days, max_gap_days, hard_max_gap_days/.test(sql)) {
+      if (/SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days/.test(sql)) {
         return [[{
           footer: null,
           photo_root: '/photos',
+          partner_forward_message: null,
           min_gap_days: 40,
           max_gap_days: 10,
           hard_max_gap_days: 20,

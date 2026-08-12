@@ -1606,6 +1606,7 @@ GET /api/public/properties`}
 function LeasingAvailabilitySettings() {
   const [maxGap, setMaxGap] = useState(null);
   const [hardMaxGap, setHardMaxGap] = useState(null);
+  const [partnerMsg, setPartnerMsg] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1622,6 +1623,7 @@ function LeasingAvailabilitySettings() {
         if (!d) { setLoadError(true); return; }
         setMaxGap(d.max_gap_days ?? null);
         setHardMaxGap(d.hard_max_gap_days ?? null);
+        setPartnerMsg(d.partner_forward_message ?? '');
       })
       .catch(() => setLoadError(true))
       .finally(() => setLoading(false));
@@ -1636,7 +1638,11 @@ function LeasingAvailabilitySettings() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await advertisingApi.updateAdSettings({ max_gap_days: maxGap, hard_max_gap_days: hardMaxGap });
+      await advertisingApi.updateAdSettings({
+        max_gap_days: maxGap,
+        hard_max_gap_days: hardMaxGap,
+        partner_forward_message: partnerMsg,
+      });
       message.success('Saved');
     } catch (e) {
       message.error(e?.response?.data?.message || 'Failed to save');
@@ -1706,8 +1712,23 @@ function LeasingAvailabilitySettings() {
       <Alert
         type="info" showIcon style={{ marginBottom: 16 }}
         message="When nothing matches"
-        description="If every unit is past the stop-offering limit, the reply says nothing suitable is available so the inquiry can be passed to partner agencies. A unit that only becomes free after the requested date is never hidden by this limit — waiting costs no rent."
+        description="If we can't house the inquiry — whether nothing is suitable or we have nothing at all — the message below is what gets forwarded to partner agencies. A unit that only becomes free after the requested date is never hidden by the limits above, since waiting costs no rent."
       />
+
+      <div style={{ marginBottom: 8, fontWeight: 500 }}>Message to forward to partner agencies</div>
+      <Input.TextArea
+        rows={5} value={partnerMsg} onChange={e => setPartnerMsg(e.target.value)}
+        maxLength={2000} showCount
+        placeholder={'e.g. Hi, we have an enquiry we can\u2019t house ourselves \u2014 {customer_name} is looking to move in around {target_date}, budget {budget}, in {area}. Requirements: {requirements}. Anything available on your side?'}
+      />
+      <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+        Leave this empty and nothing is sent — there is deliberately no default, because this text
+        goes to real agencies. Placeholders are filled in when the message is sent:{' '}
+        <code>{'{customer_name}'}</code> <code>{'{target_date}'}</code> <code>{'{budget}'}</code>{' '}
+        <code>{'{area}'}</code> <code>{'{requirements}'}</code>
+      </div>
+
+      <div style={{ height: 20 }} />
 
       <Button type="primary" loading={saving} disabled={invalid} onClick={handleSave}>Save</Button>
     </Card>

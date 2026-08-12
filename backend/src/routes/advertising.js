@@ -15,6 +15,7 @@ function newId() {
 // Column length caps (match migrations-org/015). Returns an error string when a
 // field is too long, so we can 400 instead of letting MySQL 500 on truncation.
 const FIELD_LIMITS = { name: 160, title: 255, webpage_link: 500, label: 255, forum_rule: 500 };
+const SETTINGS_LIMITS = { photo_root: 255, partner_forward_message: 2000 };
 const UNIT_LINE_LIMITS = { name: 160, line_text: 500 };
 function lengthError(body, limits = FIELD_LIMITS) {
   for (const [field, max] of Object.entries(limits)) {
@@ -949,13 +950,15 @@ async function renderBundle(pool, orgId, bundle, template, footer) {
 
 // Org-wide advertising settings (shared footer + photo root).
 async function loadSettings(pool, orgId) {
-  const defaults = { footer: null, photo_root: PHOTO_ROOT, min_gap_days: 40, max_gap_days: 10, hard_max_gap_days: 20, lead_days_nr: 60, lead_days_other: 45 };
+  const defaults = { footer: null, photo_root: PHOTO_ROOT, partner_forward_message: null, min_gap_days: 40, max_gap_days: 10, hard_max_gap_days: 20, lead_days_nr: 60, lead_days_other: 45 };
   try {
     const [[row]] = await pool.execute(
-      `SELECT footer, photo_root, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+      `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
     return {
       footer: row?.footer || null,
       photo_root: row?.photo_root || PHOTO_ROOT,
+      // Outward-facing partner-agency text is opt-in only. NULL means unauthored.
+      partner_forward_message: row?.partner_forward_message ?? null,
       min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
       max_gap_days: Number.isFinite(Number(row?.max_gap_days)) ? Number(row.max_gap_days) : 10,
       hard_max_gap_days: Number.isFinite(Number(row?.hard_max_gap_days)) ? Number(row.hard_max_gap_days) : 20,
@@ -1005,10 +1008,13 @@ router.get('/settings', authenticate, async (req, res) => {
 router.put('/settings', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { footer, photo_root, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other } = req.body || {};
-    const bt = nonStringField(req.body || {}, ['footer', 'photo_root']);
+    const { footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other } = req.body || {};
+    const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
-    const lenErr = lengthError({ photo_root }, { photo_root: 255 });   // column is VARCHAR(255)
+    const normalizedPartnerForwardMessage = partner_forward_message !== undefined
+      ? normalizePartnerForwardMessage(partner_forward_message)
+      : undefined;
+    const lenErr = lengthError({ photo_root, partner_forward_message: normalizedPartnerForwardMessage }, SETTINGS_LIMITS);
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     for (const field of ['min_gap_days', 'max_gap_days', 'hard_max_gap_days', 'lead_days_nr', 'lead_days_other']) {
       if (req.body?.[field] !== undefined
@@ -1036,20 +1042,26 @@ router.put('/settings', authenticate, async (req, res) => {
     const setClauses = [];
     if (footer !== undefined) setClauses.push('footer = VALUES(footer)');
     if (photo_root !== undefined) setClauses.push('photo_root = VALUES(photo_root)');
+    if (partner_forward_message !== undefined) setClauses.push('partner_forward_message = VALUES(partner_forward_message)');
     if (min_gap_days !== undefined) setClauses.push('min_gap_days = VALUES(min_gap_days)');
     if (max_gap_days !== undefined) setClauses.push('max_gap_days = VALUES(max_gap_days)');
     if (hard_max_gap_days !== undefined) setClauses.push('hard_max_gap_days = VALUES(hard_max_gap_days)');
     if (lead_days_nr !== undefined) setClauses.push('lead_days_nr = VALUES(lead_days_nr)');
     if (lead_days_other !== undefined) setClauses.push('lead_days_other = VALUES(lead_days_other)');
     if (!setClauses.length) return res.json({ code: 200, data: { ok: true } });
-    const executeUpsert = ({ includeMaxGap, includeHardMaxGap }) => {
-      const insertColumns = ['org_id', 'footer', 'photo_root', 'min_gap_days'];
+    const executeUpsert = ({ includeMaxGap, includeHardMaxGap, includePartnerForward }) => {
+      const insertColumns = ['org_id', 'footer', 'photo_root'];
       const params = [
         orgId,
         footer !== undefined ? (footer || null) : null,
         photo_root !== undefined ? (photo_root || null) : null,
-        min_gap_days ?? 40,
       ];
+      if (includePartnerForward) {
+        insertColumns.push('partner_forward_message');
+        params.push(normalizedPartnerForwardMessage ?? null);
+      }
+      insertColumns.push('min_gap_days');
+      params.push(min_gap_days ?? 40);
       if (includeMaxGap) {
         insertColumns.push('max_gap_days');
         params.push(max_gap_days ?? 10);
@@ -1064,6 +1076,7 @@ router.put('/settings', authenticate, async (req, res) => {
       const clauses = setClauses.filter(clause => {
         if (!includeMaxGap && clause.startsWith('max_gap_days')) return false;
         if (!includeHardMaxGap && clause.startsWith('hard_max_gap_days')) return false;
+        if (!includePartnerForward && clause.startsWith('partner_forward_message')) return false;
         return true;
       });
       if (!clauses.length) return Promise.resolve();
@@ -1074,20 +1087,31 @@ router.put('/settings', authenticate, async (req, res) => {
         params
       );
     };
-    try {
-      await executeUpsert({ includeMaxGap: true, includeHardMaxGap: true });
-    } catch (err) {
-      if (isMissingColumn(err, 'hard_max_gap_days') && hard_max_gap_days === undefined) {
-        try {
-          await executeUpsert({ includeMaxGap: true, includeHardMaxGap: false });
-        } catch (err2) {
-          if (!isMissingColumn(err2, 'max_gap_days') || max_gap_days !== undefined) throw err2;
-          await executeUpsert({ includeMaxGap: false, includeHardMaxGap: false });
-        }
-      } else if (isMissingColumn(err, 'max_gap_days') && max_gap_days === undefined && hard_max_gap_days === undefined) {
-        await executeUpsert({ includeMaxGap: false, includeHardMaxGap: false });
-      } else {
-        throw err;
+    const optionalColumns = {
+      includePartnerForward: {
+        column: 'partner_forward_message',
+        wasSent: partner_forward_message !== undefined,
+      },
+      includeHardMaxGap: {
+        column: 'hard_max_gap_days',
+        wasSent: hard_max_gap_days !== undefined,
+      },
+      includeMaxGap: {
+        column: 'max_gap_days',
+        wasSent: max_gap_days !== undefined,
+      },
+    };
+    const flags = { includeMaxGap: true, includeHardMaxGap: true, includePartnerForward: true };
+    while (true) {
+      try {
+        await executeUpsert(flags);
+        break;
+      } catch (err) {
+        const missing = Object.entries(optionalColumns).find(([flag, info]) => (
+          flags[flag] && !info.wasSent && isMissingColumn(err, info.column)
+        ));
+        if (!missing) throw err;
+        flags[missing[0]] = false;
       }
     }
     res.json({ code: 200, data: { ok: true } });
@@ -1320,6 +1344,14 @@ function nonStringField(body, keys) {
     if (v != null && typeof v !== 'string') return k;
   }
   return null;
+}
+
+function normalizePartnerForwardMessage(value) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  // A whitespace-only partner-forward message must not count as authored; the
+  // caller would otherwise send a blank message to real partner agencies.
+  return trimmed === '' ? null : trimmed;
 }
 
 function parseForumFlags(body, { partial = false } = {}) {

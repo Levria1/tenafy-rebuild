@@ -203,7 +203,11 @@ caveat instead of stating them as firm availability.
     "max_gap_days": 10,
     "hard_max_gap_days": 20,
     "hidden_by_gap_cap": 0,
-    "no_match_reason": null
+    "no_match_reason": null,
+    "partner_forward": {
+      "applies": false,
+      "message": null
+    }
   }
 }
 ```
@@ -245,6 +249,8 @@ Hard gap cap fields:
 | `hard_max_gap_days` | Positive gaps greater than this are hidden from inquiry answers |
 | `hidden_by_gap_cap` | Count of rows removed by the hard cap; `0` when no `target_date` was supplied |
 | `no_match_reason` | `null` when at least one unit is returned; otherwise one of the values below |
+| `partner_forward.applies` | `true` when the returned vacancy list is empty, regardless of `no_match_reason` |
+| `partner_forward.message` | Operator-authored text to send to partner agencies, or `null` when unset |
 
 `no_match_reason` values:
 
@@ -252,6 +258,33 @@ Hard gap cap fields:
 |---|---|
 | `all_beyond_hard_cap` | The endpoint had candidate vacancies, but the hard cap removed them all |
 | `no_vacancies` | There were no candidate vacancies to offer |
+
+Use `partner_forward.applies`, not `no_match_reason`, as the caller branch for
+forwarding an inquiry to partner agencies. Both `all_beyond_hard_cap` and
+`no_vacancies` are internally distinct reports but trigger the same partner
+forwarding decision. `partner_forward` is always present, with or without
+`target_date`; `message` is still returned when `applies=false` so callers can
+pre-load it, but it must not be sent unless `applies=true`.
+
+`partner_forward.message` has no default. The stored setting is nullable and
+ships empty because this is outward-facing content sent to real partner agencies;
+the operator must author it deliberately. If `partner_forward.applies=true` and
+`partner_forward.message=null`, the caller must not send a partner-forward
+message.
+
+The message is returned verbatim and unsubstituted. Tenafy substitutes none of
+these placeholders; the caller must fill them from chat context before sending:
+
+| Placeholder | Meaning |
+|---|---|
+| `{customer_name}` | the enquirer's name |
+| `{target_date}` | requested move-in date |
+| `{budget}` | stated budget |
+| `{requirements}` | free-text summary of what they asked for |
+| `{area}` | area or district requested |
+
+Tenafy only knows `{target_date}` at this point. The other values live in the
+chat/inquiry layer, so server-side partial substitution is intentionally avoided.
 
 Tier 1 (`VACANT`) rows are never hidden by `hard_max_gap_days`, even when their
 positive gap is larger than the cap. Already-vacant units are sunk vacancy cost
