@@ -1391,11 +1391,22 @@ router.get('/viewing-negotiation/active', async (req, res) => {
     const orgId = req.apiKey.orgId;
     const target = normPhoneDigits(req.query.phone);
     if (!target) return ok(res, { active: false });
+    // A CONFIRMED/AUTO_CONFIRMED negotiation whose viewing has not happened yet is
+    // still routable FOR THE TENANT: they may withdraw ("sorry, I can't do 3pm after
+    // all"), which is the reversal path. Excluding those rows here would make that
+    // path unreachable — handleReply accepts a tenant reply on a terminal state, but
+    // TaneChat discovers negotiations through THIS endpoint, so it would never send
+    // one. Bounded by current_proposed_datetime > NOW() so a viewing that already
+    // happened stops matching the tenant's number forever.
     const [rows] = await req.pool.execute(
-      `SELECT n.id, n.state, n.awaiting, n.prospect_phone, t.phone AS tenant_phone
+      `SELECT n.id, n.state, n.awaiting, n.prospect_phone, n.current_proposed_datetime,
+              t.phone AS tenant_phone
          FROM viewing_negotiation n
          LEFT JOIN tenant t ON t.id = n.tenant_id
         WHERE n.state NOT IN ('CONFIRMED','AUTO_CONFIRMED','CANCELLED')
+           OR (n.state IN ('CONFIRMED','AUTO_CONFIRMED')
+               AND n.current_proposed_datetime IS NOT NULL
+               AND n.current_proposed_datetime > NOW())
         ORDER BY n.updated_at DESC LIMIT 200`,
       []
     );

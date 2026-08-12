@@ -439,8 +439,14 @@ function reminderTarget(row, { reminderHours = 4, staleHours = 24 } = {}) {
 function activeNegotiationPayload(rows, targetDigits) {
   const matches = [];
   for (const r of rows || []) {
+    // A booked-but-not-yet-happened viewing is routable for the TENANT only. They can
+    // still withdraw, and that reversal has to reach us. The prospect cannot reopen a
+    // booked viewing by messaging — handleReply refuses a prospect reply on a terminal
+    // state, so marking it routable would have TaneChat relay a message that is then
+    // dropped, and the viewer would get silence instead of "we'll follow up".
+    const committed = r.state === 'CONFIRMED' || r.state === STATE_AUTO_CONFIRMED;
     if (r.prospect_digits === targetDigits) {
-      const routable = r.state !== 'NEEDS_STAFF';
+      const routable = r.state !== 'NEEDS_STAFF' && !committed;
       matches.push({ negotiation_id: String(r.id), party: 'prospect', state: r.state, awaiting: r.awaiting, routable });
     }
     if (r.tenant_digits && r.tenant_digits === targetDigits) {

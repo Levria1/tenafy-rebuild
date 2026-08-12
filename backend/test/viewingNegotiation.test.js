@@ -715,3 +715,30 @@ test('CLOSED_STATES sweep predicates exclude AUTO_CONFIRMED', () => {
   assert.equal(viewingService.isStaleCandidate(row), false);
   assert.equal(viewingService.CLOSED_STATES.includes(STATE_AUTO_CONFIRMED), true);
 });
+
+// The reversal path is only reachable if TaneChat is TOLD to relay the tenant's
+// message. It discovers negotiations through /viewing-negotiation/active, so a
+// booked-but-not-yet-happened viewing has to stay routable for the tenant — the
+// reply route accepting it is necessary but not sufficient on its own.
+test('activeNegotiationPayload: a committed viewing stays routable for the tenant, not the prospect', () => {
+  for (const state of ['AUTO_CONFIRMED', 'CONFIRMED']) {
+    const rows = [{ id: '1', state, awaiting: null, prospect_digits: '11111111', tenant_digits: '22222222' }];
+
+    const tenant = activeNegotiationPayload(rows, '22222222');
+    assert.equal(tenant.active, true, `${state}: tenant must be able to withdraw`);
+    assert.equal(tenant.negotiations[0].routable, true);
+    assert.equal(tenant.negotiations[0].party, 'tenant');
+
+    // The prospect cannot reopen a booked viewing: handleReply refuses a prospect
+    // reply on a terminal state, so relaying it would drop the message silently.
+    const prospect = activeNegotiationPayload(rows, '11111111');
+    assert.equal(prospect.active, false, `${state}: prospect must not be routable`);
+    assert.equal(prospect.negotiations[0].routable, false);
+  }
+
+  // A cancelled negotiation is routable for nobody — the SQL excludes it entirely,
+  // but assert the shape here too so the two layers can't drift apart.
+  const cancelled = [{ id: '2', state: 'CANCELLED', awaiting: null, prospect_digits: '33333333', tenant_digits: '44444444' }];
+  assert.equal(activeNegotiationPayload(cancelled, '44444444').active, true); // not excluded by this pure fn
+  // …which is exactly why the route's WHERE clause must keep excluding CANCELLED.
+});
