@@ -189,3 +189,54 @@ Message TaneChat should produce:
 > Central House 4A is available from 2026-10-15. Harbour Court 8B is free from
 > 2026-09-15 — would you be able to start a little earlier? Kowloon Loft 2C is
 > available from 2026-11-01 if you can wait until then.
+
+---
+
+## 8. Verified live on production — 2026-08-12
+
+Not illustrative. This is the real response, so you can compare your own call
+against it.
+
+`GET /vacancies?target_date=2026-10-15` → `count: 6`, `max_gap_days: 14`
+
+| tier | intent | available_from | gap_days | flags | unit |
+|---:|---|---|---:|---|---|
+| 2 | NR | 2026-10-12 | 3 | — | Hollywood 5B |
+| 2 | NR | 2026-09-27 | 18 | `gap_warning` | Jardine 2B |
+| 3 | MR | 2026-09-26 | 19 | `gap_warning`, `certain:false` | Hollywood 1B |
+| 3 | MR | 2026-09-21 | 24 | `gap_warning`, `certain:false` | Mong Kok 1C |
+| 3 | MR | 2026-09-21 | 24 | `gap_warning`, `certain:false` | Mong Kok 5D |
+| 2 | NR | 2026-09-17 | 28 | `gap_warning` | Gilman's Bazaar 5B |
+
+Three things to notice:
+
+- **Best fit is first.** Hollywood 5B (3-day gap) leads; the 28-day gap is last.
+  Sorting is done for you — do not re-sort by price or name before answering.
+- **Nothing was removed.** Five of six carry `gap_warning` and all six are still
+  returned. The warning is advice, not exclusion.
+- **`certain:false` appears only on the tier-3 MR rows.** Those are the ones that
+  need `phrasing.uncertain`.
+
+A good answer from that payload:
+
+> Hollywood 5B is available from 12 October, which lines up well with your date.
+> Jardine 2B and Gilman's Bazaar 5B are free a bit earlier, from 27 September and
+> 17 September — would you be able to start a little earlier?
+> We may also have Hollywood 1B, Mong Kok 1C and Mong Kok 5D available, however
+> the tenant may renew, they're not sure.
+
+Note the uncertain units are grouped into **one** caveated sentence rather than
+repeating the caveat three times.
+
+### What `/units/available` now returns
+
+Same day, the deprecated endpoint returned **1 unit, down from 6**. That is the
+over-reporting being corrected, not units disappearing: the other five are re-let
+within 40 days, so they are not genuinely available now. They still appear in
+`/vacancies` with an `available_from` date. If your current chatbot answers feel
+suddenly thinner, this is why — and it is the reason to migrate rather than a
+reason to worry.
+
+`?date=` still works and every original field (`amenity_type`, `city`, …) is still
+returned, so nothing breaks while you migrate. Responses now carry a
+`Deprecation: true` header and `meta.replacement: "/vacancies"`.
