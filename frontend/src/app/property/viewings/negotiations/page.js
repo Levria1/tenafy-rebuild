@@ -26,6 +26,12 @@ const STATE_META = {
   RELAY_TO_PROSPECT: { label: 'Relaying to prospect', color: 'purple' },
   CONFIRM_TIME: { label: 'Confirming time', color: 'geekblue' },
   CONFIRMED: { label: 'Confirmed', color: 'green' },
+  // Booked because the occupant stayed silent past the opt-out deadline they were
+  // given. Distinguished from CONFIRMED on purpose: nobody explicitly agreed, so
+  // it is the one confirmed state that can still be reversed by the tenant.
+  AUTO_CONFIRMED: { label: 'Auto-confirmed', color: 'green' },
+  TENANT_CANCELS_AFTER_X: { label: 'Tenant reversed', color: 'red' },
+  RESCHEDULE_AFTER_COMMIT: { label: 'Reschedule needed', color: 'volcano' },
   NEEDS_STAFF: { label: 'Needs staff', color: 'red' },
   CANCELLED: { label: 'Cancelled', color: 'default' },
 };
@@ -239,7 +245,10 @@ function NegotiationDrawer({
 }) {
   const neg = detail?.negotiation;
   const events = detail?.events || [];
-  const closed = neg && ['CONFIRMED', 'CANCELLED'].includes(neg.state);
+  // AUTO_CONFIRMED counts as closed — it has a booking. TENANT_CANCELS_AFTER_X and
+  // RESCHEDULE_AFTER_COMMIT deliberately do NOT: the booking has been pulled and
+  // staff still have to resolve them, so the action buttons must stay available.
+  const closed = neg && ['CONFIRMED', 'AUTO_CONFIRMED', 'CANCELLED'].includes(neg.state);
   const offWindow = neg && neg.state === 'NEEDS_STAFF' && neg.needs_staff_reason === 'off_window';
   const multiUnit = neg && neg.state === 'NEEDS_STAFF' && neg.needs_staff_reason === 'multi_unit';
 

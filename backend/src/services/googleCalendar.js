@@ -41,36 +41,52 @@ function getClient() {
   }
 }
 
+function buildViewingEvent({ booking, unit, property, employee }, { tentative = false } = {}) {
+  const start = new Date(booking.proposed_datetime);
+  const end = new Date(start.getTime() + (booking.duration_minutes || 30) * 60 * 1000);
+
+  const location = [property.street_address, property.city, property.state]
+    .filter(Boolean).join(', ');
+
+  const description = [
+    `Viewer:  ${booking.viewer_name}`,
+    `Email:   ${booking.viewer_email}`,
+    booking.viewer_phone   ? `Phone:   ${booking.viewer_phone}`   : null,
+    booking.viewer_message ? `Message: ${booking.viewer_message}` : null,
+    `\nHost: ${employee.name}`,
+    tentative ? '\nPending hold: this slot is not yet confirmed and may move or disappear.' : null,
+  ].filter(Boolean).join('\n');
+
+  const event = {
+    summary: tentative
+      ? `Viewing (pending): ${unit.name} @ ${property.name}`
+      : `Viewing: ${unit.name} @ ${property.name}`,
+    location,
+    description,
+    start: { dateTime: start.toISOString() },
+    end:   { dateTime: end.toISOString() },
+  };
+
+  if (tentative) {
+    event.status = 'tentative';
+    // Transparent holds stay visible but do not appear in free/busy, avoiding
+    // a relay negotiation blocking its own auto-confirm availability check.
+    event.transparency = 'transparent';
+  }
+
+  return event;
+}
+
 /**
  * Create a viewing event on the employee's calendar.
  * Returns the Google Calendar event ID string, or null on failure/skip.
  */
-async function createViewingEvent({ calendarId, booking, unit, property, employee }) {
+async function createViewingEvent({ calendarId, booking, unit, property, employee }, { tentative = false } = {}) {
   const cal = getClient();
   if (!cal || !calendarId) return null;
 
   try {
-    const start = new Date(booking.proposed_datetime);
-    const end = new Date(start.getTime() + (booking.duration_minutes || 30) * 60 * 1000);
-
-    const location = [property.street_address, property.city, property.state]
-      .filter(Boolean).join(', ');
-
-    const description = [
-      `Viewer:  ${booking.viewer_name}`,
-      `Email:   ${booking.viewer_email}`,
-      booking.viewer_phone   ? `Phone:   ${booking.viewer_phone}`   : null,
-      booking.viewer_message ? `Message: ${booking.viewer_message}` : null,
-      `\nHost: ${employee.name}`,
-    ].filter(Boolean).join('\n');
-
-    const event = {
-      summary: `Viewing: ${unit.name} @ ${property.name}`,
-      location,
-      description,
-      start: { dateTime: start.toISOString() },
-      end:   { dateTime: end.toISOString() },
-    };
+    const event = buildViewingEvent({ booking, unit, property, employee }, { tentative });
 
     const res = await cal.events.insert({
       calendarId,
@@ -82,6 +98,30 @@ async function createViewingEvent({ calendarId, booking, unit, property, employe
   } catch (err) {
     console.error('[googleCalendar] createViewingEvent failed:', err.message);
     return null;
+  }
+}
+
+/**
+ * Patch an existing viewing event's timing and display fields.
+ * Returns true on success, false on failure/skip.
+ */
+async function updateViewingEvent({ calendarId, gcalEventId, booking, unit, property, employee }, { tentative = false } = {}) {
+  const cal = getClient();
+  if (!cal || !calendarId || !gcalEventId) return false;
+
+  try {
+    const event = buildViewingEvent({ booking, unit, property, employee }, { tentative });
+    await cal.events.patch({
+      calendarId,
+      eventId: gcalEventId,
+      resource: event,
+      sendUpdates: 'none',
+    });
+    return true;
+  } catch (err) {
+    if ([404, 410].includes(err.code) || [404, 410].includes(err.status)) return false;
+    console.error('[googleCalendar] updateViewingEvent failed:', err.message);
+    return false;
   }
 }
 
@@ -141,4 +181,4 @@ async function getFreeBusy({ calendarId, timeMin, timeMax }) {
   }
 }
 
-module.exports = { createViewingEvent, deleteViewingEvent, getFreeBusy };
+module.exports = { createViewingEvent, updateViewingEvent, deleteViewingEvent, getFreeBusy };

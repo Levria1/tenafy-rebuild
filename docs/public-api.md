@@ -186,6 +186,62 @@ the rotation history used by later plans. Call this endpoint after every posting
 otherwise rotation history never accumulates and the seven-day rotation cannot
 work.
 
+### Viewing negotiations
+
+#### `GET /viewing-negotiations`
+
+Requires `X-API-Key`; read-only keys are allowed. This is the board endpoint for
+viewing relay rows. It does not replace `GET /viewing-negotiation/active`, whose
+response shape is reserved for per-message phone routing.
+
+Query parameters:
+
+| Param | Description |
+|---|---|
+| `status` | `active`, `terminal`, or `all` (`active` default). `NEEDS_STAFF` is active because staff still need to act. |
+| `state` | Optional comma-separated state filter, e.g. `AWAIT_TENANT,NEEDS_STAFF`. |
+| `updated_since` | Optional ISO-ish timestamp lower bound on `updated_at`. |
+| `limit` | Page size, default `50`, max `200`. |
+| `cursor` | Opaque cursor from `meta.next_cursor`; uses keyset pagination, not offset. |
+
+Each row contains stable keys for TaneChat rendering:
+
+```json
+{
+  "negotiation_id": "123",
+  "status": "active",
+  "state": "AWAIT_TENANT",
+  "awaiting": "tenant",
+  "unit": { "id": "45", "label": "Gilman's Bazaar 5B", "address": "..." },
+  "customer": { "name": "Alex", "phone": "+852..." },
+  "tenant": { "id": "67", "name": "Tenant Name", "phone": "+852..." },
+  "viewing": { "proposed_start_at": "2026-08-13T15:00:00", "timezone": "Asia/Hong_Kong" },
+  "policy": { "opt_out_window_hours": 4, "require_explicit_confirmation": false, "source": "setting" },
+  "timestamps": {
+    "created_at": "...",
+    "customer_asked_at": "...",
+    "tenant_notified_at": "...",
+    "auto_confirmed_at": "...",
+    "updated_at": "..."
+  },
+  "next_deadline": { "kind": "opt_out_expiry", "due_at": "...", "overdue": false },
+  "risk_flags": ["implicit_consent_pending"],
+  "last_event": { "event_type": "tenant_opt_out_notice", "party": "tenant", "send_mode": "approve", "status": "draft", "created_at": "..." }
+}
+```
+
+`meta.next_cursor` is present when another page is available. `next_deadline` is
+computed from the same decision helpers used by the scheduler, so the board and
+the hourly sweep should agree.
+
+Viewing relay v2 adds three states: `AUTO_CONFIRMED` means the tenant opt-out
+deadline elapsed and the viewing was booked automatically;
+`TENANT_CANCELS_AFTER_X` means the occupant replied after confirmation and can no
+longer make the time; `RESCHEDULE_AFTER_COMMIT` means the occupant replied after
+confirmation with a new proposed time. A tenant reply is accepted on an
+`AUTO_CONFIRMED` negotiation so the reversal path can run. Prospect replies on
+terminal states are still refused as no longer active.
+
 ---
 
 ## Field Reference (commonly-needed enums)

@@ -68,6 +68,75 @@ function fail(res, message, status = 500) {
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 }
+function encodeCursor(row) {
+  if (!row) return null;
+  return Buffer.from(JSON.stringify({
+    updated_at: viewingNegotiation.dateToWallClock(row.updated_at),
+    id: String(row.id),
+  })).toString('base64url');
+}
+function decodeCursor(s) {
+  if (!s) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(String(s), 'base64url').toString('utf8'));
+    if (!parsed || !parsed.updated_at || parsed.id == null) return null;
+    return { updated_at: String(parsed.updated_at).slice(0, 19).replace('T', ' '), id: String(parsed.id) };
+  } catch { return null; }
+}
+function tenantName(row) {
+  return row.tenant_company_name || [row.tenant_first_name, row.tenant_last_name].filter(Boolean).join(' ') || null;
+}
+function boardRow(row, lastEvent, setting) {
+  const terminal = viewingNegotiation.TERMINAL_STATES.includes(row.state);
+  const next = viewingNegotiation.boardNextDeadline(row, setting, new Date());
+  const flags = [];
+  if (row.state === 'AWAIT_TENANT' && row.awaiting === 'tenant' && !row.policy_explicit_confirm && row.tenant_notified_at) flags.push('implicit_consent_pending');
+  if (next.overdue) flags.push('overdue');
+  if ([viewingNegotiation.STATE_TENANT_REVERSED, viewingNegotiation.STATE_RESCHEDULE_AFTER_COMMIT].includes(row.state)) flags.push('reversal');
+  if (row.policy_explicit_confirm) flags.push('explicit_yes_required');
+  return {
+    negotiation_id: String(row.id),
+    status: terminal ? 'terminal' : 'active',
+    state: row.state || null,
+    awaiting: row.awaiting || null,
+    unit: {
+      id: row.unit_id == null ? null : String(row.unit_id),
+      label: [row.property_name, row.unit_name].filter(Boolean).join(' ') || null,
+      address: [row.street_address, row.city, row.state_name].filter(Boolean).join(', ') || null,
+    },
+    customer: { name: row.prospect_name || null, phone: row.prospect_phone || null },
+    tenant: {
+      id: row.tenant_id == null ? null : String(row.tenant_id),
+      name: tenantName(row),
+      phone: row.tenant_phone || null,
+    },
+    viewing: {
+      proposed_start_at: viewingNegotiation.dateToWallClock(row.current_proposed_datetime),
+      timezone: 'Asia/Hong_Kong',
+    },
+    policy: {
+      opt_out_window_hours: row.policy_opt_out_hours == null ? null : Number(row.policy_opt_out_hours),
+      require_explicit_confirmation: row.policy_explicit_confirm == null ? null : Boolean(row.policy_explicit_confirm),
+      source: row.policy_source || null,
+    },
+    timestamps: {
+      created_at: viewingNegotiation.dateToWallClock(row.created_at),
+      customer_asked_at: viewingNegotiation.dateToWallClock(row.customer_asked_at),
+      tenant_notified_at: viewingNegotiation.dateToWallClock(row.tenant_notified_at),
+      auto_confirmed_at: viewingNegotiation.dateToWallClock(row.auto_confirmed_at),
+      updated_at: viewingNegotiation.dateToWallClock(row.updated_at),
+    },
+    next_deadline: next,
+    risk_flags: flags,
+    last_event: lastEvent ? {
+      event_type: lastEvent.event_type || null,
+      party: lastEvent.party || null,
+      send_mode: lastEvent.send_mode || null,
+      status: lastEvent.status || null,
+      created_at: viewingNegotiation.dateToWallClock(lastEvent.created_at),
+    } : { event_type: null, party: null, send_mode: null, status: null, created_at: null },
+  };
+}
 
 const MAX_FACTS = 50;
 const MAX_FACT_CHARS = 500;
@@ -1079,6 +1148,117 @@ function normPhoneDigits(p) {
   return d.length > 8 ? d.slice(-8) : d; // compare on the local subscriber part
 }
 
+// GET /api/public/viewing-negotiations
+// Board API for TaneChat: plural route is separate from the strict singular
+// /viewing-negotiation/active phone-routing response.
+router.get('/viewing-negotiations', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const setting = await viewingNegotiation.getSetting(req.pool, orgId);
+    const status = ['active', 'terminal', 'all'].includes(req.query.status) ? req.query.status : 'active';
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+    const where = ['n.org_id = ?'];
+    const params = [orgId];
+    if (status === 'active') where.push(`n.state NOT IN (${viewingNegotiation.TERMINAL_STATES.map(() => '?').join(',')})`), params.push(...viewingNegotiation.TERMINAL_STATES);
+    if (status === 'terminal') where.push(`n.state IN (${viewingNegotiation.TERMINAL_STATES.map(() => '?').join(',')})`), params.push(...viewingNegotiation.TERMINAL_STATES);
+    if (req.query.state) {
+      const states = String(req.query.state).split(',').map(s => s.trim()).filter(Boolean);
+      if (states.length) {
+        where.push(`n.state IN (${states.map(() => '?').join(',')})`);
+        params.push(...states);
+      }
+    }
+    if (req.query.updated_since) {
+      where.push('n.updated_at >= ?');
+      params.push(String(req.query.updated_since).slice(0, 19).replace('T', ' '));
+    }
+    const cursor = decodeCursor(req.query.cursor);
+    if (cursor) {
+      where.push('(n.updated_at < ? OR (n.updated_at = ? AND n.id < ?))');
+      params.push(cursor.updated_at, cursor.updated_at, cursor.id);
+    }
+    let rows;
+    try {
+      [rows] = await req.pool.execute(
+        `SELECT n.id, n.state, n.awaiting, n.unit_id, n.tenant_id, n.prospect_name, n.prospect_phone,
+                n.current_proposed_datetime, n.policy_opt_out_hours, n.policy_explicit_confirm,
+                n.policy_source, n.customer_asked_at, n.tenant_notified_at, n.auto_confirmed_at,
+                n.opt_out_deadline_at, n.customer_nudge_count, n.tenant_nudge_count, n.last_nudge_at,
+                n.created_at, n.updated_at,
+                u.name AS unit_name, p.display_name AS property_name, p.street_address, p.city, p.state AS state_name,
+                t.phone AS tenant_phone, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+                t.company_name AS tenant_company_name
+           FROM viewing_negotiation n
+           LEFT JOIN unit u ON u.id = n.unit_id
+           LEFT JOIN property p ON p.id = n.property_id
+           LEFT JOIN tenant t ON t.id = n.tenant_id
+          WHERE ${where.join(' AND ')}
+          ORDER BY n.updated_at DESC, n.id DESC
+          LIMIT ${limit + 1}`,
+        params
+      );
+    } catch (e) {
+      if (!viewingNegotiation.isSchemaMissingError(e)) throw e;
+      [rows] = await req.pool.execute(
+        `SELECT n.id, n.state, n.awaiting, n.unit_id, n.tenant_id, n.prospect_name, n.prospect_phone,
+                n.current_proposed_datetime,
+                NULL AS policy_opt_out_hours, NULL AS policy_explicit_confirm, NULL AS policy_source,
+                NULL AS customer_asked_at, NULL AS tenant_notified_at, NULL AS auto_confirmed_at,
+                NULL AS opt_out_deadline_at, NULL AS customer_nudge_count, NULL AS tenant_nudge_count,
+                NULL AS last_nudge_at, n.created_at, n.updated_at,
+                u.name AS unit_name, p.display_name AS property_name, p.street_address, p.city, p.state AS state_name,
+                t.phone AS tenant_phone, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+                t.company_name AS tenant_company_name
+           FROM viewing_negotiation n
+           LEFT JOIN unit u ON u.id = n.unit_id
+           LEFT JOIN property p ON p.id = n.property_id
+           LEFT JOIN tenant t ON t.id = n.tenant_id
+          WHERE ${where.join(' AND ')}
+          ORDER BY n.updated_at DESC, n.id DESC
+          LIMIT ${limit + 1}`,
+        params
+      );
+    }
+    const pageRows = rows.slice(0, limit);
+    const lastByNegotiation = new Map();
+    if (pageRows.length) {
+      const ids = pageRows.map(r => String(r.id));
+      try {
+        const [events] = await req.pool.execute(
+          `SELECT e.negotiation_id, e.event_type, e.party, e.send_mode, e.status, e.created_at
+             FROM viewing_negotiation_event e
+             LEFT JOIN viewing_negotiation_event newer
+               ON newer.negotiation_id = e.negotiation_id
+              AND (newer.created_at > e.created_at OR (newer.created_at = e.created_at AND newer.id > e.id))
+            WHERE e.negotiation_id IN (${ids.map(() => '?').join(',')})
+              AND newer.id IS NULL`,
+          ids
+        );
+        for (const ev of events) lastByNegotiation.set(String(ev.negotiation_id), ev);
+      } catch (e) {
+        if (!viewingNegotiation.isSchemaMissingError(e)) throw e;
+        const [events] = await req.pool.execute(
+          `SELECT e.negotiation_id, NULL AS event_type, e.party, NULL AS send_mode, e.status, e.created_at
+             FROM viewing_negotiation_event e
+             LEFT JOIN viewing_negotiation_event newer
+               ON newer.negotiation_id = e.negotiation_id
+              AND (newer.created_at > e.created_at OR (newer.created_at = e.created_at AND newer.id > e.id))
+            WHERE e.negotiation_id IN (${ids.map(() => '?').join(',')})
+              AND newer.id IS NULL`,
+          ids
+        );
+        for (const ev of events) lastByNegotiation.set(String(ev.negotiation_id), ev);
+      }
+    }
+    const data = pageRows.map(r => boardRow(r, lastByNegotiation.get(String(r.id)), setting));
+    const nextCursor = rows.length > limit ? encodeCursor(pageRows[pageRows.length - 1]) : null;
+    return ok(res, data, { limit, next_cursor: nextCursor, timezone: 'Asia/Hong_Kong' });
+  } catch (err) {
+    console.error('Public viewing-negotiations error:', err);
+    fail(res, 'Failed to load viewing negotiations');
+  }
+});
+
 // POST /api/public/viewing-negotiation/start
 // Body: { unit_id, prospect:{name,phone,email} }
 // Staff pressed "Schedule Viewing". Creates the negotiation + first prospect prompt.
@@ -1137,7 +1317,10 @@ async function handleNegotiationReply(req, res, party) {
     const messageId = (req.body && (req.body.message_id || req.body.messageId)) || null;
     const neg = await viewingNegotiation.loadNegotiation(req.pool, negId);
     if (!neg) return fail(res, 'Negotiation not found', 404);
-    if (['CONFIRMED', 'CANCELLED', 'NEEDS_STAFF'].includes(neg.state)) {
+    if (neg.state === 'CANCELLED'
+      || neg.state === 'NEEDS_STAFF'
+      || (viewingNegotiation.TERMINAL_STATES.includes(neg.state)
+        && party !== 'tenant')) {
       return ok(res, { closed: true, negotiation_id: negId, state: neg.state,
         message: 'This viewing request is no longer active — our team will follow up.' });
     }
@@ -1212,7 +1395,7 @@ router.get('/viewing-negotiation/active', async (req, res) => {
       `SELECT n.id, n.state, n.awaiting, n.prospect_phone, t.phone AS tenant_phone
          FROM viewing_negotiation n
          LEFT JOIN tenant t ON t.id = n.tenant_id
-        WHERE n.state NOT IN ('CONFIRMED','CANCELLED')
+        WHERE n.state NOT IN ('CONFIRMED','AUTO_CONFIRMED','CANCELLED')
         ORDER BY n.updated_at DESC LIMIT 200`,
       []
     );

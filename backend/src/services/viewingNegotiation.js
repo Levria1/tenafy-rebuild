@@ -22,7 +22,7 @@
 
 const crypto = require('crypto');
 const { getMasterPool } = require('../config/poolRegistry');
-const { getFreeBusy } = require('./googleCalendar');
+const { createViewingEvent, updateViewingEvent, getFreeBusy, deleteViewingEvent } = require('./googleCalendar');
 const { sendWhatsApp, loadWhatsAppTemplate } = require('./whatsappService');
 const { sendViewingConfirmation } = require('./viewingNotify');
 const { loadTemplate, substituteVariables } = require('./emailService');
@@ -30,9 +30,19 @@ const { KIND_ACTION, KIND_MANAGE } = require('../middleware/viewingTokenAuth');
 const {
   DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting,
   reminderTarget, activeNegotiationPayload,
+  STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
+  TERMINAL_STATES, CLOSED_STATES,
+  resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
+  reversalClassification,
+  sendModeFor, idempotencyKeyFor, withinQuietHours,
 } = require('./viewingNegotiationLogic');
 const { findActiveLeaseForUnit } = require('./viewingBooking');
 const { resolveUnit, optionsText } = require('./unitResolver');
+const {
+  viewingSlotOverlaps,
+  negotiationConflictOverlaps,
+  decideCalendarHoldSync,
+} = require('./viewingCalendarHoldLogic');
 
 function safeParseCandidates(s) {
   try { const a = JSON.parse(s || '[]'); return Array.isArray(a) ? a : []; } catch { return []; }
@@ -115,6 +125,10 @@ function stripToText(html) {
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
     .replace(/\n{3,}/g, '\n\n').trim();
 }
+function tenantDisplayName(ctx) {
+  if (!ctx) return '';
+  return ctx.company_name || [ctx.tenant_first_name, ctx.tenant_last_name].filter(Boolean).join(' ') || '';
+}
 
 // buildRouting is imported from ./viewingNegotiationLogic (pure).
 
@@ -132,6 +146,15 @@ async function getSetting(pool, orgId) {
       viewing_end: row.viewing_end || DEFAULT_SETTING.viewing_end,
       lead_days_nr: row.lead_days_nr == null ? DEFAULT_SETTING.lead_days_nr : Number(row.lead_days_nr),
       lead_days_other: row.lead_days_other == null ? DEFAULT_SETTING.lead_days_other : Number(row.lead_days_other),
+      customer_nudge_1_hours: row.customer_nudge_1_hours == null ? DEFAULT_SETTING.customer_nudge_1_hours : Number(row.customer_nudge_1_hours),
+      customer_nudge_2_hours: row.customer_nudge_2_hours == null ? DEFAULT_SETTING.customer_nudge_2_hours : Number(row.customer_nudge_2_hours),
+      customer_nudge_cap: row.customer_nudge_cap == null ? DEFAULT_SETTING.customer_nudge_cap : Number(row.customer_nudge_cap),
+      customer_timeout_hours: row.customer_timeout_hours == null ? DEFAULT_SETTING.customer_timeout_hours : Number(row.customer_timeout_hours),
+      tenant_opt_out_hours: row.tenant_opt_out_hours == null ? DEFAULT_SETTING.tenant_opt_out_hours : Number(row.tenant_opt_out_hours),
+      tenant_explicit_timeout_hours: row.tenant_explicit_timeout_hours == null ? DEFAULT_SETTING.tenant_explicit_timeout_hours : Number(row.tenant_explicit_timeout_hours),
+      tenant_nudge_cap: row.tenant_nudge_cap == null ? DEFAULT_SETTING.tenant_nudge_cap : Number(row.tenant_nudge_cap),
+      auto_send_nudges: row.auto_send_nudges == null ? DEFAULT_SETTING.auto_send_nudges : Number(row.auto_send_nudges),
+      respect_quiet_hours: row.respect_quiet_hours == null ? DEFAULT_SETTING.respect_quiet_hours : Number(row.respect_quiet_hours),
     };
   } catch {
     return { ...DEFAULT_SETTING }; // table not migrated yet
@@ -175,7 +198,7 @@ async function loadStaffById(pool, employeeId) {
 }
 
 // Is `whenIso` free for this staffer (their bookings + Google busy + buffer)?
-async function checkStaffFree(pool, { employeeId, unitId, whenIso, buffer, calendarId }) {
+async function checkStaffFree(pool, { employeeId, unitId, whenIso, buffer, calendarId, excludeNegotiationId }) {
   const bufferMin = (buffer == null || isNaN(Number(buffer))) ? 30 : Number(buffer);
   const start = new Date(whenIso);
   const end = new Date(start.getTime() + 30 * 60000);
@@ -191,9 +214,43 @@ async function checkStaffFree(pool, { employeeId, unitId, whenIso, buffer, calen
     [employeeId, unitId, fetchStart, padEnd]
   );
   for (const b of rows) {
-    const eStart = new Date(b.proposed_datetime).getTime() - bufferMin * 60000;
-    const eEnd = new Date(b.proposed_datetime).getTime() + ((Number(b.duration_minutes) || 30) + bufferMin) * 60000;
-    if (start.getTime() < eEnd && end.getTime() > eStart) return { free: false };
+    if (viewingSlotOverlaps({
+      proposedStart: start,
+      proposedEnd: end,
+      existingDatetime: b.proposed_datetime,
+      durationMinutes: b.duration_minutes,
+      bufferMin,
+    })) return { free: false };
+  }
+  try {
+    // Only emit the self-exclusion clause when we actually have an id. `id <> NULL`
+    // evaluates to NULL in SQL, which would make the WHERE false for EVERY row and
+    // silently delete this entire conflict check — a caller that forgot the argument
+    // would look like "no conflicts" rather than an error. checkStaffFree is exported,
+    // so that caller may not be in this file. The JS-level guard below excludes self
+    // regardless; this just keeps the query honest.
+    const excludeSql = excludeNegotiationId == null ? '' : 'AND id <> ? ';
+    const [negRows] = await pool.execute(
+      `SELECT id, current_proposed_datetime
+         FROM viewing_negotiation
+        WHERE state NOT IN (${sqlList(CLOSED_STATES)})
+          AND current_proposed_datetime IS NOT NULL
+          AND (staff_employee_id = ? OR unit_id = ?)
+          ${excludeSql}
+          AND current_proposed_datetime >= ? AND current_proposed_datetime <= ?`,
+      excludeNegotiationId == null
+        ? [employeeId, unitId, fetchStart, padEnd]
+        : [employeeId, unitId, excludeNegotiationId, fetchStart, padEnd]
+    );
+    for (const row of negRows) {
+      if (negotiationConflictOverlaps(row, excludeNegotiationId, {
+        proposedStart: start,
+        proposedEnd: end,
+        bufferMin,
+      })) return { free: false };
+    }
+  } catch (e) {
+    if (!isSchemaMissingError(e)) throw e;
   }
   if (calendarId) {
     const busy = await getFreeBusy({ calendarId, timeMin: padStart, timeMax: padEnd });
@@ -221,14 +278,134 @@ async function loadContext(pool, neg) {
   return ctx;
 }
 
+function hasCalendarHoldColumns(neg) {
+  return neg && Object.prototype.hasOwnProperty.call(neg, 'gcal_hold_event_id');
+}
+
+function staffDisplayName(staff) {
+  return [staff && staff.first_name, staff && staff.last_name].filter(Boolean).join(' ')
+      || (staff && staff.email) || 'Staff';
+}
+
+function holdDatetimeSql(whenIso) {
+  const s = dateToWallClock(whenIso);
+  return s ? s.replace('T', ' ') : null;
+}
+
+function holdEventPayload(neg, ctx, whenIso, staff) {
+  return {
+    booking: {
+      proposed_datetime: whenIso,
+      duration_minutes: 30,
+      viewer_name: neg.prospect_name || 'Prospect',
+      viewer_email: neg.prospect_email || '',
+      viewer_phone: neg.prospect_phone || null,
+      viewer_message: null,
+    },
+    unit: { name: ctx.unit_name || 'Unit' },
+    property: {
+      name: ctx.property_name || 'Property',
+      street_address: ctx.street_address,
+      city: ctx.city,
+      state: ctx.state,
+    },
+    employee: { name: staffDisplayName(staff), email: staff.email },
+  };
+}
+
+async function syncCalendarHold(pool, orgId, neg, { whenIso, staff } = {}) {
+  if (!hasCalendarHoldColumns(neg)) return;
+  const calendarId = staff && staff.google_calendar_id ? String(staff.google_calendar_id).trim() : '';
+  if (!staff || !whenIso || !calendarId) return;
+
+  const action = decideCalendarHoldSync({
+    existingEventId: neg.gcal_hold_event_id,
+    existingCalendarId: neg.gcal_hold_calendar_id,
+    existingDatetime: neg.gcal_hold_datetime,
+  }, { calendarId, whenIso });
+  if (action === 'skip' || action === 'noop') return;
+
+  const ctx = await loadContext(pool, neg);
+  const payload = holdEventPayload(neg, ctx, whenIso, staff);
+  const holdSql = holdDatetimeSql(whenIso);
+  if (!holdSql) return;
+
+  try {
+    if (action === 'patch') {
+      const ok = await updateViewingEvent({
+        calendarId,
+        gcalEventId: neg.gcal_hold_event_id,
+        ...payload,
+      }, { tentative: true });
+      if (!ok) return;
+      await pool.execute(
+        `UPDATE viewing_negotiation
+            SET gcal_hold_datetime = ?, updated_at = updated_at
+          WHERE id = ?`,
+        [holdSql, neg.id]
+      );
+      return;
+    }
+
+    if (action === 'move' && neg.gcal_hold_event_id && neg.gcal_hold_calendar_id) {
+      deleteViewingEvent({
+        calendarId: neg.gcal_hold_calendar_id,
+        gcalEventId: neg.gcal_hold_event_id,
+      }).catch(e => console.error('[viewingNegotiation] gcal hold delete failed:', e.message));
+    }
+
+    const eventId = await createViewingEvent({ calendarId, ...payload }, { tentative: true });
+    if (!eventId) return;
+    await pool.execute(
+      `UPDATE viewing_negotiation
+          SET gcal_hold_event_id = ?, gcal_hold_datetime = ?, gcal_hold_calendar_id = ?,
+              updated_at = updated_at
+        WHERE id = ?`,
+      [eventId, holdSql, calendarId, neg.id]
+    );
+  } catch (e) {
+    if (!isSchemaMissingError(e)) throw e;
+  }
+}
+
+async function clearCalendarHold(pool, orgId, neg) {
+  if (!hasCalendarHoldColumns(neg)) return;
+  const eventId = neg.gcal_hold_event_id;
+  const calendarId = neg.gcal_hold_calendar_id;
+  if (eventId && calendarId) {
+    deleteViewingEvent({ calendarId, gcalEventId: eventId })
+      .catch(e => console.error('[viewingNegotiation] gcal hold delete failed:', e.message));
+  }
+  if (!eventId && !calendarId && !neg.gcal_hold_datetime) return;
+  try {
+    await pool.execute(
+      `UPDATE viewing_negotiation
+          SET gcal_hold_event_id = NULL, gcal_hold_datetime = NULL, gcal_hold_calendar_id = NULL,
+              updated_at = updated_at
+        WHERE id = ?`,
+      [neg.id]
+    );
+  } catch (e) {
+    if (!isSchemaMissingError(e)) throw e;
+  }
+}
+
 // ── outbound rendering + dispatch ─────────────────────────────────────────────
 const FALLBACKS = {
   'Viewing-Prospect-Day-Ask': `Hi! We'd love to arrange a viewing of %Unit Name% at %Property Name%. Which day and time would suit you? (Viewings run Mon–Sat, 11am–7pm.)`,
   'Viewing-Slot-Taken': `Sorry, %Proposed Time% isn't available. Could you suggest another day and time?`,
   'Viewing-Checking': `Thanks! Let me check on %Proposed Time% for you and confirm the viewing.`,
   'Viewing-Tenant-Ask': `Hi, a prospective viewer would like to see %Unit Name% at %Proposed Time%. Would that be okay?`,
+  // The deadline substitution is load-bearing: if %Opt Out Deadline% renders
+  // empty, the message stops being an informed opt-out and the auto-confirm that
+  // follows is no longer consented to. chooseTenantNoticeTemplate falls back to
+  // the explicit-YES wording whenever the deadline is missing.
+  'Viewing-Tenant-OptOut': `Hi %Tenant Name%, %Prospect Name% would like to view %Unit Name% on %Proposed Time%. Unless you reply no or ask to reschedule by %Opt Out Deadline%, we'll confirm this viewing. If the time doesn't work, please reply here.`,
+  'Viewing-Tenant-Explicit': `Hi %Tenant Name%, %Prospect Name% would like to view %Unit Name% on %Proposed Time%. Please reply yes to confirm this works, or send another time that would be better.`,
   'Viewing-Tenant-Alt-Ask': `Got it, no problem. May I ask which day and time would work best for you?`,
   'Viewing-Relay-Prospect': `Sorry, %Old Time% doesn't work for the occupant. Would %Proposed Time% work for you instead?`,
+  'Viewing-Reversal-Prospect': `Sorry, the occupant can no longer make the confirmed viewing time. Apologies for the change — our team will be in touch with alternatives shortly.`,
+  'Viewing-Reschedule-Prospect': `The occupant has proposed %Proposed Time% instead. Would that work for you?`,
   'Viewing-Outside-Hours': `Sorry, %Proposed Time% is outside our viewing hours. Could you suggest another day and time? (Viewings run Mon–Sat, 11am–7pm.)`,
   'Viewing-Confirm-Time': `Just to confirm — a viewing of %Unit Name% at %Property Name% on %Proposed Time%? Reply YES to confirm, or send a different day and time.`,
   'Viewing-Relay-Confirmed': `Great news — your viewing of %Unit Name% is confirmed for %Proposed Time%. See you then!`,
@@ -246,6 +423,104 @@ const FALLBACKS = {
   'Viewing-Unit-NotFound': `Sorry, I couldn't find that unit. Which property and unit would you like to view?`,
   'Viewing-Hold-MultiUnit': `Thanks! It looks like you'd like to view more than one unit — I'll have a colleague help arrange that. Someone from our team will follow up with you shortly.`,
 };
+
+const EVENT_TYPES = [
+  'customer_confirm_request',
+  'customer_nudge',
+  'tenant_nudge',
+  'tenant_opt_out_notice',
+  'tenant_explicit_confirm_request',
+  'customer_booking_confirmed',
+  'customer_reschedule_request',
+  'customer_reversal_notice',
+  'staff_alert',
+];
+
+const EVENT_TYPE_BY_TEMPLATE = {
+  'Viewing-Prospect-Day-Ask': 'customer_confirm_request',
+  'Viewing-Confirm-Time': 'customer_confirm_request',
+  'Viewing-Tenant-OptOut': 'tenant_opt_out_notice',
+  'Viewing-Tenant-Explicit': 'tenant_explicit_confirm_request',
+  'Viewing-Tenant-Ask': 'tenant_explicit_confirm_request',
+  'Viewing-Relay-Confirmed': 'customer_booking_confirmed',
+  'Viewing-Relay-Prospect': 'customer_reschedule_request',
+  'Viewing-Relay-Escalated': 'customer_reschedule_request',
+  'Viewing-Reversal-Prospect': 'customer_reversal_notice',
+  'Viewing-Reschedule-Prospect': 'customer_reschedule_request',
+};
+
+function eventTypeForOutbound(ob) {
+  if (Object.prototype.hasOwnProperty.call(ob || {}, 'eventType')) return ob.eventType || null;
+  if (ob && ob.templateType === 'Viewing-Relay-Reminder') {
+    return ob.party === 'tenant' ? 'tenant_nudge' : 'customer_nudge';
+  }
+  return EVENT_TYPE_BY_TEMPLATE[ob && ob.templateType] || null;
+}
+
+function outboundSendDecision(eventType, setting, now = new Date()) {
+  setting = { ...DEFAULT_SETTING, ...(setting || {}) };
+  const mode = sendModeFor(eventType, setting);
+  let shouldSend = mode === 'auto' || setting.relay_mode === 'auto';
+  let quietSuppressed = false;
+  if (mode === 'auto' && setting.respect_quiet_hours && withinQuietHours(dateToWallClock(now), setting)) {
+    // A nudge is never urgent enough to wake someone; the next hourly cron tick
+    // will pick it up when the org's viewing window is open again.
+    shouldSend = false;
+    quietSuppressed = true;
+  }
+  return { mode, shouldSend, quietSuppressed };
+}
+
+function chooseTenantNoticeTemplate(policy, deadline) {
+  if (policy && policy.require_explicit_confirmation) {
+    return { templateType: 'Viewing-Tenant-Explicit', eventType: 'tenant_explicit_confirm_request', deadline: null };
+  }
+  if (!deadline) {
+    return { templateType: 'Viewing-Tenant-Explicit', eventType: 'tenant_explicit_confirm_request', deadline: null };
+  }
+  return { templateType: 'Viewing-Tenant-OptOut', eventType: 'tenant_opt_out_notice', deadline };
+}
+
+function isClosedState(state) {
+  return CLOSED_STATES.includes(state);
+}
+
+function isNudgeCandidate(row) {
+  return row && !isClosedState(row.state) && ['prospect', 'tenant'].includes(row.awaiting);
+}
+
+function isStaleCandidate(row) {
+  return row && !isClosedState(row.state);
+}
+
+function boardNextDeadline(row, setting, now = new Date()) {
+  const autoDecision = autoConfirmDecision(row, now);
+  if (autoDecision.action === 'auto_confirm' || autoDecision.action === 'wait') {
+    return {
+      kind: 'opt_out_expiry',
+      due_at: dateToWallClock(row && row.opt_out_deadline_at),
+      overdue: autoDecision.action === 'auto_confirm',
+    };
+  }
+  const nudge = nudgeDecision(row, setting, now);
+  if (nudge.action === 'nudge') {
+    return { kind: `${nudge.party}_nudge`, due_at: dateToWallClock(now), overdue: true };
+  }
+  if (nudge.action === 'escalate') {
+    return { kind: nudge.party === 'prospect' ? 'customer_timeout' : 'tenant_timeout', due_at: dateToWallClock(now), overdue: true };
+  }
+  return { kind: null, due_at: null, overdue: false };
+}
+
+function sqlList(values) {
+  return values.map(v => `'${String(v).replace(/'/g, "''")}'`).join(', ');
+}
+
+const V2_NEGOTIATION_COLUMNS = new Set([
+  'customer_asked_at', 'tenant_notified_at', 'opt_out_deadline_at', 'auto_confirmed_at',
+  'customer_nudge_count', 'tenant_nudge_count', 'last_nudge_at',
+  'policy_opt_out_hours', 'policy_explicit_confirm', 'policy_source', 'reversal_reason',
+]);
 
 async function renderMessage(pool, orgId, templateType, vars) {
   let text = FALLBACKS[templateType] || '';
@@ -268,24 +543,71 @@ async function renderMessage(pool, orgId, templateType, vars) {
 // silently believing the party was messaged.
 async function dispatchOutbounds(pool, orgId, negId, setting, outbounds) {
   const events = [];
-  const auto = setting.relay_mode === 'auto';
   for (const ob of outbounds) {
+    const eventType = eventTypeForOutbound(ob);
+    const { mode, shouldSend } = outboundSendDecision(eventType, setting, new Date());
     const body = await renderMessage(pool, orgId, ob.templateType, ob.vars);
     const id = newId();
     let status = 'draft', sentAt = null;
-    if (auto && ob.to_phone) {
+    let eventId = id;
+    let idempotencyKey = null;
+    let inserted = false;
+    try {
+      if (eventType) {
+        const [[countRow]] = await pool.execute(
+          `SELECT COUNT(*) AS c FROM viewing_negotiation_event
+            WHERE negotiation_id = ? AND event_type = ?`,
+          [negId, eventType]
+        );
+        idempotencyKey = idempotencyKeyFor(negId, eventType, (Number(countRow && countRow.c) || 0) + 1);
+      }
+      await pool.execute(
+        `INSERT INTO viewing_negotiation_event
+           (id, negotiation_id, direction, party, to_phone, template_type, body, status, sent_at,
+            send_mode, event_type, idempotency_key, deadline_at)
+         VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, negId, ob.party, ob.to_phone || null, ob.templateType, body, 'draft', null,
+         mode, eventType, idempotencyKey, ob.deadlineAt || null]
+      );
+      inserted = true;
+    } catch (e) {
+      if (e && e.code === 'ER_DUP_ENTRY' && idempotencyKey) {
+        const [[existing]] = await pool.execute(
+          `SELECT id, status, sent_at FROM viewing_negotiation_event WHERE idempotency_key = ? LIMIT 1`,
+          [idempotencyKey]
+        );
+        eventId = existing ? String(existing.id) : id;
+        status = existing ? existing.status : 'draft';
+        sentAt = existing ? existing.sent_at : null;
+      } else if (isSchemaMissingError(e)) {
+        await pool.execute(
+          `INSERT INTO viewing_negotiation_event
+             (id, negotiation_id, direction, party, to_phone, template_type, body, status, sent_at)
+           VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?)`,
+          [id, negId, ob.party, ob.to_phone || null, ob.templateType, body, 'draft', null]
+        );
+        inserted = true;
+      } else {
+        throw e;
+      }
+    }
+    if (inserted && shouldSend && ob.to_phone) {
       let ok = false;
       try { const r = await sendWhatsApp(pool, orgId, ob.to_phone, body); ok = !!(r && r.ok); }
       catch (e) { console.error('[viewingNegotiation] sendWhatsApp failed:', e.message); }
-      if (ok) { status = 'sent'; sentAt = new Date(); }
+      if (ok) {
+        status = 'sent'; sentAt = new Date();
+        await pool.execute(
+          `UPDATE viewing_negotiation_event SET status = 'sent', sent_at = ? WHERE id = ?`,
+          [sentAt, eventId]
+        );
+      }
     }
-    await pool.execute(
-      `INSERT INTO viewing_negotiation_event
-         (id, negotiation_id, direction, party, to_phone, template_type, body, status, sent_at)
-       VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?)`,
-      [id, negId, ob.party, ob.to_phone || null, ob.templateType, body, status, sentAt]
-    );
-    events.push({ id, party: ob.party, to_phone: ob.to_phone, template_type: ob.templateType, body, status });
+    events.push({
+      id: eventId, party: ob.party, to_phone: ob.to_phone, template_type: ob.templateType,
+      body, status, send_mode: mode, event_type: eventType, deadline_at: ob.deadlineAt || null,
+    });
+    if (status === 'sent') await applySentEventSideEffects(pool, orgId, eventId, sentAt || new Date());
   }
   return events;
 }
@@ -319,16 +641,133 @@ async function notifyStaff(pool, orgId, title, message) {
   } catch (e) { console.error('[viewingNegotiation] notifyStaff failed:', e.message); }
 }
 
+async function loadStoredAccessPolicy(pool, unitId, tenantId) {
+  if (!unitId || !tenantId) return null;
+  try {
+    const [[row]] = await pool.execute(
+      `SELECT * FROM viewing_access_policy WHERE unit_id = ? AND tenant_id = ? LIMIT 1`,
+      [unitId, tenantId]
+    );
+    return row || null;
+  } catch (e) {
+    if (isSchemaMissingError(e)) return null;
+    throw e;
+  }
+}
+
+function callerPolicyFromNegotiation(neg) {
+  if (!neg) return null;
+  if (neg.policy_opt_out_hours == null && neg.policy_explicit_confirm == null) return null;
+  return {
+    opt_out_window_hours: neg.policy_opt_out_hours,
+    require_explicit_confirmation: neg.policy_explicit_confirm == null ? undefined : Boolean(neg.policy_explicit_confirm),
+  };
+}
+
+async function applySentEventSideEffects(pool, orgId, eventId, sentAt = new Date()) {
+  try {
+    const [[ev]] = await pool.execute(
+      `SELECT e.id, e.event_type, e.status, e.deadline_at, n.id AS negotiation_id,
+              n.current_proposed_datetime, n.policy_opt_out_hours, n.policy_explicit_confirm
+         FROM viewing_negotiation_event e
+         JOIN viewing_negotiation n ON n.id = e.negotiation_id
+        WHERE e.id = ? LIMIT 1`,
+      [eventId]
+    );
+    if (!ev || ev.status !== 'sent') return;
+    if (ev.event_type === 'customer_confirm_request') {
+      await pool.execute(
+        `UPDATE viewing_negotiation SET customer_asked_at = ?, updated_at = updated_at WHERE id = ?`,
+        [sentAt, ev.negotiation_id]
+      );
+      return;
+    }
+    if (!['tenant_opt_out_notice', 'tenant_explicit_confirm_request'].includes(ev.event_type)) return;
+
+    const setting = await getSetting(pool, orgId);
+    const policy = resolvePolicy({
+      callerPolicy: {
+        opt_out_window_hours: ev.policy_opt_out_hours,
+        require_explicit_confirmation: ev.policy_explicit_confirm == null ? undefined : Boolean(ev.policy_explicit_confirm),
+      },
+      setting,
+      viewingStartAt: dateToWallClock(ev.current_proposed_datetime),
+      noticeSentAt: sentAt,
+    });
+    // The deadline the tenant was ACTUALLY SHOWN is the only one we may act on.
+    // It was rendered into the message body at composition time and stored on the
+    // event row; we must not recompute it here. In manual relay mode (the default)
+    // composition and approval can be hours apart, so recomputing from `sentAt`
+    // would enforce a deadline that appears nowhere in the message the tenant read —
+    // and auto-confirming off that is not informed consent, it is a guess.
+    const staleNotice = ev.event_type === 'tenant_opt_out_notice'
+      && !noticeIsActionable({ quotedDeadlineAt: ev.deadline_at, sentAt });
+
+    if (ev.event_type === 'tenant_explicit_confirm_request' || policy.require_explicit_confirmation
+        || staleNotice) {
+      // Staff may approve an opt-out draft hours later, by which time either short
+      // notice or an expired quoted deadline makes silence unsafe. Force explicit
+      // confirmation from that point and leave no deadline, so silence cannot confirm.
+      await pool.execute(
+        `UPDATE viewing_negotiation
+            SET tenant_notified_at = ?, opt_out_deadline_at = NULL,
+                policy_opt_out_hours = ?, policy_explicit_confirm = 1, policy_source = ?,
+                updated_at = updated_at
+          WHERE id = ?`,
+        [sentAt, policy.opt_out_window_hours, staleNotice ? 'stale_notice' : policy.source, ev.negotiation_id]
+      );
+      if (staleNotice) {
+        // The tenant received a deadline that had already lapsed. We will not act on
+        // their silence, so a human has to close the loop.
+        notifyStaff(pool, orgId, 'Viewing notice approved too late',
+          'A tenant opt-out notice was approved after the deadline it quoted had passed. '
+          + 'The viewing will NOT auto-confirm — please confirm with the occupant directly.');
+      }
+      return;
+    }
+    await pool.execute(
+      `UPDATE viewing_negotiation
+          SET tenant_notified_at = ?, opt_out_deadline_at = ?,
+              policy_opt_out_hours = ?, policy_explicit_confirm = 0, policy_source = ?,
+              updated_at = updated_at
+        WHERE id = ?`,
+      [sentAt, ev.deadline_at, policy.opt_out_window_hours, policy.source, ev.negotiation_id]
+    );
+  } catch (e) {
+    if (!isSchemaMissingError(e)) throw e;
+  }
+}
+
+async function applySentSideEffectsFromEvents(pool, orgId, events) {
+  for (const ev of events || []) {
+    if (ev && ev.status === 'sent') await applySentEventSideEffects(pool, orgId, ev.id, new Date());
+  }
+}
+
 // ── booking confirmation ──────────────────────────────────────────────────────
-async function confirmNegotiation(pool, orgId, neg, whenIso, staff) {
-  // Atomically CLAIM the negotiation first: a single UPDATE flips it to CONFIRMED
-  // only if it isn't already CONFIRMED/CANCELLED. Two concurrent replies race
+async function confirmNegotiation(pool, orgId, neg, whenIso, staff, options = {}) {
+  const finalState = options.finalState || 'CONFIRMED';
+  const reason = options.reason || null;
+  // Atomically CLAIM the negotiation first: a single UPDATE flips it to the
+  // terminal state only if it isn't already terminal. Two concurrent replies race
   // here; the loser gets affectedRows=0 and MUST NOT create a second booking.
-  const [claim] = await pool.execute(
-    `UPDATE viewing_negotiation SET state = 'CONFIRMED', awaiting = NULL, closed_at = NOW()
-      WHERE id = ? AND state NOT IN ('CONFIRMED', 'CANCELLED')`,
-    [neg.id]
-  );
+  const terminalPlaceholders = TERMINAL_STATES.map(() => '?').join(', ');
+  let claim;
+  try {
+    [claim] = await pool.execute(
+      `UPDATE viewing_negotiation
+          SET state = ?, awaiting = NULL, closed_at = NOW(), reversal_reason = COALESCE(?, reversal_reason)
+        WHERE id = ? AND state NOT IN (${terminalPlaceholders})`,
+      [finalState, reason, neg.id, ...TERMINAL_STATES]
+    );
+  } catch (e) {
+    if (!isSchemaMissingError(e)) throw e;
+    [claim] = await pool.execute(
+      `UPDATE viewing_negotiation SET state = ?, awaiting = NULL, closed_at = NOW()
+        WHERE id = ? AND state NOT IN (${terminalPlaceholders})`,
+      [finalState, neg.id, ...TERMINAL_STATES]
+    );
+  }
   if (claim.affectedRows === 0) return { skipped: true };
 
   const ctx = await loadContext(pool, neg);
@@ -386,6 +825,10 @@ async function confirmNegotiation(pool, orgId, neg, whenIso, staff) {
       WHERE vb.id = ? LIMIT 1`,
     [bookingId]
   );
+  // Clear the tentative projection before creating the confirmed event, so the
+  // staffer does not briefly see the same viewing twice.
+  await clearCalendarHold(pool, orgId, neg)
+    .catch(e => console.error('[viewingNegotiation] clear hold before confirm failed:', e.message));
   if (full) sendViewingConfirmation(pool, orgId, full);
   return { bookingId, ctx };
 }
@@ -409,7 +852,7 @@ async function startNegotiation(pool, orgId, { unit, lease, prospect }) {
     const [[existing]] = await pool.execute(
       `SELECT id, state, awaiting, prospect_phone FROM viewing_negotiation
         WHERE unit_id = ? AND prospect_phone = ?
-          AND state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')
+          AND state NOT IN (${sqlList(CLOSED_STATES)})
         ORDER BY created_at DESC LIMIT 1`,
       [unit.id, prospect.phone]
     );
@@ -500,7 +943,7 @@ async function startNegotiationFromText(pool, orgId, { unitText, prospect }) {
   if (prospect.phone) {
     const [[existing]] = await pool.execute(
       `SELECT id, state, awaiting, prospect_phone FROM viewing_negotiation
-        WHERE prospect_phone = ? AND state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')
+        WHERE prospect_phone = ? AND state NOT IN (${sqlList(CLOSED_STATES)})
         ORDER BY created_at DESC LIMIT 1`,
       [prospect.phone]
     );
@@ -582,9 +1025,50 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
   const baseVars = {
     '%Unit Name%': ctx.unit_name || '', '%Property Name%': ctx.property_name || '',
     '%Property Address%': ctx.address || '', '%Prospect Name%': neg.prospect_name || '',
+    '%Tenant Name%': tenantDisplayName(ctx),
   };
   const prospectPhone = neg.prospect_phone;
   const tenantPhone = ctx.tenant_phone;
+
+  const reversal = reversalClassification({ state: neg.state, party, intent });
+  if (reversal) {
+    await cancelCommittedBookingForNegotiation(pool, neg);
+    clearCalendarHold(pool, orgId, neg)
+      .catch(e => console.error('[viewingNegotiation] clear hold on reversal failed:', e.message));
+    const set = { state: reversal.state, reversal_reason: reversal.reason };
+    const outbounds = [];
+    if (reversal.state === STATE_TENANT_REVERSED) {
+      set.awaiting = 'staff';
+      outbounds.push({
+        party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Reversal-Prospect',
+        eventType: 'customer_reversal_notice', vars: baseVars,
+      });
+      notifyStaff(pool, orgId, 'Viewing reversal needs staff',
+        `${neg.prospect_name || 'A prospect'} — ${ctx.unit_name || 'unit'}: tenant can no longer make the auto-confirmed viewing.`);
+    } else if (reversal.state === STATE_RESCHEDULE_AFTER_COMMIT) {
+      set.awaiting = 'prospect';
+      set.current_proposed_datetime = intent.when ? intent.when.slice(0, 19).replace('T', ' ') : null;
+      outbounds.push({
+        party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Reschedule-Prospect',
+        eventType: 'customer_reschedule_request',
+        vars: { ...baseVars, '%Proposed Time%': formatWhen(intent.when) },
+      });
+      notifyStaff(pool, orgId, 'Viewing reschedule needs customer',
+        `${neg.prospect_name || 'A prospect'} — ${ctx.unit_name || 'unit'}: tenant proposed ${formatWhen(intent.when)} after confirmation.`);
+    } else {
+      set.awaiting = 'staff';
+      notifyStaff(pool, orgId, 'Tenant replied after confirmation',
+        `${neg.prospect_name || 'A prospect'} — ${ctx.unit_name || 'unit'}: review the tenant reply after confirmation.`);
+    }
+    const cols = Object.keys(set);
+    await pool.execute(
+      `UPDATE viewing_negotiation SET ${cols.map(c => `${c} = ?`).join(', ')} WHERE id = ?`,
+      [...cols.map(c => set[c]), neg.id]
+    );
+    const events = await dispatchOutbounds(pool, orgId, neg.id, setting, outbounds);
+    const fresh = await loadNegotiation(pool, neg.id);
+    return { negotiation: fresh, events, ...buildRouting(fresh, ctx.tenant_phone) };
+  }
 
   // A parseable time that is OUTSIDE the viewing window: tell the sender the
   // reason and keep waiting on them, rather than falling through to the generic
@@ -594,6 +1078,9 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     if (!toPhone) {
       // No way to tell this party why — hand to staff rather than sit silent.
       await pool.execute(`UPDATE viewing_negotiation SET state = 'NEEDS_STAFF', awaiting = 'staff' WHERE id = ?`, [neg.id]);
+      // A human now owns this; do not leave an obsolete tentative calendar hold.
+      clearCalendarHold(pool, orgId, neg)
+        .catch(e => console.error('[viewingNegotiation] clear hold on escalation failed:', e.message));
       notifyStaff(pool, orgId, 'Viewing needs staff',
         `${neg.prospect_name || 'A prospect'} — ${ctx.unit_name || 'unit'} at ${ctx.property_name || ''} (window_no_phone)`);
       const fresh = await loadNegotiation(pool, neg.id);
@@ -615,6 +1102,8 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
 
   const outbounds = [];
   const set = {}; // columns to update on the negotiation row
+  let holdSyncRequest = null;
+  let clearHoldAfterPersist = false;
 
   async function doStaffCheck(whenIso, proposedBy, confirmOnFree, roundDelta) {
     const staff = await resolveStaffOfDay(pool, neg.property_id, whenIso);
@@ -623,7 +1112,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     }
     const { free } = await checkStaffFree(pool, {
       employeeId: staff.employee_id, unitId: neg.unit_id, whenIso,
-      buffer: staff.buffer, calendarId: staff.google_calendar_id,
+      buffer: staff.buffer, calendarId: staff.google_calendar_id, excludeNegotiationId: neg.id,
     });
     const vProp = { ...baseVars, '%Proposed Time%': formatWhen(whenIso) };
     if (!free) {
@@ -646,8 +1135,28 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
       return;
     }
     set.state = 'AWAIT_TENANT'; set.awaiting = 'tenant';
+    holdSyncRequest = { whenIso, staff };
+    const noticeSentAt = new Date();
+    const storedPolicy = await loadStoredAccessPolicy(pool, neg.unit_id, neg.tenant_id);
+    const policy = resolvePolicy({
+      callerPolicy: callerPolicyFromNegotiation(neg),
+      storedPolicy,
+      setting,
+      viewingStartAt: whenIso,
+      noticeSentAt,
+    });
+    const deadline = policy.require_explicit_confirmation ? null
+      : optOutDeadline({ noticeSentAt, optOutWindowHours: policy.opt_out_window_hours });
+    const tenantNotice = chooseTenantNoticeTemplate(policy, deadline);
+    set.policy_opt_out_hours = policy.opt_out_window_hours;
+    set.policy_explicit_confirm = policy.require_explicit_confirmation ? 1 : 0;
+    set.policy_source = policy.source;
     outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Checking', vars: vProp });
-    outbounds.push({ party: 'tenant', to_phone: tenantPhone, templateType: 'Viewing-Tenant-Ask', vars: vProp });
+    outbounds.push({
+      party: 'tenant', to_phone: tenantPhone, templateType: tenantNotice.templateType, eventType: tenantNotice.eventType,
+      deadlineAt: tenantNotice.deadline ? tenantNotice.deadline.replace('T', ' ') : null,
+      vars: { ...vProp, '%Tenant Name%': tenantDisplayName(ctx), '%Opt Out Deadline%': tenantNotice.deadline || '' },
+    });
   }
 
   async function confirmAndClose(whenIso, staff, vProp) {
@@ -662,6 +1171,9 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
 
   function escalatePlan(reason, whenIso) {
     set.state = 'NEEDS_STAFF'; set.awaiting = 'staff';
+    // Once staff owns the exception, a stale tentative block on their calendar
+    // is worse than no projection.
+    clearHoldAfterPersist = true;
     const vProp = { ...baseVars, '%Proposed Time%': formatWhen(whenIso || neg.current_proposed_datetime) };
     outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Relay-Escalated', vars: vProp });
     if (hasTenant && tenantPhone) {
@@ -677,7 +1189,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     if (!staff) { escalatePlan('no_roster', whenIso); return; }
     const { free } = await checkStaffFree(pool, {
       employeeId: staff.employee_id, unitId: neg.unit_id, whenIso,
-      buffer: staff.buffer, calendarId: staff.google_calendar_id,
+      buffer: staff.buffer, calendarId: staff.google_calendar_id, excludeNegotiationId: neg.id,
     });
     if (!free) {
       // No staff that day → ask the tenant for another time (not a relayed round).
@@ -690,6 +1202,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     set.proposed_by = 'tenant';
     set.staff_employee_id = staff.employee_id;
     set.state = 'RELAY_TO_PROSPECT'; set.awaiting = 'prospect';
+    holdSyncRequest = { whenIso, staff };
     outbounds.push({
       party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Relay-Prospect',
       vars: { ...baseVars, '%Proposed Time%': formatWhen(whenIso), '%Old Time%': formatWhen(oldWhen) },
@@ -753,6 +1266,24 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Prospect-Day-Ask', vars });
   }
 
+  if (neg.state === STATE_RESCHEDULE_AFTER_COMMIT && party === 'prospect' && intent.accepted === true) {
+    // The tenant proposed this post-commit time themselves, so a customer YES
+    // confirms it directly; opening a second tenant opt-out window would ask for
+    // consent we already received in the tenant's counter.
+    const whenIso = intent.currentWhen;
+    const staff = await resolveStaffOfDay(pool, neg.property_id, whenIso);
+    if (!staff) {
+      escalatePlan('no_roster', whenIso);
+    } else {
+      const { free } = await checkStaffFree(pool, {
+        employeeId: staff.employee_id, unitId: neg.unit_id, whenIso,
+        buffer: staff.buffer, calendarId: staff.google_calendar_id, excludeNegotiationId: neg.id,
+      });
+      if (!free) escalatePlan('slot_taken_at_reconfirm', whenIso);
+      else await confirmAndClose(whenIso, staff, { ...baseVars, '%Proposed Time%': formatWhen(whenIso) });
+    }
+  }
+
   switch (plan.type) {
     case 'resolve_unit': {
       const p = await computeResolutionPlan(pool, orgId, plan.text, prospectPhone);
@@ -808,7 +1339,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
       if (!staff || !whenIso) { escalatePlan('confirm_no_staff', whenIso); break; }
       const { free } = await checkStaffFree(pool, {
         employeeId: staff.employee_id, unitId: neg.unit_id, whenIso,
-        buffer: staff.buffer, calendarId: staff.google_calendar_id,
+        buffer: staff.buffer, calendarId: staff.google_calendar_id, excludeNegotiationId: neg.id,
       });
       if (!free) { escalatePlan('slot_taken_at_confirm', whenIso); break; }
       await confirmAndClose(whenIso, staff, { ...baseVars, '%Proposed Time%': formatWhen(whenIso) });
@@ -846,6 +1377,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
       break;
     case 'cancel':
       set.state = 'CANCELLED'; set.awaiting = null; set.closed_at = new Date();
+      clearHoldAfterPersist = true;
       break;
     case 'ignore':
     default:
@@ -864,16 +1396,39 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
   let wonPersist = true;
   if (Object.keys(set).length) {
     const cols = Object.keys(set);
-    const [r] = await pool.execute(
-      `UPDATE viewing_negotiation SET ${cols.map(c => `${c} = ?`).join(', ')} WHERE id = ? AND state = ?`,
-      [...cols.map(c => set[c]), neg.id, neg.state]
-    );
+    let r;
+    try {
+      [r] = await pool.execute(
+        `UPDATE viewing_negotiation SET ${cols.map(c => `${c} = ?`).join(', ')} WHERE id = ? AND state = ?`,
+        [...cols.map(c => set[c]), neg.id, neg.state]
+      );
+    } catch (e) {
+      if (!isSchemaMissingError(e)) throw e;
+      const legacyCols = cols.filter(c => !V2_NEGOTIATION_COLUMNS.has(c));
+      if (!legacyCols.length) {
+        r = { affectedRows: 1 };
+      } else {
+        [r] = await pool.execute(
+          `UPDATE viewing_negotiation SET ${legacyCols.map(c => `${c} = ?`).join(', ')} WHERE id = ? AND state = ?`,
+          [...legacyCols.map(c => set[c]), neg.id, neg.state]
+        );
+      }
+    }
     // Lost the optimistic race (a concurrent reply already advanced this row) →
     // skip sending, so two racing replies can't both dispatch the same message.
     wonPersist = r.affectedRows > 0;
   }
   const events = wonPersist ? await dispatchOutbounds(pool, orgId, neg.id, setting, outbounds) : [];
   const fresh = await loadNegotiation(pool, neg.id);
+  if (wonPersist && fresh) {
+    if (clearHoldAfterPersist) {
+      clearCalendarHold(pool, orgId, fresh)
+        .catch(e => console.error('[viewingNegotiation] clear hold failed:', e.message));
+    } else if (holdSyncRequest) {
+      syncCalendarHold(pool, orgId, fresh, holdSyncRequest)
+        .catch(e => console.error('[viewingNegotiation] sync hold failed:', e.message));
+    }
+  }
   return { negotiation: fresh, events, ...buildRouting(fresh, ctx.tenant_phone) };
 }
 
@@ -896,6 +1451,7 @@ async function approveDraft(pool, orgId, eventId) {
       return { ok: false, error: r.error || 'Send failed' };
     }
   }
+  await applySentEventSideEffects(pool, orgId, eventId, new Date());
   return { ok: true };
 }
 
@@ -906,12 +1462,16 @@ async function approveDraft(pool, orgId, eventId) {
 // orgId is unused (the caller org-scopes the event); kept for signature parity
 // with approveDraft.
 async function markDraftSent(pool, orgId, eventId) {
+  const markedAt = new Date();
   const [r] = await pool.execute(
-    `UPDATE viewing_negotiation_event SET status = 'sent', sent_at = NOW()
+    `UPDATE viewing_negotiation_event SET status = 'sent', sent_at = ?
       WHERE id = ? AND direction = 'out' AND status = 'draft'`,
-    [eventId]
+    [markedAt, eventId]
   );
-  if (r.affectedRows > 0) return { ok: true, marked: true, already_sent: false, status: 'sent' };
+  if (r.affectedRows > 0) {
+    await applySentEventSideEffects(pool, orgId, eventId, markedAt);
+    return { ok: true, marked: true, already_sent: false, status: 'sent' };
+  }
   // Not a draft anymore — read the REAL status so we never falsely assert a
   // delivery for a non-'sent' terminal state.
   const [[row]] = await pool.execute(
@@ -942,7 +1502,29 @@ async function cancelNegotiation(pool, orgId, neg) {
     `UPDATE viewing_negotiation SET state = 'CANCELLED', awaiting = NULL, closed_at = NOW() WHERE id = ?`,
     [neg.id]
   );
+  clearCalendarHold(pool, orgId, neg)
+    .catch(e => console.error('[viewingNegotiation] clear hold on cancel failed:', e.message));
   return { ok: true };
+}
+
+async function cancelCommittedBookingForNegotiation(pool, neg) {
+  if (!neg || !neg.booking_id) return { cancelled: false, calendar_delete_attempted: false };
+  const [[booking]] = await pool.execute(
+    `SELECT vb.id, vb.gcal_event_id, u.google_calendar_id AS employee_google_calendar_id
+       FROM viewing_booking vb
+       LEFT JOIN user u ON u.id = vb.employee_id
+      WHERE vb.id = ? LIMIT 1`,
+    [neg.booking_id]
+  );
+  if (!booking) return { cancelled: false, calendar_delete_attempted: false };
+  await pool.execute(`UPDATE viewing_candidate SET status = 0 WHERE booking_id = ? AND status = 1`, [booking.id]);
+  await pool.execute(`UPDATE viewing_booking SET status = 3, awaiting = NULL WHERE id = ?`, [booking.id]);
+  if (booking.gcal_event_id && booking.employee_google_calendar_id) {
+    deleteViewingEvent({ calendarId: booking.employee_google_calendar_id, gcalEventId: booking.gcal_event_id })
+      .catch(e => console.error('[viewingNegotiation] gcal delete failed:', e.message));
+    return { cancelled: true, calendar_delete_attempted: true };
+  }
+  return { cancelled: true, calendar_delete_attempted: false };
 }
 
 // Staff "Start viewing anyway" on a NEEDS_STAFF request (typically an off-window
@@ -1009,17 +1591,84 @@ function viewingNegotiationVars(ctx) {
 async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
   try {
     const setting = await getSetting(pool, orgId);
+    const staleHours = Math.max(1, Number(setting.customer_timeout_hours) || STALE_HOURS);
+
+    try {
+      const [autoRows] = await pool.execute(
+        `SELECT *
+           FROM viewing_negotiation
+          WHERE state = 'AWAIT_TENANT' AND awaiting = 'tenant'
+            AND tenant_notified_at IS NOT NULL
+            AND policy_explicit_confirm = 0
+            AND opt_out_deadline_at IS NOT NULL
+            AND opt_out_deadline_at <= NOW()
+          ORDER BY opt_out_deadline_at ASC
+          LIMIT 200`
+      );
+      for (const neg of autoRows) {
+        try {
+          const decision = autoConfirmDecision(neg, new Date());
+          if (decision.action !== 'auto_confirm') continue;
+          const whenIso = dateToWallClock(neg.current_proposed_datetime);
+          const staff = await resolveStaffOfDay(pool, neg.property_id, whenIso);
+          let free = false;
+          if (staff) {
+            const checked = await checkStaffFree(pool, {
+              employeeId: staff.employee_id, unitId: neg.unit_id, whenIso,
+              buffer: staff.buffer, calendarId: staff.google_calendar_id, excludeNegotiationId: neg.id,
+            });
+            free = !!checked.free;
+          }
+          if (!staff || !free) {
+            const [claim] = await pool.execute(
+              `UPDATE viewing_negotiation
+                  SET state = 'NEEDS_STAFF', awaiting = 'staff', needs_staff_reason = 'auto_confirm_no_staff',
+                      updated_at = updated_at
+                WHERE id = ? AND state = 'AWAIT_TENANT'`,
+              [neg.id]
+            );
+            if (claim.affectedRows) {
+              clearCalendarHold(pool, orgId, neg)
+                .catch(e => console.error('[viewingNegotiation] clear hold on auto-confirm escalation failed:', e.message));
+              notifyStaff(pool, orgId, 'Viewing needs staff',
+                `${neg.prospect_name || 'A prospect'} — auto-confirm window elapsed but no staff is free.`);
+            }
+            continue;
+          }
+          await pool.execute(
+            `UPDATE viewing_negotiation SET auto_confirmed_at = NOW(), updated_at = updated_at WHERE id = ?`,
+            [neg.id]
+          );
+          const r = await confirmNegotiation(pool, orgId, neg, whenIso, staff, { finalState: STATE_AUTO_CONFIRMED });
+          if (r && r.skipped) continue;
+          // The tenant was told the deadline and their silence was the answer.
+          // Sending them a second "confirmed" note would imply we needed an
+          // agreement after telling them we did not.
+          await dispatchOutbounds(pool, orgId, neg.id, setting, [{
+            party: 'prospect',
+            to_phone: neg.prospect_phone,
+            templateType: 'Viewing-Relay-Confirmed',
+            vars: { ...viewingNegotiationVars(r.ctx), '%Proposed Time%': formatWhen(whenIso) },
+          }]);
+        } catch (err) {
+          if (isSchemaMissingError(err)) throw err;
+          console.error(`[Scheduler] auto-confirm failed for negotiation ${neg.id}:`, err.message);
+        }
+      }
+    } catch (err) {
+      if (!isSchemaMissingError(err)) throw err;
+    }
 
     try {
       const [reminders] = await pool.execute(
         `SELECT id, org_id, unit_id, property_id, tenant_id, prospect_name, prospect_phone,
                 awaiting, reminder_sent_at, TIMESTAMPDIFF(HOUR, updated_at, NOW()) AS hoursIdle
            FROM viewing_negotiation
-          WHERE state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')
+          WHERE state NOT IN (${sqlList(CLOSED_STATES)})
             AND reminder_sent_at IS NULL
             AND awaiting IN ('prospect', 'tenant')
             AND updated_at < DATE_SUB(NOW(), INTERVAL ${REMINDER_HOURS} HOUR)
-            AND updated_at >= DATE_SUB(NOW(), INTERVAL ${STALE_HOURS} HOUR)
+            AND updated_at >= DATE_SUB(NOW(), INTERVAL ${staleHours} HOUR)
           ORDER BY updated_at ASC
           LIMIT 200`
       );
@@ -1028,7 +1677,7 @@ async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
           // Pass the configured thresholds explicitly. The helper has its own
           // defaults, and letting them apply here would mean the SQL selected on one
           // window while the guard rejected on another — nothing would ever be sent.
-          const party = reminderTarget(neg, { reminderHours: REMINDER_HOURS, staleHours: STALE_HOURS });
+          const party = reminderTarget(neg, { reminderHours: REMINDER_HOURS, staleHours });
           if (!party) continue;
           const ctx = await loadContext(pool, neg);
           const toPhone = party === 'tenant' ? ctx.tenant_phone : neg.prospect_phone;
@@ -1043,7 +1692,7 @@ async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
                 SET reminder_sent_at = NOW(), updated_at = updated_at
               WHERE id = ?
                 AND reminder_sent_at IS NULL
-                AND state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')`,
+                AND state NOT IN (${sqlList(CLOSED_STATES)})`,
             [neg.id]
           );
           if (claim.affectedRows === 0) continue;
@@ -1063,11 +1712,10 @@ async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
     }
 
     const [stale] = await pool.execute(
-      `SELECT id, org_id, unit_id, property_id, tenant_id, prospect_name, prospect_phone,
-              current_proposed_datetime
-         FROM viewing_negotiation
-        WHERE state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')
-          AND updated_at < DATE_SUB(NOW(), INTERVAL ${STALE_HOURS} HOUR)
+      `SELECT *
+        FROM viewing_negotiation
+        WHERE state NOT IN (${sqlList(CLOSED_STATES)})
+          AND updated_at < DATE_SUB(NOW(), INTERVAL ${staleHours} HOUR)
         ORDER BY updated_at ASC
         LIMIT 200`
     );
@@ -1078,11 +1726,13 @@ async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
           `UPDATE viewing_negotiation
               SET state = 'NEEDS_STAFF', awaiting = 'staff', needs_staff_reason = 'stale'
             WHERE id = ?
-              AND state NOT IN ('CONFIRMED', 'CANCELLED', 'NEEDS_STAFF')`,
+              AND state NOT IN (${sqlList(CLOSED_STATES)})`,
           [neg.id]
         );
         if (claim.affectedRows === 0) continue;
         escalated += 1;
+        clearCalendarHold(pool, orgId, neg)
+          .catch(e => console.error('[viewingNegotiation] clear hold on stale escalation failed:', e.message));
 
         const ctx = await loadContext(pool, neg);
         const vars = {
@@ -1104,7 +1754,7 @@ async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
     if (escalated > 0) {
       console.log(`[Scheduler] Escalated ${escalated} stale viewing negotiation(s) to staff`);
       notifyStaff(pool, orgId, 'Viewing requests need staff',
-        `${escalated} viewing request(s) had no activity for ${STALE_HOURS}h and were handed to your team.`);
+        `${escalated} viewing request(s) had no activity for ${staleHours}h and were handed to your team.`);
     }
   } catch (err) {
     if (!isSchemaMissingError(err)) {
@@ -1117,6 +1767,13 @@ module.exports = {
   // pure / helpers (tested)
   nextStep, combineDateTime, withinWindow, viewingWindow, minutesOf,
   reminderTarget, activeNegotiationPayload,
+  DEFAULT_SETTING, STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
+  TERMINAL_STATES, CLOSED_STATES, EVENT_TYPES, EVENT_TYPE_BY_TEMPLATE,
+  resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
+  reversalClassification,
+  sendModeFor, idempotencyKeyFor, withinQuietHours,
+  eventTypeForOutbound, outboundSendDecision, chooseTenantNoticeTemplate,
+  boardNextDeadline, isNudgeCandidate, isStaleCandidate, isSchemaMissingError, dateToWallClock,
   // orchestration
   getSetting, startNegotiation, startNegotiationFromText, handleReply, loadNegotiation,
   resolveStaffOfDay, loadStaffById, checkStaffFree, confirmNegotiation,

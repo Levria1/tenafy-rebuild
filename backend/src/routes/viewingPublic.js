@@ -175,7 +175,7 @@ async function findLinkByToken(pool, token) {
             p.country, p.zip_code, u.name AS unit_name, u.type AS unit_type,
             u.beds, u.baths, u.rent_price_min, u.rent_price_max,
             usr.first_name AS employee_first_name, usr.last_name AS employee_last_name,
-            usr.email AS employee_email
+            usr.email AS employee_email, usr.google_calendar_id AS employee_google_calendar_id
      FROM viewing_link vl
      JOIN property p ON vl.property_id = p.id
      JOIN unit u     ON vl.unit_id = u.id
@@ -568,6 +568,36 @@ router.post('/link/:token/bookings', postLimiter, resolveOrgByViewingToken, asyn
       ]
     );
 
+    // While status=0, gcal_event_id stores the tentative hold. Once status=1,
+    // the same column stores the confirmed calendar event id.
+    createViewingEvent({
+      calendarId: link.employee_google_calendar_id,
+      booking: {
+        proposed_datetime: when,
+        duration_minutes: durationMin,
+        viewer_name,
+        viewer_email,
+        viewer_phone,
+        viewer_message,
+      },
+      unit: { name: link.unit_name },
+      property: {
+        name: link.property_name,
+        street_address: link.street_address,
+        city: link.city,
+        state: link.state,
+      },
+      employee: {
+        name: [link.employee_first_name, link.employee_last_name].filter(Boolean).join(' ') || link.employee_email,
+        email: link.employee_email,
+      },
+    }, { tentative: true }).then(gcalEventId => {
+      if (gcalEventId) {
+        req.pool.execute('UPDATE viewing_booking SET gcal_event_id = ? WHERE id = ?', [gcalEventId, bookingId])
+          .catch(e => console.error('[viewing-public] save tentative gcal_event_id failed:', e.message));
+      }
+    }).catch(e => console.error('[viewing-public] Google Calendar hold create failed:', e.message));
+
     // Dispatch emails (fire-and-forget beyond this point — log failures but still return 200)
     const manageUrl = buildUrl(`/book/viewing/manage/${manageTok}`);
     const employeeApprove = buildUrl(`/book/viewing/action/${employeeTok}?decision=approve`);
@@ -759,6 +789,14 @@ router.post('/action/:token', postLimiter, resolveOrgByActionToken, async (req, 
       isTenant ? 'tenant_action_token' : 'employee_action_token');
 
     if (newStatus === 1) {
+      // Promote the pending hold by deleting it first; the confirmed path below
+      // writes the real opaque booking event into the same gcal_event_id column.
+      if (full.gcal_event_id && full.employee_google_calendar_id) {
+        deleteViewingEvent({
+          calendarId: full.employee_google_calendar_id,
+          gcalEventId: full.gcal_event_id,
+        }).catch(e => console.error('[viewing-public] Google Calendar hold delete failed:', e.message));
+      }
       // Push to the assigned employee's Google Calendar (fire-and-forget)
       createViewingEvent({
         calendarId: full.employee_google_calendar_id,
@@ -853,6 +891,12 @@ router.post('/action/:token', postLimiter, resolveOrgByActionToken, async (req, 
         }).catch(e => console.error('[viewing-public] confirmation email failed:', e.message));
       }
     } else if (newStatus === 2) {
+      if (full.gcal_event_id && full.employee_google_calendar_id) {
+        deleteViewingEvent({
+          calendarId: full.employee_google_calendar_id,
+          gcalEventId: full.gcal_event_id,
+        }).catch(e => console.error('[viewing-public] Google Calendar hold delete failed:', e.message));
+      }
       // Declined — notify viewer (+ the party that had approved, if any)
       const recipients = [full.viewer_email];
       if (full.tenant_decision === 1 && full.tenant_email) recipients.push(full.tenant_email);
@@ -1135,6 +1179,13 @@ async function findBookingById(pool, id) {
 // host's Google Calendar, then email an .ics to viewer + host (+ tenant).
 // Modelled on the POST /action/:token confirmed branch. Fire-and-forget.
 function sendViewingConfirmation(pool, orgId, full) {
+  if (full.gcal_event_id && full.employee_google_calendar_id) {
+    deleteViewingEvent({
+      calendarId: full.employee_google_calendar_id,
+      gcalEventId: full.gcal_event_id,
+    }).catch(e => console.error('[viewing-public] Google Calendar hold delete failed:', e.message));
+  }
+
   createViewingEvent({
     calendarId: full.employee_google_calendar_id,
     booking: {

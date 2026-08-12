@@ -1,9 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting,
-  reminderTarget, activeNegotiationPayload,
+  DEFAULT_SETTING, STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
+  TERMINAL_STATES, CLOSED_STATES,
+  combineDateTime, minutesOf, withinWindow, withinQuietHours, viewingWindow, nextStep, buildRouting,
+  resolvePolicy, optOutDeadline, autoConfirmDecision, nudgeDecision, reversalClassification,
+  sendModeFor, idempotencyKeyFor, reminderTarget, activeNegotiationPayload,
 } = require('../src/services/viewingNegotiationLogic');
+const viewingService = require('../src/services/viewingNegotiation');
 
 // A fixed far-future weekday base so "in the past" never trips these tests.
 // 2099-01-06 is a Tuesday; 2099-01-04 is a Sunday.
@@ -304,4 +308,410 @@ test('activeNegotiationPayload: NEEDS_STAFF is visible but not routable or activ
   ], '61234567');
   assert.equal(mixed.active, true);
   assert.deepEqual(mixed.negotiations.map(n => [n.negotiation_id, n.routable]), [['2', true], ['1', false]]);
+});
+
+// ── viewing relay v2 policy/timer pure helpers ──────────────────────────────
+test('resolvePolicy: caller wins over stored wins over setting wins over hardcoded 4', () => {
+  assert.deepEqual(resolvePolicy({
+    callerPolicy: { opt_out_window_hours: 6, require_explicit_confirmation: true },
+    storedPolicy: { opt_out_window_hours: 12, require_explicit_confirmation: false },
+    setting: { tenant_opt_out_hours: 24 },
+  }), { opt_out_window_hours: 6, require_explicit_confirmation: true, source: 'caller' });
+  assert.deepEqual(resolvePolicy({
+    callerPolicy: { opt_out_window_hours: 0, require_explicit_confirmation: true },
+    storedPolicy: { opt_out_window_hours: 12, require_explicit_confirmation: true },
+    setting: { tenant_opt_out_hours: 24 },
+  }), { opt_out_window_hours: 12, require_explicit_confirmation: true, source: 'stored' });
+  assert.deepEqual(resolvePolicy({
+    callerPolicy: { opt_out_window_hours: 999 },
+    storedPolicy: { opt_out_window_hours: NaN },
+    setting: { tenant_opt_out_hours: 8 },
+  }), { opt_out_window_hours: 8, require_explicit_confirmation: false, source: 'setting' });
+  assert.deepEqual(resolvePolicy({
+    callerPolicy: { opt_out_window_hours: null },
+    storedPolicy: { opt_out_window_hours: 999 },
+    setting: { tenant_opt_out_hours: 0 },
+  }), { opt_out_window_hours: 4, require_explicit_confirmation: false, source: 'setting' });
+});
+
+test('resolvePolicy: out-of-range values fall through to the next source', () => {
+  for (const bad of [0, 999, NaN, null]) {
+    // The invalid HOURS fall through to `stored`, but the caller's explicit
+    // require_explicit_confirmation still stands — the two fields resolve
+    // independently, so a bad optional value cannot discard a safety flag.
+    assert.deepEqual(resolvePolicy({
+      callerPolicy: { opt_out_window_hours: bad, require_explicit_confirmation: true },
+      storedPolicy: { opt_out_window_hours: 10, require_explicit_confirmation: false },
+      setting: { tenant_opt_out_hours: 6 },
+    }), { opt_out_window_hours: 10, require_explicit_confirmation: true, source: 'stored' });
+  }
+});
+
+test('resolvePolicy: short notice forces explicit confirmation', () => {
+  assert.deepEqual(resolvePolicy({
+    callerPolicy: { opt_out_window_hours: 4, require_explicit_confirmation: false },
+    viewingStartAt: '2099-01-06T13:00:00',
+    noticeSentAt: '2099-01-06T10:00:00',
+  }), { opt_out_window_hours: 4, require_explicit_confirmation: true, source: 'short_notice' });
+  assert.deepEqual(resolvePolicy({
+    callerPolicy: { opt_out_window_hours: 4, require_explicit_confirmation: false },
+    viewingStartAt: '2099-01-06T15:00:00',
+    noticeSentAt: '2099-01-06T10:00:00',
+  }), { opt_out_window_hours: 4, require_explicit_confirmation: false, source: 'caller' });
+  assert.deepEqual(resolvePolicy({
+    callerPolicy: { opt_out_window_hours: 4, require_explicit_confirmation: false },
+    viewingStartAt: '2099-01-06T09:00:00',
+    noticeSentAt: '2099-01-06T10:00:00',
+  }), { opt_out_window_hours: 4, require_explicit_confirmation: true, source: 'short_notice' });
+});
+
+test('optOutDeadline: adds the window without UTC-shifting the wall clock', () => {
+  assert.equal(optOutDeadline({ noticeSentAt: '2099-01-06T10:15:30', optOutWindowHours: 4 }), '2099-01-06T14:15:00');
+  assert.equal(optOutDeadline({ noticeSentAt: null, optOutWindowHours: 4 }), null);
+  const deadline = optOutDeadline({ noticeSentAt: '2099-01-06T22:30:00', optOutWindowHours: 4 });
+  assert.equal(deadline, '2099-01-07T02:30:00');
+  assert.equal(deadline.endsWith('Z'), false);
+});
+
+test('autoConfirmDecision: manual-mode draft trap requires a sent tenant notice', () => {
+  // relay_mode='manual' creates a draft first; a draft is not notice to the tenant.
+  assert.deepEqual(autoConfirmDecision({
+    state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: null,
+    opt_out_deadline_at: '2099-01-06T14:00:00', policy_explicit_confirm: 0,
+  }, '2099-01-06T15:00:00'), { action: 'skip', reason: 'notice_not_sent' });
+});
+
+test('autoConfirmDecision: explicit path, deadline, confirmed, no-deadline, and wrong-state branches', () => {
+  assert.deepEqual(autoConfirmDecision({
+    state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: '2099-01-06T10:00:00',
+    opt_out_deadline_at: '2099-01-06T14:00:00', policy_explicit_confirm: 1,
+  }, '2099-01-06T15:00:00'), { action: 'skip', reason: 'explicit_confirmation_required' });
+  assert.deepEqual(autoConfirmDecision({
+    state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: '2099-01-06T10:00:00',
+    opt_out_deadline_at: '2099-01-06T14:00:00', policy_explicit_confirm: 0,
+  }, '2099-01-06T13:59:00'), { action: 'wait', reason: 'before_deadline' });
+  assert.deepEqual(autoConfirmDecision({
+    state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: '2099-01-06T10:00:00',
+    opt_out_deadline_at: '2099-01-06T14:00:00', policy_explicit_confirm: 0,
+  }, '2099-01-06T14:00:00'), { action: 'auto_confirm', reason: 'window_elapsed' });
+  assert.deepEqual(autoConfirmDecision({
+    state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: '2099-01-06T10:00:00',
+    opt_out_deadline_at: '2099-01-06T14:00:00', auto_confirmed_at: '2099-01-06T14:01:00',
+  }, '2099-01-06T15:00:00'), { action: 'skip', reason: 'already_confirmed' });
+  assert.deepEqual(autoConfirmDecision({
+    state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: '2099-01-06T10:00:00',
+    opt_out_deadline_at: null,
+  }, '2099-01-06T15:00:00'), { action: 'skip', reason: 'no_deadline' });
+  assert.deepEqual(autoConfirmDecision({
+    state: 'RELAY_TO_PROSPECT', awaiting: 'prospect',
+  }, '2099-01-06T15:00:00'), { action: 'skip', reason: 'not_awaiting_tenant' });
+});
+
+// Cadence is 1h → 6h → escalate at 24h (operator decision, 2026-08-12). The second
+// nudge sits at 6h rather than 24h because the escalation ALSO lands at 24h: it
+// fires first, moves the row to NEEDS_STAFF, and nudging stops — so a 24h second
+// nudge could never fire and customer_nudge_cap=2 would be dead config. The
+// assertions below are what prove both nudges are reachable before escalation.
+test('nudgeDecision: customer nudges at 1h and 6h, caps, and times out at 24h', () => {
+  const base = { state: 'ASK_PROSPECT_DAY', awaiting: 'prospect', customer_asked_at: '2099-01-06T10:00:00' };
+  assert.deepEqual(nudgeDecision({ ...base, customer_nudge_count: 0 }, S, '2099-01-06T10:59:00'),
+    { action: 'none', party: 'prospect', nudgeNumber: null, reason: 'not_due' });
+  assert.deepEqual(nudgeDecision({ ...base, customer_nudge_count: 0 }, S, '2099-01-06T11:00:00'),
+    { action: 'nudge', party: 'prospect', nudgeNumber: 1, reason: 'customer_nudge_1_due' });
+  // Not yet due at 5h59m…
+  assert.deepEqual(nudgeDecision({ ...base, customer_nudge_count: 1 }, S, '2099-01-06T15:59:00'),
+    { action: 'none', party: 'prospect', nudgeNumber: null, reason: 'not_due' });
+  // …due at 6h, comfortably inside the 24h escalation.
+  assert.deepEqual(nudgeDecision({ ...base, customer_nudge_count: 1 }, S, '2099-01-06T16:00:00'),
+    { action: 'nudge', party: 'prospect', nudgeNumber: 2, reason: 'customer_nudge_2_due' });
+  assert.deepEqual(nudgeDecision({ ...base, customer_nudge_count: 2 }, S, '2099-01-06T16:00:00'),
+    { action: 'none', party: 'prospect', nudgeNumber: null, reason: 'nudge_cap_reached' });
+  assert.deepEqual(nudgeDecision({ ...base, customer_nudge_count: 2 }, S, '2099-01-07T10:00:00'),
+    { action: 'escalate', party: 'prospect', nudgeNumber: null, reason: 'customer_timeout' });
+});
+
+test('nudgeDecision: tenant opt-out path is intentionally not nudged', () => {
+  assert.deepEqual(nudgeDecision({
+    state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: '2099-01-06T10:00:00',
+    tenant_nudge_count: 0, policy_explicit_confirm: 0,
+  }, S, '2099-01-06T14:00:00'),
+  { action: 'none', party: 'tenant', nudgeNumber: null, reason: 'opt_out_path_no_nudge' });
+});
+
+test('nudgeDecision: tenant explicit path nudges, anchors are required, and recent nudges suppress repeats', () => {
+  assert.deepEqual(nudgeDecision({
+    state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: '2099-01-06T10:00:00',
+    tenant_nudge_count: 0, policy_explicit_confirm: 1,
+  }, S, '2099-01-06T14:00:00'), { action: 'nudge', party: 'tenant', nudgeNumber: 1, reason: 'tenant_nudge_due' });
+  assert.deepEqual(nudgeDecision({
+    state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: null,
+    tenant_nudge_count: 0, policy_explicit_confirm: 1,
+  }, S, '2099-01-06T14:00:00'), { action: 'none', party: 'tenant', nudgeNumber: null, reason: 'anchor_missing' });
+  assert.deepEqual(nudgeDecision({
+    state: 'ASK_PROSPECT_DAY', awaiting: 'prospect', customer_asked_at: '2099-01-06T10:00:00',
+    customer_nudge_count: 0, last_nudge_at: '2099-01-06T13:40:00',
+  }, S, '2099-01-06T14:00:00'), { action: 'none', party: 'prospect', nudgeNumber: null, reason: 'nudged_recently' });
+});
+
+test('reversalClassification: committed tenant replies classify reversal states', () => {
+  assert.deepEqual(reversalClassification({
+    state: STATE_AUTO_CONFIRMED, party: 'tenant', intent: { cancel: true },
+  }), { state: STATE_TENANT_REVERSED, reason: 'tenant_declined_after_auto_confirm' });
+  assert.deepEqual(reversalClassification({
+    state: 'CONFIRMED', party: 'tenant', intent: { when: '2099-01-07T15:00:00' },
+  }), { state: STATE_RESCHEDULE_AFTER_COMMIT, reason: 'tenant_countered_after_auto_confirm' });
+  assert.deepEqual(reversalClassification({
+    state: STATE_AUTO_CONFIRMED, party: 'tenant', intent: { body: 'wait' },
+  }), { state: 'NEEDS_STAFF', reason: 'tenant_reply_after_confirm' });
+  assert.equal(reversalClassification({
+    state: STATE_AUTO_CONFIRMED, party: 'prospect', intent: { cancel: true },
+  }), null);
+  assert.equal(reversalClassification({
+    state: 'AWAIT_TENANT', party: 'tenant', intent: { cancel: true },
+  }), null);
+});
+
+test('sendModeFor: only allowlisted nudges/alerts can be auto', () => {
+  for (const type of ['customer_nudge', 'tenant_nudge', 'staff_alert']) {
+    assert.equal(sendModeFor(type, { auto_send_nudges: 1 }), 'auto');
+    assert.equal(sendModeFor(type, { auto_send_nudges: 0 }), 'approve');
+  }
+  for (const type of ['customer_booking_confirmed', 'tenant_opt_out_notice', 'customer_reversal_notice']) {
+    assert.equal(sendModeFor(type, { auto_send_nudges: 1 }), 'approve');
+  }
+  // Unknown protocol types fail closed to staff approval.
+  assert.equal(sendModeFor('new_protocol_event', { auto_send_nudges: 1 }), 'approve');
+});
+
+test('idempotencyKeyFor: stable output and required identifiers', () => {
+  assert.equal(idempotencyKeyFor('123', 'customer_nudge', 1), '123:customer_nudge:1');
+  assert.throws(() => idempotencyKeyFor(null, 'customer_nudge', 1), TypeError);
+  assert.throws(() => idempotencyKeyFor('123', '', 1), TypeError);
+});
+
+test('withinQuietHours: outside viewing time or day is quiet', () => {
+  assert.equal(withinQuietHours('2099-01-06T03:00:00', S), true);
+  assert.equal(withinQuietHours('2099-01-06T14:00:00', S), false);
+  assert.equal(withinQuietHours('2099-01-04T14:00:00', S), true);
+});
+
+test('terminal/closed state constants include AUTO_CONFIRMED', () => {
+  assert.equal(TERMINAL_STATES.includes(STATE_AUTO_CONFIRMED), true);
+  assert.equal(CLOSED_STATES.includes(STATE_AUTO_CONFIRMED), true);
+});
+
+// The two policy fields are INDEPENDENT decisions. viewing_access_policy allows
+// opt_out_window_hours to be NULL, so resolving both from a single winning source
+// dropped require_explicit_confirmation whenever the optional hours were absent —
+// silently reverting a tenant who must be asked back to silence-is-consent.
+test('resolvePolicy: require_explicit_confirmation survives a NULL opt_out_window_hours', () => {
+  const stored = resolvePolicy({
+    storedPolicy: { opt_out_window_hours: null, require_explicit_confirmation: 1 },
+    setting: { tenant_opt_out_hours: 4 },
+  });
+  assert.equal(stored.require_explicit_confirmation, true);
+  assert.equal(stored.opt_out_window_hours, 4); // hours still fall through to the setting
+  assert.equal(stored.source, 'stored');
+
+  const caller = resolvePolicy({
+    callerPolicy: { require_explicit_confirmation: true },
+    setting: { tenant_opt_out_hours: 8 },
+  });
+  assert.equal(caller.require_explicit_confirmation, true);
+  assert.equal(caller.opt_out_window_hours, 8);
+
+  // An absent flag defers to the next source; it must not be read as an explicit false.
+  const deferred = resolvePolicy({
+    callerPolicy: { opt_out_window_hours: 6 },
+    storedPolicy: { require_explicit_confirmation: 1 },
+    setting: { tenant_opt_out_hours: 4 },
+  });
+  assert.equal(deferred.opt_out_window_hours, 6);
+  assert.equal(deferred.require_explicit_confirmation, true);
+
+  // An explicit false from the higher-precedence source still wins.
+  const overridden = resolvePolicy({
+    callerPolicy: { opt_out_window_hours: 6, require_explicit_confirmation: false },
+    storedPolicy: { require_explicit_confirmation: 1 },
+    setting: { tenant_opt_out_hours: 4 },
+  });
+  assert.equal(overridden.require_explicit_confirmation, false);
+});
+
+// A timed-out negotiation belongs on a human's desk immediately. The
+// anti-double-send guard must only suppress nudges, never an escalation.
+test('nudgeDecision: a recent nudge does not suppress escalation', () => {
+  const now = new Date('2026-08-12T14:00:00');
+  const timedOut = nudgeDecision({
+    state: 'ASK_PROSPECT_DAY', awaiting: 'prospect',
+    customer_asked_at: new Date('2026-08-09T14:00:00'), // 72h idle, past the 48h timeout
+    customer_nudge_count: 2,
+    last_nudge_at: new Date('2026-08-12T13:40:00'),     // nudged 20 minutes ago
+  }, {}, now);
+  assert.equal(timedOut.action, 'escalate');
+  assert.equal(timedOut.reason, 'customer_timeout');
+
+  // …while a due nudge IS still suppressed by the same guard.
+  const due = nudgeDecision({
+    state: 'ASK_PROSPECT_DAY', awaiting: 'prospect',
+    customer_asked_at: new Date('2026-08-12T09:00:00'), // 5h idle — nudge 1 is due
+    customer_nudge_count: 0,
+    last_nudge_at: new Date('2026-08-12T13:40:00'),
+  }, {}, now);
+  assert.equal(due.action, 'none');
+  assert.equal(due.reason, 'nudged_recently');
+});
+
+// Without this branch the reschedule-after-commit path was a dead end: we relayed
+// the occupant's new time to the customer, and their YES fell through to `ignore`.
+test('nextStep: customer accepting a post-commit reschedule confirms without a second opt-out', () => {
+  const accept = nextStep({
+    state: STATE_RESCHEDULE_AFTER_COMMIT, party: 'prospect',
+    intent: { accepted: true, currentWhen: '2099-01-07T15:00:00' }, roundCount: 0, maxRounds: 3,
+  });
+  // confirmOnFree short-circuits the tenant leg — the tenant proposed this slot.
+  assert.deepEqual(accept, {
+    type: 'staff_check', when: '2099-01-07T15:00:00', proposedBy: 'tenant',
+    confirmOnFree: true, roundDelta: 0,
+  });
+
+  // A decline, or yet another counter, goes to staff rather than restarting the loop.
+  for (const intent of [{ accepted: false }, { when: '2099-01-08T16:00:00' }, {}]) {
+    assert.deepEqual(nextStep({
+      state: STATE_RESCHEDULE_AFTER_COMMIT, party: 'prospect', intent, roundCount: 0, maxRounds: 3,
+    }), { type: 'escalate', reason: 'reschedule_declined_after_commit' });
+  }
+});
+
+// In manual relay mode the opt-out deadline is rendered into the draft body at
+// composition, but staff approve it later. Recomputing the deadline at send time
+// would enforce a moment that appears nowhere in the message the tenant read, so we
+// act only on the QUOTED deadline — and only while it still leaves room to object.
+test('noticeIsActionable: only a quoted deadline with time left can justify silence', () => {
+  const { noticeIsActionable } = require('../src/services/viewingNegotiationLogic');
+  // Composed 11:00 with a 4h window, approved promptly at 11:05 → 3h55m left.
+  assert.equal(noticeIsActionable({
+    quotedDeadlineAt: '2099-01-06T15:00:00', sentAt: '2099-01-06T11:05:00',
+  }), true);
+  // Approved at 18:00 — the quoted 15:00 has already passed. The tenant would be
+  // asked to object by a time three hours gone.
+  assert.equal(noticeIsActionable({
+    quotedDeadlineAt: '2099-01-06T15:00:00', sentAt: '2099-01-06T18:00:00',
+  }), false);
+  // Under an hour left is not a real opportunity to object.
+  assert.equal(noticeIsActionable({
+    quotedDeadlineAt: '2099-01-06T15:00:00', sentAt: '2099-01-06T14:30:00',
+  }), false);
+  // Exactly one hour is the boundary, and it is inclusive.
+  assert.equal(noticeIsActionable({
+    quotedDeadlineAt: '2099-01-06T15:00:00', sentAt: '2099-01-06T14:00:00',
+  }), true);
+  // A missing deadline can never justify auto-confirming.
+  assert.equal(noticeIsActionable({ quotedDeadlineAt: null, sentAt: '2099-01-06T11:00:00' }), false);
+  assert.equal(noticeIsActionable({ quotedDeadlineAt: '2099-01-06T15:00:00', sentAt: null }), false);
+  assert.equal(noticeIsActionable({}), false);
+});
+
+// The explicit-path nudge must be independent of tenant_opt_out_hours. Borrowing
+// that setting meant widening the opt-out window to 24h pushed the nudge out to the
+// 24h escalation, so the tenant was never nudged at all before being handed to staff.
+test('nudgeDecision: explicit-path nudge is unaffected by the opt-out window', () => {
+  const now = new Date('2026-08-12T14:00:00');
+  const row = {
+    state: 'AWAIT_TENANT', awaiting: 'tenant', policy_explicit_confirm: 1,
+    tenant_notified_at: new Date('2026-08-12T09:00:00'), // 5h idle — past the 4h nudge
+    tenant_nudge_count: 0,
+  };
+  for (const optOut of [4, 8, 24, 168]) {
+    const d = nudgeDecision(row, { tenant_opt_out_hours: optOut, tenant_explicit_timeout_hours: 24 }, now);
+    assert.equal(d.action, 'nudge', `opt_out_window_hours=${optOut} must not gate this path`);
+    assert.equal(d.nudgeNumber, 1);
+  }
+
+  // Capped at half the timeout, so the nudge still precedes escalation on a short one.
+  const shortTimeout = nudgeDecision({ ...row, tenant_notified_at: new Date('2026-08-12T12:30:00') },
+    { tenant_explicit_timeout_hours: 3 }, now); // 1.5h idle, nudge at min(4, 1.5)=1.5h
+  assert.equal(shortTimeout.action, 'nudge');
+  // …and it has not yet escalated at that point.
+  assert.notEqual(shortTimeout.action, 'escalate');
+});
+
+// ── service-level pure wiring helpers ───────────────────────────────────────
+test('outboundSendDecision: manual defaults do not send any A6 event type', () => {
+  const setting = { ...S, relay_mode: 'manual', auto_send_nudges: 0, respect_quiet_hours: 0 };
+  for (const eventType of viewingService.EVENT_TYPES) {
+    assert.deepEqual(viewingService.outboundSendDecision(eventType, setting, '2099-01-06T14:00:00'), {
+      mode: 'approve',
+      shouldSend: false,
+      quietSuppressed: false,
+    }, `${eventType} must stay draft by default`);
+  }
+});
+
+test('outboundSendDecision: relay_mode auto sends every event type', () => {
+  const setting = { ...S, relay_mode: 'auto', auto_send_nudges: 0, respect_quiet_hours: 0 };
+  for (const eventType of viewingService.EVENT_TYPES) {
+    const d = viewingService.outboundSendDecision(eventType, setting, '2099-01-06T14:00:00');
+    assert.equal(d.shouldSend, true, `${eventType} should send under relay_mode auto`);
+  }
+});
+
+test('outboundSendDecision: auto_send_nudges opens only the nudge door', () => {
+  const setting = { ...S, relay_mode: 'manual', auto_send_nudges: 1, respect_quiet_hours: 0 };
+  assert.equal(viewingService.outboundSendDecision('customer_nudge', setting, '2099-01-06T14:00:00').shouldSend, true);
+  for (const type of ['customer_booking_confirmed', 'tenant_opt_out_notice', 'customer_reversal_notice']) {
+    assert.equal(viewingService.outboundSendDecision(type, setting, '2099-01-06T14:00:00').shouldSend, false);
+  }
+});
+
+test('outboundSendDecision: quiet hours suppress auto nudges only', () => {
+  const setting = { ...S, relay_mode: 'manual', auto_send_nudges: 1, respect_quiet_hours: 1 };
+  assert.deepEqual(viewingService.outboundSendDecision('customer_nudge', setting, '2099-01-06T03:00:00'), {
+    mode: 'auto',
+    shouldSend: false,
+    quietSuppressed: true,
+  });
+  assert.deepEqual(viewingService.outboundSendDecision('customer_booking_confirmed', setting, '2099-01-06T03:00:00'), {
+    mode: 'approve',
+    shouldSend: false,
+    quietSuppressed: false,
+  });
+});
+
+test('chooseTenantNoticeTemplate: deadline-less opt-out falls back to explicit', () => {
+  assert.deepEqual(viewingService.chooseTenantNoticeTemplate(
+    { require_explicit_confirmation: true }, '2099-01-06T14:00:00'
+  ), { templateType: 'Viewing-Tenant-Explicit', eventType: 'tenant_explicit_confirm_request', deadline: null });
+  assert.deepEqual(viewingService.chooseTenantNoticeTemplate(
+    { require_explicit_confirmation: false }, '2099-01-06T14:00:00'
+  ), { templateType: 'Viewing-Tenant-OptOut', eventType: 'tenant_opt_out_notice', deadline: '2099-01-06T14:00:00' });
+  assert.deepEqual(viewingService.chooseTenantNoticeTemplate(
+    { require_explicit_confirmation: false }, null
+  ), { templateType: 'Viewing-Tenant-Explicit', eventType: 'tenant_explicit_confirm_request', deadline: null });
+});
+
+test('boardNextDeadline: opt-out deadline agrees with autoConfirmDecision', () => {
+  const waiting = {
+    state: 'AWAIT_TENANT', awaiting: 'tenant', policy_explicit_confirm: 0,
+    tenant_notified_at: '2099-01-06T10:00:00', opt_out_deadline_at: '2099-01-06T14:00:00',
+  };
+  assert.equal(autoConfirmDecision(waiting, '2099-01-06T13:00:00').action, 'wait');
+  assert.deepEqual(viewingService.boardNextDeadline(waiting, S, '2099-01-06T13:00:00'), {
+    kind: 'opt_out_expiry',
+    due_at: '2099-01-06T14:00:00',
+    overdue: false,
+  });
+  assert.equal(autoConfirmDecision(waiting, '2099-01-06T14:01:00').action, 'auto_confirm');
+  assert.deepEqual(viewingService.boardNextDeadline(waiting, S, '2099-01-06T14:01:00'), {
+    kind: 'opt_out_expiry',
+    due_at: '2099-01-06T14:00:00',
+    overdue: true,
+  });
+});
+
+test('CLOSED_STATES sweep predicates exclude AUTO_CONFIRMED', () => {
+  const row = { state: STATE_AUTO_CONFIRMED, awaiting: 'prospect' };
+  assert.equal(viewingService.isNudgeCandidate(row), false);
+  assert.equal(viewingService.isStaleCandidate(row), false);
+  assert.equal(viewingService.CLOSED_STATES.includes(STATE_AUTO_CONFIRMED), true);
 });

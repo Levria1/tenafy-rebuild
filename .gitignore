@@ -28,3 +28,7 @@ test2.txt
 
 # Uploaded files
 backend/uploads/
+
+# Python bytecode (scripts/tenafy_posting_plan.py)
+__pycache__/
+*.pyc
