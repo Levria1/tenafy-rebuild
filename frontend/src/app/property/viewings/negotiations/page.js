@@ -362,7 +362,13 @@ function SetupDrawer({ open, onClose }) {
       viewingApi.getViewingSettings().catch(() => ({ data: { data: null } })),
       viewingApi.getRoster().catch(() => ({ data: { data: { entries: [], properties: [], staff: [] } } })),
     ]).then(([s, r]) => {
-      setSettings(s.data.data || { relay_mode: 'manual', max_rounds: 3, read_back: 1, viewing_days: '1,2,3,4,5,6', viewing_start: '11:00:00', viewing_end: '19:00:00', lead_days_nr: 60, lead_days_other: 45 });
+      // Deliberately NO hardcoded fallback defaults here. GET /settings always
+      // returns a full object (the backend substitutes its own defaults when the org
+      // has no viewing_setting row yet), so a null means the request FAILED. Inventing
+      // values here would show plausible settings that aren't the org's, and saving
+      // would then write those invented values over the real ones. Leave it null so the
+      // drawer says so and Save stays disabled.
+      setSettings(s.data.data || null);
       const rd = r.data.data || { entries: [], properties: [], staff: [] };
       setRoster(rd);
       const g = {};
@@ -398,6 +404,15 @@ function SetupDrawer({ open, onClose }) {
         viewing_end: settings.viewing_end,
         lead_days_nr: settings.lead_days_nr,
         lead_days_other: settings.lead_days_other,
+        customer_nudge_1_hours: settings.customer_nudge_1_hours,
+        customer_nudge_2_hours: settings.customer_nudge_2_hours,
+        customer_nudge_cap: settings.customer_nudge_cap,
+        customer_timeout_hours: settings.customer_timeout_hours,
+        tenant_opt_out_hours: settings.tenant_opt_out_hours,
+        tenant_explicit_timeout_hours: settings.tenant_explicit_timeout_hours,
+        tenant_nudge_cap: settings.tenant_nudge_cap,
+        auto_send_nudges: settings.auto_send_nudges ? 1 : 0,
+        respect_quiet_hours: settings.respect_quiet_hours ? 1 : 0,
       });
       const entries = [];
       Object.entries(grid).forEach(([propId, days]) => {
@@ -420,7 +435,15 @@ function SetupDrawer({ open, onClose }) {
       title="Viewing Relay Setup" width={720} open={open} onClose={onClose}
       extra={<Button type="primary" loading={saving} onClick={save} disabled={!settings}>Save</Button>}
     >
-      {loading || !settings ? <Text type="secondary">Loading…</Text> : (
+      {loading ? <Text type="secondary">Loading…</Text> : !settings ? (
+        <Space direction="vertical">
+          <Text type="danger">Couldn&apos;t load the current settings.</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Saving is disabled until they load, so a failed read can&apos;t overwrite your real settings.
+          </Text>
+          <Button onClick={load}>Retry</Button>
+        </Space>
+      ) : (
         <>
           <Title level={5}>Relay mode</Title>
           <Segmented
@@ -500,6 +523,96 @@ function SetupDrawer({ open, onClose }) {
                 onChange={(v) => setSettings({ ...settings, lead_days_other: v })} addonAfter="days before end" />
             </div>
           </Space>
+
+          <Title level={5} style={{ marginTop: 20 }}>Chasing a quiet viewer</Title>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            After we ask the viewer to confirm a time, nudge them on this schedule. Once the escalation
+            time is reached the request is handed to staff and nudging stops — so the second nudge must
+            be sooner than that, or it can never be sent.
+          </Text>
+          <Space size="large" wrap style={{ marginTop: 8 }}>
+            <div>
+              <div><Text type="secondary">First nudge</Text></div>
+              <InputNumber min={1} max={168} value={settings.customer_nudge_1_hours}
+                onChange={(v) => setSettings({ ...settings, customer_nudge_1_hours: v })} addonAfter="hours" />
+            </div>
+            <div>
+              <div><Text type="secondary">Second nudge</Text></div>
+              <InputNumber min={1} max={168} value={settings.customer_nudge_2_hours}
+                onChange={(v) => setSettings({ ...settings, customer_nudge_2_hours: v })} addonAfter="hours" />
+            </div>
+            <div>
+              <div><Text type="secondary">Max nudges</Text></div>
+              <InputNumber min={0} max={5} value={settings.customer_nudge_cap}
+                onChange={(v) => setSettings({ ...settings, customer_nudge_cap: v })} />
+            </div>
+            <div>
+              <div><Text type="secondary">Hand to staff after</Text></div>
+              <InputNumber min={1} max={336} value={settings.customer_timeout_hours}
+                onChange={(v) => setSettings({ ...settings, customer_timeout_hours: v })} addonAfter="hours" />
+            </div>
+          </Space>
+          {settings.customer_nudge_2_hours >= settings.customer_timeout_hours ? (
+            <div style={{ marginTop: 6 }}>
+              <Text type="danger" style={{ fontSize: 12 }}>
+                The second nudge ({settings.customer_nudge_2_hours}h) is not before the escalation
+                ({settings.customer_timeout_hours}h), so it would never be sent.
+              </Text>
+            </div>
+          ) : null}
+
+          <Title level={5} style={{ marginTop: 20 }}>Asking the current tenant</Title>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Once the viewer confirms, we tell the occupant and give them a deadline to object. If they
+            say nothing by then, the viewing is confirmed automatically. Per-tenant overrides (a longer
+            window, or requiring an explicit yes) take priority over these.
+          </Text>
+          <Space size="large" wrap style={{ marginTop: 8 }}>
+            <div>
+              <div><Text type="secondary">Deadline to object</Text></div>
+              <InputNumber min={1} max={168} value={settings.tenant_opt_out_hours}
+                onChange={(v) => setSettings({ ...settings, tenant_opt_out_hours: v })} addonAfter="hours" />
+            </div>
+            <div>
+              <div><Text type="secondary">If an explicit yes is required, give up after</Text></div>
+              <InputNumber min={1} max={336} value={settings.tenant_explicit_timeout_hours}
+                onChange={(v) => setSettings({ ...settings, tenant_explicit_timeout_hours: v })} addonAfter="hours" />
+            </div>
+            <div>
+              <div><Text type="secondary">Max tenant nudges</Text></div>
+              <InputNumber min={0} max={5} value={settings.tenant_nudge_cap}
+                onChange={(v) => setSettings({ ...settings, tenant_nudge_cap: v })} />
+            </div>
+          </Space>
+          <div style={{ marginTop: 6 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              An occupant on the deadline-to-object path is never nudged — their silence is already a
+              valid answer, and we told them so. Nudges only apply when an explicit yes is required.
+            </Text>
+          </div>
+
+          <Title level={5} style={{ marginTop: 20 }}>Sending nudges without approval</Title>
+          <div style={{ marginBottom: 4 }}>
+            <Space>
+              <Switch checked={!!settings.auto_send_nudges}
+                onChange={(v) => setSettings({ ...settings, auto_send_nudges: v ? 1 : 0 })} />
+              <Text>Send nudges automatically</Text>
+            </Space>
+            <div><Text type="secondary" style={{ fontSize: 12 }}>
+              Off by default. Nudges only — messages that confirm, change or cancel a viewing always wait
+              for your approval, even with this on.
+            </Text></div>
+          </div>
+          <div>
+            <Space>
+              <Switch checked={!!settings.respect_quiet_hours}
+                onChange={(v) => setSettings({ ...settings, respect_quiet_hours: v ? 1 : 0 })} />
+              <Text>Hold automatic nudges outside viewing hours</Text>
+            </Space>
+            <div><Text type="secondary" style={{ fontSize: 12 }}>
+              A nudge due at 3am waits until your viewing hours resume instead of waking someone.
+            </Text></div>
+          </div>
 
           <Title level={5} style={{ marginTop: 24 }}>Responsible staff (property × day)</Title>
           <Text type="secondary">The person on duty for a property that weekday is whose Google calendar is checked.</Text>

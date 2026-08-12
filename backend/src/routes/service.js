@@ -5,6 +5,22 @@ const { logActivity } = require('../utils/activityLog');
 
 const { generateSequenceCode } = require('../utils/sequenceCode');
 
+// Column length caps duplicated from the schema after migrations-org/055.
+// MySQL's "Data too long for column 'sub_category'" is unusable to a user, so
+// this app-level check can name the UI field before the query runs. Update these
+// when the service column widths change.
+const FIELD_LIMITS = { code: 45, category: 50, sub_category: 255, contact_phone: 50 };
+const FIELD_LABELS = { sub_category: 'Issues / Sub-Category' };
+function lengthError(body, limits = FIELD_LIMITS) {
+  for (const [field, max] of Object.entries(limits)) {
+    const v = body[field];
+    if (v != null && String(v).length > max) {
+      return `${FIELD_LABELS[field] || field} must be ${max} characters or fewer`;
+    }
+  }
+  return null;
+}
+
 // POST /api/service/list - List services with paging
 router.post('/list', authenticate, async (req, res) => {
   try {
@@ -162,6 +178,9 @@ router.post('/create', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const userId = req.user.id;
 
+    const tooLong = lengthError(req.body);
+    if (tooLong) return res.status(400).json({ code: 400, message: tooLong });
+
     // Snowflake ID
     const serviceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
@@ -173,6 +192,9 @@ router.post('/create', authenticate, async (req, res) => {
       console.error('Sequence lookup failed, using fallback code:', seqErr.message);
       code = 'S' + Date.now();
     }
+
+    const codeTooLong = lengthError({ code });
+    if (codeTooLong) return res.status(400).json({ code: 400, message: codeTooLong });
 
     await req.pool.execute(
       `INSERT INTO service (id, org_id, code, unit_id, category, sub_category,
@@ -410,6 +432,9 @@ router.put('/update/:id', authenticate, async (req, res) => {
       preferred_date_second_start, preferred_date_second_end,
       service_date_start, service_date_end
     } = req.body;
+
+    const tooLong = lengthError(req.body);
+    if (tooLong) return res.status(400).json({ code: 400, message: tooLong });
 
     // Verify exists
     const [existing] = await req.pool.execute(

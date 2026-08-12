@@ -1072,27 +1072,63 @@ router.put('/settings', async (req, res) => {
     const b = req.body || {};
     const fields = [];
     const params = [];
+    const nextValues = {};
     if (b.relay_mode !== undefined) {
       if (!['manual', 'auto'].includes(b.relay_mode)) return fail(res, 'relay_mode must be manual or auto', 400);
-      fields.push('relay_mode'); params.push(b.relay_mode);
+      fields.push('relay_mode'); params.push(b.relay_mode); nextValues.relay_mode = b.relay_mode;
     }
     if (b.max_rounds !== undefined) {
       const n = Number(b.max_rounds);
       if (!Number.isInteger(n) || n < 1 || n > 10) return fail(res, 'max_rounds must be 1–10', 400);
-      fields.push('max_rounds'); params.push(n);
+      fields.push('max_rounds'); params.push(n); nextValues.max_rounds = n;
     }
-    if (b.read_back !== undefined) { fields.push('read_back'); params.push(b.read_back ? 1 : 0); }
+    if (b.read_back !== undefined) {
+      const n = b.read_back ? 1 : 0;
+      fields.push('read_back'); params.push(n); nextValues.read_back = n;
+    }
     for (const key of ['lead_days_nr', 'lead_days_other']) {
       if (b[key] !== undefined) {
         const n = Number(b[key]);
         if (!Number.isInteger(n) || n < 1 || n > 365) return fail(res, `${key} must be 1–365 days`, 400);
-        fields.push(key); params.push(n);
+        fields.push(key); params.push(n); nextValues[key] = n;
       }
     }
-    if (b.viewing_days !== undefined) { fields.push('viewing_days'); params.push(String(b.viewing_days)); }
-    if (b.viewing_start !== undefined) { fields.push('viewing_start'); params.push(String(b.viewing_start)); }
-    if (b.viewing_end !== undefined) { fields.push('viewing_end'); params.push(String(b.viewing_end)); }
-    if (!fields.length) return ok(res, await viewingNegotiation.getSetting(req.pool, orgId));
+    const cadenceLimits = {
+      customer_nudge_1_hours: [1, 168],
+      customer_nudge_2_hours: [1, 168],
+      customer_nudge_cap: [0, 5],
+      customer_timeout_hours: [1, 336],
+      tenant_opt_out_hours: [1, 168],
+      tenant_explicit_timeout_hours: [1, 336],
+      tenant_nudge_cap: [0, 5],
+    };
+    for (const [key, [min, max]] of Object.entries(cadenceLimits)) {
+      if (b[key] !== undefined) {
+        const n = Number(b[key]);
+        if (!Number.isInteger(n) || n < min || n > max) return fail(res, `${key} must be ${min}–${max}`, 400);
+        fields.push(key); params.push(n); nextValues[key] = n;
+      }
+    }
+    for (const key of ['auto_send_nudges', 'respect_quiet_hours']) {
+      if (b[key] !== undefined) {
+        const n = b[key] ? 1 : 0;
+        fields.push(key); params.push(n); nextValues[key] = n;
+      }
+    }
+    if (b.viewing_days !== undefined) { const v = String(b.viewing_days); fields.push('viewing_days'); params.push(v); nextValues.viewing_days = v; }
+    if (b.viewing_start !== undefined) { const v = String(b.viewing_start); fields.push('viewing_start'); params.push(v); nextValues.viewing_start = v; }
+    if (b.viewing_end !== undefined) { const v = String(b.viewing_end); fields.push('viewing_end'); params.push(v); nextValues.viewing_end = v; }
+
+    const current = await viewingNegotiation.getSetting(req.pool, orgId);
+    if (!fields.length) return ok(res, current);
+
+    const merged = { ...current, ...nextValues };
+    if (Number(merged.customer_nudge_1_hours) > Number(merged.customer_nudge_2_hours)) {
+      return fail(res, 'customer_nudge_1_hours must be less than or equal to customer_nudge_2_hours so nudge 1 is not scheduled after nudge 2', 400);
+    }
+    if (Number(merged.customer_nudge_2_hours) >= Number(merged.customer_timeout_hours)) {
+      return fail(res, 'customer_nudge_2_hours must be less than customer_timeout_hours so the second nudge can happen before escalation moves the negotiation to NEEDS_STAFF and stops nudging', 400);
+    }
 
     // Upsert the single row for this org.
     const cols = ['org_id', ...fields];
