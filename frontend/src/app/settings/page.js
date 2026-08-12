@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Alert, Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../components/Layout';
-import { settings, user, amenity, role, emailTemplate, whatsappTemplate, smtpAccount, bookingPlatform, salesAgent, advertisingApi } from '../../lib/api';
+import { settings, user, amenity, role, emailTemplate, whatsappTemplate, smtpAccount, bookingPlatform, salesAgent } from '../../lib/api';
 import { useCallback } from 'react';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
@@ -468,10 +468,6 @@ function SettingsPage() {
     { key: 'apiKeys', label: 'API Keys', children: <ApiKeySettings isMobile={isMobile} /> },
   ];
 
-  const leasingTabs = [
-    { key: 'leasing', label: 'Availability', children: <LeasingAvailabilitySettings /> },
-  ];
-
   const bookingCommissionTabs = [
     { key: 'bookingPlatforms', label: 'Booking Platforms', children: <BookingPlatformSettings isMobile={isMobile} /> },
     { key: 'salesAgents', label: 'Sales Agents', children: <SalesAgentSettings isMobile={isMobile} /> },
@@ -487,15 +483,11 @@ function SettingsPage() {
   const userKeys = ['users', 'roles'];
   const apiKeyKeys = ['apiKeys'];
   const bookingKeys = ['bookingPlatforms', 'salesAgents', 'leadSources'];
-  const leasingKeys = ['leasing'];
 
   let tabItems, pageTitle;
   if (bookingKeys.includes(activeTab)) {
     tabItems = bookingCommissionTabs;
     pageTitle = 'Booking & Commission';
-  } else if (leasingKeys.includes(activeTab)) {
-    tabItems = leasingTabs;
-    pageTitle = 'Leasing';
   } else if (apiKeyKeys.includes(activeTab)) {
     tabItems = apiKeyTabs;
     pageTitle = 'API Keys';
@@ -1595,145 +1587,6 @@ GET /api/public/properties`}
 // ---------------------------------------------------------------------------
 // Email Whitelist Settings
 // ---------------------------------------------------------------------------
-
-// Settings -> Leasing -> Availability.
-//
-// These live on `advertising_setting` because that is where the availability engine
-// (computeVacancies) already reads min_gap_days and the lead windows from. The table
-// name is historical: these are LETTING rules, not advertising rules — they decide
-// what gets offered to a prospect whether the answer comes from the chatbot, the
-// public API, or a member of staff. This page is the first UI any of them has had.
-function LeasingAvailabilitySettings() {
-  const [maxGap, setMaxGap] = useState(null);
-  const [hardMaxGap, setHardMaxGap] = useState(null);
-  const [partnerMsg, setPartnerMsg] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    setLoadError(false);
-    advertisingApi.getAdSettings()
-      .then(r => {
-        const d = r.data?.data;
-        // No invented fallbacks: the API always returns a full object, so a missing
-        // one means the request failed. Showing plausible-but-wrong numbers here and
-        // then saving them over the real ones is the failure worth avoiding.
-        if (!d) { setLoadError(true); return; }
-        setMaxGap(d.max_gap_days ?? null);
-        setHardMaxGap(d.hard_max_gap_days ?? null);
-        setPartnerMsg(d.partner_forward_message ?? '');
-      })
-      .catch(() => setLoadError(true))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  // Mirrors the server-side rule. A warning threshold above the hide threshold is
-  // incoherent: nothing could ever be warned about, because it would already be hidden.
-  const invalid = maxGap != null && hardMaxGap != null && Number(maxGap) > Number(hardMaxGap);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await advertisingApi.updateAdSettings({
-        max_gap_days: maxGap,
-        hard_max_gap_days: hardMaxGap,
-        partner_forward_message: partnerMsg,
-      });
-      message.success('Saved');
-    } catch (e) {
-      message.error(e?.response?.data?.message || 'Failed to save');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (loading) return <Card loading />;
-
-  if (loadError) {
-    return (
-      <Card>
-        <Space direction="vertical">
-          <Alert type="error" showIcon message="Couldn't load the availability settings." />
-          <span style={{ color: '#888', fontSize: 12 }}>
-            Saving is disabled until they load, so a failed read can&apos;t overwrite your real settings.
-          </span>
-          <Button onClick={load}>Retry</Button>
-        </Space>
-      </Card>
-    );
-  }
-
-  return (
-    <Card>
-      <h3 style={{ marginTop: 0, marginBottom: 4 }}>Availability</h3>
-      <p style={{ color: '#888', marginBottom: 20 }}>
-        Availability settings for inquiries about what units are available
-      </p>
-
-      <Row gutter={24}>
-        <Col xs={24} md={12} style={{ marginBottom: 20 }}>
-          <div style={{ marginBottom: 4, fontWeight: 500 }}>Suggest an earlier move-in after</div>
-          <InputNumber
-            min={0} max={365} value={maxGap} onChange={setMaxGap}
-            addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
-          />
-          <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
-            If the unit would sit empty longer than this before the tenant moves in, we still offer it
-            — but we ask whether they can start a little earlier.
-          </div>
-        </Col>
-
-        <Col xs={24} md={12} style={{ marginBottom: 20 }}>
-          <div style={{ marginBottom: 4, fontWeight: 500 }}>Stop offering the unit after</div>
-          <InputNumber
-            min={0} max={365} value={hardMaxGap} onChange={setHardMaxGap}
-            addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
-          />
-          <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
-            Past this the unit is not offered at all. <strong>Units that are already vacant are
-            always offered</strong> regardless — they are the ones most needing a tenant, so hiding
-            them would be counter-productive.
-          </div>
-        </Col>
-      </Row>
-
-      {invalid && (
-        <Alert
-          type="error" showIcon style={{ marginBottom: 16 }}
-          message={`Suggest-earlier (${maxGap}d) must not be later than stop-offering (${hardMaxGap}d)`}
-          description="Otherwise nothing could ever be flagged — it would already have been hidden."
-        />
-      )}
-
-      <Alert
-        type="info" showIcon style={{ marginBottom: 16 }}
-        message="When nothing matches"
-        description="If we can't house the inquiry — whether nothing is suitable or we have nothing at all — the message below is what gets forwarded to partner agencies. A unit that only becomes free after the requested date is never hidden by the limits above, since waiting costs no rent."
-      />
-
-      <div style={{ marginBottom: 8, fontWeight: 500 }}>Message to forward to partner agencies</div>
-      <Input.TextArea
-        rows={5} value={partnerMsg} onChange={e => setPartnerMsg(e.target.value)}
-        maxLength={2000} showCount
-        placeholder={'e.g. Hi, we have an enquiry we can\u2019t house ourselves \u2014 {customer_name} is looking to move in around {target_date}, budget {budget}, in {area}. Requirements: {requirements}. Anything available on your side?'}
-      />
-      <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
-        Leave this empty and nothing is sent — there is deliberately no default, because this text
-        goes to real agencies. Placeholders are filled in when the message is sent:{' '}
-        <code>{'{customer_name}'}</code> <code>{'{target_date}'}</code> <code>{'{budget}'}</code>{' '}
-        <code>{'{area}'}</code> <code>{'{requirements}'}</code>
-      </div>
-
-      <div style={{ height: 20 }} />
-
-      <Button type="primary" loading={saving} disabled={invalid} onClick={handleSave}>Save</Button>
-    </Card>
-  );
-}
 
 function EmailWhitelistSettings() {
   const [enabled, setEnabled] = useState(false);
