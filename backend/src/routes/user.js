@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate, isSuperAdmin } = require('../middleware/auth');
 const { getMasterPool } = require('../config/poolRegistry');
 
 const bcrypt = require('bcryptjs');
@@ -25,7 +25,7 @@ router.get('/profile', authenticate, async (req, res) => {
 
     // Load permissions
     let permissions = [];
-    if (Number(orgType) === 6) {
+    if (isSuperAdmin(req)) {
       permissions = ['*'];
     } else {
       const [perms] = await req.pool.execute(
@@ -37,7 +37,7 @@ router.get('/profile', authenticate, async (req, res) => {
       permissions = perms.map(p => p.permission_code);
     }
 
-    res.json({ code: 200, data: { ...users[0], orgType: Number(orgType), permissions } });
+    res.json({ code: 200, data: { ...users[0], orgType: Number(orgType), isSuperAdmin: isSuperAdmin(req), permissions } });
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get profile' });

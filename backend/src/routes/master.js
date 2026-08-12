@@ -185,7 +185,7 @@ router.get('/api-keys', authenticateMaster, async (req, res) => {
   try {
     const masterPool = getMasterPool();
     const [keys] = await masterPool.execute(
-      `SELECT k.id, k.org_id, k.api_key, k.name, k.status, k.created_at, k.last_used_at,
+      `SELECT k.id, k.org_id, k.api_key, k.name, k.status, k.read_only, k.created_at, k.last_used_at,
               o.display_name AS org_name
        FROM api_keys k
        LEFT JOIN organizations o ON k.org_id = o.id
@@ -201,7 +201,7 @@ router.get('/api-keys', authenticateMaster, async (req, res) => {
 // POST /api/master/api-keys - Create a new API key
 router.post('/api-keys', authenticateMaster, async (req, res) => {
   try {
-    const { org_id, name } = req.body;
+    const { org_id, name, read_only } = req.body;
     if (!org_id) {
       return res.status(400).json({ code: 400, message: 'org_id is required' });
     }
@@ -217,12 +217,19 @@ router.post('/api-keys', authenticateMaster, async (req, res) => {
     const id = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
     const apiKey = 'pk_' + crypto.randomBytes(32).toString('hex');
 
+    // read_only is a hard guarantee, not a hint: authenticateApiKey rejects every
+    // non-GET/HEAD/OPTIONS request from such a key before any route runs. Until now
+    // this route could not set it, so every key minted here was read-write — which is
+    // more privilege than most integrations (the posting-plan script, a website feed)
+    // actually need.
+    const readOnly = read_only ? 1 : 0;
+
     await masterPool.execute(
-      'INSERT INTO api_keys (id, org_id, api_key, name, status, created_at) VALUES (?, ?, ?, ?, 1, NOW())',
-      [id, org_id, apiKey, name || 'Default']
+      'INSERT INTO api_keys (id, org_id, api_key, name, status, read_only, created_at) VALUES (?, ?, ?, ?, 1, ?, NOW())',
+      [id, org_id, apiKey, name || 'Default', readOnly]
     );
 
-    res.json({ code: 200, data: { id, api_key: apiKey, name: name || 'Default' } });
+    res.json({ code: 200, data: { id, api_key: apiKey, name: name || 'Default', read_only: readOnly } });
   } catch (error) {
     console.error('Create API key error:', error);
     res.status(500).json({ code: 500, message: 'Server error' });

@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const config = require('../config');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, isSuperAdmin } = require('../middleware/auth');
 const { sendMail, sendMailWithAccount } = require('../config/mailer');
 const { findSmtpAccount } = require('../services/emailService');
 
@@ -57,6 +57,10 @@ async function resolveOrgByEmail(email) {
   return { orgId: rows[0].org_id, dbName: rows[0].db_name, pool: orgPool };
 }
 
+function isSchemaMissingError(err) {
+  return /doesn't exist|Unknown column|Unknown table/i.test(err && err.message);
+}
+
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
   try {
@@ -106,8 +110,23 @@ router.post('/login', async (req, res) => {
 
     const [[org]] = await orgPool.execute('SELECT type FROM organization WHERE id = ?', [user.org_id]);
 
+    let userIsSuperAdmin = false;
+    if (Object.prototype.hasOwnProperty.call(user, 'is_super_admin')) {
+      userIsSuperAdmin = !!user.is_super_admin;
+    } else {
+      try {
+        const [[superAdminRow]] = await orgPool.execute(
+          'SELECT is_super_admin FROM user WHERE id = ?',
+          [user.id]
+        );
+        userIsSuperAdmin = !!superAdminRow?.is_super_admin;
+      } catch (err) {
+        if (!isSchemaMissingError(err)) throw err;
+      }
+    }
+
     const token = jwt.sign(
-      { id: user.id, username: user.username, orgId: user.org_id, orgType: org?.type },
+      { id: user.id, username: user.username, orgId: user.org_id, orgType: org?.type, isSuperAdmin: userIsSuperAdmin },
       config.jwtSecret,
       { expiresIn: config.jwtExpiresIn }
     );
@@ -125,7 +144,7 @@ router.post('/login', async (req, res) => {
 
     // Fetch user permissions
     let permissions = [];
-    if (Number(org?.type) === 6) {
+    if (isSuperAdmin({ user: { orgType: org?.type, isSuperAdmin: userIsSuperAdmin } })) {
       permissions = ['*'];
     } else {
       const [perms] = await orgPool.execute(
@@ -137,7 +156,7 @@ router.post('/login', async (req, res) => {
       permissions = perms.map(p => p.permission_code);
     }
 
-    res.json({ code: 200, message: 'Login successful', data: { token, orgType: org?.type, permissions } });
+    res.json({ code: 200, message: 'Login successful', data: { token, orgType: org?.type, isSuperAdmin: userIsSuperAdmin, permissions } });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ code: 500, message: 'Login failed' });

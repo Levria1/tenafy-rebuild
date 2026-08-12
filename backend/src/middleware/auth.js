@@ -36,7 +36,10 @@ const authenticate = async (req, res, next) => {
 };
 
 const isSuperAdmin = (req) => {
-  return Number(req.user?.orgType) === 6;
+  // Keep the org-wide check deliberately for backward compatibility. Tokens
+  // issued before per-user super admins have no isSuperAdmin field, and removing
+  // this branch would de-privilege existing super-admin orgs mid-session.
+  return Number(req.user?.orgType) === 6 || !!req.user?.isSuperAdmin;
 };
 
 const authorize = (...roles) => {

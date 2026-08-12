@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm, Tooltip } from 'antd';
+import { Alert, Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../components/Layout';
 import { settings, user, amenity, role, emailTemplate, whatsappTemplate, smtpAccount, bookingPlatform, salesAgent } from '../../lib/api';
@@ -1320,6 +1320,8 @@ function ApiKeySettings({ isMobile }) {
   const [loading, setLoading] = useState(true);
   const [apiEnabled, setApiEnabled] = useState(false);
   const [checkingEnabled, setCheckingEnabled] = useState(true);
+  const [error, setError] = useState('');
+  const [errorStatus, setErrorStatus] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
@@ -1348,11 +1350,15 @@ function ApiKeySettings({ isMobile }) {
 
   const loadKeys = async () => {
     setLoading(true);
+    setError('');
+    setErrorStatus(null);
     try {
       const r = await settings.getApiKeys();
       if (r.data.code === 200) setKeys(r.data.data || []);
     } catch (err) {
       console.error('Load API keys error:', err);
+      setError(err.response?.data?.message || "Couldn't load API keys.");
+      setErrorStatus(err.response?.status || null);
     } finally {
       setLoading(false);
     }
@@ -1501,7 +1507,16 @@ function ApiKeySettings({ isMobile }) {
             Create API Key
           </Button>
         </div>
-        {isMobile ? (
+        {error ? (
+          <>
+            <Alert type="error" showIcon message={error} />
+            {errorStatus === 403 && (
+              <p style={{ color: '#666', marginTop: 12, marginBottom: 0, fontSize: 13 }}>
+                API key management requires super admin access.
+              </p>
+            )}
+          </>
+        ) : isMobile ? (
           <MobileCardList dataSource={keys} renderCard={renderApiKeyCard} loading={loading} rowKey="id" />
         ) : (
           <Table columns={columns} dataSource={keys} rowKey="id" loading={loading} pagination={false} size="middle" />

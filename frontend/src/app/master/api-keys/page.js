@@ -100,6 +100,16 @@ export default function ApiKeysPage() {
       key: 'org_name',
     },
     {
+      // Previously invisible here, so a read-write key was indistinguishable from a
+      // read-only one except by whatever the name happened to say.
+      title: 'Access',
+      dataIndex: 'read_only',
+      key: 'read_only',
+      render: (v) => (Number(v) === 1
+        ? <Tag color="green">Read-only</Tag>
+        : <Tag color="orange">Read/write</Tag>),
+    },
+    {
       title: 'API Key',
       dataIndex: 'api_key',
       key: 'api_key',
@@ -208,6 +218,19 @@ curl -H "X-API-Key: YOUR_KEY" https://yourdomain.com/api/public/properties`}
           </Form.Item>
           <Form.Item name="name" label="Key Name" rules={[{ required: true, message: 'Enter a name' }]}>
             <Input placeholder="e.g. Scraper Bot, Partner Integration" />
+          </Form.Item>
+          {/* Switch must be the DIRECT child: Form.Item injects value/onChange into its
+              single child, so wrapping it in a Space would bind the Space instead and the
+              field would never update. Defaults to read-only — least privilege by default,
+              and most integrations (posting plan, website feed) never write. */}
+          <Form.Item
+            name="read_only"
+            valuePropName="checked"
+            initialValue={true}
+            label="Read-only"
+            extra="Read-only keys can fetch data but cannot create, change or delete anything — every non-GET request is rejected before it reaches a route. Turn this off only if the integration genuinely needs to write back."
+          >
+            <Switch checkedChildren="Read-only" unCheckedChildren="Read/write" />
           </Form.Item>
         </Form>
       </Modal>
