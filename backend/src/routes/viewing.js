@@ -853,7 +853,7 @@ async function loadNegotiationOrg(pool, orgId, id) {
   return row || null;
 }
 
-// GET /api/viewing/negotiations?state=&awaiting=&q=
+// GET /api/viewing/negotiations?state=&awaiting=&q=&has_draft=1
 router.get('/negotiations', async (req, res) => {
   try {
     const orgId = req.user.orgId;
@@ -868,19 +868,27 @@ router.get('/negotiations', async (req, res) => {
       const like = `%${req.query.q}%`;
       params.push(like, like, like, like);
     }
+    if (req.query.has_draft === '1') where.push('COALESCE(pd.pending_draft_count, 0) > 0');
     const [rows] = await req.pool.execute(
       `SELECT n.id, n.state, n.awaiting, n.round_count, n.current_proposed_datetime,
               n.prospect_name, n.prospect_phone, n.pending_unit_text, n.needs_staff_reason,
               n.created_at, n.updated_at,
-              u.name AS unit_name, p.display_name AS property_name
+              u.name AS unit_name, p.display_name AS property_name,
+              COALESCE(pd.pending_draft_count, 0) AS pending_draft_count
          FROM viewing_negotiation n
          LEFT JOIN unit u ON u.id = n.unit_id
          LEFT JOIN property p ON p.id = n.property_id
+         LEFT JOIN (
+           SELECT negotiation_id, COUNT(*) AS pending_draft_count
+             FROM viewing_negotiation_event
+            WHERE direction = 'out' AND status = 'draft'
+            GROUP BY negotiation_id
+         ) pd ON pd.negotiation_id = n.id
         WHERE ${where.join(' AND ')}
         ORDER BY n.updated_at DESC LIMIT 300`,
       params
     );
-    ok(res, rows.map(r => ({ ...r, id: String(r.id) })));
+    ok(res, rows.map(r => ({ ...r, id: String(r.id), pending_draft_count: Number(r.pending_draft_count) || 0 })));
   } catch (err) {
     console.error('[viewing] list negotiations error:', err);
     fail(res, 'Failed to load negotiations');

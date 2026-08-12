@@ -234,6 +234,56 @@ Each row contains stable keys for TaneChat rendering:
 computed from the same decision helpers used by the scheduler, so the board and
 the hourly sweep should agree.
 
+#### `GET /viewing-negotiation/drafts`
+
+Requires `X-API-Key`; read-only keys are allowed. TaneChat polls this endpoint
+for pending outbound drafts created by the viewing relay scheduler. This endpoint
+does not send messages and does not mutate state.
+
+Query parameters:
+
+| Param | Description |
+|---|---|
+| `limit` | Page size, default `50`, clamped to `1`-`200`. |
+| `max_age_hours` | Draft age window, default `168` hours, clamped to `1`-`8760`. |
+| `party` | Optional `prospect` or `tenant` filter. Other values are ignored. |
+
+Response:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "drafts": [{
+      "event_id": "123",
+      "negotiation_id": "456",
+      "negotiation_state": "AWAIT_TENANT",
+      "awaiting": "tenant",
+      "party": "tenant",
+      "to_phone": "+85255551234",
+      "body": "Hi ...",
+      "template_type": "Viewing-Tenant-OptOut",
+      "event_type": "tenant_opt_out_notice",
+      "send_mode": "approve",
+      "idempotency_key": "456:tenant_opt_out_notice:1",
+      "deadline_at": "2026-08-13T15:00:00",
+      "created_at": "2026-08-13T11:00:00",
+      "age_hours": 4,
+      "unit": { "id": "789", "label": "Gilman's Bazaar 5B" },
+      "customer": { "name": "Alex", "phone": "+852..." }
+    }],
+    "count": 1,
+    "max_age_hours": 168
+  }
+}
+```
+
+TaneChat must send `body` verbatim to `to_phone` in that party's own thread, then
+call `POST /viewing-negotiation/:id/draft-sent` with `event_id`. A draft
+reappears until `draft-sent` is called. This is intentional at-least-once
+behaviour: `draft-sent` is idempotent, and seeing a duplicate pending draft is
+safer than silently missing an outbound message.
+
 Viewing relay v2 adds three states: `AUTO_CONFIRMED` means the tenant opt-out
 deadline elapsed and the viewing was booked automatically;
 `TENANT_CANCELS_AFTER_X` means the occupant replied after confirmation and can no

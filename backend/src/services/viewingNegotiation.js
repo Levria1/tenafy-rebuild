@@ -35,6 +35,7 @@ const {
   resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
   reversalClassification,
   sendModeFor, idempotencyKeyFor, withinQuietHours,
+  draftQueryOptions,
 } = require('./viewingNegotiationLogic');
 const { findActiveLeaseForUnit } = require('./viewingBooking');
 const { resolveUnit, optionsText } = require('./unitResolver');
@@ -1771,7 +1772,7 @@ module.exports = {
   TERMINAL_STATES, CLOSED_STATES, EVENT_TYPES, EVENT_TYPE_BY_TEMPLATE,
   resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
   reversalClassification,
-  sendModeFor, idempotencyKeyFor, withinQuietHours,
+  sendModeFor, idempotencyKeyFor, withinQuietHours, draftQueryOptions,
   eventTypeForOutbound, outboundSendDecision, chooseTenantNoticeTemplate,
   boardNextDeadline, isNudgeCandidate, isStaleCandidate, isSchemaMissingError, dateToWallClock,
   // orchestration

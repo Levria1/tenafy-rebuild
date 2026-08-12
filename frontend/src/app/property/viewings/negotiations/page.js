@@ -56,6 +56,7 @@ export default function ViewingNegotiationsPage() {
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState('');
   const [awaitingFilter, setAwaitingFilter] = useState('');
+  const [draftsOnly, setDraftsOnly] = useState(false);
 
   // Detail drawer
   const [detailOpen, setDetailOpen] = useState(false);
@@ -73,12 +74,13 @@ export default function ViewingNegotiationsPage() {
     const params = {};
     if (stateFilter) params.state = stateFilter;
     if (awaitingFilter) params.awaiting = awaitingFilter;
+    if (draftsOnly) params.has_draft = 1;
     if (search.trim()) params.q = search.trim();
     viewingApi.listNegotiations(params)
       .then((r) => setRows(r.data.data || []))
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
-  }, [stateFilter, awaitingFilter, search]);
+  }, [stateFilter, awaitingFilter, draftsOnly, search]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -168,6 +170,15 @@ export default function ViewingNegotiationsPage() {
     },
     { title: 'Status', dataIndex: 'state', key: 'state', render: (s) => stateTag(s) },
     {
+      // In manual relay mode every outbound is a draft, and the hourly cron creates
+      // them on its own (nudges, booking-confirmed, reversal notices). Without a
+      // column you had to open each row's drawer to discover a message was waiting.
+      title: 'To send', dataIndex: 'pending_draft_count', key: 'drafts', align: 'center', width: 90,
+      render: (n) => (Number(n) > 0
+        ? <Tag color="gold">{n} waiting</Tag>
+        : <Text type="secondary">—</Text>),
+    },
+    {
       title: 'Waiting on', dataIndex: 'awaiting', key: 'awaiting',
       render: (a) => a && AWAITING_META[a] ? <Tag color={AWAITING_META[a].color}>{AWAITING_META[a].label}</Tag> : '-',
     },
@@ -212,6 +223,10 @@ export default function ViewingNegotiationsPage() {
               value={awaitingFilter || undefined} onChange={(v) => setAwaitingFilter(v || '')}
               options={Object.entries(AWAITING_META).map(([k, v]) => ({ value: k, label: v.label }))}
             />
+            <Space size={6}>
+              <Switch checked={draftsOnly} onChange={setDraftsOnly} />
+              <Text>Only ones with a message to send</Text>
+            </Space>
           </Space>
         </Card>
 

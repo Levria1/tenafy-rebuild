@@ -137,6 +137,30 @@ function boardRow(row, lastEvent, setting) {
     } : { event_type: null, party: null, send_mode: null, status: null, created_at: null },
   };
 }
+function draftRow(row) {
+  const hasUnit = row.unit_id != null && row.unit_name;
+  return {
+    event_id: row.event_id == null ? null : String(row.event_id),
+    negotiation_id: row.negotiation_id == null ? null : String(row.negotiation_id),
+    negotiation_state: row.negotiation_state || null,
+    awaiting: row.awaiting || null,
+    party: row.party || null,
+    to_phone: row.to_phone || null,
+    body: row.body || null,
+    template_type: row.template_type || null,
+    event_type: row.event_type || null,
+    send_mode: row.send_mode || null,
+    idempotency_key: row.idempotency_key || null,
+    deadline_at: viewingNegotiation.dateToWallClock(row.deadline_at),
+    created_at: viewingNegotiation.dateToWallClock(row.created_at),
+    age_hours: row.age_hours == null ? null : Number(row.age_hours),
+    unit: {
+      id: row.unit_id == null ? null : String(row.unit_id),
+      label: hasUnit ? [row.property_name, row.unit_name].filter(Boolean).join(' ') : null,
+    },
+    customer: { name: row.prospect_name || null, phone: row.prospect_phone || null },
+  };
+}
 
 const MAX_FACTS = 50;
 const MAX_FACT_CHARS = 500;
@@ -1339,6 +1363,101 @@ async function handleNegotiationReply(req, res, party) {
     fail(res, 'Failed to process reply');
   }
 }
+
+// GET /api/public/viewing-negotiation/drafts
+//
+// Contract with TaneChat: it polls this read-only endpoint, sends each `body`
+// verbatim to `to_phone` in that party's own thread, then calls
+// POST /viewing-negotiation/:id/draft-sent with the `event_id`. Until draft-sent
+// is called the row keeps appearing here. That is intentional at-least-once
+// behaviour: draft-sent is idempotent, and a duplicate appearance is safer than a
+// message silently never being sent.
+//
+// This endpoint does not send anything and does not mutate state, so polling it
+// is free. Read-only API keys are allowed because this is a GET.
+router.get('/viewing-negotiation/drafts', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const { limit, maxAgeHours, party } = viewingNegotiation.draftQueryOptions(req.query);
+    const where = [
+      'n.org_id = ?',
+      "e.direction = 'out'",
+      "e.status = 'draft'",
+      // CANCELLED negotiations are excluded because the viewing is not
+      // happening; sending a queued "can you confirm Tuesday?" would restart a
+      // dead conversation.
+      "n.state <> 'CANCELLED'",
+      // max_age_hours defaults to seven days because an unapproved week-old
+      // draft probably refers to a time that has already passed. Operators can
+      // widen it deliberately, but the safe default avoids confusing recipients.
+      `e.created_at >= DATE_SUB(NOW(), INTERVAL ${maxAgeHours} HOUR)`,
+      // Draft AGE is not enough on its own. A booking-confirmed draft written on
+      // Monday for a Tuesday viewing is only three days old on Thursday, so it would
+      // still be returned — and sending "your viewing is confirmed for Tuesday" on
+      // Thursday is worse than sending nothing. Suppress any draft whose viewing has
+      // already happened. NULL is kept deliberately: a negotiation still resolving a
+      // unit or waiting on a day has no proposed time yet and its drafts are valid.
+      '(n.current_proposed_datetime IS NULL OR n.current_proposed_datetime > NOW())',
+    ];
+    const params = [orgId];
+    if (party) {
+      where.push('e.party = ?');
+      params.push(party);
+    }
+    // NEEDS_STAFF rows are included: their draft is usually the relay-escalated
+    // "our team will follow up shortly" message, which is exactly the one that
+    // must not leave the person waiting in silence.
+    // CONFIRMED/AUTO_CONFIRMED rows are included: customer_booking_confirmed is
+    // created at confirmation time, so filtering terminal states would hide the
+    // most important message in the flow.
+    // Oldest first is intentional: the draft waiting longest is the most urgent
+    // for TaneChat to release.
+    const sqlBase =
+      ` FROM viewing_negotiation_event e
+         JOIN viewing_negotiation n ON n.id = e.negotiation_id
+         LEFT JOIN unit u ON u.id = n.unit_id
+         LEFT JOIN property p ON p.id = n.property_id
+         LEFT JOIN tenant t ON t.id = n.tenant_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY e.created_at ASC
+        LIMIT ${limit}`;
+    let rows;
+    try {
+      [rows] = await req.pool.execute(
+        `SELECT e.id AS event_id, e.negotiation_id, n.state AS negotiation_state,
+                n.awaiting, e.party, e.to_phone, e.body, e.template_type,
+                e.event_type, e.send_mode, e.idempotency_key, e.deadline_at,
+                e.created_at, TIMESTAMPDIFF(HOUR, e.created_at, NOW()) AS age_hours,
+                n.unit_id, n.prospect_name, n.prospect_phone,
+                u.name AS unit_name, p.display_name AS property_name,
+                t.phone AS tenant_phone, t.first_name AS tenant_first_name,
+                t.last_name AS tenant_last_name, t.company_name AS tenant_company_name
+          ${sqlBase}`,
+        params
+      );
+    } catch (e) {
+      if (!viewingNegotiation.isSchemaMissingError(e)) throw e;
+      [rows] = await req.pool.execute(
+        `SELECT e.id AS event_id, e.negotiation_id, n.state AS negotiation_state,
+                n.awaiting, e.party, e.to_phone, e.body, e.template_type,
+                NULL AS event_type, NULL AS send_mode, NULL AS idempotency_key,
+                NULL AS deadline_at, e.created_at,
+                TIMESTAMPDIFF(HOUR, e.created_at, NOW()) AS age_hours,
+                n.unit_id, n.prospect_name, n.prospect_phone,
+                u.name AS unit_name, p.display_name AS property_name,
+                t.phone AS tenant_phone, t.first_name AS tenant_first_name,
+                t.last_name AS tenant_last_name, t.company_name AS tenant_company_name
+          ${sqlBase}`,
+        params
+      );
+    }
+    const drafts = rows.map(draftRow);
+    return ok(res, { drafts, count: drafts.length, max_age_hours: maxAgeHours });
+  } catch (err) {
+    console.error('Public viewing-negotiation/drafts error:', err);
+    fail(res, 'Failed to load viewing negotiation drafts');
+  }
+});
 
 // POST /api/public/viewing-negotiation/:id/prospect-reply  Body: { intent, text }
 router.post('/viewing-negotiation/:id/prospect-reply', (req, res) => handleNegotiationReply(req, res, 'prospect'));

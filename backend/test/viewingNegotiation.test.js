@@ -5,7 +5,7 @@ const {
   TERMINAL_STATES, CLOSED_STATES,
   combineDateTime, minutesOf, withinWindow, withinQuietHours, viewingWindow, nextStep, buildRouting,
   resolvePolicy, optOutDeadline, autoConfirmDecision, nudgeDecision, reversalClassification,
-  sendModeFor, idempotencyKeyFor, reminderTarget, activeNegotiationPayload,
+  sendModeFor, idempotencyKeyFor, reminderTarget, activeNegotiationPayload, draftQueryOptions,
 } = require('../src/services/viewingNegotiationLogic');
 const viewingService = require('../src/services/viewingNegotiation');
 
@@ -41,6 +41,31 @@ test('withinWindow: custom viewing_days honoured (Sunday-only org)', () => {
   const sunOnly = { ...S, viewing_days: '0' };
   assert.equal(withinWindow('2099-01-04T12:00:00', sunOnly), null);       // Sunday allowed
   assert.equal(withinWindow('2099-01-06T12:00:00', sunOnly), 'Outside viewing days'); // Tuesday not
+});
+
+test('draftQueryOptions: defaults with an empty query', () => {
+  assert.deepEqual(draftQueryOptions({}), { limit: 50, maxAgeHours: 168, party: null });
+});
+
+test('draftQueryOptions: limit clamps and non-numeric falls back', () => {
+  assert.equal(draftQueryOptions({ limit: '0' }).limit, 1);
+  assert.equal(draftQueryOptions({ limit: '9999' }).limit, 200);
+  assert.equal(draftQueryOptions({ limit: 'many' }).limit, 50);
+});
+
+test('draftQueryOptions: max_age_hours clamps and non-numeric falls back', () => {
+  assert.equal(draftQueryOptions({ max_age_hours: '0' }).maxAgeHours, 1);
+  assert.equal(draftQueryOptions({ max_age_hours: '99999' }).maxAgeHours, 8760);
+  assert.equal(draftQueryOptions({ max_age_hours: 'many' }).maxAgeHours, 168);
+});
+
+test('draftQueryOptions: party only accepts TaneChat-sendable parties', () => {
+  assert.equal(draftQueryOptions({ party: 'prospect' }).party, 'prospect');
+  assert.equal(draftQueryOptions({ party: 'tenant' }).party, 'tenant');
+  assert.equal(draftQueryOptions({ party: '' }).party, null);
+  // `staff` is rejected deliberately: staff alerts are internal and must never
+  // be handed to TaneChat to send into a customer thread.
+  assert.equal(draftQueryOptions({ party: 'staff' }).party, null);
 });
 
 // ── nextStep transitions ─────────────────────────────────────────────────────

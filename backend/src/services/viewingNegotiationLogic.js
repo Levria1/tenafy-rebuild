@@ -203,6 +203,22 @@ function positiveHours(value, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function clampedInteger(value, fallback, min, max) {
+  if (value == null || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+function draftQueryOptions(query = {}) {
+  const party = ['prospect', 'tenant'].includes(query.party) ? query.party : null;
+  return {
+    limit: clampedInteger(query.limit, 50, 1, 200),
+    maxAgeHours: clampedInteger(query.max_age_hours, 168, 1, 8760),
+    party,
+  };
+}
+
 function nudgeDecision(row, setting, now) {
   row = row || {};
   setting = { ...DEFAULT_SETTING, ...(setting || {}) };
@@ -467,5 +483,5 @@ module.exports = {
   combineDateTime, minutesOf, withinWindow, withinQuietHours, viewingWindow, nextStep, buildRouting,
   resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
   reversalClassification,
-  sendModeFor, idempotencyKeyFor, reminderTarget, activeNegotiationPayload,
+  sendModeFor, idempotencyKeyFor, reminderTarget, activeNegotiationPayload, draftQueryOptions,
 };
