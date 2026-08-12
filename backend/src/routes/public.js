@@ -25,7 +25,8 @@ const { resolveUnit } = require('../services/unitResolver');
 const { validateChannel } = require('../utils/chatChannel');
 const { createNotification } = require('../services/scheduler');
 const config = require('../config');
-const { buildPostingPlan, markPostingPlan } = require('./advertising');
+const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings } = require('./advertising');
+const { vacancyToPublicShape, formatLocalDate, vacancyFit, compareVacancyFit } = require('../utils/advertisingPlan');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
 // The middleware attaches req.pool (scoped to the caller's org DB) and
@@ -55,6 +56,93 @@ router.post('/posting-plan/mark', async (req, res) => {
     if (err.httpStatus === 400) return res.status(400).json({ code: 400, message: err.message });
     console.error('[public/posting-plan mark] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to log post' });
+  }
+});
+
+const CERTAIN_AVAILABILITY_PHRASE = '{units} available from {date}';
+const UNCERTAIN_AVAILABILITY_PHRASE = "We may also have {units} available, however the tenant may renew, they're not sure";
+// Offered instead of hiding a poor fit: suppressing the unit forfeits the
+// negotiation that could remove the vacancy entirely.
+const EARLIER_AVAILABILITY_PHRASE = '{units} is free from {date} — would you be able to start a little earlier?';
+
+function clampInteger(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+function isStrictYmd(value) {
+  if (typeof value !== 'string') return false;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+}
+
+// Static chatbot availability route. Both phrasing values are templates for the
+// caller to fill, not finished sentences.
+router.get('/vacancies', async (req, res) => {
+  try {
+    const maxTier = clampInteger(req.query.max_tier, 3, 1, 3);
+    const limit = clampInteger(req.query.limit, 50, 1, 200);
+    const propertyId = req.query.property_id != null ? String(req.query.property_id) : null;
+    const hasTargetDate = req.query.target_date !== undefined;
+    const targetDate = hasTargetDate ? String(req.query.target_date) : null;
+    if (hasTargetDate && !isStrictYmd(targetDate)) {
+      return res.status(400).json({ code: 400, message: 'target_date must be in YYYY-MM-DD format' });
+    }
+
+    const settings = hasTargetDate ? await loadSettings(req.pool, req.apiKey.orgId) : null;
+    const { vacancies } = await computeVacancies(
+      req.pool,
+      req.apiKey.orgId,
+      hasTargetDate ? { page: false, settings } : { page: false }
+    );
+    let rows = vacancies
+      .filter(row => Number(row.tier) <= maxTier)
+      .filter(row => !propertyId || String(row.property_id) === propertyId);
+
+    if (hasTargetDate) {
+      const today = formatLocalDate(new Date());
+      rows = rows
+        .map(vacancyToPublicShape)
+        .map(row => ({ ...row, ...vacancyFit(row, targetDate, { maxGapDays: settings.max_gap_days, today }) }))
+        // Rank by fit, never filter by fit. A long positive gap is still better
+        // than losing the lead entirely; stated dates are soft or absent for many
+        // inquiries; and a hard cap can return zero options, protecting revenue
+        // that is then never earned.
+        .sort(compareVacancyFit)
+        .slice(0, limit);
+    } else {
+      rows = rows
+        .slice(0, limit)
+        .map(vacancyToPublicShape);
+    }
+
+    const data = {
+      vacancies: rows,
+      count: rows.length,
+      phrasing: {
+        certain: CERTAIN_AVAILABILITY_PHRASE,
+        uncertain: UNCERTAIN_AVAILABILITY_PHRASE,
+      },
+    };
+    if (hasTargetDate) {
+      data.phrasing.earlier = EARLIER_AVAILABILITY_PHRASE;
+      data.target_date = targetDate;
+      data.max_gap_days = settings.max_gap_days;
+    }
+
+    res.json({
+      code: 200,
+      data,
+    });
+  } catch (err) {
+    console.error('[public/vacancies] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load vacancies' });
   }
 });
 
@@ -98,6 +186,7 @@ function boardRow(row, lastEvent, setting) {
     negotiation_id: String(row.id),
     status: terminal ? 'terminal' : 'active',
     state: row.state || null,
+    needs_staff_reason: row.needs_staff_reason || null,
     awaiting: row.awaiting || null,
     unit: {
       id: row.unit_id == null ? null : String(row.unit_id),
@@ -1205,7 +1294,7 @@ router.get('/viewing-negotiations', async (req, res) => {
     try {
       [rows] = await req.pool.execute(
         `SELECT n.id, n.state, n.awaiting, n.unit_id, n.tenant_id, n.prospect_name, n.prospect_phone,
-                n.current_proposed_datetime, n.policy_opt_out_hours, n.policy_explicit_confirm,
+                n.current_proposed_datetime, n.needs_staff_reason, n.policy_opt_out_hours, n.policy_explicit_confirm,
                 n.policy_source, n.customer_asked_at, n.tenant_notified_at, n.auto_confirmed_at,
                 n.opt_out_deadline_at, n.customer_nudge_count, n.tenant_nudge_count, n.last_nudge_at,
                 n.created_at, n.updated_at,
@@ -1225,7 +1314,7 @@ router.get('/viewing-negotiations', async (req, res) => {
       if (!viewingNegotiation.isSchemaMissingError(e)) throw e;
       [rows] = await req.pool.execute(
         `SELECT n.id, n.state, n.awaiting, n.unit_id, n.tenant_id, n.prospect_name, n.prospect_phone,
-                n.current_proposed_datetime,
+                n.current_proposed_datetime, NULL AS needs_staff_reason,
                 NULL AS policy_opt_out_hours, NULL AS policy_explicit_confirm, NULL AS policy_source,
                 NULL AS customer_asked_at, NULL AS tenant_notified_at, NULL AS auto_confirmed_at,
                 NULL AS opt_out_deadline_at, NULL AS customer_nudge_count, NULL AS tenant_nudge_count,
@@ -1346,12 +1435,14 @@ async function handleNegotiationReply(req, res, party) {
       || (viewingNegotiation.TERMINAL_STATES.includes(neg.state)
         && party !== 'tenant')) {
       return ok(res, { closed: true, negotiation_id: negId, state: neg.state,
+        needs_staff_reason: neg.needs_staff_reason || null,
         message: 'This viewing request is no longer active — our team will follow up.' });
     }
     const out = await viewingNegotiation.handleReply(req.pool, orgId, neg, party, intent, text, messageId);
     return ok(res, {
       negotiation_id: negId,
       state: out.negotiation ? out.negotiation.state : null,
+      needs_staff_reason: out.negotiation ? (out.negotiation.needs_staff_reason || null) : null,
       awaiting: out.negotiation ? out.negotiation.awaiting : null,
       parties: out.parties,
       awaiting_phone: out.awaiting_phone,
@@ -1502,7 +1593,7 @@ router.post('/viewing-negotiation/:id/draft-sent', async (req, res) => {
 // them, so TaneChat must not post replies into them. `active` therefore means
 // "there is at least one routable negotiation", which is intentionally narrower
 // than "the returned list is non-empty".
-// → { active:bool, negotiations:[{ negotiation_id, party, state, awaiting, routable }, ...] }
+// → { active:bool, negotiations:[{ negotiation_id, party, state, needs_staff_reason, awaiting, routable }, ...] }
 //   ordered routable-first, then newest-first with the negotiation actually
 //   awaiting that party first within each group.
 router.get('/viewing-negotiation/active', async (req, res) => {
@@ -1517,18 +1608,35 @@ router.get('/viewing-negotiation/active', async (req, res) => {
     // TaneChat discovers negotiations through THIS endpoint, so it would never send
     // one. Bounded by current_proposed_datetime > NOW() so a viewing that already
     // happened stops matching the tenant's number forever.
-    const [rows] = await req.pool.execute(
-      `SELECT n.id, n.state, n.awaiting, n.prospect_phone, n.current_proposed_datetime,
-              t.phone AS tenant_phone
-         FROM viewing_negotiation n
-         LEFT JOIN tenant t ON t.id = n.tenant_id
-        WHERE n.state NOT IN ('CONFIRMED','AUTO_CONFIRMED','CANCELLED')
-           OR (n.state IN ('CONFIRMED','AUTO_CONFIRMED')
-               AND n.current_proposed_datetime IS NOT NULL
-               AND n.current_proposed_datetime > NOW())
-        ORDER BY n.updated_at DESC LIMIT 200`,
-      []
-    );
+    let rows;
+    try {
+      [rows] = await req.pool.execute(
+        `SELECT n.id, n.state, n.awaiting, n.needs_staff_reason, n.prospect_phone, n.current_proposed_datetime,
+                t.phone AS tenant_phone
+           FROM viewing_negotiation n
+           LEFT JOIN tenant t ON t.id = n.tenant_id
+          WHERE n.state NOT IN ('CONFIRMED','AUTO_CONFIRMED','CANCELLED')
+             OR (n.state IN ('CONFIRMED','AUTO_CONFIRMED')
+                 AND n.current_proposed_datetime IS NOT NULL
+                 AND n.current_proposed_datetime > NOW())
+          ORDER BY n.updated_at DESC LIMIT 200`,
+        []
+      );
+    } catch (e) {
+      if (!viewingNegotiation.isSchemaMissingError(e)) throw e;
+      [rows] = await req.pool.execute(
+        `SELECT n.id, n.state, n.awaiting, NULL AS needs_staff_reason, n.prospect_phone,
+                n.current_proposed_datetime, t.phone AS tenant_phone
+           FROM viewing_negotiation n
+           LEFT JOIN tenant t ON t.id = n.tenant_id
+          WHERE n.state NOT IN ('CONFIRMED','AUTO_CONFIRMED','CANCELLED')
+             OR (n.state IN ('CONFIRMED','AUTO_CONFIRMED')
+                 AND n.current_proposed_datetime IS NOT NULL
+                 AND n.current_proposed_datetime > NOW())
+          ORDER BY n.updated_at DESC LIMIT 200`,
+        []
+      );
+    }
     const shapedRows = rows.map(r => ({
       ...r,
       prospect_digits: normPhoneDigits(r.prospect_phone),
@@ -1812,12 +1920,19 @@ async function autoCreateInquiryForSession(pool, orgId, sessionId) {
 // ────────────────────────────────────────────────────────────────
 
 // GET /api/public/units/available?date=YYYY-MM-DD&propertyId=123
-// Units that are active AND have no lease covering the given date.
+// Deprecated: use /vacancies. Kept for TaneChat compatibility.
 router.get('/units/available', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
     const date = req.query.date || new Date().toISOString().split('T')[0];
-    const propertyId = req.query.propertyId || null;
+    const propertyId = req.query.propertyId || req.query.property_id || null;
+
+    // DEPRECATED in favour of GET /vacancies, which also reports units coming free
+    // and carries renewal intent. This handler deliberately keeps its ORIGINAL query,
+    // response fields and `date` parameter: its whole remaining job is to not break
+    // callers while they migrate, and `?date=` is documented usage. The only change is
+    // the gap filter below.
+    res.set('Deprecation', 'true');
 
     let whereClause = 'p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL AND u.active_status = 1';
     const params = [orgId];
@@ -1826,6 +1941,13 @@ router.get('/units/available', async (req, res) => {
       whereClause += ' AND p.id = ?';
       params.push(propertyId);
     }
+
+    // The bug this endpoint shipped with: "no lease active on `date`" also matches a
+    // unit that is already re-let. Unit "6A Test" was reported as available while a
+    // tenant moved in three days later. Exclude anything whose next tenancy starts
+    // within MIN_GAP_DAYS of `date` — it is vacant on paper and taken in practice.
+    // Mirrors the advertising min_gap_days default; /vacancies reads the live setting.
+    const MIN_GAP_DAYS = 40;
 
     const [units] = await req.pool.execute(
       `SELECT u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.amenity_type,
@@ -1847,11 +1969,17 @@ router.get('/units/available', async (req, res) => {
          WHERE l1.deleted_at IS NULL
        ) last_lease ON last_lease.unit_id = u.id
        WHERE ${whereClause} AND active_lease.id IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM leasing nl
+            WHERE nl.unit_id = u.id AND nl.deleted_at IS NULL
+              AND nl.start_date > ?
+              AND nl.start_date <= DATE_ADD(?, INTERVAL ${MIN_GAP_DAYS} DAY)
+         )
        ORDER BY p.display_name, u.name`,
-      [date, date, ...params]
+      [date, date, ...params, date, date]
     );
 
-    ok(res, units, { date });
+    ok(res, units, { date, deprecated: true, replacement: '/vacancies' });
   } catch (error) {
     console.error('Public available units error:', error);
     fail(res, 'Failed to fetch available units');

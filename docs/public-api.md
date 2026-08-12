@@ -77,7 +77,8 @@ All endpoints return JSON in this shape:
 |---|---|---|---|
 | GET | `/units` | `?property_id=&status=0\|1&active_status=0\|1` | All units (filtered) |
 | GET | `/units/:id` | | Unit detail + current lease + tenant + amenities + gallery |
-| GET | `/units/available` | `?date=YYYY-MM-DD&propertyId=` | Units with no active lease on date |
+| GET | `/vacancies` | `?max_tier=3&property_id=&limit=50&target_date=YYYY-MM-DD` | Chatbot availability using advertising vacancy logic |
+| GET | `/units/available` | `?date=YYYY-MM-DD&property_id=` | Deprecated; use `/vacancies` |
 
 ### Tenants & Contacts
 
@@ -143,6 +144,135 @@ All endpoints return JSON in this shape:
 | GET | `/cleaning/schedule` | `?week_of=YYYY-MM-DD` (required) | Cleaning schedule for week |
 
 ### Advertising posting plan
+
+#### `GET /vacancies`
+
+Requires `X-API-Key`; read-only keys are allowed. This is the public chatbot
+availability endpoint and uses the same vacancy engine as Advertising -> Vacancy
+and the posting plan. It applies customer-facing lead-time windows and priority
+sorting (`page=false` internally).
+
+Query parameters:
+
+| Param | Default | Clamp | Description |
+|---|---:|---:|---|
+| `max_tier` | `3` | `1`-`3` | `1` vacant only, `2` vacant + NR, `3` all tiers |
+| `property_id` | | | Optional property filter |
+| `limit` | `50` | `1`-`200` | Maximum rows returned |
+| `target_date` | | | Optional prospect move-in date. Must be `YYYY-MM-DD`; malformed values return `400` |
+
+All tiers are included by default. Tier 3 rows are deliberately returned with
+`availability.certain=false` so TaneChat can offer them with the configured
+caveat instead of stating them as firm availability.
+
+```json
+{
+  "code": 200,
+  "data": {
+    "vacancies": [{
+      "unit_id": "123",
+      "unit_name": "5B",
+      "property_id": "456",
+      "property_name": "Gilman's Bazaar",
+      "label": "Gilman's Bazaar 5B",
+      "unit_type": "apartment",
+      "beds": 1,
+      "baths": 1,
+      "size": 320,
+      "rent": "12000.00",
+      "tier": 2,
+      "tier_name": "NR",
+      "intent": "NR",
+      "availability": {
+        "status": "from_date",
+        "available_from": "2026-09-16",
+        "days_until": 35,
+        "certain": true
+      },
+      "gap_days": 29,
+      "gap_warning": true,
+      "available_after_target": false
+    }],
+    "count": 1,
+    "phrasing": {
+      "certain": "{units} available from {date}",
+      "uncertain": "We may also have {units} available, however the tenant may renew, they're not sure",
+      "earlier": "{units} is free from {date} — would you be able to start a little earlier?"
+    },
+    "target_date": "2026-10-15",
+    "max_gap_days": 14
+  }
+}
+```
+
+Availability rules:
+
+| Tier | `tier_name` | Meaning | `availability` |
+|---:|---|---|---|
+| 1 | `VACANT` | Empty now and passes the minimum gap rule | `status="now"`, `available_from=null`, `days_until=0`, `certain=true` |
+| 2 | `NR` | Tenant has confirmed they are not renewing | `status="from_date"`, `available_from=end_date+1`, `certain=true` |
+| 3 | `MR/other` | May renew / month-to-month / unconfirmed | `status="from_date"`, `available_from=end_date+1`, `certain=false` |
+
+If a non-vacant row has no `end_date`, `available_from` is `null` and
+`certain` is `false`.
+
+When `target_date` is supplied, each row also includes move-in fit fields and the
+result order is re-ranked by best fit. No unit is filtered out because of fit.
+The endpoint still returns every row that passed the normal vacancy logic,
+`max_tier`, `property_id`, and `limit` handling.
+
+Fit fields:
+
+| Field | Meaning |
+|---|---|
+| `gap_days` | `target_date - effectiveAvailableFrom`, in days |
+| `gap_warning` | `true` only when `gap_days > max_gap_days`; advisory, not a cap |
+| `available_after_target` | `true` when `gap_days` is negative and the prospect would need to wait |
+
+Positive `gap_days` means the unit would sit empty before the prospect arrives,
+so it is the lost-rent case. `0` is an exact fit. Negative `gap_days` means the
+unit is not free until after the requested date; that is not a lost-rent warning,
+but callers should explain the wait.
+
+#### `GET /units/available` (deprecated)
+
+Requires `X-API-Key`; read-only keys are allowed. This endpoint remains for
+existing TaneChat callers but now returns only tier-1 vacancies that pass the
+advertising minimum-gap rule. New callers should use `GET /vacancies`.
+
+Response headers include `Deprecation: true`. The JSON response keeps `data` as
+the legacy unit array and adds top-level deprecation metadata:
+
+```json
+{
+  "code": 200,
+  "data": [{
+    "unit_id": "123",
+    "unit_name": "5B",
+    "unit_type": "apartment",
+    "amenity_type": null,
+    "property_id": "456",
+    "property_name": "Gilman's Bazaar",
+    "street_address": "1 Gilman Street",
+    "city": null,
+    "state": null,
+    "district": null,
+    "country": null,
+    "zip_code": null,
+    "property_type": null,
+    "last_lease_price": "12000.00",
+    "last_lease_end_date": "2026-08-31"
+  }],
+  "meta": { "total": 1, "date": "2026-08-12" },
+  "deprecated": true,
+  "replacement": "/vacancies"
+}
+```
+
+`date` is still accepted only for compatibility. If supplied and not today's
+date, the endpoint returns `400` because the replacement vacancy engine does not
+support arbitrary as-of dates. `property_id` and the legacy `propertyId` alias
+are both accepted.
 
 #### `GET /posting-plan`
 
@@ -211,6 +341,7 @@ Each row contains stable keys for TaneChat rendering:
   "negotiation_id": "123",
   "status": "active",
   "state": "AWAIT_TENANT",
+  "needs_staff_reason": null,
   "awaiting": "tenant",
   "unit": { "id": "45", "label": "Gilman's Bazaar 5B", "address": "..." },
   "customer": { "name": "Alex", "phone": "+852..." },
@@ -233,6 +364,31 @@ Each row contains stable keys for TaneChat rendering:
 `meta.next_cursor` is present when another page is available. `next_deadline` is
 computed from the same decision helpers used by the scheduler, so the board and
 the hourly sweep should agree.
+
+`needs_staff_reason` is `null` unless `state` is `NEEDS_STAFF`. Current reason
+values are: `off_window`, `not_marketing`, `no_host`, `multi_unit`, `stale`,
+`tenant_no_phone`, `window_no_phone`, `auto_confirm_no_staff`,
+`slot_taken_at_confirm`, `slot_taken_at_reconfirm`, `max_rounds`,
+`tenant_reply_after_confirm`, `reschedule_declined_after_commit`, `no_roster`,
+and `confirm_no_staff`.
+
+#### `GET /viewing-negotiation/active`
+
+Requires `X-API-Key`; read-only keys are allowed. Given a WhatsApp phone number,
+returns open negotiations that TaneChat can route replies into. The response is
+purely for phone routing and is ordered routable-first, then newest-first, with
+the negotiation awaiting that party first within each group. Each negotiation
+entry includes `negotiation_id`, `party`, `state`, `needs_staff_reason`,
+`awaiting`, and `routable`.
+
+#### `POST /viewing-negotiation/:id/prospect-reply`
+#### `POST /viewing-negotiation/:id/tenant-reply`
+
+Requires a write-enabled `X-API-Key`. These endpoints accept parsed reply intent
+from TaneChat and return the post-transition `state`, `needs_staff_reason`,
+`awaiting`, routing phones, and generated outbound events. If the negotiation is
+already closed to that sender, the `closed: true` response also includes
+`needs_staff_reason`.
 
 #### `GET /viewing-negotiation/drafts`
 
@@ -331,10 +487,16 @@ curl -H "X-API-Key: pk_..." \
   http://YOUR_DROPLET:3001/api/public/properties
 ```
 
-### Available units on a specific date
+### Vacancies for chatbot availability
 ```bash
 curl -H "X-API-Key: pk_..." \
-  "http://YOUR_DROPLET:3001/api/public/units/available?date=2026-05-01"
+  "http://YOUR_DROPLET:3001/api/public/vacancies?max_tier=3&limit=50"
+```
+
+### Deprecated available-units compatibility endpoint
+```bash
+curl -H "X-API-Key: pk_..." \
+  "http://YOUR_DROPLET:3001/api/public/units/available"
 ```
 
 ### Tenants with outstanding invoices

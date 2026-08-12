@@ -324,7 +324,8 @@ test('activeNegotiationPayload: NEEDS_STAFF is visible but not routable or activ
   ], '61234567');
   assert.equal(escalatedOnly.active, false);
   assert.deepEqual(escalatedOnly.negotiations, [
-    { negotiation_id: '1', party: 'prospect', state: 'NEEDS_STAFF', awaiting: 'staff', routable: false },
+    { negotiation_id: '1', party: 'prospect', state: 'NEEDS_STAFF',
+      needs_staff_reason: null, awaiting: 'staff', routable: false },
   ]);
 
   const mixed = activeNegotiationPayload([

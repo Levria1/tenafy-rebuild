@@ -44,6 +44,23 @@ function viewingWindow({ endDate, contractType, leadDaysNr, leadDaysOther, today
   return { inWindow: daysToEnd <= leadDays, leadDays, reason: daysToEnd <= leadDays ? 'ok' : 'beyond_window' };
 }
 
+function marketabilityDecision(facts = {}) {
+  if (facts.hasActiveLease) {
+    return Number(facts.viewingEnabled) === 1 || facts.viewingEnabled === true
+      ? { proceed: true, reason: null }
+      : { proceed: false, reason: 'not_marketing' };
+  }
+  return facts.hasRosteredStaff || facts.hasHostLink
+    ? { proceed: true, reason: null }
+    : { proceed: false, reason: 'no_host' };
+}
+
+const RESUMABLE_HOLD_REASONS = ['off_window', 'not_marketing', 'no_host'];
+
+function isResumableHold(reason) {
+  return RESUMABLE_HOLD_REASONS.includes(reason);
+}
+
 // Combine assorted intent time shapes into canonical 'YYYY-MM-DDTHH:mm:00'.
 function combineDateTime(intent) {
   if (!intent) return null;
@@ -463,11 +480,13 @@ function activeNegotiationPayload(rows, targetDigits) {
     const committed = r.state === 'CONFIRMED' || r.state === STATE_AUTO_CONFIRMED;
     if (r.prospect_digits === targetDigits) {
       const routable = r.state !== 'NEEDS_STAFF' && !committed;
-      matches.push({ negotiation_id: String(r.id), party: 'prospect', state: r.state, awaiting: r.awaiting, routable });
+      matches.push({ negotiation_id: String(r.id), party: 'prospect', state: r.state,
+        needs_staff_reason: r.needs_staff_reason || null, awaiting: r.awaiting, routable });
     }
     if (r.tenant_digits && r.tenant_digits === targetDigits) {
       const routable = r.state !== 'NEEDS_STAFF';
-      matches.push({ negotiation_id: String(r.id), party: 'tenant', state: r.state, awaiting: r.awaiting, routable });
+      matches.push({ negotiation_id: String(r.id), party: 'tenant', state: r.state,
+        needs_staff_reason: r.needs_staff_reason || null, awaiting: r.awaiting, routable });
     }
   }
   matches.sort((a, b) => {
@@ -480,7 +499,8 @@ function activeNegotiationPayload(rows, targetDigits) {
 module.exports = {
   DEFAULT_SETTING, STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
   TERMINAL_STATES, CLOSED_STATES,
-  combineDateTime, minutesOf, withinWindow, withinQuietHours, viewingWindow, nextStep, buildRouting,
+  combineDateTime, minutesOf, withinWindow, withinQuietHours, viewingWindow, marketabilityDecision,
+  isResumableHold, RESUMABLE_HOLD_REASONS, nextStep, buildRouting,
   resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
   reversalClassification,
   sendModeFor, idempotencyKeyFor, reminderTarget, activeNegotiationPayload, draftQueryOptions,

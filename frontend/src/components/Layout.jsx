@@ -59,8 +59,15 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
       label: 'Properties',
       children: [
         { key: '/property/list', label: <Link href="/property">All Properties</Link> },
-        { key: '/property/viewings', label: <Link href="/property/viewings">Viewings</Link> },
+        // Viewing REQUESTS (the WhatsApp relay) and SCHEDULED viewings (confirmed bookings) are
+        // the two live surfaces. /property/viewings — the tokenised viewing-LINK manager — is
+        // deliberately no longer linked here: the link flow is retired (2 links in existence, last
+        // booking 2026-04-18) and having it in the menu invited people to generate links for a flow
+        // nothing consumes. The route still works for outstanding tokens; it is just not advertised.
+        // /viewings/bookings used to be reachable ONLY from that page, so it is promoted here rather
+        // than orphaned — it is where confirmed relay viewings appear.
         { key: '/property/viewings/negotiations', label: <Link href="/property/viewings/negotiations">Viewing Requests</Link> },
+        { key: '/property/viewings/bookings', label: <Link href="/property/viewings/bookings">Scheduled Viewings</Link> },
       ],
     });
   }

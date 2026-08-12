@@ -28,7 +28,8 @@ const { sendViewingConfirmation } = require('./viewingNotify');
 const { loadTemplate, substituteVariables } = require('./emailService');
 const { KIND_ACTION, KIND_MANAGE } = require('../middleware/viewingTokenAuth');
 const {
-  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, nextStep, buildRouting,
+  DEFAULT_SETTING, combineDateTime, minutesOf, withinWindow, viewingWindow, marketabilityDecision,
+  RESUMABLE_HOLD_REASONS, nextStep, buildRouting,
   reminderTarget, activeNegotiationPayload,
   STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
   TERMINAL_STATES, CLOSED_STATES,
@@ -181,6 +182,20 @@ async function resolveStaffOfDay(pool, propertyId, whenIso) {
     return row || null;
   } catch {
     return null; // table not migrated
+  }
+}
+
+// Is ANYONE rostered to show this property, on any weekday?
+async function propertyHasRosteredStaff(pool, propertyId) {
+  try {
+    const [[row]] = await pool.execute(
+      `SELECT 1 FROM viewing_staff_roster
+        WHERE property_id = ? AND active = 1 LIMIT 1`,
+      [propertyId]
+    );
+    return !!row;
+  } catch {
+    return false; // table not migrated
   }
 }
 
@@ -1037,6 +1052,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     clearCalendarHold(pool, orgId, neg)
       .catch(e => console.error('[viewingNegotiation] clear hold on reversal failed:', e.message));
     const set = { state: reversal.state, reversal_reason: reversal.reason };
+    if (reversal.state === 'NEEDS_STAFF') set.needs_staff_reason = reversal.reason;
     const outbounds = [];
     if (reversal.state === STATE_TENANT_REVERSED) {
       set.awaiting = 'staff';
@@ -1078,7 +1094,12 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     const toPhone = party === 'tenant' ? tenantPhone : prospectPhone;
     if (!toPhone) {
       // No way to tell this party why — hand to staff rather than sit silent.
-      await pool.execute(`UPDATE viewing_negotiation SET state = 'NEEDS_STAFF', awaiting = 'staff' WHERE id = ?`, [neg.id]);
+      await pool.execute(
+        `UPDATE viewing_negotiation
+            SET state = 'NEEDS_STAFF', awaiting = 'staff', needs_staff_reason = 'window_no_phone'
+          WHERE id = ?`,
+        [neg.id]
+      );
       // A human now owns this; do not leave an obsolete tentative calendar hold.
       clearCalendarHold(pool, orgId, neg)
         .catch(e => console.error('[viewingNegotiation] clear hold on escalation failed:', e.message));
@@ -1172,6 +1193,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
 
   function escalatePlan(reason, whenIso) {
     set.state = 'NEEDS_STAFF'; set.awaiting = 'staff';
+    set.needs_staff_reason = reason || null;
     // Once staff owns the exception, a stale tentative block on their calendar
     // is worse than no projection.
     clearHoldAfterPersist = true;
@@ -1211,8 +1233,8 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
   }
 
   // Pin a resolved/confirmed unit onto the negotiation and run the marketable +
-  // window gate (same outcomes as the direct-unit_id start): in-window →
-  // ASK_PROSPECT_DAY; off-window → off_window hold; not open → not_marketing hold.
+  // window gate: in-window → ASK_PROSPECT_DAY; off-window → off_window hold;
+  // occupied-but-disabled → not_marketing hold; vacant-without-host → no_host.
   async function pinUnitAndProceed(unitId) {
     const [[u]] = await pool.execute(
       `SELECT u.id, u.name AS unit_name, u.property_id, p.display_name AS property_name
@@ -1232,7 +1254,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     set.pending_unit_id = null; set.pending_unit_text = null; set.unit_candidates = null;
 
     const active = await findActiveLeaseForUnit(pool, unitId); // { leasing_id, tenant_id, contract_type, end_date, viewing_enabled } | null
-    const marketableOccupied = active && Number(active.viewing_enabled) === 1;
+    const hasRosteredStaff = active ? false : await propertyHasRosteredStaff(pool, u.property_id);
     let hostLink = false;
     if (!active) {
       const [[hl]] = await pool.execute(
@@ -1242,12 +1264,30 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     set.lease_id = active ? active.leasing_id : null;
     set.tenant_id = active ? active.tenant_id : null;
 
-    if (!marketableOccupied && !hostLink) {
-      // Identified, but not open for viewings → inform the prospect + capture as a staff lead.
-      set.state = 'NEEDS_STAFF'; set.awaiting = 'staff'; set.needs_staff_reason = 'not_marketing';
+    const marketability = marketabilityDecision({
+      hasActiveLease: !!active,
+      viewingEnabled: active ? active.viewing_enabled : 0,
+      hasRosteredStaff,
+      hasHostLink: hostLink,
+    });
+
+    if (!marketability.proceed) {
+      // A vacant unit has no occupant to ask, so the only question is whether
+      // anyone can let the viewer in, which is what the roster answers.
+      // viewing_link belonged to a different, now-abandoned flow (2 rows in
+      // production, last booking four months ago) and using it here made 495
+      // vacant units unschedulable. The link check is retained only for
+      // backwards compatibility with outstanding links, not because it is the
+      // right signal. Checking any weekday is deliberate: the viewer has not
+      // named a day yet. The specific-day availability check still happens later
+      // in staff_check, and the existing !free path asks for another time.
+      set.state = 'NEEDS_STAFF'; set.awaiting = 'staff'; set.needs_staff_reason = marketability.reason;
       outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Hold-OffWindow', vars });
+      const staffReason = marketability.reason === 'no_host'
+        ? 'no rostered host is assigned for the property'
+        : "it isn't open for viewings";
       notifyStaff(pool, orgId, 'Viewing request needs review',
-        `${neg.prospect_name || prospectPhone || 'A prospect'} asked to view ${u.unit_name} at ${u.property_name}, but it isn't open for viewings. Open Viewing Requests.`);
+        `${neg.prospect_name || prospectPhone || 'A prospect'} asked to view ${u.unit_name} at ${u.property_name}, but ${staffReason}. Open Viewing Requests.`);
       return;
     }
     if (active) {
@@ -1262,7 +1302,8 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
         return;
       }
     }
-    // In-window (occupied) or vacant-with-host-link → proceed to the day-ask.
+    // In-window occupied, or vacant with rostered staff / a compat link, proceeds
+    // to the day-ask.
     set.state = 'ASK_PROSPECT_DAY'; set.awaiting = 'prospect'; set.needs_staff_reason = null;
     outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Prospect-Day-Ask', vars });
   }
@@ -1528,22 +1569,28 @@ async function cancelCommittedBookingForNegotiation(pool, neg) {
   return { cancelled: true, calendar_delete_attempted: false };
 }
 
-// Staff "Start viewing anyway" on a NEEDS_STAFF request (typically an off-window
-// hold): atomically claim it back into ASK_PROSPECT_DAY and send the prospect the
-// day-ask, honouring relay_mode (manual → draft). No-op if it isn't NEEDS_STAFF
-// or already has a booking.
+// Staff "Start viewing anyway" on a resumable NEEDS_STAFF request: atomically
+// claim it back into ASK_PROSPECT_DAY and send the prospect the day-ask,
+// honouring relay_mode (manual → draft). No-op if it isn't NEEDS_STAFF or
+// already has a booking.
 async function proceedNegotiation(pool, orgId, neg) {
   const setting = await getSetting(pool, orgId);
-  // Only an off-window HOLD can be resumed this way. Other NEEDS_STAFF causes
-  // (max_rounds, the stale reaper, no tenant phone) carry live conversation
-  // progress — restarting the day-ask would abandon it — so they're excluded.
+  // Only these holds restart cleanly at the day-ask. multi_unit is deliberately
+  // not resumable: the viewer named more than one unit, and resuming would drop
+  // back into a flow that still cannot arrange a multi-unit viewing.
+  const resumableReasons = RESUMABLE_HOLD_REASONS;
+  const reasonPlaceholders = resumableReasons.map(() => '?').join(',');
   const [r] = await pool.execute(
     `UPDATE viewing_negotiation
         SET state = 'ASK_PROSPECT_DAY', awaiting = 'prospect', needs_staff_reason = NULL, updated_at = NOW()
-      WHERE id = ? AND state = 'NEEDS_STAFF' AND needs_staff_reason = 'off_window' AND booking_id IS NULL`,
-    [neg.id]
+      WHERE id = ? AND state = 'NEEDS_STAFF'
+        AND needs_staff_reason IN (${reasonPlaceholders})
+        AND booking_id IS NULL`,
+    [neg.id, ...resumableReasons]
   );
-  if (!r.affectedRows) return { ok: false, message: 'Only an on-hold (off-window) request can be started this way.' };
+  if (!r.affectedRows) {
+    return { ok: false, message: 'Only an on-hold request with no booking and a resumable reason (off_window, not_marketing, no_host) can be started this way.' };
+  }
   const [[u]] = await pool.execute(
     `SELECT u.name AS unit_name, p.display_name AS property_name
        FROM unit u JOIN property p ON u.property_id = p.id WHERE u.id = ? LIMIT 1`,
@@ -1766,7 +1813,8 @@ async function autoEscalateStaleNegotiationsForOrg(pool, orgId) {
 
 module.exports = {
   // pure / helpers (tested)
-  nextStep, combineDateTime, withinWindow, viewingWindow, minutesOf,
+  nextStep, combineDateTime, withinWindow, viewingWindow, marketabilityDecision, minutesOf,
+  RESUMABLE_HOLD_REASONS,
   reminderTarget, activeNegotiationPayload,
   DEFAULT_SETTING, STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
   TERMINAL_STATES, CLOSED_STATES, EVENT_TYPES, EVENT_TYPE_BY_TEMPLATE,

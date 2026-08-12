@@ -26,6 +26,14 @@ function lengthError(body, limits = FIELD_LIMITS) {
   return null;
 }
 
+function isMissingMaxGapColumn(err) {
+  return err && (
+    err.code === 'ER_BAD_FIELD_ERROR'
+    || err.errno === 1054
+    || /Unknown column 'max_gap_days'/.test(String(err.message || ''))
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Advertising → Vacancy
 // Units that need advertising, in two categories:
@@ -941,31 +949,43 @@ async function renderBundle(pool, orgId, bundle, template, footer) {
 
 // Org-wide advertising settings (shared footer + photo root).
 async function loadSettings(pool, orgId) {
-  const defaults = { footer: null, photo_root: PHOTO_ROOT, min_gap_days: 40, lead_days_nr: 60, lead_days_other: 45 };
+  const defaults = { footer: null, photo_root: PHOTO_ROOT, min_gap_days: 40, max_gap_days: 14, lead_days_nr: 60, lead_days_other: 45 };
   try {
     const [[row]] = await pool.execute(
-      `SELECT footer, photo_root, min_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+      `SELECT footer, photo_root, min_gap_days, max_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
     return {
       footer: row?.footer || null,
       photo_root: row?.photo_root || PHOTO_ROOT,
       min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+      max_gap_days: Number.isFinite(Number(row?.max_gap_days)) ? Number(row.max_gap_days) : 14,
       lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
       lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
     };
   } catch (err) {
     try {
       const [[row]] = await pool.execute(
-        `SELECT footer, photo_root, min_gap_days FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+        `SELECT footer, photo_root, min_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
       return {
         ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT,
         min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+        lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
+        lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
       };
     } catch {
       try {
         const [[row]] = await pool.execute(
-          `SELECT footer, photo_root FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
-        return { ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT };
-      } catch { return defaults; }
+          `SELECT footer, photo_root, min_gap_days FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+        return {
+          ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT,
+          min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+        };
+      } catch {
+        try {
+          const [[row]] = await pool.execute(
+            `SELECT footer, photo_root FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+          return { ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT };
+        } catch { return defaults; }
+      }
     }
   }
 }
@@ -983,12 +1003,12 @@ router.get('/settings', authenticate, async (req, res) => {
 router.put('/settings', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { footer, photo_root, min_gap_days, lead_days_nr, lead_days_other } = req.body || {};
+    const { footer, photo_root, min_gap_days, max_gap_days, lead_days_nr, lead_days_other } = req.body || {};
     const bt = nonStringField(req.body || {}, ['footer', 'photo_root']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     const lenErr = lengthError({ photo_root }, { photo_root: 255 });   // column is VARCHAR(255)
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
-    for (const field of ['min_gap_days', 'lead_days_nr', 'lead_days_other']) {
+    for (const field of ['min_gap_days', 'max_gap_days', 'lead_days_nr', 'lead_days_other']) {
       if (req.body?.[field] !== undefined
           && (!Number.isInteger(req.body[field]) || req.body[field] < 0 || req.body[field] > 365)) {
         return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
@@ -1000,16 +1020,35 @@ router.put('/settings', authenticate, async (req, res) => {
     if (footer !== undefined) setClauses.push('footer = VALUES(footer)');
     if (photo_root !== undefined) setClauses.push('photo_root = VALUES(photo_root)');
     if (min_gap_days !== undefined) setClauses.push('min_gap_days = VALUES(min_gap_days)');
+    if (max_gap_days !== undefined) setClauses.push('max_gap_days = VALUES(max_gap_days)');
     if (lead_days_nr !== undefined) setClauses.push('lead_days_nr = VALUES(lead_days_nr)');
     if (lead_days_other !== undefined) setClauses.push('lead_days_other = VALUES(lead_days_other)');
     if (!setClauses.length) return res.json({ code: 200, data: { ok: true } });
-    await req.pool.execute(
-      `INSERT INTO advertising_setting (org_id, footer, photo_root, min_gap_days, lead_days_nr, lead_days_other, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, NOW())
-       ON DUPLICATE KEY UPDATE ${setClauses.join(', ')}`,
-      [orgId, footer !== undefined ? (footer || null) : null, photo_root !== undefined ? (photo_root || null) : null,
-        min_gap_days ?? 40, lead_days_nr ?? 60, lead_days_other ?? 45]
-    );
+    const executeUpsert = includeMaxGap => {
+      const insertColumns = includeMaxGap
+        ? 'org_id, footer, photo_root, min_gap_days, max_gap_days, lead_days_nr, lead_days_other, created_at'
+        : 'org_id, footer, photo_root, min_gap_days, lead_days_nr, lead_days_other, created_at';
+      const placeholders = includeMaxGap ? '?, ?, ?, ?, ?, ?, ?, NOW()' : '?, ?, ?, ?, ?, ?, NOW()';
+      const params = includeMaxGap
+        ? [orgId, footer !== undefined ? (footer || null) : null, photo_root !== undefined ? (photo_root || null) : null,
+          min_gap_days ?? 40, max_gap_days ?? 14, lead_days_nr ?? 60, lead_days_other ?? 45]
+        : [orgId, footer !== undefined ? (footer || null) : null, photo_root !== undefined ? (photo_root || null) : null,
+          min_gap_days ?? 40, lead_days_nr ?? 60, lead_days_other ?? 45];
+      const clauses = includeMaxGap ? setClauses : setClauses.filter(clause => !clause.startsWith('max_gap_days'));
+      if (!clauses.length) return Promise.resolve();
+      return req.pool.execute(
+        `INSERT INTO advertising_setting (${insertColumns})
+         VALUES (${placeholders})
+         ON DUPLICATE KEY UPDATE ${clauses.join(', ')}`,
+        params
+      );
+    };
+    try {
+      await executeUpsert(true);
+    } catch (err) {
+      if (!isMissingMaxGapColumn(err) || max_gap_days !== undefined) throw err;
+      await executeUpsert(false);
+    }
     res.json({ code: 200, data: { ok: true } });
   } catch (err) {
     console.error('[advertising/settings put] error:', err);
@@ -1863,3 +1902,5 @@ router.post('/forums/:id/members', authenticate, async (req, res) => {
 module.exports = router;
 module.exports.buildPostingPlan = buildPostingPlan;
 module.exports.markPostingPlan = markPostingPlan;
+module.exports.computeVacancies = computeVacancies;
+module.exports.loadSettings = loadSettings;

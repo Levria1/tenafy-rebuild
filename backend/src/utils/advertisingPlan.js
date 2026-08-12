@@ -130,6 +130,162 @@ const PRIORITY_VACANT = 1;
 const PRIORITY_NR = 2;
 const PRIORITY_OTHER = 3;
 
+function formatLocalDate(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) return null;
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const text = String(value);
+  const m = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  const parsed = new Date(text);
+  if (!Number.isFinite(parsed.getTime())) return null;
+  return formatLocalDate(parsed);
+}
+
+function parseYmdStrict(value) {
+  if (typeof value !== 'string') return null;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return { year, month, day, time: Date.UTC(year, month - 1, day) };
+}
+
+function addOneLocalDay(value) {
+  const date = formatLocalDate(value);
+  if (!date) return null;
+  const [year, month, day] = date.split('-').map(Number);
+  const d = new Date(year, month - 1, day);
+  d.setDate(d.getDate() + 1);
+  return formatLocalDate(d);
+}
+
+function moneyString(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : String(value);
+}
+
+function tierName(tier) {
+  if (Number(tier) === PRIORITY_VACANT) return 'VACANT';
+  if (Number(tier) === PRIORITY_NR) return 'NR';
+  return 'MR/other';
+}
+
+function vacancyToPublicShape(row) {
+  const tier = Number(row?.tier);
+  const endDate = formatLocalDate(row?.end_date);
+  const availableFrom = tier === PRIORITY_VACANT ? null : addOneLocalDay(endDate);
+  const certaintyByTier = tier === PRIORITY_VACANT || tier === PRIORITY_NR;
+  // `certain: false` is what TaneChat branches on: offer the unit only with the
+  // caveat wording, because an MR/MTM/UC tenant may renew and the unit may never
+  // become free.
+  const certain = tier === PRIORITY_VACANT ? true : Boolean(certaintyByTier && endDate);
+
+  return {
+    unit_id: row?.unit_id == null ? null : String(row.unit_id),
+    unit_name: row?.unit_name ?? null,
+    property_id: row?.property_id == null ? null : String(row.property_id),
+    property_name: row?.property_name ?? null,
+    label: [row?.property_name, row?.unit_name].filter(Boolean).join(' ') || null,
+    unit_type: row?.unit_type ?? null,
+    beds: row?.beds != null ? Number(row.beds) : null,
+    baths: row?.baths != null ? Number(row.baths) : null,
+    size: row?.size != null ? Number(row.size) : null,
+    rent: moneyString(row?.rent),
+    tier,
+    tier_name: tierName(tier),
+    intent: row?.intent ?? null,
+    availability: {
+      status: tier === PRIORITY_VACANT ? 'now' : 'from_date',
+      available_from: availableFrom,
+      days_until: tier === PRIORITY_VACANT ? 0 : (row?.days_left != null ? Number(row.days_left) : null),
+      certain,
+    },
+  };
+}
+
+const EMPTY_VACANCY_FIT = {
+  gap_days: null,
+  gap_warning: null,
+  available_after_target: null,
+};
+
+/**
+ * How well does a unit's availability fit when the prospect wants to move in?
+ * row: the public-shaped vacancy (tier + availability{available_from,status})
+ * targetDate / today: 'YYYY-MM-DD'
+ * Returns { gap_days, gap_warning, available_after_target } — or all null when
+ * there is nothing to compare.
+ */
+function vacancyFit(row, targetDate, { maxGapDays = 14, today } = {}) {
+  const target = parseYmdStrict(targetDate);
+  if (!target) return { ...EMPTY_VACANCY_FIT };
+
+  let effectiveAvailableFrom = null;
+  const availability = row?.availability || {};
+  if (Number(row?.tier) === PRIORITY_VACANT && availability.status === 'now') {
+    // Tier-1 `available_from:null` means "available now", not "unknown". Treat it
+    // as today so currently-vacant units remain rankable for a future move-in.
+    effectiveAvailableFrom = today;
+  } else {
+    effectiveAvailableFrom = availability.available_from;
+  }
+
+  const available = parseYmdStrict(effectiveAvailableFrom);
+  if (!available) return { ...EMPTY_VACANCY_FIT };
+
+  // Sign convention: gap_days = targetDate - effectiveAvailableFrom.
+  // Positive = lost-rent vacancy before the prospect arrives; zero = exact fit;
+  // negative = the unit is free after the target, so the prospect waits instead.
+  const gapDays = Math.round((target.time - available.time) / 86400000);
+  const configuredMax = Number(maxGapDays);
+  const threshold = Number.isFinite(configuredMax) ? Math.trunc(configuredMax) : 14;
+  const availableAfterTarget = gapDays < 0;
+
+  // A negative gap costs no rent; it is exposed separately so the caller can say
+  // the prospect would need to wait rather than treating it as a vacancy warning.
+  return {
+    gap_days: gapDays,
+    gap_warning: gapDays > threshold,
+    available_after_target: availableAfterTarget,
+  };
+}
+
+function fitRank(row) {
+  const gapDays = row?.gap_days;
+  if (typeof gapDays === 'number' && Number.isFinite(gapDays)) {
+    return gapDays >= 0
+      ? { group: 0, value: gapDays }
+      : { group: 1, value: Math.abs(gapDays) };
+  }
+  return { group: 2, value: Number.POSITIVE_INFINITY };
+}
+
+// Best fit first: exact/near matches, then increasing vacancy, then units that
+// are not free until after the target date.
+function compareVacancyFit(a, b) {
+  const ar = fitRank(a);
+  const br = fitRank(b);
+  if (ar.group !== br.group) return ar.group - br.group;
+  if (ar.value !== br.value) return ar.value - br.value;
+
+  const tierDifference = Number(a?.tier || 0) - Number(b?.tier || 0);
+  if (tierDifference) return tierDifference;
+
+  const aLabel = [a?.property_name, a?.unit_name].filter(Boolean).join(' ') || a?.label || '';
+  const bLabel = [b?.property_name, b?.unit_name].filter(Boolean).join(' ') || b?.label || '';
+  return String(aLabel).localeCompare(String(bLabel));
+}
+
 /**
  * Which priority tier does an advertisable row sit in, and is it in its window yet?
  */
@@ -230,6 +386,10 @@ module.exports = {
   PRIORITY_VACANT,
   PRIORITY_NR,
   PRIORITY_OTHER,
+  vacancyToPublicShape,
+  formatLocalDate,
+  vacancyFit,
+  compareVacancyFit,
   priorityOf,
   sortByPriority,
   assignBundlesToSlots,
