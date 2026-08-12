@@ -304,7 +304,11 @@ test('GET /vacancies without target_date keeps order and reports no cap filterin
 
     assert.equal(result.statusCode, 200);
     assert.equal(JSON.stringify(result.body), JSON.stringify(expected));
-    assert.deepEqual(computeOptions, { page: false, settings: { max_gap_days: 10, hard_max_gap_days: 20, partner_forward_message: null } });
+    assert.deepEqual(computeOptions, {
+      page: false,
+      settings: { max_gap_days: 10, hard_max_gap_days: 20, partner_forward_message: null },
+      audience: 'inquiry',
+    });
     assert.equal(loadSettingsCalls, 1);
   } finally {
     advertising.computeVacancies = originalComputeVacancies;

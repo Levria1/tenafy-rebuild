@@ -292,11 +292,51 @@ and remain the most urgent units to offer. Rows with negative `gap_days` and row
 with `gap_days=null` are also not hidden by the cap.
 
 Advertising settings expose `min_gap_days`, `max_gap_days`, `hard_max_gap_days`,
-`lead_days_nr`, and `lead_days_other`. `PUT /advertising/settings` validates
-each numeric gap/lead field as an integer from `0` to `365`, treats absent fields
-as unchanged, and rejects merged settings where `max_gap_days >
-hard_max_gap_days` because the warning threshold would sit above the hide
-threshold.
+`lead_days_nr`, `lead_days_other`, and three inquiry override fields:
+`inquiry_min_gap_days`, `inquiry_lead_days_nr`, and
+`inquiry_lead_days_other`. The inquiry fields are nullable overrides, not
+duplicate policy values. Leaving them unset keeps one shared availability policy
+for Facebook advertising and chatbot inquiry answers. Setting one is an explicit
+decision to let that audience diverge for that one field.
+
+Precedence is: explicit backend argument > audience override > advertising
+value. `GET /advertising/settings` returns the raw overrides as `null` when
+unset, plus an `effective` block showing what is actually in force:
+
+```json
+{
+  "min_gap_days": 40,
+  "lead_days_nr": 60,
+  "lead_days_other": 45,
+  "inquiry_min_gap_days": null,
+  "inquiry_lead_days_nr": 30,
+  "inquiry_lead_days_other": null,
+  "effective": {
+    "advertising": {
+      "min_gap_days": 40,
+      "lead_days_nr": 60,
+      "lead_days_other": 45
+    },
+    "inquiry": {
+      "min_gap_days": 40,
+      "lead_days_nr": 30,
+      "lead_days_other": 45,
+      "source": {
+        "min_gap_days": "advertising",
+        "lead_days_nr": "inquiry",
+        "lead_days_other": "advertising"
+      }
+    }
+  }
+}
+```
+
+`PUT /advertising/settings` validates each numeric gap/lead field as an integer
+from `0` to `365`, treats absent fields as unchanged, and rejects merged settings
+where `max_gap_days > hard_max_gap_days` because the warning threshold would sit
+above the hide threshold. The three `inquiry_*` overrides each accept either an
+integer from `0` to `365` or `null`; send `null` to clear an override and fall
+back to the advertising value.
 
 #### `GET /units/available` (deprecated)
 

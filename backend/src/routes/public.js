@@ -34,6 +34,7 @@ const {
   vacancyNoMatchReason,
   partnerForwardBlock,
   compareVacancyFit,
+  resolveAvailabilityWindows,
 } = require('../utils/advertisingPlan');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
@@ -107,7 +108,7 @@ router.get('/vacancies', async (req, res) => {
     const { vacancies } = await computeVacancies(
       req.pool,
       req.apiKey.orgId,
-      { page: false, settings }
+      { page: false, settings, audience: 'inquiry' }
     );
     let rows = vacancies
       .filter(row => Number(row.tier) <= maxTier)
@@ -1969,9 +1970,10 @@ router.get('/units/available', async (req, res) => {
     // The bug this endpoint shipped with: "no lease active on `date`" also matches a
     // unit that is already re-let. Unit "6A Test" was reported as available while a
     // tenant moved in three days later. Exclude anything whose next tenancy starts
-    // within MIN_GAP_DAYS of `date` — it is vacant on paper and taken in practice.
-    // Mirrors the advertising min_gap_days default; /vacancies reads the live setting.
-    const MIN_GAP_DAYS = 40;
+    // within the inquiry minimum gap of `date` — it is vacant on paper and taken
+    // in practice.
+    const settings = await loadSettings(req.pool, orgId);
+    const inquiryWindows = resolveAvailabilityWindows(settings, 'inquiry');
 
     const [units] = await req.pool.execute(
       `SELECT u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.amenity_type,
@@ -1997,7 +1999,7 @@ router.get('/units/available', async (req, res) => {
            SELECT 1 FROM leasing nl
             WHERE nl.unit_id = u.id AND nl.deleted_at IS NULL
               AND nl.start_date > ?
-              AND nl.start_date <= DATE_ADD(?, INTERVAL ${MIN_GAP_DAYS} DAY)
+              AND nl.start_date <= DATE_ADD(?, INTERVAL ${inquiryWindows.min_gap_days} DAY)
          )
        ORDER BY p.display_name, u.name`,
       [date, date, ...params, date, date]

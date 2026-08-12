@@ -4,7 +4,7 @@ const { authenticate } = require('../middleware/auth');
 const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold } = require('../services/advertisingTemplate');
 const { DAY_NAMES, weekdayOf, postsOnDay, parseDays, validateDays, dayLabel } = require('../utils/advertisingSchedule');
 const { slotLabel, findRepeatViolations, suggestReplacements, forumWeeklyLoad,
-  gapIsAdvertisable, priorityOf, sortByPriority, assignBundlesToSlots } = require('../utils/advertisingPlan');
+  gapIsAdvertisable, priorityOf, resolveAvailabilityWindows, sortByPriority, assignBundlesToSlots } = require('../utils/advertisingPlan');
 const { hkDate } = require('../utils/inquiryFacts');
 
 // Snowflake id (same pattern used across the app).
@@ -96,12 +96,14 @@ const NOT_TEST = `LOWER(u.name) NOT LIKE '%test%' AND LOWER(p.display_name) NOT 
 //   - VACANT: the page includes every unit empty today. The scheduler filters a
 //     booked next move-in through the minimum-gap setting; `days_to_move_in`
 //     carries the length of that window and `gap_ok` records the decision.
-async function computeVacancies(pool, orgId, { page = false, minGapDays, settings: suppliedSettings } = {}) {
+async function computeVacancies(pool, orgId, { page = false, minGapDays, settings: suppliedSettings, audience = 'advertising' } = {}) {
     const settings = suppliedSettings || (page ? null : await loadSettings(pool, orgId));
-    const effectiveMinGapDays = page ? 40 : (minGapDays ?? settings.min_gap_days);
+    const availabilityWindows = resolveAvailabilityWindows(settings || {}, audience);
+    // Precedence: explicit argument > audience override > advertising value.
+    const effectiveMinGapDays = page ? 40 : (minGapDays ?? availabilityWindows.min_gap_days);
     const expiringWindow = page
       ? EXPIRING_WINDOW
-      : Math.max(settings.lead_days_nr, settings.lead_days_other);
+      : Math.max(availabilityWindows.lead_days_nr, availabilityWindows.lead_days_other);
     // 1. EXPIRING — the unit's LATEST lease (current OR a future one) ends within
     //    the window and nothing follows it. We intentionally do NOT require the
     //    lease to have started: a unit re-let with a SHORT upcoming lease (e.g.
@@ -223,7 +225,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
         is_vacant: false,
         contract_type: r.contract_type,
         days_left: r.days_left != null ? Number(r.days_left) : null,
-      }, settings || {});
+      }, availabilityWindows);
       return ({
       status: 'expiring',
       lease_id: String(r.lease_id),
@@ -255,7 +257,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
     });
     }).filter(row => page || priorityOf({
       is_vacant: false, contract_type: row.contract_type, days_left: row.days_left,
-    }, settings).advertisable);
+    }, availabilityWindows).advertisable);
 
     const vacantRows = vacant.map(r => {
       // days_vacant computed by the DB (DATEDIFF) so it agrees with CURDATE()/
@@ -263,7 +265,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       const daysVacant = r.days_vacant != null ? Number(r.days_vacant) : null;
       const daysToMoveIn = r.days_to_move_in != null ? Number(r.days_to_move_in) : null;
       const gapOk = gapIsAdvertisable(daysToMoveIn, effectiveMinGapDays);
-      const priority = priorityOf({ is_vacant: true, gap_ok: gapOk, days_left: daysVacant != null ? -daysVacant : null }, settings || {});
+      const priority = priorityOf({ is_vacant: true, gap_ok: gapOk, days_left: daysVacant != null ? -daysVacant : null }, availabilityWindows);
       return {
         status: 'vacant',
         lease_id: null,
@@ -950,10 +952,25 @@ async function renderBundle(pool, orgId, bundle, template, footer) {
 
 // Org-wide advertising settings (shared footer + photo root).
 async function loadSettings(pool, orgId) {
-  const defaults = { footer: null, photo_root: PHOTO_ROOT, partner_forward_message: null, min_gap_days: 40, max_gap_days: 10, hard_max_gap_days: 20, lead_days_nr: 60, lead_days_other: 45 };
+  const defaults = {
+    footer: null,
+    photo_root: PHOTO_ROOT,
+    partner_forward_message: null,
+    min_gap_days: 40,
+    max_gap_days: 10,
+    hard_max_gap_days: 20,
+    lead_days_nr: 60,
+    lead_days_other: 45,
+    inquiry_min_gap_days: null,
+    inquiry_lead_days_nr: null,
+    inquiry_lead_days_other: null,
+  };
+  const nullableNumber = value => (Number.isFinite(Number(value)) ? Number(value) : null);
   try {
     const [[row]] = await pool.execute(
-      `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+      `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other,
+              inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other
+         FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
     return {
       footer: row?.footer || null,
       photo_root: row?.photo_root || PHOTO_ROOT,
@@ -964,32 +981,53 @@ async function loadSettings(pool, orgId) {
       hard_max_gap_days: Number.isFinite(Number(row?.hard_max_gap_days)) ? Number(row.hard_max_gap_days) : 20,
       lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
       lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
+      inquiry_min_gap_days: nullableNumber(row?.inquiry_min_gap_days),
+      inquiry_lead_days_nr: nullableNumber(row?.inquiry_lead_days_nr),
+      inquiry_lead_days_other: nullableNumber(row?.inquiry_lead_days_other),
     };
   } catch (err) {
     try {
       const [[row]] = await pool.execute(
-        `SELECT footer, photo_root, min_gap_days, max_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+        `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other
+           FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
       return {
-        ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT,
+        ...defaults,
+        footer: row?.footer || null,
+        photo_root: row?.photo_root || PHOTO_ROOT,
+        // Outward-facing partner-agency text is opt-in only. NULL means unauthored.
+        partner_forward_message: row?.partner_forward_message ?? null,
         min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
         max_gap_days: Number.isFinite(Number(row?.max_gap_days)) ? Number(row.max_gap_days) : 10,
+        hard_max_gap_days: Number.isFinite(Number(row?.hard_max_gap_days)) ? Number(row.hard_max_gap_days) : 20,
         lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
         lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
       };
     } catch {
       try {
         const [[row]] = await pool.execute(
-          `SELECT footer, photo_root, min_gap_days FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+          `SELECT footer, photo_root, min_gap_days, max_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
         return {
           ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT,
           min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+          max_gap_days: Number.isFinite(Number(row?.max_gap_days)) ? Number(row.max_gap_days) : 10,
+          lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
+          lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
         };
       } catch {
         try {
           const [[row]] = await pool.execute(
-            `SELECT footer, photo_root FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
-          return { ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT };
-        } catch { return defaults; }
+            `SELECT footer, photo_root, min_gap_days FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+          return {
+            ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT,
+            min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+          };
+        } catch {
+          try {
+            const [[row]] = await pool.execute(
+              `SELECT footer, photo_root FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+            return { ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT };
+          } catch { return defaults; }
+        }
       }
     }
   }
@@ -998,7 +1036,19 @@ async function loadSettings(pool, orgId) {
 router.get('/settings', authenticate, async (req, res) => {
   try {
     const s = await loadSettings(req.pool, req.user.orgId);
-    res.json({ code: 200, data: s });
+    const effectiveAdvertising = resolveAvailabilityWindows(s, 'advertising');
+    const { source: _advertisingSource, ...advertising } = effectiveAdvertising;
+    const inquiry = resolveAvailabilityWindows(s, 'inquiry');
+    res.json({
+      code: 200,
+      data: {
+        ...s,
+        effective: {
+          advertising,
+          inquiry,
+        },
+      },
+    });
   } catch (err) {
     console.error('[advertising/settings get] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to load settings' });
@@ -1008,7 +1058,19 @@ router.get('/settings', authenticate, async (req, res) => {
 router.put('/settings', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other } = req.body || {};
+    const {
+      footer,
+      photo_root,
+      partner_forward_message,
+      min_gap_days,
+      max_gap_days,
+      hard_max_gap_days,
+      lead_days_nr,
+      lead_days_other,
+      inquiry_min_gap_days,
+      inquiry_lead_days_nr,
+      inquiry_lead_days_other,
+    } = req.body || {};
     const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     const normalizedPartnerForwardMessage = partner_forward_message !== undefined
@@ -1020,6 +1082,13 @@ router.put('/settings', authenticate, async (req, res) => {
       if (req.body?.[field] !== undefined
           && (!Number.isInteger(req.body[field]) || req.body[field] < 0 || req.body[field] > 365)) {
         return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
+      }
+    }
+    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other']) {
+      if (req.body?.[field] !== undefined
+          && req.body[field] !== null
+          && (!Number.isInteger(req.body[field]) || req.body[field] < 0 || req.body[field] > 365)) {
+        return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365 or null` });
       }
     }
     const current = await loadSettings(req.pool, orgId);
@@ -1048,8 +1117,18 @@ router.put('/settings', authenticate, async (req, res) => {
     if (hard_max_gap_days !== undefined) setClauses.push('hard_max_gap_days = VALUES(hard_max_gap_days)');
     if (lead_days_nr !== undefined) setClauses.push('lead_days_nr = VALUES(lead_days_nr)');
     if (lead_days_other !== undefined) setClauses.push('lead_days_other = VALUES(lead_days_other)');
+    if (inquiry_min_gap_days !== undefined) setClauses.push('inquiry_min_gap_days = VALUES(inquiry_min_gap_days)');
+    if (inquiry_lead_days_nr !== undefined) setClauses.push('inquiry_lead_days_nr = VALUES(inquiry_lead_days_nr)');
+    if (inquiry_lead_days_other !== undefined) setClauses.push('inquiry_lead_days_other = VALUES(inquiry_lead_days_other)');
     if (!setClauses.length) return res.json({ code: 200, data: { ok: true } });
-    const executeUpsert = ({ includeMaxGap, includeHardMaxGap, includePartnerForward }) => {
+    const executeUpsert = ({
+      includeMaxGap,
+      includeHardMaxGap,
+      includePartnerForward,
+      includeInquiryMinGap,
+      includeInquiryLeadNr,
+      includeInquiryLeadOther,
+    }) => {
       const insertColumns = ['org_id', 'footer', 'photo_root'];
       const params = [
         orgId,
@@ -1070,13 +1149,29 @@ router.put('/settings', authenticate, async (req, res) => {
         insertColumns.push('hard_max_gap_days');
         params.push(hard_max_gap_days ?? 20);
       }
-      insertColumns.push('lead_days_nr', 'lead_days_other', 'created_at');
+      insertColumns.push('lead_days_nr', 'lead_days_other');
       params.push(lead_days_nr ?? 60, lead_days_other ?? 45);
+      if (includeInquiryMinGap) {
+        insertColumns.push('inquiry_min_gap_days');
+        params.push(inquiry_min_gap_days ?? null);
+      }
+      if (includeInquiryLeadNr) {
+        insertColumns.push('inquiry_lead_days_nr');
+        params.push(inquiry_lead_days_nr ?? null);
+      }
+      if (includeInquiryLeadOther) {
+        insertColumns.push('inquiry_lead_days_other');
+        params.push(inquiry_lead_days_other ?? null);
+      }
+      insertColumns.push('created_at');
       const placeholders = [...params.map(() => '?'), 'NOW()'].join(', ');
       const clauses = setClauses.filter(clause => {
         if (!includeMaxGap && clause.startsWith('max_gap_days')) return false;
         if (!includeHardMaxGap && clause.startsWith('hard_max_gap_days')) return false;
         if (!includePartnerForward && clause.startsWith('partner_forward_message')) return false;
+        if (!includeInquiryMinGap && clause.startsWith('inquiry_min_gap_days')) return false;
+        if (!includeInquiryLeadNr && clause.startsWith('inquiry_lead_days_nr')) return false;
+        if (!includeInquiryLeadOther && clause.startsWith('inquiry_lead_days_other')) return false;
         return true;
       });
       if (!clauses.length) return Promise.resolve();
@@ -1100,8 +1195,27 @@ router.put('/settings', authenticate, async (req, res) => {
         column: 'max_gap_days',
         wasSent: max_gap_days !== undefined,
       },
+      includeInquiryMinGap: {
+        column: 'inquiry_min_gap_days',
+        wasSent: inquiry_min_gap_days !== undefined,
+      },
+      includeInquiryLeadNr: {
+        column: 'inquiry_lead_days_nr',
+        wasSent: inquiry_lead_days_nr !== undefined,
+      },
+      includeInquiryLeadOther: {
+        column: 'inquiry_lead_days_other',
+        wasSent: inquiry_lead_days_other !== undefined,
+      },
     };
-    const flags = { includeMaxGap: true, includeHardMaxGap: true, includePartnerForward: true };
+    const flags = {
+      includeMaxGap: true,
+      includeHardMaxGap: true,
+      includePartnerForward: true,
+      includeInquiryMinGap: true,
+      includeInquiryLeadNr: true,
+      includeInquiryLeadOther: true,
+    };
     while (true) {
       try {
         await executeUpsert(flags);

@@ -130,6 +130,67 @@ const PRIORITY_VACANT = 1;
 const PRIORITY_NR = 2;
 const PRIORITY_OTHER = 3;
 
+function availabilityNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+// Is this override actually SET, as opposed to blank or junk?
+//
+// Number() is too permissive on its own: Number('  ') and Number([]) are both 0, and
+// Number(true) is 1 — so a whitespace-only or non-scalar value would read as a
+// deliberate 0, i.e. "no minimum gap". That is a LOOSER policy arrived at by accident,
+// which is the wrong direction to fail in. Only a number or a numeric string counts;
+// everything else falls back to the advertising value. The API already validates
+// 0–365 on write, so this only guards against values written straight to the database.
+function hasAvailabilityOverride(value) {
+  if (value == null) return false;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'string') return false; // objects, arrays, booleans
+  const trimmed = value.trim();
+  if (trimmed === '') return false;
+  return Number.isFinite(Number(trimmed));
+}
+
+/**
+ * Effective availability windows for one audience.
+ * audience: 'advertising' | 'inquiry'
+ * Inquiry values fall back to the advertising ones when the override is null/unset.
+ */
+function resolveAvailabilityWindows(settings, audience) {
+  const advertising = {
+    min_gap_days: availabilityNumber(settings?.min_gap_days, 40),
+    lead_days_nr: availabilityNumber(settings?.lead_days_nr, 60),
+    lead_days_other: availabilityNumber(settings?.lead_days_other, 45),
+  };
+  const advertisingSource = {
+    min_gap_days: 'advertising',
+    lead_days_nr: 'advertising',
+    lead_days_other: 'advertising',
+  };
+  if (audience !== 'inquiry') return { ...advertising, source: advertisingSource };
+
+  const resolveField = (field, overrideField) => {
+    if (!hasAvailabilityOverride(settings?.[overrideField])) {
+      return { value: advertising[field], source: 'advertising' };
+    }
+    return { value: Number(settings[overrideField]), source: 'inquiry' };
+  };
+  const minGap = resolveField('min_gap_days', 'inquiry_min_gap_days');
+  const leadNr = resolveField('lead_days_nr', 'inquiry_lead_days_nr');
+  const leadOther = resolveField('lead_days_other', 'inquiry_lead_days_other');
+  return {
+    min_gap_days: minGap.value,
+    lead_days_nr: leadNr.value,
+    lead_days_other: leadOther.value,
+    source: {
+      min_gap_days: minGap.source,
+      lead_days_nr: leadNr.source,
+      lead_days_other: leadOther.source,
+    },
+  };
+}
+
 function formatLocalDate(value) {
   if (value == null || value === '') return null;
   if (value instanceof Date) {
@@ -423,6 +484,7 @@ module.exports = {
   vacancyNoMatchReason,
   partnerForwardBlock,
   compareVacancyFit,
+  resolveAvailabilityWindows,
   priorityOf,
   sortByPriority,
   assignBundlesToSlots,
