@@ -112,6 +112,7 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
         { key: '/advertising/scheduler', label: <Link href="/advertising/scheduler">Scheduler</Link> },
         { key: '/advertising/templates', label: <Link href="/advertising/templates">Templates</Link> },
         { key: '/advertising/forums', label: <Link href="/advertising/forums">Forums</Link> },
+        { key: '/advertising/settings', label: <Link href="/advertising/settings">Settings</Link> },
       ],
     });
   }
