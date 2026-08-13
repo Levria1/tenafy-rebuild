@@ -36,6 +36,7 @@ const {
   compareVacancyFit,
   resolveAvailabilityWindows,
 } = require('../utils/advertisingPlan');
+const { findUnitByListingUrl } = require('../utils/listingUrl');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
 // The middleware attaches req.pool (scoped to the caller's org DB) and
@@ -1403,16 +1404,43 @@ router.get('/viewing-negotiations', async (req, res) => {
 router.post('/viewing-negotiation/start', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
-    const { unit_id, unit_text } = req.body || {};
+    let { unit_id, unit_text } = req.body || {};
+    const listing_url = req.body ? (req.body.listing_url ?? req.body.listing_link) : null;
     const prospect = (req.body && req.body.prospect) || {};
-    if (!unit_id && !unit_text) return fail(res, 'unit_id or unit_text is required', 400);
+    if (!unit_id && listing_url == null && !unit_text) return fail(res, 'unit_id, listing_url, or unit_text is required', 400);
     if (!prospect.phone) return fail(res, 'prospect.phone is required', 400);
+
+    let resolvedBy = unit_id ? 'unit_id' : null;
+    // Precedence is deliberate: explicit unit_id wins, listing_url is the exact
+    // partner-click path, and unit_text remains the fuzzy fallback.
+    if (!unit_id && listing_url != null) {
+      const [units] = await req.pool.execute(
+        `SELECT u.id AS unit_id, u.listing_url
+           FROM unit u
+           JOIN property p ON p.id = u.property_id
+          WHERE p.org_id = ? AND u.active_status = 1`,
+        [orgId]
+      );
+      const listingMatch = findUnitByListingUrl(units, listing_url);
+      if (listingMatch.status === 'match') {
+        unit_id = listingMatch.unit_id;
+        resolvedBy = 'listing_url';
+      } else if (!unit_text) {
+        const reason = listingMatch.status === 'ambiguous'
+          ? 'listing_url_ambiguous'
+          : 'listing_url_not_found';
+        return ok(res, { available: false, reason,
+          message: listingMatch.status === 'ambiguous'
+            ? 'This listing link matches more than one unit.'
+            : 'This listing link does not match an active unit.' });
+      }
+    }
 
     // Text path: Tenafy resolves the unit from the raw phrase and reconfirms /
     // disambiguates in-relay before the day-ask (handles "mongkok 6a", "mk 6a", etc.).
     if (!unit_id && unit_text) {
       const out = await viewingNegotiation.startNegotiationFromText(req.pool, orgId, { unitText: unit_text, prospect });
-      return ok(res, { available: true, ...out });
+      return ok(res, { available: true, ...out, resolved_by: 'unit_text' });
     }
 
     const resolved = await resolveMarketedUnit(req.pool, orgId, unit_id);
@@ -1438,7 +1466,7 @@ router.post('/viewing-negotiation/start', async (req, res) => {
     const out = await viewingNegotiation.startNegotiation(req.pool, orgId, {
       unit: resolved.unit, lease, prospect,
     });
-    return ok(res, { available: true, ...out });
+    return ok(res, { available: true, ...out, resolved_by: resolvedBy || 'unit_id' });
   } catch (err) {
     console.error('Public viewing-negotiation/start error:', err);
     fail(res, 'Failed to start viewing negotiation');

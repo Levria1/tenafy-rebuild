@@ -72,6 +72,7 @@ Real response, captured from production:
   "phrasing": { "certain": "…", "uncertain": "…", "earlier": "…" },
   "vacancies": [
     { "label": "Hollywood 5B", "tier": 2, "intent": "NR",
+      "unit_id": "123", "listing_url": "https://taneresidence.com/product/hollywood-5b/",
       "availability": { "status": "from_date", "available_from": "2026-10-12",
                         "days_until": 60, "certain": true },
       "gap_days": 0, "gap_warning": false, "available_after_target": false }
@@ -80,6 +81,9 @@ Real response, captured from production:
 ```
 
 **Results are already ranked best-fit-first. Do not re-sort.**
+
+Each vacancy includes `unit_id` and `listing_url`. `listing_url` is `null` when the unit has none
+(roughly a third of units), so treat it as a fast exact path when present, not a guarantee.
 
 ## 4. The four fields that decide your wording
 
@@ -213,7 +217,23 @@ POST /viewing-negotiation/start
 { "unit_text": "mongkok 6a", "prospect": { "name": "Alex", "phone": "+85255053651" } }
 ```
 
-**That is the whole payload.** You do **not** need to send a proposed time or a policy:
+You can start with any one of three unit identifiers:
+
+1. `unit_id` — exact, preferred, wins over everything.
+2. `listing_url` — exact listing-link lookup. `listing_link` is accepted as an alias.
+3. `unit_text` — fuzzy fallback for phrases like `"mongkok 6a"`.
+
+Tenafy returns `resolved_by`: `"unit_id"`, `"listing_url"` or `"unit_text"`. Read it. If you sent a
+listing URL and it falls back to text, this is how you know the exact path did not work.
+
+Listing URLs are compared after stripping the scheme, `www.`, query string, fragment and trailing
+slash, then lowercasing. An ad click with `?fbclid=...` still matches the stored listing URL.
+
+If a listing URL cannot be matched and no `unit_text` fallback was supplied, the response is
+`available:false` with reason `"listing_url_not_found"`. If more than one unit normalises to the same
+URL, the reason is `"listing_url_ambiguous"` and Tenafy never guesses.
+
+You do **not** need to send a proposed time or a policy:
 
 - Tenafy resolves `unit_text` to a unit and asks the viewer to confirm if it is ambiguous.
 - Tenafy asks the viewer for a day itself.
@@ -361,6 +381,7 @@ Automatic sending is **off**. Nudges are drafts too until the operator enables i
 - [ ] Accept the three new states; tolerate unknown ones
 - [ ] Read `needs_staff_reason`, and keep the relay row alive on `closed: true`
 - [ ] Poll `/drafts`, send `body` verbatim, then `draft-sent` — and never `draft-sent` on a failed send
+- [ ] Prefer `unit_id` or `listing_url` over `unit_text` when starting a viewing
 - [ ] Delete any timer you have for viewings
 
 ## 19. Questions

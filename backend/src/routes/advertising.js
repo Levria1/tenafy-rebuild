@@ -117,7 +117,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
           DATEDIFF(l.end_date, CURDATE()) AS days_left,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
-          u.rent_price_min, u.rent_price_max,
+          u.rent_price_min, u.rent_price_max, u.listing_url AS listing_url,
           at.id AS template_id, at.name AS template_name,
           p.id AS property_id, p.display_name AS property_name, p.street_address,
           t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name
@@ -157,7 +157,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
     const [vacant] = await pool.execute(
       `SELECT
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
-          u.rent_price_min, u.rent_price_max,
+          u.rent_price_min, u.rent_price_max, u.listing_url AS listing_url,
           at.id AS template_id, at.name AS template_name,
           p.id AS property_id, p.display_name AS property_name, p.street_address,
           ll.id AS last_lease_id,

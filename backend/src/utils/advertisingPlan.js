@@ -248,6 +248,7 @@ function vacancyToPublicShape(row) {
   return {
     unit_id: row?.unit_id == null ? null : String(row.unit_id),
     unit_name: row?.unit_name ?? null,
+    listing_url: row?.listing_url ?? null,
     property_id: row?.property_id == null ? null : String(row.property_id),
     property_name: row?.property_name ?? null,
     label: [row?.property_name, row?.unit_name].filter(Boolean).join(' ') || null,
