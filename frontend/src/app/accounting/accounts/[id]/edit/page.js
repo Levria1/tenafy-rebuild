@@ -103,9 +103,13 @@ export default function AccountEditPage() {
         // Load account lines if they exist
         // Skip if there's only 1 line that matches the header (it's just the header line, not an extra breakdown)
         if (data.lines && data.lines.length > 0) {
+          // The detail GET coalesces line category/property/unit/lease into the header, but not tag_id.
+          // A line with only a line-level owner tag is therefore a real breakdown; skipping it would let
+          // Save hard-delete and rebuild the line from the untagged header, destroying the owner tag.
           const isHeaderOnly = data.lines.length === 1
             && Number(data.lines[0].amount) === Number(data.amount)
             && String(data.lines[0].category || '') === String(data.category || '')
+            && String(data.lines[0].tag_id || '') === String(data.tag_id || '')
             && String(data.lines[0].invoice_code || '').trim() === String(data.invoice_code || '').trim();
           if (!isHeaderOnly) {
             setAccountLines(data.lines.map(l => ({
