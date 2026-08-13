@@ -27,17 +27,15 @@ const CAPABILITY_LABELS = [
 // Settings -> Leasing -> Availability.
 //
 // These live on `advertising_setting` because that is where the availability engine
-// (computeVacancies) already reads min_gap_days and the lead windows from. The table
-// name is historical: these are LETTING rules, not advertising rules — they decide
-// what gets offered to a prospect whether the answer comes from the chatbot, the
-// public API, or a member of staff. This page is the first UI any of them has had.
+// (computeVacancies) reads its window settings. The table name is historical: this
+// card edits the inquiry audience's independent copy only.
 function LeasingAvailabilitySettings() {
   const [maxGap, setMaxGap] = useState(null);
   const [hardMaxGap, setHardMaxGap] = useState(null);
   const [inquiryMinGap, setInquiryMinGap] = useState(null);
   const [inquiryLeadDaysNr, setInquiryLeadDaysNr] = useState(null);
   const [inquiryLeadDaysOther, setInquiryLeadDaysOther] = useState(null);
-  const [effectiveInquiry, setEffectiveInquiry] = useState(null);
+  const [effectiveAdvertising, setEffectiveAdvertising] = useState(null);
   const [partnerMsg, setPartnerMsg] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -55,10 +53,10 @@ function LeasingAvailabilitySettings() {
         if (!d) { setLoadError(true); return; }
         setMaxGap(d.max_gap_days ?? null);
         setHardMaxGap(d.hard_max_gap_days ?? null);
-        setInquiryMinGap(d.inquiry_min_gap_days ?? null);
-        setInquiryLeadDaysNr(d.inquiry_lead_days_nr ?? null);
-        setInquiryLeadDaysOther(d.inquiry_lead_days_other ?? null);
-        setEffectiveInquiry(d.effective?.inquiry ?? null);
+        setInquiryMinGap(d.inquiry_min_gap_days ?? 40);
+        setInquiryLeadDaysNr(d.inquiry_lead_days_nr ?? 60);
+        setInquiryLeadDaysOther(d.inquiry_lead_days_other ?? 45);
+        setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       })
       .catch(() => setLoadError(true))
@@ -71,20 +69,16 @@ function LeasingAvailabilitySettings() {
   // incoherent: nothing could ever be warned about, because it would already be hidden.
   const invalid = maxGap != null && hardMaxGap != null && Number(maxGap) > Number(hardMaxGap);
 
-  const handleNullableDays = setter => value => {
-    setter(value === null || value === undefined || value === '' ? null : Number(value));
+  const handleRequiredDays = (setter, fallback) => value => {
+    setter(value === null || value === undefined || value === '' ? fallback : Number(value));
   };
 
-  const renderEffectiveInquiry = key => {
-    const value = effectiveInquiry?.[key];
-    const source = effectiveInquiry?.source?.[key];
-    if (value === null || value === undefined || !source) return null;
+  const renderAdvertisingReference = key => {
+    const value = effectiveAdvertising?.[key];
+    if (value === null || value === undefined) return null;
 
     const label = `${value} ${Number(value) === 1 ? 'day' : 'days'}`;
-    if (source === 'advertising') {
-      return <Text type="secondary" style={{ fontSize: 12 }}>Using the advertising value ({label})</Text>;
-    }
-    return <Text style={{ fontSize: 12 }}>Overriding advertising ({label})</Text>;
+    return <Text type="secondary" style={{ fontSize: 12 }}>Advertising uses {label}</Text>;
   };
 
   const handleSave = async () => {
@@ -99,13 +93,13 @@ function LeasingAvailabilitySettings() {
         partner_forward_message: partnerMsg,
       });
       const d = r.data?.data;
-      if (d) {
+      if (d && d.max_gap_days !== undefined) {
         setMaxGap(d.max_gap_days ?? null);
         setHardMaxGap(d.hard_max_gap_days ?? null);
-        setInquiryMinGap(d.inquiry_min_gap_days ?? null);
-        setInquiryLeadDaysNr(d.inquiry_lead_days_nr ?? null);
-        setInquiryLeadDaysOther(d.inquiry_lead_days_other ?? null);
-        setEffectiveInquiry(d.effective?.inquiry ?? null);
+        setInquiryMinGap(d.inquiry_min_gap_days ?? 40);
+        setInquiryLeadDaysNr(d.inquiry_lead_days_nr ?? 60);
+        setInquiryLeadDaysOther(d.inquiry_lead_days_other ?? 45);
+        setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       }
       message.success('Saved');
@@ -174,35 +168,35 @@ function LeasingAvailabilitySettings() {
       )}
 
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
-        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Only for inquiries (optional)</Title>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Availability for inquiries</Title>
         <Paragraph type="secondary" style={{ marginBottom: 16 }}>
-          Leaving these empty means inquiries use the same windows as advertising; filling one lets
-          that single field differ. The advertising values live on Advertising → Settings.
+          These values are independent of advertising. Changing them does not affect what gets
+          posted to Facebook; those values live on Advertising → Settings.
         </Paragraph>
         <Row gutter={24}>
           <Col xs={24} md={8} style={{ marginBottom: 16 }}>
             <div style={{ marginBottom: 4, fontWeight: 500 }}>Minimum vacancy worth offering</div>
             <InputNumber
-              min={0} max={365} value={inquiryMinGap} onChange={handleNullableDays(setInquiryMinGap)}
-              allowClear addonAfter="days" style={{ width: '100%', maxWidth: 240 }}
+              min={0} max={365} value={inquiryMinGap} onChange={handleRequiredDays(setInquiryMinGap, 40)}
+              addonAfter="days" style={{ width: '100%', maxWidth: 240 }}
             />
-            <div style={{ marginTop: 6 }}>{renderEffectiveInquiry('min_gap_days')}</div>
+            <div style={{ marginTop: 6 }}>{renderAdvertisingReference('min_gap_days')}</div>
           </Col>
           <Col xs={24} md={8} style={{ marginBottom: 16 }}>
             <div style={{ marginBottom: 4, fontWeight: 500 }}>Offer a not-renewing unit from</div>
             <InputNumber
-              min={0} max={365} value={inquiryLeadDaysNr} onChange={handleNullableDays(setInquiryLeadDaysNr)}
-              allowClear addonAfter="days out" style={{ width: '100%', maxWidth: 240 }}
+              min={0} max={365} value={inquiryLeadDaysNr} onChange={handleRequiredDays(setInquiryLeadDaysNr, 60)}
+              addonAfter="days out" style={{ width: '100%', maxWidth: 240 }}
             />
-            <div style={{ marginTop: 6 }}>{renderEffectiveInquiry('lead_days_nr')}</div>
+            <div style={{ marginTop: 6 }}>{renderAdvertisingReference('lead_days_nr')}</div>
           </Col>
           <Col xs={24} md={8} style={{ marginBottom: 16 }}>
             <div style={{ marginBottom: 4, fontWeight: 500 }}>Offer an other/may-renew unit from</div>
             <InputNumber
-              min={0} max={365} value={inquiryLeadDaysOther} onChange={handleNullableDays(setInquiryLeadDaysOther)}
-              allowClear addonAfter="days out" style={{ width: '100%', maxWidth: 240 }}
+              min={0} max={365} value={inquiryLeadDaysOther} onChange={handleRequiredDays(setInquiryLeadDaysOther, 45)}
+              addonAfter="days out" style={{ width: '100%', maxWidth: 240 }}
             />
-            <div style={{ marginTop: 6 }}>{renderEffectiveInquiry('lead_days_other')}</div>
+            <div style={{ marginTop: 6 }}>{renderAdvertisingReference('lead_days_other')}</div>
           </Col>
         </Row>
       </div>

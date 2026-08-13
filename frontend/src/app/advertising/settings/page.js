@@ -14,6 +14,7 @@ export default function AdvertisingSettingsPage() {
   const [minGapDays, setMinGapDays] = useState(null);
   const [leadDaysNr, setLeadDaysNr] = useState(null);
   const [leadDaysOther, setLeadDaysOther] = useState(null);
+  const [effectiveInquiry, setEffectiveInquiry] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -28,6 +29,7 @@ export default function AdvertisingSettingsPage() {
         setMinGapDays(d.min_gap_days ?? null);
         setLeadDaysNr(d.lead_days_nr ?? null);
         setLeadDaysOther(d.lead_days_other ?? null);
+        setEffectiveInquiry(d.effective?.inquiry ?? null);
       })
       .catch(() => setLoadError(true))
       .finally(() => setLoading(false));
@@ -35,8 +37,18 @@ export default function AdvertisingSettingsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleNullableDays = setter => value => {
-    setter(value === null || value === undefined || value === '' ? null : Number(value));
+  const handleRequiredDays = (setter, fallback) => value => {
+    setter(value === null || value === undefined || value === '' ? fallback : Number(value));
+  };
+
+  const renderInquiryReference = key => {
+    const value = effectiveInquiry?.[key];
+    if (value === null || value === undefined) return null;
+    return (
+      <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+        Inquiries use {value} {Number(value) === 1 ? 'day' : 'days'}
+      </div>
+    );
   };
 
   const handleSave = async () => {
@@ -50,10 +62,11 @@ export default function AdvertisingSettingsPage() {
         lead_days_other: leadDaysOther,
       });
       const d = r.data?.data;
-      if (d) {
+      if (d && d.min_gap_days !== undefined) {
         setMinGapDays(d.min_gap_days ?? null);
         setLeadDaysNr(d.lead_days_nr ?? null);
         setLeadDaysOther(d.lead_days_other ?? null);
+        setEffectiveInquiry(d.effective?.inquiry ?? null);
       }
       message.success('Saved');
     } catch (err) {
@@ -89,44 +102,47 @@ export default function AdvertisingSettingsPage() {
             )}
 
             <Alert
-              type="warning"
+              type="info"
               showIcon
-              message="These values are shared"
-              description="They also govern what the chatbot offers in answer to inquiries, unless a per-field override is set on Chatbot → Settings → Leasing."
+              message="These values apply to Facebook posting only"
+              description="Inquiry answers have their own availability values on Chatbot → Settings → Leasing."
             />
 
             <Row gutter={24}>
               <Col xs={24} md={8} style={{ marginBottom: 16 }}>
                 <div style={{ marginBottom: 4, fontWeight: 500 }}>Minimum vacancy worth posting</div>
                 <InputNumber
-                  min={0} max={365} value={minGapDays} onChange={handleNullableDays(setMinGapDays)}
+                  min={0} max={365} value={minGapDays} onChange={handleRequiredDays(setMinGapDays, 40)}
                   disabled={loadError} addonAfter="days" style={{ width: '100%', maxWidth: 240 }}
                 />
                 <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
                   A unit re-let sooner than this is effectively taken, so it is not advertised.
                 </div>
+                {renderInquiryReference('min_gap_days')}
               </Col>
 
               <Col xs={24} md={8} style={{ marginBottom: 16 }}>
                 <div style={{ marginBottom: 4, fontWeight: 500 }}>Post a not-renewing unit from</div>
                 <InputNumber
-                  min={0} max={365} value={leadDaysNr} onChange={handleNullableDays(setLeadDaysNr)}
+                  min={0} max={365} value={leadDaysNr} onChange={handleRequiredDays(setLeadDaysNr, 60)}
                   disabled={loadError} addonAfter="days out" style={{ width: '100%', maxWidth: 240 }}
                 />
                 <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
                   The tenant has confirmed they are leaving, so a longer runway is safe.
                 </div>
+                {renderInquiryReference('lead_days_nr')}
               </Col>
 
               <Col xs={24} md={8} style={{ marginBottom: 16 }}>
                 <div style={{ marginBottom: 4, fontWeight: 500 }}>Post an other/may-renew unit from</div>
                 <InputNumber
-                  min={0} max={365} value={leadDaysOther} onChange={handleNullableDays(setLeadDaysOther)}
+                  min={0} max={365} value={leadDaysOther} onChange={handleRequiredDays(setLeadDaysOther, 45)}
                   disabled={loadError} addonAfter="days out" style={{ width: '100%', maxWidth: 240 }}
                 />
                 <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
                   Shorter on purpose: they may renew, and advertising too early markets a unit that might never come free.
                 </div>
+                {renderInquiryReference('lead_days_other')}
               </Col>
             </Row>
 

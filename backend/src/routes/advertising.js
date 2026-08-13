@@ -961,11 +961,11 @@ async function loadSettings(pool, orgId) {
     hard_max_gap_days: 20,
     lead_days_nr: 60,
     lead_days_other: 45,
-    inquiry_min_gap_days: null,
-    inquiry_lead_days_nr: null,
-    inquiry_lead_days_other: null,
+    inquiry_min_gap_days: 40,
+    inquiry_lead_days_nr: 60,
+    inquiry_lead_days_other: 45,
   };
-  const nullableNumber = value => (Number.isFinite(Number(value)) ? Number(value) : null);
+  const numberOrDefault = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
   try {
     const [[row]] = await pool.execute(
       `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other,
@@ -981,9 +981,9 @@ async function loadSettings(pool, orgId) {
       hard_max_gap_days: Number.isFinite(Number(row?.hard_max_gap_days)) ? Number(row.hard_max_gap_days) : 20,
       lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
       lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
-      inquiry_min_gap_days: nullableNumber(row?.inquiry_min_gap_days),
-      inquiry_lead_days_nr: nullableNumber(row?.inquiry_lead_days_nr),
-      inquiry_lead_days_other: nullableNumber(row?.inquiry_lead_days_other),
+      inquiry_min_gap_days: numberOrDefault(row?.inquiry_min_gap_days, 40),
+      inquiry_lead_days_nr: numberOrDefault(row?.inquiry_lead_days_nr, 60),
+      inquiry_lead_days_other: numberOrDefault(row?.inquiry_lead_days_other, 45),
     };
   } catch (err) {
     try {
@@ -1037,14 +1037,13 @@ router.get('/settings', authenticate, async (req, res) => {
   try {
     const s = await loadSettings(req.pool, req.user.orgId);
     const effectiveAdvertising = resolveAvailabilityWindows(s, 'advertising');
-    const { source: _advertisingSource, ...advertising } = effectiveAdvertising;
     const inquiry = resolveAvailabilityWindows(s, 'inquiry');
     res.json({
       code: 200,
       data: {
         ...s,
         effective: {
-          advertising,
+          advertising: effectiveAdvertising,
           inquiry,
         },
       },
@@ -1085,10 +1084,16 @@ router.put('/settings', authenticate, async (req, res) => {
       }
     }
     for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other']) {
-      if (req.body?.[field] !== undefined
-          && req.body[field] !== null
-          && (!Number.isInteger(req.body[field]) || req.body[field] < 0 || req.body[field] > 365)) {
-        return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365 or null` });
+      if (req.body?.[field] !== undefined) {
+        if (req.body[field] === null) {
+          return res.status(400).json({
+            code: 400,
+            message: `${field} must be an integer between 0 and 365; inquiry and advertising windows are independent, so each inquiry window needs its own value`,
+          });
+        }
+        if (!Number.isInteger(req.body[field]) || req.body[field] < 0 || req.body[field] > 365) {
+          return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
+        }
       }
     }
     const current = await loadSettings(req.pool, orgId);
@@ -1153,15 +1158,15 @@ router.put('/settings', authenticate, async (req, res) => {
       params.push(lead_days_nr ?? 60, lead_days_other ?? 45);
       if (includeInquiryMinGap) {
         insertColumns.push('inquiry_min_gap_days');
-        params.push(inquiry_min_gap_days ?? null);
+        params.push(inquiry_min_gap_days ?? 40);
       }
       if (includeInquiryLeadNr) {
         insertColumns.push('inquiry_lead_days_nr');
-        params.push(inquiry_lead_days_nr ?? null);
+        params.push(inquiry_lead_days_nr ?? 60);
       }
       if (includeInquiryLeadOther) {
         insertColumns.push('inquiry_lead_days_other');
-        params.push(inquiry_lead_days_other ?? null);
+        params.push(inquiry_lead_days_other ?? 45);
       }
       insertColumns.push('created_at');
       const placeholders = [...params.map(() => '?'), 'NOW()'].join(', ');
