@@ -3,8 +3,10 @@
 **For:** the TaneChat team.
 **Covers:** answering availability inquiries, and running a viewing from first message to booked.
 **Base URL:** `https://platform.tenafy.com/api/public`
-**Auth:** `X-API-Key: <key>` on every request. A **read-only key is enough for everything here except
-two writes** (`draft-sent` and the reply endpoints) — see §9.
+**Auth:** `X-API-Key: <key>` on every request. Availability (Part A) needs only a **read-only** key.
+Viewings (Part B) need a **read-write** key: four of its endpoints are POSTs — `start`,
+`prospect-reply`, `tenant-reply`, `draft-sent` — and a read-only key is rejected on any of them with a
+`403` before the handler runs. See the table in §9.
 
 Verified against production on 2026-08-13. Where this doc shows a payload, it was captured from a
 real call, not written by hand.
@@ -44,6 +46,11 @@ GET /vacancies?target_date=2026-10-12
 | `limit` | `50` | max 200 |
 
 A malformed `target_date` is a **400**, deliberately — it is not silently ignored.
+
+**Without `target_date` these keys are absent from the response — not null:** `target_date`,
+`max_gap_days`, `phrasing.earlier`, and the three per-unit gap fields `gap_days`, `gap_warning`,
+`available_after_target`. There is no date to measure a gap against, so nothing is ranked, warned about
+or hidden. Don't assume those keys exist if you ever call without a date.
 
 `GET /units/available` is **deprecated**. It answers a strictly worse question: it cannot see units
 coming free later, and until recently it reported units already re-let. Responses carry
