@@ -1,8 +1,7 @@
 # Tenafy → TaneChat — what's new (August 2026)
 
-**Status: NOT LIVE YET.** Everything below is built and tested but not deployed. We'll confirm the
-date. Nothing here breaks what you have today — every change is additive, and existing fields keep
-their meaning.
+**Status: LIVE as of 14 August 2026.** Nothing here breaks what you have today — every change is
+additive, every new parameter is optional, and existing fields keep their meaning.
 
 Full reference stays `tanechat-integration-guide.md`. This note is just the delta.
 
@@ -119,7 +118,24 @@ These always come back with `certain: false`, and there is a new template for th
 Those are two different kinds of uncertainty and read differently to a customer, so please don't
 collapse them. Branch on `source` only after checking `certain` — `certain` remains the primary signal.
 
-You will see no manual units at first; the operator tooling for them ships alongside this.
+**Do not say why the unit might free up.** `phrasing.manual` deliberately says only "not confirmed
+yet". The occupant has not committed to leaving and may well stay — their intention is not a
+prospect's business. Use the template as written and don't add an explanation.
+
+### Viewings on a manual unit — nothing changes for you
+
+**Treat it exactly like any other occupied unit.** It has a live lease and someone living in it, so a
+viewing goes down the same path you already implement: you start the negotiation, the occupant is
+asked, silence counts as agreement, and the states, timers and endpoints are all identical. There is
+no new call and no special case. Please don't build one.
+
+**If the request is withdrawn or expires mid-conversation**, the unit simply stops appearing in
+`/vacancies`, and a *new* viewing request for it will come back as `NEEDS_STAFF` with
+`needs_staff_reason: "off_window"` — a human picks it up from there. A negotiation already in flight
+carries on unaffected. This is normal, not an error, and not worth reporting as a bug.
+
+**Never present a manual unit as held, reserved or promised.** Nothing is committed. If a customer
+pushes for certainty, the honest answer is that we'll know shortly and can tell them either way.
 
 ---
 

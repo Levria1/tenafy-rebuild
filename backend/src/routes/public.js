@@ -73,7 +73,11 @@ router.post('/posting-plan/mark', async (req, res) => {
 
 const CERTAIN_AVAILABILITY_PHRASE = '{units} available from {date}';
 const UNCERTAIN_AVAILABILITY_PHRASE = "We may also have {units} available, however the tenant may renew, they're not sure";
-const MANUAL_AVAILABILITY_PHRASE = '{units} may become available from {date} — the current tenant is considering moving out early, so this one is not confirmed yet.';
+// Deliberately does NOT say why the unit might free up. The occupant has not
+// committed to leaving and may well stay; their intention is not a stranger's
+// business. "Not confirmed yet" carries the same decision value to a prospect —
+// it is uncertain — without disclosing anything about the person living there.
+const MANUAL_AVAILABILITY_PHRASE = '{units} may become available from {date} — not confirmed yet.';
 // Offered instead of hiding a poor fit: suppressing the unit forfeits the
 // negotiation that could remove the vacancy entirely.
 const EARLIER_AVAILABILITY_PHRASE = '{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long.';
