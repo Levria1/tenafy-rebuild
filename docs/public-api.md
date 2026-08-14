@@ -77,6 +77,7 @@ All endpoints return JSON in this shape:
 |---|---|---|---|
 | GET | `/units` | `?property_id=&status=0\|1&active_status=0\|1` | All units (filtered) |
 | GET | `/units/:id` | | Unit detail + current lease + tenant + amenities + gallery |
+| POST | `/units/resolve` | | Read-only unit lookup from id, listing URL, or free text |
 | GET | `/vacancies` | `?max_tier=3&property_id=&limit=50&target_date=YYYY-MM-DD` | Chatbot availability using advertising vacancy logic |
 | GET | `/units/available` | `?date=YYYY-MM-DD&property_id=` | Deprecated; use `/vacancies` |
 
@@ -142,6 +143,85 @@ All endpoints return JSON in this shape:
 |---|---|---|---|
 | GET | `/cleaning/cleaners` | | All cleaners |
 | GET | `/cleaning/schedule` | `?week_of=YYYY-MM-DD` (required) | Cleaning schedule for week |
+
+### Units
+
+#### `POST /units/resolve`
+
+Requires `X-API-Key`; read-only keys are allowed. This endpoint is read-only and
+safe to call on every inbound message. It resolves a unit reference without
+starting a viewing negotiation, sending messages, or writing any records.
+
+Request body:
+
+```json
+{
+  "unit_id": "123",
+  "listing_url": "https://taneresidence.com/product/mong-kok-5a/",
+  "unit_text": "Mong Kok Flat 5A"
+}
+```
+
+All fields are optional, but at least one of `unit_id`, `listing_url`, or
+`unit_text` is required. `listing_link` is accepted as an alias for
+`listing_url`. Empty or whitespace-only `unit_text` is treated as absent, and
+`unit_text` is limited to 500 characters.
+
+Precedence is fixed and matches `/viewing-negotiation/start`:
+
+| Order | Field | Behavior |
+|---:|---|---|
+| 1 | `unit_id` | Active unit in the caller's org only |
+| 2 | `listing_url` / `listing_link` | Exact listing URL match after URL normalization |
+| 3 | `unit_text` | Shared fuzzy unit resolver |
+
+If `listing_url` is not found and `unit_text` is also present, the endpoint
+falls through and resolves by text. If `unit_id` is present, it always wins.
+
+Response:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "status": "confident",
+    "resolved_by": "unit_text",
+    "match": {
+      "unit_id": "123",
+      "unit_name": "5A",
+      "property_id": "456",
+      "property_name": "Mong Kok",
+      "label": "Mong Kok 5A",
+      "marketable": true
+    },
+    "candidates": [],
+    "query": "mong kok flat 5a"
+  }
+}
+```
+
+`query` is returned only when resolution used `unit_text`. `match` is non-null
+only when `status` is `confident`; otherwise inspect `candidates`.
+
+Status vocabulary:
+
+| Status | Meaning |
+|---|---|
+| `confident` | Exactly one unit was resolved |
+| `ambiguous` | More than one unit could match; use `candidates` to disambiguate |
+| `property_only` | The text identifies a property but not a specific unit |
+| `multi_unit` | The text appears to name more than one distinct unit |
+| `none` | No active unit in this org matched |
+
+An unrecognised `unit_id` returns `status: "none"`, not `404`, so a typo and a
+real unit belonging to another org are indistinguishable from outside. Unlike a
+stale `listing_url`, it does **not** fall through to `unit_text`: a listing URL
+goes stale on its own, whereas a `unit_id` is one we issued, so a miss means a
+caller bug worth surfacing rather than papering over with a fuzzy match.
+
+Only `confident` is safe to act on without confirming with the customer. Treat
+`ambiguous` and `property_only` as "ask which one" — the resolver deliberately
+declines to guess between equally-good matches rather than picking the first.
 
 ### Advertising posting plan
 

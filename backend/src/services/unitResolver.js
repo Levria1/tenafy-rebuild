@@ -221,7 +221,10 @@ function optionsText(candidates) {
 }
 
 module.exports = {
-  scoreUnits, resolveUnit, loadUnitsWithMarketable, optionsText,
+  // unitOut is exported so /units/resolve emits the identical shape rather than
+  // keeping its own copy. Partners learn one unit vocabulary; two hand-maintained
+  // formatters would drift apart silently the first time either gains a field.
+  scoreUnits, resolveUnit, loadUnitsWithMarketable, optionsText, unitOut,
   // exported for tests
   _norm: norm, _squish: squish, _editDistance: editDistance, _unitCore: unitCore,
 };

@@ -21,7 +21,7 @@ const {
   shouldApplyUnitResolution,
   payloadHash,
 } = require('../utils/inquiryFacts');
-const { resolveUnit } = require('../services/unitResolver');
+const { resolveUnit, loadUnitsWithMarketable, unitOut } = require('../services/unitResolver');
 const { validateChannel } = require('../utils/chatChannel');
 const { createNotification } = require('../services/scheduler');
 const config = require('../config');
@@ -38,7 +38,7 @@ const {
   resolveAvailabilityWindows,
   hasActiveManualVacancyOverride,
 } = require('../utils/advertisingPlan');
-const { findUnitByListingUrl } = require('../utils/listingUrl');
+const { findUnitByListingUrl, normalizeListingUrl } = require('../utils/listingUrl');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
 // The middleware attaches req.pool (scoped to the caller's org DB) and
@@ -228,6 +228,15 @@ function ok(res, data, meta) {
 }
 function fail(res, message, status = 500) {
   res.status(status).json({ code: status, message });
+}
+// Deliberately the resolver's own formatter, not a copy of it — see the note on
+// its export.
+const publicUnitOut = unitOut;
+function badResolveField(body) {
+  for (const key of ['unit_id', 'listing_url', 'listing_link', 'unit_text']) {
+    if (body[key] != null && typeof body[key] !== 'string') return key;
+  }
+  return null;
 }
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -2159,6 +2168,101 @@ router.get('/units/search', async (req, res) => {
   } catch (error) {
     console.error('Public units search error:', error);
     fail(res, 'Failed to search units');
+  }
+});
+
+// POST /api/public/units/resolve
+// Read-only unit lookup for qualification flows. Mirrors viewing negotiation's
+// unit_id -> listing_url -> unit_text precedence without starting a negotiation.
+router.post('/units/resolve', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const body = req.body || {};
+    const badField = badResolveField(body);
+    if (badField) return fail(res, `${badField} must be a string`, 400);
+
+    const unitId = body.unit_id || null;
+    const listingUrl = body.listing_url ?? body.listing_link ?? null;
+    const unitText = typeof body.unit_text === 'string' ? body.unit_text.trim() : '';
+    if (!unitId && listingUrl == null && !unitText) {
+      return fail(res, 'unit_id, listing_url, or unit_text is required', 400);
+    }
+    if (unitText.length > 500) return fail(res, 'unit_text must be 500 characters or fewer', 400);
+
+    const units = await loadUnitsWithMarketable(req.pool, orgId);
+    const byId = new Map(units.map(u => [String(u.id), u]));
+
+    // An unknown unit_id does NOT fall through to the other paths, though an
+    // unknown listing_url does. The asymmetry is deliberate: a listing URL comes
+    // from an ad click and goes stale on its own, whereas a unit_id is one WE
+    // issued, so a miss means the caller has a bug or is probing another tenant.
+    // Quietly fuzzy-matching their way to a different unit would hide both.
+    if (unitId) {
+      const unit = byId.get(String(unitId));
+      return ok(res, {
+        // 'none' rather than a 404, so a typo and another org's real unit are
+        // indistinguishable from outside.
+        status: unit ? 'confident' : 'none',
+        resolved_by: 'unit_id',
+        match: unit ? publicUnitOut(unit) : null,
+        candidates: [],
+      });
+    }
+
+    if (listingUrl != null) {
+      const [listingRows] = await req.pool.execute(
+        `SELECT u.id AS unit_id, u.listing_url
+           FROM unit u
+           JOIN property p ON p.id = u.property_id
+          WHERE p.org_id = ? AND u.active_status = 1`,
+        [orgId]
+      );
+      const listingMatch = findUnitByListingUrl(listingRows, listingUrl);
+      if (listingMatch.status === 'match') {
+        const unit = byId.get(String(listingMatch.unit_id));
+        if (unit) {
+          return ok(res, {
+            status: 'confident',
+            resolved_by: 'listing_url',
+            match: publicUnitOut(unit),
+            candidates: [],
+          });
+        }
+      } else if (listingMatch.status === 'ambiguous') {
+        const target = normalizeListingUrl(listingUrl);
+        const candidates = (listingRows || [])
+          .filter(row => normalizeListingUrl(row.listing_url) === target)
+          .map(row => byId.get(String(row.unit_id)))
+          .filter(Boolean)
+          .map(publicUnitOut);
+        return ok(res, {
+          status: 'ambiguous',
+          resolved_by: 'listing_url',
+          match: null,
+          candidates,
+        });
+      }
+      if (!unitText) {
+        return ok(res, {
+          status: 'none',
+          resolved_by: 'listing_url',
+          match: null,
+          candidates: [],
+        });
+      }
+    }
+
+    const out = await resolveUnit(req.pool, orgId, unitText);
+    return ok(res, {
+      status: out.status,
+      resolved_by: 'unit_text',
+      match: out.status === 'confident' ? out.match : null,
+      candidates: out.candidates || [],
+      query: out.query,
+    });
+  } catch (err) {
+    console.error('Public units/resolve error:', err);
+    fail(res, 'Failed to resolve unit');
   }
 });
 
