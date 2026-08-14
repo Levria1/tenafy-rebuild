@@ -392,7 +392,11 @@ async function hasActiveManualVacancyOverride(pool, orgId, unitId) {
   return !!row;
 }
 
-function matchesFreeOn(vacancy, freeOn) {
+// Why a unit passes or fails free_on, not just whether. Failing for the two
+// reasons below means two different things to a customer: one is worth offering
+// on a later date, the other is gone. Collapsing them into a boolean is what made
+// six lettable flats read as "nothing available".
+function classifyFreeOn(vacancy, freeOn) {
   const availability = vacancy?.availability || {};
   // These are zero-padded YYYY-MM-DD strings, so lexicographic comparison is
   // date comparison without introducing timezone conversion.
@@ -400,7 +404,19 @@ function matchesFreeOn(vacancy, freeOn) {
     || (availability.available_from != null && availability.available_from <= freeOn);
   const noIncomingTenantByThen = availability.next_move_in_date == null
     || availability.next_move_in_date > freeOn;
-  return availableByThen && noIncomingTenantByThen;
+
+  // Checked FIRST, and it overrides everything: once someone else moves in by the
+  // requested date the unit is spoken for, however soon it might free up again.
+  if (!noIncomingTenantByThen) return 'unavailable';
+  if (availableByThen) return 'match';
+  // Frees up later, but we cannot say when. There is no date to put in the "would
+  // a later start work?" question, so offering it would be an empty promise.
+  if (availability.available_from == null) return 'unavailable';
+  return 'later';
+}
+
+function matchesFreeOn(vacancy, freeOn) {
+  return classifyFreeOn(vacancy, freeOn) === 'match';
 }
 
 const EMPTY_VACANCY_FIT = {
@@ -613,6 +629,7 @@ module.exports = {
   leaseChangedForOverride,
   pickVacancyRow,
   hasActiveManualVacancyOverride,
+  classifyFreeOn,
   matchesFreeOn,
   formatLocalDate,
   vacancyFit,

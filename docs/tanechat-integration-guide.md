@@ -41,7 +41,7 @@ GET /vacancies?target_date=2026-10-12&free_on=2026-10-12
 | Param | Default | Notes |
 |---|---|---|
 | `target_date` | none | `YYYY-MM-DD`. **Send it whenever you know it.** This ranks and warns by move-in fit. Without it there is no gap to judge, so no ranking, no warnings and no hiding. |
-| `free_on` | none | `YYYY-MM-DD`. This filters to units the customer can actually take on that date. It answers a different question from `target_date`, and the two can be combined. |
+| `free_on` | none | `YYYY-MM-DD`. A **hard filter** to units the customer can actually take on that date. It answers a different question from `target_date`, and the two can be combined. Anything it removes that merely frees up *later* comes back in `next_available` — see §7. |
 | `max_tier` | `3` | `1` vacant only, `2` + NR, `3` all. Leave it alone unless you have a reason. |
 | `property_id` | none | optional filter |
 | `limit` | `50` | max 200 |
@@ -93,7 +93,8 @@ the area.
 
 `availability.next_move_in_date` means somebody is already moving in then, so the unit is only free
 until that date. Send `free_on` when the customer has a firm date and Tenafy will remove those rows for
-you.
+you — but read §7 first, because a unit that frees up a fortnight after their date is still worth
+offering, and Tenafy hands it back to you separately rather than dropping it.
 
 ## 4. The four fields that decide your wording
 
@@ -127,6 +128,7 @@ costs the operator nothing.
 | `certain: true`, `status: "now"` | "available now" |
 | `certain: true`, `status: "from_date"` | "available from {available_from}" |
 | `gap_warning: true` | still offer it — use `phrasing.earlier` |
+| the unit came from `next_available` | use `phrasing.later` — ask whether a later start works. Never present it as free on their date. |
 | `certain: false`, `source: "manual"` | **must** use `phrasing.manual`. Never state it as firm availability. |
 | `certain: false`, `source: "lease"` | **must** use `phrasing.uncertain`. Never state it as firm availability. |
 
@@ -161,10 +163,45 @@ Past `hard_max_gap_days` (20) a unit is **removed** from the response. Two exemp
 suitable-ish units and you were shown the best three. **This is normal. Do not treat a short list as
 an error or ask for `max_tier=3` to compensate.**
 
-## 7. When there is nothing — you send the partner message
+## 7. When there is nothing — later dates first, then the partner message
+
+### 7a. `next_available` — what `free_on` took away
+
+`free_on` is a hard filter, and on a busy portfolio it can empty the list completely while the
+operator still has flats coming free three weeks later. So Tenafy now hands those back separately:
+
+```json
+"vacancies": [],
+"count": 0,
+"hidden_by_free_on": 6,
+"next_available": [ { "label": "Gilman's Bazaar 5B", "availability": { "available_from": "2026-09-17" } } ],
+"phrasing": { "later": "{units} available from {date} — a little later than you asked. Would that still work?" }
+```
+
+**If `next_available` is present, ask about a later start before you conclude anything.** These are
+real, offerable units — the only thing wrong with them is the date.
+
+- `next_available` appears **only** when `free_on` was sent and something offerable frees up later.
+  Absent otherwise — not an empty array.
+- Sorted soonest-first, and `limit` applies to it independently.
+- Units **already re-let** by the requested date appear in neither list. That is deliberate: they are
+  spoken for, and offering them would be a promise Tenafy cannot keep.
+- `phrasing.later` ships alongside it. Use it as written; it must never read as though the unit is
+  free on the date they asked for.
+- `hidden_by_free_on` counts **everything** `free_on` removed — both the later units and the re-let
+  ones. It is not the length of `next_available`.
+
+Same wording rules as everywhere else: if one of these units is `certain: false`, the caveat still
+applies. A later date and an unconfirmed date are two separate hedges, and it needs both.
+
+### 7b. The partner message
 
 If `vacancies` is empty, `partner_forward.applies` is `true` and **TaneChat sends
 `partner_forward.message` to the partner agencies.**
+
+**`applies` is now `false` whenever `next_available` is non-empty**, even though `vacancies` is
+empty — we are not handing a lead to a competitor while we have something to offer. Ask about the
+later date instead.
 
 ```json
 "partner_forward": {
@@ -196,12 +233,13 @@ If you cannot fill one, drop that clause cleanly rather than sending a literal `
 `no_match_reason` is for the operator's reporting, not your logic:
 
 - `"all_beyond_hard_cap"` — units exist, none within policy
-- `"none_free_on_date"` — units exist, none are free on the requested `free_on` date
+- `"none_free_on_date"` — units exist, none are free on the requested `free_on` date. **Check
+  `next_available` before treating this as a dead end** — it fires even when later units exist.
 - `"no_vacancies"` — nothing at all
 - `null` — the list is non-empty
 
-Also tell the customer. Either reason means the same thing to them: nothing suitable right now, and
-we are passing it to partners.
+Also tell the customer — but only once `next_available` is empty too. Then either reason means the
+same thing to them: nothing suitable right now, and we are passing it to partners.
 
 ---
 
@@ -392,6 +430,8 @@ Automatic sending is **off**. Nudges are drafts too until the operator enables i
 
 - [ ] Swap `/units/available` → `/vacancies`, and send `target_date` whenever known
 - [ ] Send `free_on` when the customer has a firm date and you need a hard availability filter
+- [ ] **Read `next_available` and offer it with `phrasing.later` before telling anyone we have
+      nothing** — this is the one that loses real leads
 - [ ] Branch wording on `availability.certain`, never on `tier`
 - [ ] Use the `phrasing` templates rather than your own copy
 - [ ] Do not re-sort or re-filter `vacancies`

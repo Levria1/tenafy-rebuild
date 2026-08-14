@@ -7,6 +7,7 @@ const {
   partnerForwardBlock,
   compareVacancyFit,
   vacancyToPublicShape,
+  classifyFreeOn,
   matchesFreeOn,
 } = require('../src/utils/advertisingPlan');
 
@@ -110,6 +111,55 @@ test('matchesFreeOn rejects unknown available_from for from_date availability', 
     publicRow({ availability: { status: 'from_date', available_from: null, next_move_in_date: null, days_until: null, certain: false } }),
     '2026-10-15'
   ), false);
+});
+
+test('classifyFreeOn matches a unit available before the requested date', () => {
+  assert.equal(classifyFreeOn(
+    publicRow({ availability: { status: 'from_date', available_from: '2026-10-01', next_move_in_date: null, days_until: 48, certain: true } }),
+    '2026-10-15'
+  ), 'match');
+});
+
+test('classifyFreeOn matches a unit available exactly on the requested date', () => {
+  assert.equal(classifyFreeOn(
+    publicRow({ availability: { status: 'from_date', available_from: '2026-10-15', next_move_in_date: null, days_until: 62, certain: true } }),
+    '2026-10-15'
+  ), 'match');
+});
+
+test('classifyFreeOn matches a vacant-now unit with no incoming tenant', () => {
+  assert.equal(classifyFreeOn(
+    publicRow({ tier: 1, availability: { status: 'now', available_from: null, next_move_in_date: null, days_until: 0, certain: true } }),
+    '2026-10-15'
+  ), 'match');
+});
+
+test('classifyFreeOn marks a unit freeing up after the requested date as later', () => {
+  assert.equal(classifyFreeOn(
+    publicRow({ availability: { status: 'from_date', available_from: '2026-10-16', next_move_in_date: null, days_until: 63, certain: true } }),
+    '2026-10-15'
+  ), 'later');
+});
+
+test('classifyFreeOn marks a vacant-now unit re-let by the requested date as unavailable', () => {
+  assert.equal(classifyFreeOn(
+    publicRow({ tier: 1, availability: { status: 'now', available_from: null, next_move_in_date: '2026-10-15', days_until: 0, certain: true } }),
+    '2026-10-15'
+  ), 'unavailable');
+});
+
+test('classifyFreeOn lets a re-let date win over later availability', () => {
+  assert.equal(classifyFreeOn(
+    publicRow({ availability: { status: 'from_date', available_from: '2026-10-20', next_move_in_date: '2026-10-10', days_until: 67, certain: true } }),
+    '2026-10-15'
+  ), 'unavailable');
+});
+
+test('classifyFreeOn marks unknown later availability as unavailable', () => {
+  assert.equal(classifyFreeOn(
+    publicRow({ availability: { status: 'from_date', available_from: null, next_move_in_date: null, days_until: null, certain: false } }),
+    '2026-10-15'
+  ), 'unavailable');
 });
 
 test('vacancyFit warning is decided by maxGapDays, not the gap alone', () => {
@@ -453,6 +503,76 @@ test('GET /vacancies applies free_on after shaping and before limit', async () =
     assert.equal(result.body.data.free_on, '2026-10-15');
     assert.equal(result.body.data.hidden_by_free_on, 2);
     assert.equal(result.body.data.no_match_reason, null);
+    assert.deepEqual(result.body.data.next_available.map(row => row.unit_id), ['u-late']);
+  } finally {
+    advertising.computeVacancies = originalComputeVacancies;
+    advertising.loadSettings = originalLoadSettings;
+  }
+});
+
+test('GET /vacancies offers later rows when free_on removes every shaped row', async () => {
+  const advertising = require('../src/routes/advertising');
+  const originalComputeVacancies = advertising.computeVacancies;
+  const originalLoadSettings = advertising.loadSettings;
+  advertising.loadSettings = async () => ({ max_gap_days: 10, hard_max_gap_days: 20, partner_forward_message: 'Forward message' });
+  advertising.computeVacancies = async () => ({
+    vacancies: [
+      vacancySourceRow({ unit_id: 'u-oct', unit_name: '3A', property_name: 'Beta', end_date: '2026-10-11' }),
+      vacancySourceRow({ unit_id: 'u-sep-b', unit_name: '2A', property_name: 'Beta', end_date: '2026-09-16' }),
+      vacancySourceRow({ unit_id: 'u-sep-a', unit_name: '1A', property_name: 'Alpha', end_date: '2026-09-16' }),
+    ],
+  });
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const result = await callVacanciesHandler(handler, { free_on: '2026-08-24', limit: '50' });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.count, 0);
+    assert.deepEqual(result.body.data.next_available.map(row => row.unit_id), ['u-sep-a', 'u-sep-b', 'u-oct']);
+    assert.deepEqual(result.body.data.next_available.map(row => row.availability.available_from), ['2026-09-17', '2026-09-17', '2026-10-12']);
+    assert.equal(typeof result.body.data.phrasing.later, 'string');
+    assert.equal(result.body.data.hidden_by_free_on, 3);
+    assert.equal(result.body.data.partner_forward.applies, false);
+    assert.equal(result.body.data.no_match_reason, 'none_free_on_date');
+  } finally {
+    advertising.computeVacancies = originalComputeVacancies;
+    advertising.loadSettings = originalLoadSettings;
+  }
+});
+
+test('GET /vacancies separates free_on matches, later rows, and unavailable rows', async () => {
+  const advertising = require('../src/routes/advertising');
+  const originalComputeVacancies = advertising.computeVacancies;
+  const originalLoadSettings = advertising.loadSettings;
+  advertising.loadSettings = async () => ({ max_gap_days: 10, hard_max_gap_days: 20, partner_forward_message: 'Forward message' });
+  advertising.computeVacancies = async () => ({
+    vacancies: [
+      vacancySourceRow({ unit_id: 'u-free', unit_name: '1A', tier: 1, end_date: null, next_move_in_date: null }),
+      vacancySourceRow({ unit_id: 'u-late', unit_name: '2A', tier: 2, end_date: '2026-10-19' }),
+      vacancySourceRow({ unit_id: 'u-incoming', unit_name: '3A', tier: 1, end_date: null, next_move_in_date: '2026-10-10' }),
+    ],
+  });
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const result = await callVacanciesHandler(handler, { free_on: '2026-10-15' });
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data.vacancies.map(row => row.unit_id), ['u-free']);
+    assert.deepEqual(result.body.data.next_available.map(row => row.unit_id), ['u-late']);
+    assert.equal(result.body.data.vacancies.some(row => row.unit_id === 'u-incoming'), false);
+    assert.equal(result.body.data.next_available.some(row => row.unit_id === 'u-incoming'), false);
+    assert.equal(result.body.data.hidden_by_free_on, 2);
+    assert.deepEqual(result.body.data.partner_forward, { applies: false, message: 'Forward message' });
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
     advertising.loadSettings = originalLoadSettings;
@@ -482,7 +602,42 @@ test('GET /vacancies reports none_free_on_date when free_on removes every shaped
     assert.equal(result.body.data.count, 0);
     assert.equal(result.body.data.hidden_by_free_on, 1);
     assert.equal(result.body.data.no_match_reason, 'none_free_on_date');
+    assert.equal(Object.hasOwn(result.body.data, 'next_available'), false);
+    assert.equal(Object.hasOwn(result.body.data.phrasing, 'later'), false);
     assert.deepEqual(result.body.data.partner_forward, { applies: true, message: 'Forward message' });
+  } finally {
+    advertising.computeVacancies = originalComputeVacancies;
+    advertising.loadSettings = originalLoadSettings;
+  }
+});
+
+test('GET /vacancies applies limit to next_available independently', async () => {
+  const advertising = require('../src/routes/advertising');
+  const originalComputeVacancies = advertising.computeVacancies;
+  const originalLoadSettings = advertising.loadSettings;
+  advertising.loadSettings = async () => ({ max_gap_days: 10, hard_max_gap_days: 20, partner_forward_message: null });
+  advertising.computeVacancies = async () => ({
+    vacancies: [
+      vacancySourceRow({ unit_id: 'u-free-1', unit_name: '1A', tier: 1, end_date: null, next_move_in_date: null }),
+      vacancySourceRow({ unit_id: 'u-free-2', unit_name: '1B', tier: 1, end_date: null, next_move_in_date: null }),
+      vacancySourceRow({ unit_id: 'u-late-1', unit_name: '2A', tier: 2, end_date: '2026-10-19' }),
+      vacancySourceRow({ unit_id: 'u-late-2', unit_name: '2B', tier: 2, end_date: '2026-10-20' }),
+    ],
+  });
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const result = await callVacanciesHandler(handler, { free_on: '2026-10-15', limit: '1' });
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data.vacancies.map(row => row.unit_id), ['u-free-1']);
+    assert.deepEqual(result.body.data.next_available.map(row => row.unit_id), ['u-late-1']);
+    assert.equal(result.body.data.count, 1);
+    assert.equal(result.body.data.hidden_by_free_on, 2);
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
     advertising.loadSettings = originalLoadSettings;

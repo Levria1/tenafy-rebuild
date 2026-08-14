@@ -160,6 +160,7 @@ Query parameters:
 | `property_id` | | | Optional property filter |
 | `limit` | `50` | `1`-`200` | Maximum rows returned |
 | `target_date` | | | Optional prospect move-in date. Must be `YYYY-MM-DD`; malformed values return `400` |
+| `free_on` | | | Optional hard availability date. Must be `YYYY-MM-DD`; malformed values return `400` |
 
 All tiers are included by default. Tier 3 rows are deliberately returned with
 `availability.certain=false` so TaneChat can offer them with the configured
@@ -242,6 +243,28 @@ so it is the lost-rent case. `0` is an exact fit. Negative `gap_days` means the
 unit is not free until after the requested date; that is not a lost-rent warning,
 but callers should explain the wait.
 
+When `free_on` is supplied, it remains a hard filter for `vacancies`. Rows free
+on or before that date stay in `vacancies`; rows that are already re-let by that
+date, or have no known availability date, are hidden.
+
+If the hard `free_on` filter removes a row only because it frees up later,
+`next_available` appears with those rows, sorted by `availability.available_from`
+ascending and limited independently using the same `limit`. `phrasing.later`
+appears only in the same case. Units already re-let by the requested date appear
+in neither `vacancies` nor `next_available`, deliberately.
+
+`next_available` is absent when `free_on` was not sent or when nothing offerable
+frees up later. It is not returned as an empty array.
+
+Free-on fields:
+
+| Field | Meaning |
+|---|---|
+| `free_on` | Echo of the requested hard availability date |
+| `hidden_by_free_on` | Count of rows removed by `free_on`, including later rows and unavailable rows |
+| `next_available` | Rows that fail `free_on` only because they free up after the requested date |
+| `phrasing.later` | Template for asking whether the later available date would still work |
+
 Hard gap cap fields:
 
 | Field | Meaning |
@@ -249,7 +272,7 @@ Hard gap cap fields:
 | `hard_max_gap_days` | Positive gaps greater than this are hidden from inquiry answers |
 | `hidden_by_gap_cap` | Count of rows removed by the hard cap; `0` when no `target_date` was supplied |
 | `no_match_reason` | `null` when at least one unit is returned; otherwise one of the values below |
-| `partner_forward.applies` | `true` when the returned vacancy list is empty, regardless of `no_match_reason` |
+| `partner_forward.applies` | `true` when both `vacancies` and `next_available` are empty, regardless of `no_match_reason` |
 | `partner_forward.message` | Operator-authored text to send to partner agencies, or `null` when unset |
 
 `no_match_reason` values:
@@ -257,6 +280,7 @@ Hard gap cap fields:
 | Value | Meaning |
 |---|---|
 | `all_beyond_hard_cap` | The endpoint had candidate vacancies, but the hard cap removed them all |
+| `none_free_on_date` | The endpoint had candidate vacancies, but `free_on` removed them all from `vacancies` |
 | `no_vacancies` | There were no candidate vacancies to offer |
 
 Use `partner_forward.applies`, not `no_match_reason`, as the caller branch for
@@ -265,6 +289,10 @@ forwarding an inquiry to partner agencies. Both `all_beyond_hard_cap` and
 forwarding decision. `partner_forward` is always present, with or without
 `target_date`; `message` is still returned when `applies=false` so callers can
 pre-load it, but it must not be sent unless `applies=true`.
+
+When `next_available` is non-empty, `partner_forward.applies=false`, so a lead
+is not handed to a partner agency while Tenafy still has something later to
+offer.
 
 `partner_forward.message` has no default. The stored setting is nullable and
 ships empty because this is outward-facing content sent to real partner agencies;

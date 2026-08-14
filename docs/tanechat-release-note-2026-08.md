@@ -137,6 +137,47 @@ carries on unaffected. This is normal, not an error, and not worth reporting as 
 **Never present a manual unit as held, reserved or promised.** Nothing is committed. If a customer
 pushes for certainty, the honest answer is that we'll know shortly and can tell them either way.
 
+## 7. Follow-up — `free_on` no longer dead-ends. Please read this one.
+
+**Added after the note above went out, because it bit immediately.**
+
+The first live call using `free_on` was:
+
+```
+GET /vacancies?target_date=2026-08-24&limit=50&free_on=2026-08-24
+→ count: 0, hidden_by_free_on: 6
+```
+
+All six hidden units were genuinely lettable — they just come free between 17 September and
+12 October, after the date the customer named. The customer was told nothing was available, and six
+viable leads went nowhere.
+
+That is our sharp edge, not your mistake: `free_on` is a hard filter and we gave you no way to see
+what it removed. Now we do.
+
+```json
+"vacancies": [], "count": 0, "hidden_by_free_on": 6,
+"next_available": [ { "label": "Gilman's Bazaar 5B",
+                      "availability": { "available_from": "2026-09-17" } } ],
+"phrasing": { "later": "{units} available from {date} — a little later than you asked. Would that still work?" }
+```
+
+- **`next_available`** — units that fail `free_on` *only* because they free up later. Sorted
+  soonest-first; `limit` applies to it independently. Present only when `free_on` was sent and
+  something qualifies — absent otherwise, never an empty array.
+- **`phrasing.later`** — ships with it. Use it as written.
+- **Units already re-let by the requested date are in neither list.** Someone else is moving in; they
+  are not ours to offer.
+- **`partner_forward.applies` is now `false` when `next_available` is non-empty.** We would rather ask
+  the customer about a later date than hand the lead to a partner agency while we have flats coming
+  free in three weeks.
+- `hidden_by_free_on` still counts everything removed, both kinds. It is not the length of
+  `next_available`.
+
+**What we'd ask of you:** when `count` is 0, check `next_available` before saying we have nothing.
+And keep sending `free_on` only when the date is genuinely firm — `target_date` on its own already
+ranks by fit and flags `available_after_target`, which handles "I'd prefer the 24th" perfectly well.
+
 ---
 
 ## Nothing you must change
@@ -153,6 +194,7 @@ for prospects arriving from a listing link, which is the case you raised.
 - [ ] Send `listing_url` at `/viewing-negotiation/start` when the prospect came from a listing
 - [ ] Read `resolved_by` and log it — it tells you when you silently fell back to fuzzy matching
 - [ ] Send `free_on` when the customer has a firm move-in date
+- [ ] **Check `next_available` whenever `count` is 0, and offer it with `phrasing.later`**
 - [ ] Check `availability.next_move_in_date` before offering a long let
 - [ ] Add `phrasing.manual` handling, branching on `source`
 - [ ] If you send text, prefer unit + district over unit + street

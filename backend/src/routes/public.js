@@ -28,7 +28,7 @@ const config = require('../config');
 const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings } = require('./advertising');
 const {
   vacancyToPublicShape,
-  matchesFreeOn,
+  classifyFreeOn,
   formatLocalDate,
   vacancyFit,
   exceedsHardGapCap,
@@ -81,6 +81,9 @@ const MANUAL_AVAILABILITY_PHRASE = '{units} may become available from {date} —
 // Offered instead of hiding a poor fit: suppressing the unit forfeits the
 // negotiation that could remove the vacancy entirely.
 const EARLIER_AVAILABILITY_PHRASE = '{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long.';
+// The prospect named a date we cannot meet. This offers the date we CAN meet and
+// asks — it must never read as though the unit is free on the date they asked for.
+const LATER_AVAILABILITY_PHRASE = '{units} available from {date} — a little later than you asked. Would that still work?';
 
 function clampInteger(value, fallback, min, max) {
   const parsed = Number(value);
@@ -128,6 +131,7 @@ router.get('/vacancies', async (req, res) => {
       .filter(row => !propertyId || String(row.property_id) === propertyId);
     let hiddenByGapCap = 0;
     let hiddenByFreeOn = 0;
+    let laterRows = [];
 
     if (hasTargetDate) {
       const today = formatLocalDate(new Date());
@@ -151,11 +155,26 @@ router.get('/vacancies', async (req, res) => {
     }
 
     if (hasFreeOn) {
-      rows = rows.filter(row => {
-        if (matchesFreeOn(row, freeOn)) return true;
+      const matchingRows = [];
+      for (const row of rows) {
+        const freeOnClass = classifyFreeOn(row, freeOn);
+        if (freeOnClass === 'match') {
+          matchingRows.push(row);
+          continue;
+        }
         hiddenByFreeOn += 1;
-        return false;
-      });
+        if (freeOnClass === 'later') laterRows.push(row);
+      }
+      rows = matchingRows;
+      laterRows = laterRows
+        .sort((a, b) => {
+          const aDate = String(a.availability?.available_from || '');
+          const bDate = String(b.availability?.available_from || '');
+          if (aDate < bDate) return -1;
+          if (aDate > bDate) return 1;
+          return String(a.label || '').localeCompare(String(b.label || ''));
+        })
+        .slice(0, limit);
     }
 
     rows = rows.slice(0, limit);
@@ -172,7 +191,7 @@ router.get('/vacancies', async (req, res) => {
       // than string-matching no_match_reason: the reason is internal reporting.
       // The message is operator-authored outward-facing content; null means the
       // operator has not authored it, so the caller must send nothing.
-      partner_forward: partnerForwardBlock(rows.length, settings.partner_forward_message),
+      partner_forward: partnerForwardBlock(rows.length + laterRows.length, settings.partner_forward_message),
       phrasing: {
         certain: CERTAIN_AVAILABILITY_PHRASE,
         uncertain: UNCERTAIN_AVAILABILITY_PHRASE,
@@ -187,6 +206,10 @@ router.get('/vacancies', async (req, res) => {
     if (hasFreeOn) {
       data.free_on = freeOn;
       data.hidden_by_free_on = hiddenByFreeOn;
+      if (laterRows.length > 0) {
+        data.next_available = laterRows;
+        data.phrasing.later = LATER_AVAILABILITY_PHRASE;
+      }
     }
 
     res.json({
