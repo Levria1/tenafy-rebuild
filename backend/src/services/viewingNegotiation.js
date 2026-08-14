@@ -45,6 +45,7 @@ const {
   negotiationConflictOverlaps,
   decideCalendarHoldSync,
 } = require('./viewingCalendarHoldLogic');
+const { hasActiveManualVacancyOverride } = require('../utils/advertisingPlan');
 
 function safeParseCandidates(s) {
   try { const a = JSON.parse(s || '[]'); return Array.isArray(a) ? a : []; } catch { return []; }
@@ -884,7 +885,10 @@ async function startNegotiation(pool, orgId, { unit, lease, prospect }) {
   // lead_days_other). Outside it we DON'T reject the prospect — we park the
   // request as NEEDS_STAFF, soft-hold the prospect, and notify staff, who can
   // "Start viewing anyway" from the dashboard. Vacant units (no lease) skip this.
-  if (lease && lease.id) {
+  const hasManualOverride = lease && lease.id
+    ? await hasActiveManualVacancyOverride(pool, orgId, unit.id)
+    : false;
+  if (lease && lease.id && !hasManualOverride) {
     const win = viewingWindow({
       endDate: lease.end_date, contractType: lease.contract_type,
       leadDaysNr: setting.lead_days_nr, leadDaysOther: setting.lead_days_other, today: todayYmd(),
@@ -1264,9 +1268,12 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     set.lease_id = active ? active.leasing_id : null;
     set.tenant_id = active ? active.tenant_id : null;
 
+    const hasManualOverride = active
+      ? await hasActiveManualVacancyOverride(pool, orgId, u.id)
+      : false;
     const marketability = marketabilityDecision({
       hasActiveLease: !!active,
-      viewingEnabled: active ? active.viewing_enabled : 0,
+      viewingEnabled: active ? (hasManualOverride ? 1 : active.viewing_enabled) : 0,
       hasRosteredStaff,
       hasHostLink: hostLink,
     });
@@ -1290,7 +1297,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
         `${neg.prospect_name || prospectPhone || 'A prospect'} asked to view ${u.unit_name} at ${u.property_name}, but ${staffReason}. Open Viewing Requests.`);
       return;
     }
-    if (active) {
+    if (active && !hasManualOverride) {
       const win = viewingWindow({ endDate: active.end_date, contractType: active.contract_type,
         leadDaysNr: setting.lead_days_nr, leadDaysOther: setting.lead_days_other, today: todayYmd() });
       if (!win.inWindow) {

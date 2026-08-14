@@ -223,6 +223,22 @@ function addOneLocalDay(value) {
   return formatLocalDate(d);
 }
 
+function subtractOneLocalDay(value) {
+  const date = formatLocalDate(value);
+  if (!date) return null;
+  const [year, month, day] = date.split('-').map(Number);
+  const d = new Date(year, month - 1, day);
+  d.setDate(d.getDate() - 1);
+  return formatLocalDate(d);
+}
+
+function diffLocalDays(fromDate, toDate) {
+  const from = parseYmdStrict(formatLocalDate(fromDate));
+  const to = parseYmdStrict(formatLocalDate(toDate));
+  if (!from || !to) return null;
+  return Math.round((to.time - from.time) / 86400000);
+}
+
 function moneyString(value) {
   if (value == null || value === '') return null;
   const n = Number(value);
@@ -240,6 +256,7 @@ function vacancyToPublicShape(row) {
   const endDate = formatLocalDate(row?.end_date);
   const availableFrom = tier === PRIORITY_VACANT ? null : addOneLocalDay(endDate);
   const certaintyByTier = tier === PRIORITY_VACANT || tier === PRIORITY_NR;
+  const source = row?.source === 'manual' ? 'manual' : 'lease';
   // `certain: false` is what TaneChat branches on: offer the unit only with the
   // caveat wording, because an MR/MTM/UC tenant may renew and the unit may never
   // become free.
@@ -251,6 +268,8 @@ function vacancyToPublicShape(row) {
     listing_url: row?.listing_url ?? null,
     property_id: row?.property_id == null ? null : String(row.property_id),
     property_name: row?.property_name ?? null,
+    district: row?.district ?? null,
+    city: row?.city ?? null,
     label: [row?.property_name, row?.unit_name].filter(Boolean).join(' ') || null,
     unit_type: row?.unit_type ?? null,
     beds: row?.beds != null ? Number(row.beds) : null,
@@ -260,13 +279,128 @@ function vacancyToPublicShape(row) {
     tier,
     tier_name: tierName(tier),
     intent: row?.intent ?? null,
+    source,
     availability: {
       status: tier === PRIORITY_VACANT ? 'now' : 'from_date',
       available_from: availableFrom,
+      next_move_in_date: row?.next_move_in_date ?? null,
       days_until: tier === PRIORITY_VACANT ? 0 : (row?.days_left != null ? Number(row.days_left) : null),
       certain,
     },
   };
+}
+
+function manualVacancyToRow(override, unitRow, today) {
+  const availableFrom = formatLocalDate(override?.available_from);
+  const endDate = subtractOneLocalDay(availableFrom);
+  return {
+    status: 'manual',
+    lease_id: null,
+    contract_type: null,
+    notice_period_days: null,
+    intent: 'Manual',
+    days_left: diffLocalDays(today, availableFrom),
+    end_date: endDate,
+    vacant_since: null,
+    rent: unitRow?.rent != null ? Number(unitRow.rent) : null,
+    deposit: null,
+    unit_id: unitRow?.unit_id == null ? null : String(unitRow.unit_id),
+    unit_name: unitRow?.unit_name,
+    unit_type: unitRow?.unit_type,
+    beds: unitRow?.beds != null ? Number(unitRow.beds) : null,
+    baths: unitRow?.baths != null ? Number(unitRow.baths) : null,
+    size: unitRow?.size != null ? Number(unitRow.size) : null,
+    rent_price_min: unitRow?.rent_price_min != null ? Number(unitRow.rent_price_min) : null,
+    rent_price_max: unitRow?.rent_price_max != null ? Number(unitRow.rent_price_max) : null,
+    template_id: unitRow?.template_id ? String(unitRow.template_id) : null,
+    template_name: unitRow?.template_name || null,
+    property_id: unitRow?.property_id == null ? null : String(unitRow.property_id),
+    property_name: unitRow?.property_name,
+    street_address: unitRow?.street_address,
+    district: unitRow?.district,
+    city: unitRow?.city,
+    tenant_id: null,
+    tenant_name: null,
+    moveout_notes: null,
+    moved_out_early: false,
+    next_move_in_date: null,
+    days_to_move_in: null,
+    next_tenant_id: null,
+    next_tenant_name: null,
+    tier: PRIORITY_OTHER,
+    priority_reason: 'manual',
+    source: 'manual',
+    override_id: override?.id == null ? null : String(override.id),
+    override_lease_id: override?.lease_id == null ? null : String(override.lease_id),
+    current_lease_id: override?.current_lease_id == null ? null : String(override.current_lease_id),
+    lease_changed: override?.lease_changed === true || Number(override?.lease_changed) === 1,
+    expires_on: formatLocalDate(override?.expires_on),
+    reason: override?.reason ?? null,
+  };
+}
+
+function leaseChangedForOverride(override) {
+  if (override?.lease_id == null) return false;
+  return String(override.lease_id) !== String(override?.current_lease_id ?? '');
+}
+
+function overrideAppliesTo(override, audience, { page = false } = {}) {
+  if (!page && leaseChangedForOverride(override)) return false;
+  if (page) return true;
+  if (audience === 'inquiry') return Number(override?.inquiry_enabled) === 1;
+  return Number(override?.advertising_enabled) === 1;
+}
+
+function pickVacancyRow(manualRow, leaseRow) {
+  if (!manualRow) return leaseRow || null;
+  if (!leaseRow) return manualRow || null;
+
+  const leaseAvailability = vacancyToPublicShape(leaseRow).availability;
+  if (leaseAvailability.status === 'now') return leaseRow;
+
+  const manualDate = vacancyToPublicShape(manualRow).availability.available_from;
+  const leaseDate = leaseAvailability.available_from;
+
+  // A manual override is newer information than a contract nobody has amended
+  // yet, so it wins only when it brings the offered date forward. Otherwise the
+  // lease row is the simpler truth and the override self-retires from output.
+  return manualDate && leaseDate && manualDate < leaseDate ? manualRow : leaseRow;
+}
+
+async function hasActiveManualVacancyOverride(pool, orgId, unitId) {
+  const [[row]] = await pool.execute(
+    `SELECT m.id
+       FROM manual_vacancy_override m
+       JOIN unit u ON u.id = m.unit_id
+       JOIN property p ON p.id = u.property_id
+       LEFT JOIN leasing cl ON cl.id = (
+         SELECT l.id FROM leasing l
+          WHERE l.unit_id = m.unit_id
+            AND l.deleted_at IS NULL
+            AND l.start_date <= CURDATE()
+            AND (l.end_date IS NULL OR l.end_date >= CURDATE())
+          ORDER BY l.start_date DESC, l.id DESC LIMIT 1)
+      WHERE m.org_id = ?
+        AND p.org_id = ?
+        AND m.unit_id = ?
+        AND m.status = 1
+        AND m.expires_on >= CURDATE()
+        AND (m.lease_id IS NULL OR m.lease_id = cl.id)
+      LIMIT 1`,
+    [orgId, orgId, unitId]
+  );
+  return !!row;
+}
+
+function matchesFreeOn(vacancy, freeOn) {
+  const availability = vacancy?.availability || {};
+  // These are zero-padded YYYY-MM-DD strings, so lexicographic comparison is
+  // date comparison without introducing timezone conversion.
+  const availableByThen = availability.status === 'now'
+    || (availability.available_from != null && availability.available_from <= freeOn);
+  const noIncomingTenantByThen = availability.next_move_in_date == null
+    || availability.next_move_in_date > freeOn;
+  return availableByThen && noIncomingTenantByThen;
 }
 
 const EMPTY_VACANCY_FIT = {
@@ -331,8 +465,9 @@ function exceedsHardGapCap(unit, hardMaxGapDays) {
 
 // A caller may act on this to forward the inquiry, so this must describe only
 // observable route decisions and never infer why a unit was unavailable.
-function vacancyNoMatchReason(returnedCount, hiddenByGapCap) {
+function vacancyNoMatchReason(returnedCount, hiddenByGapCap, hiddenByFreeOn = 0) {
   if (Number(returnedCount) > 0) return null;
+  if (Number(hiddenByFreeOn) > 0) return 'none_free_on_date';
   return Number(hiddenByGapCap) > 0 ? 'all_beyond_hard_cap' : 'no_vacancies';
 }
 
@@ -473,6 +608,12 @@ module.exports = {
   PRIORITY_NR,
   PRIORITY_OTHER,
   vacancyToPublicShape,
+  manualVacancyToRow,
+  overrideAppliesTo,
+  leaseChangedForOverride,
+  pickVacancyRow,
+  hasActiveManualVacancyOverride,
+  matchesFreeOn,
   formatLocalDate,
   vacancyFit,
   exceedsHardGapCap,

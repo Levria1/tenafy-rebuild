@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Table, Card, Tag, Typography, Space, Input, Select, message, Tooltip } from 'antd';
+import dayjs from 'dayjs';
+import { Table, Card, Tag, Typography, Space, Input, Select, message, Tooltip, Modal, Form, DatePicker, Checkbox, Popconfirm } from 'antd';
 import { HomeOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import Link from 'next/link';
 import MainLayout from '../../../components/Layout';
@@ -30,23 +31,33 @@ export default function VacancyPage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [leadDays, setLeadDays] = useState(60);
-  const [counts, setCounts] = useState({ vacant: 0, expiring: 0 });
+  const [counts, setCounts] = useState({ vacant: 0, expiring: 0, manual: 0 });
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState(null);        // null = All
   const [upcomingFilter, setUpcomingFilter] = useState('open');  // default: things not yet filled
   const [intentFilter, setIntentFilter] = useState([]);          // multi-select renewal intents
+  const [overrideRows, setOverrideRows] = useState([]);
+  const [overrideModal, setOverrideModal] = useState(null);       // { row }
+  const [savingOverride, setSavingOverride] = useState(false);
+  const [overrideForm] = Form.useForm();
 
   const load = async () => {
     setLoading(true);
     try {
-      const res = await advertisingApi.getVacancies();
+      const [res, overridesRes] = await Promise.all([
+        advertisingApi.getVacancies(),
+        advertisingApi.listVacancyOverrides(),
+      ]);
       if (res.data.code === 200) {
         const d = res.data.data;
         setRows(d.vacancies || []);
         if (d.lead_days) setLeadDays(d.lead_days);
-        setCounts({ vacant: d.vacant_count || 0, expiring: d.expiring_count || 0 });
+        setCounts({ vacant: d.vacant_count || 0, expiring: d.expiring_count || 0, manual: d.manual_count || 0 });
       } else {
         message.error(res.data.message || 'Failed to load vacancies');
+      }
+      if (overridesRes.data.code === 200) {
+        setOverrideRows(overridesRes.data.data || []);
       }
     } catch (e) {
       message.error('Failed to load vacancies');
@@ -56,6 +67,51 @@ export default function VacancyPage() {
   };
 
   useEffect(() => { load(); }, []);
+
+  const overrideById = new Map(overrideRows.map(o => [String(o.id), o]));
+
+  const openOverrideModal = (row) => {
+    const override = row?.override_id ? overrideById.get(String(row.override_id)) : null;
+    setOverrideModal({ row });
+    overrideForm.setFieldsValue({
+      available_from: dayjs(override?.available_from || row.end_date).add(override?.available_from ? 0 : 1, 'day'),
+      expires_on: dayjs(override?.expires_on || row.expires_on),
+      reason: override?.reason || row.reason || '',
+      offered: override ? !!(override.advertising_enabled || override.inquiry_enabled) : true,
+    });
+  };
+
+  const saveOverride = async () => {
+    try {
+      const vals = await overrideForm.validateFields();
+      setSavingOverride(true);
+      await advertisingApi.saveVacancyOverride({
+        unit_id: overrideModal.row.unit_id,
+        available_from: dayjs(vals.available_from).format('YYYY-MM-DD'),
+        expires_on: dayjs(vals.expires_on).format('YYYY-MM-DD'),
+        reason: vals.reason || null,
+        advertising_enabled: !!vals.offered,
+        inquiry_enabled: !!vals.offered,
+      });
+      message.success('Saved');
+      setOverrideModal(null);
+      await load();
+    } catch (e) {
+      if (!e?.errorFields) message.error(e.response?.data?.message || 'Failed to save vacancy override');
+    } finally {
+      setSavingOverride(false);
+    }
+  };
+
+  const clearOverride = async (id) => {
+    try {
+      await advertisingApi.clearVacancyOverride(id);
+      message.success('Cleared');
+      await load();
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Failed to clear vacancy override');
+    }
+  };
 
   const filtered = rows.filter(r => {
     if (statusFilter && r.status !== statusFilter) return false;
@@ -83,6 +139,26 @@ export default function VacancyPage() {
       key: 'status',
       width: 150,
       render: (_, r) => {
+        if (r.source === 'manual') {
+          const override = r.override_id ? overrideById.get(String(r.override_id)) : null;
+          const offered = override
+            ? !!(override.advertising_enabled || override.inquiry_enabled)
+            : !!(r.advertising_enabled || r.inquiry_enabled);
+          const manualTag = (
+            <Tag color="purple" style={{ fontWeight: 600 }}>Manual</Tag>
+          );
+          return (
+            <Space direction="vertical" size={4}>
+              <div>{r.reason ? <Tooltip title={r.reason}>{manualTag}</Tooltip> : manualTag}</div>
+              <div>{offered ? <Tag color="green">Offered</Tag> : <Tag>Not offered yet</Tag>}</div>
+              {r.lease_changed && (
+                <Tooltip title="The lease for this unit changed after this was added, so it is no longer being offered. Check it still applies.">
+                  <Tag color="red">Lease changed — review</Tag>
+                </Tooltip>
+              )}
+            </Space>
+          );
+        }
         if (r.status === 'vacant') {
           if (r.days_vacant == null) {
             return <Tag color="volcano">Vacant · never leased</Tag>;
@@ -153,6 +229,24 @@ export default function VacancyPage() {
       key: 'date',
       width: 150,
       render: (_, r) => {
+        if (r.source === 'manual') {
+          const override = r.override_id ? overrideById.get(String(r.override_id)) : null;
+          const availableFrom = override?.available_from || (r.end_date ? dayjs(r.end_date).add(1, 'day').format('YYYY-MM-DD') : null);
+          const expiresOn = override?.expires_on || r.expires_on;
+          const expiresIn = expiresOn ? dayjs(expiresOn).startOf('day').diff(dayjs().startOf('day'), 'day') : null;
+          return (
+            <div>
+              {availableFrom ? `Available from ${availableFrom}` : <Text type="secondary">—</Text>}
+              {expiresOn && (
+                <div>
+                  <Text type="secondary" style={{ fontSize: 12 }}>Expires {expiresOn}</Text>
+                  {expiresIn === 0 && <Tag color="red" style={{ marginLeft: 6 }}>Expires today</Tag>}
+                  {expiresIn > 0 && expiresIn <= 2 && <Tag color="orange" style={{ marginLeft: 6 }}>Expires soon</Tag>}
+                </div>
+              )}
+            </div>
+          );
+        }
         if (r.status === 'vacant') {
           return r.vacant_since
             ? <Tooltip title="Vacant since"><Text type="secondary">since {r.vacant_since}</Text></Tooltip>
@@ -214,6 +308,22 @@ export default function VacancyPage() {
         return parts.length ? <Text type="secondary" style={{ fontSize: 12 }}>{parts.join(' · ')}</Text> : '—';
       },
     },
+    {
+      title: '',
+      key: 'actions',
+      width: 110,
+      render: (_, r) => {
+        if (r.source !== 'manual') return null;
+        return (
+          <Space size="small">
+            <a onClick={() => openOverrideModal(r)}>Edit</a>
+            <Popconfirm title="Stop showing this unit as possibly available?" onConfirm={() => clearOverride(r.override_id)} okText="Clear">
+              <a>Clear</a>
+            </Popconfirm>
+          </Space>
+        );
+      },
+    },
   ];
 
   return (
@@ -227,7 +337,8 @@ export default function VacancyPage() {
           <Text type="secondary">
             Units that are or will soon be available — <Tag color="red">Vacant now</Tag> (empty today,
             even if a move-in is booked), then <Tag color="green">Expiring</Tag> (occupied, lease ending
-            within <Tag color="blue">{leadDays}d</Tag>). The <b>Next Move-In</b> columns show a booked
+            within <Tag color="blue">{leadDays}d</Tag>), and <Tag color="purple">Manual</Tag> (created from a
+            lease via Request Exit, managed here, and expires on its own). The <b>Next Move-In</b> columns show a booked
             incoming tenant. Defaults to <b>Open</b> (not yet filled) — switch <i>Upcoming booking</i> to see
             booked units.
           </Text>
@@ -252,6 +363,7 @@ export default function VacancyPage() {
               options={[
                 { value: 'vacant', label: `Vacant now (${counts.vacant})` },
                 { value: 'expiring', label: `Expiring soon (${counts.expiring})` },
+                { value: 'manual', label: `Manual (${counts.manual})` },
               ]}
             />
             <Select
@@ -281,7 +393,7 @@ export default function VacancyPage() {
             <a onClick={load}><ReloadOutlined /> Refresh</a>
             <Text type="secondary">
               {filtered.length} unit{filtered.length === 1 ? '' : 's'}
-              {' '}({counts.vacant} vacant · {counts.expiring} expiring)
+              {' '}({counts.vacant} vacant · {counts.expiring} expiring · {counts.manual} manual)
             </Text>
           </Space>
 
@@ -295,6 +407,53 @@ export default function VacancyPage() {
             scroll={{ x: 'max-content' }}
           />
         </Card>
+
+        <Modal
+          title="Edit early exit request"
+          open={!!overrideModal}
+          onCancel={() => setOverrideModal(null)}
+          onOk={saveOverride}
+          confirmLoading={savingOverride}
+          okText="Save"
+        >
+          <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
+            For a tenant who says they might leave early. This does not change the lease, invoices or the calendar — it only affects what we offer people and what you see here.
+          </Text>
+          <Form form={overrideForm} layout="vertical">
+            <Form.Item name="available_from" label="Available from" rules={[{ required: true, message: 'Available from is required' }]}>
+              <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+            </Form.Item>
+            <Form.Item
+              name="expires_on"
+              label="Stop showing after"
+              dependencies={['available_from']}
+              rules={[
+                { required: true, message: 'Stop showing after is required' },
+                ({ getFieldValue }) => ({
+                  validator(_, value) {
+                    const availableFrom = getFieldValue('available_from');
+                    if (!value || !availableFrom || !dayjs(value).isBefore(dayjs(availableFrom), 'day')) {
+                      return Promise.resolve();
+                    }
+                    return Promise.reject(new Error('Stop showing after must be on or after Available from'));
+                  },
+                }),
+              ]}
+            >
+              <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+            </Form.Item>
+            <Form.Item name="reason" label="Reason" extra="Staff only — never shown to customers.">
+              <Input maxLength={255} />
+            </Form.Item>
+            <Form.Item
+              name="offered"
+              valuePropName="checked"
+              extra="Untick to just note it for now — it stays on this page but is not offered to anyone."
+            >
+              <Checkbox>Offer to advertising and inquiries</Checkbox>
+            </Form.Item>
+          </Form>
+        </Modal>
       </div>
     </MainLayout>
   );

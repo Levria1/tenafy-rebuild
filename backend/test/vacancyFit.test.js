@@ -7,6 +7,7 @@ const {
   partnerForwardBlock,
   compareVacancyFit,
   vacancyToPublicShape,
+  matchesFreeOn,
 } = require('../src/utils/advertisingPlan');
 
 const EMPTY_FIT = {
@@ -40,6 +41,75 @@ test('vacancyFit flags the operator scenario as a warning at the default thresho
     gap_warning: true,
     available_after_target: false,
   });
+});
+
+test('vacancyToPublicShape includes location and next move-in fields as null when absent', () => {
+  const result = vacancyToPublicShape(vacancySourceRow());
+
+  assert.equal(Object.hasOwn(result, 'district'), true);
+  assert.equal(Object.hasOwn(result, 'city'), true);
+  assert.equal(Object.hasOwn(result.availability, 'next_move_in_date'), true);
+  assert.equal(result.district, null);
+  assert.equal(result.city, null);
+  assert.equal(result.availability.next_move_in_date, null);
+});
+
+test('matchesFreeOn keeps a vacant-now unit with no incoming tenant', () => {
+  assert.equal(matchesFreeOn(
+    publicRow({ tier: 1, availability: { status: 'now', available_from: null, next_move_in_date: null, days_until: 0, certain: true } }),
+    '2026-10-15'
+  ), true);
+});
+
+test('matchesFreeOn keeps a unit available before the requested free date', () => {
+  assert.equal(matchesFreeOn(
+    publicRow({ availability: { status: 'from_date', available_from: '2026-10-01', next_move_in_date: null, days_until: 48, certain: true } }),
+    '2026-10-15'
+  ), true);
+});
+
+test('matchesFreeOn rejects a unit available after the requested free date', () => {
+  assert.equal(matchesFreeOn(
+    publicRow({ availability: { status: 'from_date', available_from: '2026-10-20', next_move_in_date: null, days_until: 67, certain: true } }),
+    '2026-10-15'
+  ), false);
+});
+
+test('matchesFreeOn rejects a vacant-now unit already re-let before the requested free date', () => {
+  // This is the point of free_on: empty today is not enough if someone else
+  // moves in before the prospect needs the unit.
+  assert.equal(matchesFreeOn(
+    publicRow({ tier: 1, availability: { status: 'now', available_from: null, next_move_in_date: '2026-10-10', days_until: 0, certain: true } }),
+    '2026-10-15'
+  ), false);
+});
+
+test('matchesFreeOn keeps a vacant-now unit re-let after the requested free date', () => {
+  assert.equal(matchesFreeOn(
+    publicRow({ tier: 1, availability: { status: 'now', available_from: null, next_move_in_date: '2026-11-30', days_until: 0, certain: true } }),
+    '2026-10-15'
+  ), true);
+});
+
+test('matchesFreeOn rejects an incoming tenant exactly on the requested free date', () => {
+  assert.equal(matchesFreeOn(
+    publicRow({ tier: 1, availability: { status: 'now', available_from: null, next_move_in_date: '2026-10-15', days_until: 0, certain: true } }),
+    '2026-10-15'
+  ), false);
+});
+
+test('matchesFreeOn keeps a unit available exactly on the requested free date', () => {
+  assert.equal(matchesFreeOn(
+    publicRow({ availability: { status: 'from_date', available_from: '2026-10-15', next_move_in_date: null, days_until: 62, certain: true } }),
+    '2026-10-15'
+  ), true);
+});
+
+test('matchesFreeOn rejects unknown available_from for from_date availability', () => {
+  assert.equal(matchesFreeOn(
+    publicRow({ availability: { status: 'from_date', available_from: null, next_move_in_date: null, days_until: null, certain: false } }),
+    '2026-10-15'
+  ), false);
 });
 
 test('vacancyFit warning is decided by maxGapDays, not the gap alone', () => {
@@ -354,6 +424,80 @@ test('GET /vacancies with target_date ranks and warns without filtering on max_g
     advertising.computeVacancies = originalComputeVacancies;
     advertising.loadSettings = originalLoadSettings;
   }
+});
+
+test('GET /vacancies applies free_on after shaping and before limit', async () => {
+  const advertising = require('../src/routes/advertising');
+  const originalComputeVacancies = advertising.computeVacancies;
+  const originalLoadSettings = advertising.loadSettings;
+  advertising.loadSettings = async () => ({ max_gap_days: 10, hard_max_gap_days: 20, partner_forward_message: null });
+  advertising.computeVacancies = async () => ({
+    vacancies: [
+      vacancySourceRow({ unit_id: 'u-incoming', unit_name: '1A', tier: 1, end_date: null, next_move_in_date: '2026-10-10' }),
+      vacancySourceRow({ unit_id: 'u-late', unit_name: '2A', tier: 2, end_date: '2026-10-19' }),
+      vacancySourceRow({ unit_id: 'u-free', unit_name: '3A', tier: 1, end_date: null, next_move_in_date: null }),
+    ],
+  });
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const result = await callVacanciesHandler(handler, { free_on: '2026-10-15', limit: '1' });
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data.vacancies.map(row => row.unit_id), ['u-free']);
+    assert.equal(result.body.data.count, 1);
+    assert.equal(result.body.data.free_on, '2026-10-15');
+    assert.equal(result.body.data.hidden_by_free_on, 2);
+    assert.equal(result.body.data.no_match_reason, null);
+  } finally {
+    advertising.computeVacancies = originalComputeVacancies;
+    advertising.loadSettings = originalLoadSettings;
+  }
+});
+
+test('GET /vacancies reports none_free_on_date when free_on removes every shaped row', async () => {
+  const advertising = require('../src/routes/advertising');
+  const originalComputeVacancies = advertising.computeVacancies;
+  const originalLoadSettings = advertising.loadSettings;
+  advertising.loadSettings = async () => ({ max_gap_days: 10, hard_max_gap_days: 20, partner_forward_message: 'Forward message' });
+  advertising.computeVacancies = async () => ({
+    vacancies: [
+      vacancySourceRow({ unit_id: 'u-incoming', unit_name: '1A', tier: 1, end_date: null, next_move_in_date: '2026-10-10' }),
+    ],
+  });
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const result = await callVacanciesHandler(handler, { free_on: '2026-10-15' });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.count, 0);
+    assert.equal(result.body.data.hidden_by_free_on, 1);
+    assert.equal(result.body.data.no_match_reason, 'none_free_on_date');
+    assert.deepEqual(result.body.data.partner_forward, { applies: true, message: 'Forward message' });
+  } finally {
+    advertising.computeVacancies = originalComputeVacancies;
+    advertising.loadSettings = originalLoadSettings;
+  }
+});
+
+test('GET /vacancies rejects malformed free_on', async () => {
+  const publicRouter = require('../src/routes/public');
+  const handler = publicRouter.stack
+    .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+    .route.stack.at(-1).handle;
+  const result = await callVacanciesHandler(handler, { free_on: '2026-02-30' });
+
+  assert.equal(result.statusCode, 400);
+  assert.match(result.body.message, /free_on must be in YYYY-MM-DD format/);
 });
 
 test('PUT /advertising/settings rejects hard_max_gap_days outside the allowed range', async () => {

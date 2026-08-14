@@ -673,6 +673,10 @@ export const advertisingApi = {
   // Advertising → Vacancy: units whose current lease is expiring within its
   // renewal-intent lead window (NR 45d / UC 30d / else 20d), soonest first.
   getVacancies: () => api.get('/api/advertising/vacancies'),
+  // Advertising → Vacancy: manual, expiring vacancy overrides for early move-out conversations.
+  listVacancyOverrides: (params) => api.get('/api/advertising/vacancy-override', { params }),
+  saveVacancyOverride: (data) => api.post('/api/advertising/vacancy-override', data),
+  clearVacancyOverride: (id) => api.delete(`/api/advertising/vacancy-override/${id}`),
 
   // Advertising → Templates: reusable ad copy (with %placeholders%) per unit.
   getPlaceholders: () => api.get('/api/advertising/templates/placeholders'),

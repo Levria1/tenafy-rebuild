@@ -2,14 +2,14 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert, Checkbox, InputNumber, Upload } from 'antd';
-import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined, MailOutlined, LogoutOutlined } from '@ant-design/icons';
+import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert, Checkbox, InputNumber, Upload, Dropdown, Menu } from 'antd';
+import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined, MailOutlined, LogoutOutlined, CalendarOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../components/mobile/MobileCardList';
 import SignStatusTag from '../../../../components/SignStatusTag';
-import { leasing, pdf, utility, signature, file as fileApi } from '../../../../lib/api';
+import { leasing, pdf, utility, signature, file as fileApi, advertisingApi } from '../../../../lib/api';
 
 const LEASE_TYPE_MAP = { 0: 'Fixed', 1: 'Month-to-Month' };
 const CONTRACT_TYPE_MAP = { 1: 'MR (May Renew)', 2: 'MTM (Month To Month)', 3: 'NR (Not Renewing)', 4: 'UC (Unconfirmed)' };
@@ -41,6 +41,14 @@ export default function LeasingDetailPage() {
   const [moveOutNotes, setMoveOutNotes] = useState('');
   const [recordingMoveOut, setRecordingMoveOut] = useState(false);
   const [undoingMoveOut, setUndoingMoveOut] = useState(false);
+  const [moveOutMenuOpen, setMoveOutMenuOpen] = useState(false);
+  const [exitRequestOpen, setExitRequestOpen] = useState(false);
+  const [exitAvailableFrom, setExitAvailableFrom] = useState(null);
+  const [exitReason, setExitReason] = useState('');
+  const [exitOfferEnabled, setExitOfferEnabled] = useState(true);
+  const [savingExitRequest, setSavingExitRequest] = useState(false);
+  const [withdrawingExitRequest, setWithdrawingExitRequest] = useState(false);
+  const [vacancyOverride, setVacancyOverride] = useState(null);
   const [pushRows, setPushRows] = useState([]);          // rent still owed
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState(null);
@@ -60,6 +68,7 @@ export default function LeasingDetailPage() {
 
   useEffect(() => {
     loadLease();
+    loadVacancyOverride();
   }, [leaseId]);
 
   const loadLease = async () => {
@@ -82,6 +91,21 @@ export default function LeasingDetailPage() {
     } catch (err) {
       // Likely the lease_revision table doesn't exist yet — silently ignore so
       // the page still renders pre-migration.
+    }
+  };
+
+  const loadVacancyOverride = async () => {
+    try {
+      const res = await advertisingApi.listVacancyOverrides({ lease_id: leaseId });
+      if (res.data?.code === 200) {
+        const overrides = res.data?.data || [];
+        const active = overrides.find(row => (
+          !row.expires_on || !dayjs(row.expires_on).isBefore(dayjs(), 'day')
+        ));
+        setVacancyOverride(active || null);
+      }
+    } catch (err) {
+      setVacancyOverride(null);
     }
   };
 
@@ -217,6 +241,60 @@ export default function LeasingDetailPage() {
       message.error(err.response?.data?.message || 'Failed to send check-in email');
     } finally {
       setSendingCheckin(false);
+    }
+  };
+
+  const handleOpenExitRequest = () => {
+    setExitAvailableFrom(null);
+    setExitReason('');
+    setExitOfferEnabled(true);
+    setExitRequestOpen(true);
+  };
+
+  const handleSaveExitRequest = async () => {
+    if (!exitAvailableFrom) {
+      message.error('They want to leave on is required');
+      return;
+    }
+    setSavingExitRequest(true);
+    try {
+      const res = await advertisingApi.saveVacancyOverride({
+        lease_id: leaseId,
+        available_from: dayjs(exitAvailableFrom).format('YYYY-MM-DD'),
+        reason: exitReason.trim() || undefined,
+        advertising_enabled: exitOfferEnabled,
+        inquiry_enabled: exitOfferEnabled,
+        // expires_on is intentionally omitted; the server derives the 3-day window.
+      });
+      if (res.data?.code === 200) {
+        message.success('Exit request recorded.');
+        setExitRequestOpen(false);
+        await loadVacancyOverride();
+      } else {
+        message.error(res.data?.message || 'Failed to record exit request');
+      }
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to record exit request');
+    } finally {
+      setSavingExitRequest(false);
+    }
+  };
+
+  const handleWithdrawExitRequest = async () => {
+    if (!vacancyOverride?.id) return;
+    setWithdrawingExitRequest(true);
+    try {
+      const res = await advertisingApi.clearVacancyOverride(vacancyOverride.id);
+      if (res.data?.code === 200) {
+        message.success('Exit request withdrawn.');
+        await loadVacancyOverride();
+      } else {
+        message.error(res.data?.message || 'Failed to withdraw exit request');
+      }
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to withdraw exit request');
+    } finally {
+      setWithdrawingExitRequest(false);
     }
   };
 
@@ -884,6 +962,16 @@ export default function LeasingDetailPage() {
   ];
 
   const leaseTitle = lease?.lease_no || `#${leaseId}`;
+  const cardTitle = (
+    <Space wrap>
+      <span>{`Lease ${leaseTitle}`}</span>
+      {/* Status belongs with the lease identity; inline with buttons it reads like an action. */}
+      {lease?.pdf_status && <SignStatusTag status={lease.pdf_status} />}
+      {vacancyOverride && (
+        <Tag color="processing">Exit requested: {formatDate(vacancyOverride.available_from)}</Tag>
+      )}
+    </Space>
+  );
 
   return (
     <MainLayout>
@@ -892,7 +980,6 @@ export default function LeasingDetailPage() {
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/leasing')}>Back to Leases</Button>
           <Space wrap>
             <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.leaseUrl(leaseId), '_blank')}>View Lease</Button>
-            {lease?.pdf_status && <SignStatusTag status={lease.pdf_status} />}
             <Button
               icon={<FilePdfOutlined />}
               onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}
@@ -908,21 +995,50 @@ export default function LeasingDetailPage() {
             >
               <Button icon={<MailOutlined />} loading={sendingCheckin}>Send Check-in Email</Button>
             </Popconfirm>
-            {canEdit && (
-              <Button icon={<LogoutOutlined />} onClick={handleOpenMoveOut}>
-                {lease?.moveout ? 'Edit move-out' : 'Move out'}
+            {vacancyOverride ? (
+              <Popconfirm
+                title="Withdraw this exit request?"
+                description="The unit stops showing as possibly available to inquiries and advertising. The lease and invoicing are not affected."
+                okText="Withdraw"
+                onConfirm={handleWithdrawExitRequest}
+              >
+                <Button icon={<CalendarOutlined />} loading={withdrawingExitRequest}>Withdraw request</Button>
+              </Popconfirm>
+            ) : (
+              <Button icon={<CalendarOutlined />} onClick={handleOpenExitRequest}>
+                Request Exit
               </Button>
             )}
-            {canEdit && lease?.moveout && (
-              <Popconfirm
-                title="Undo this move-out?"
-                description={`The lease end date goes back to ${lease.moveout.original_end_date || 'its original date'} and the move-out is removed. Any invoices already raised for rent after the move-out are NOT deleted.`}
-                okText="Undo move-out"
-                okButtonProps={{ danger: true }}
-                onConfirm={handleUndoMoveOut}
-              >
-                <Button danger loading={undoingMoveOut}>Undo move-out</Button>
-              </Popconfirm>
+            {canEdit && (
+              <Dropdown trigger={['click']} open={moveOutMenuOpen} onOpenChange={setMoveOutMenuOpen} dropdownRender={() => (
+                  <Menu selectable={false}>
+                    <Menu.Item key="record-move-out" onClick={() => { setMoveOutMenuOpen(false); handleOpenMoveOut(); }}>
+                      <div>
+                        <div>{lease?.moveout ? 'Edit move-out date' : 'Record move-out'}</div>
+                        <div style={{ color: '#8c8c8c', fontSize: 12 }}>Ends the lease and updates invoicing.</div>
+                      </div>
+                    </Menu.Item>
+                    {lease?.moveout && <Menu.Divider />}
+                    {lease?.moveout && (
+                      <Menu.Item key="undo-move-out" danger>
+                        <Popconfirm
+                          title="Undo this move-out?"
+                          description={`The lease end date goes back to ${lease.moveout.original_end_date || 'its original date'} and the move-out is removed. Any invoices already raised for rent after the move-out are NOT deleted.`}
+                          okText="Undo move-out"
+                          okButtonProps={{ danger: true }}
+                          onConfirm={() => { setMoveOutMenuOpen(false); handleUndoMoveOut(); }}
+                        >
+                          <div onClick={(e) => e.stopPropagation()} style={{ minWidth: 220 }}>
+                            {undoingMoveOut ? 'Undoing move-out...' : 'Undo move-out'}
+                          </div>
+                        </Popconfirm>
+                      </Menu.Item>
+                    )}
+                  </Menu>
+                )}>
+                {/* Static label prevents row reflow when move-out state changes or undo appears. */}
+                <Button icon={<LogoutOutlined />}>Move-out</Button>
+              </Dropdown>
             )}
             {canEdit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/leasing/${leaseId}/edit`)}>Edit Lease</Button>}
           </Space>
@@ -1014,6 +1130,29 @@ export default function LeasingDetailPage() {
                 message={`This lease runs to ${originalEndDate.format('DD MMM YYYY')}. Moving out earlier stops future rent invoices from being generated — if the tenant still owes rent for that period, issue those invoices before completing the move-out.`}
               />
             )}
+          </Space>
+        </Modal>
+
+        <Modal title="Request Exit" open={exitRequestOpen} onCancel={() => setExitRequestOpen(false)} onOk={handleSaveExitRequest} okText="Save" confirmLoading={savingExitRequest}>
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <div style={{ color: '#666' }}>
+              The tenant has asked to leave before the lease ends. This does not change the lease, invoices or the calendar — it only affects what we tell people who ask about availability.
+            </div>
+            <div>
+              <div style={{ marginBottom: 6, fontWeight: 500 }}>They want to leave on</div>
+              <DatePicker value={exitAvailableFrom} onChange={setExitAvailableFrom} style={{ width: '100%' }} />
+            </div>
+            <div>
+              <div style={{ marginBottom: 6, fontWeight: 500 }}>Reason <span style={{ fontWeight: 400 }}>(optional)</span></div>
+              <Input value={exitReason} onChange={(e) => setExitReason(e.target.value)} maxLength={255} />
+              <div style={{ color: '#8c8c8c', fontSize: 12, marginTop: 4 }}>Staff only — never shown to customers.</div>
+            </div>
+            <div>
+              <Checkbox checked={exitOfferEnabled} onChange={(e) => setExitOfferEnabled(e.target.checked)}>
+                Offer it to advertising and inquiries
+              </Checkbox>
+              <div style={{ color: '#8c8c8c', fontSize: 12, marginTop: 4 }}>Untick to just record it for now.</div>
+            </div>
           </Space>
         </Modal>
 
@@ -1210,7 +1349,7 @@ export default function LeasingDetailPage() {
           </Card>
         )}
 
-        <Card title={`Lease ${leaseTitle}`} loading={loading}>
+        <Card title={cardTitle} loading={loading}>
           {lease && (
             <Tabs
               items={tabItems}

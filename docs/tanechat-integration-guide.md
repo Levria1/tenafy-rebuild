@@ -35,17 +35,18 @@ job is to read the flags and choose words.
 ## 2. The call
 
 ```
-GET /vacancies?target_date=2026-10-12
+GET /vacancies?target_date=2026-10-12&free_on=2026-10-12
 ```
 
 | Param | Default | Notes |
 |---|---|---|
-| `target_date` | none | `YYYY-MM-DD`. **Send it whenever you know it.** Without it there is no gap to judge, so no ranking, no warnings and no hiding. |
+| `target_date` | none | `YYYY-MM-DD`. **Send it whenever you know it.** This ranks and warns by move-in fit. Without it there is no gap to judge, so no ranking, no warnings and no hiding. |
+| `free_on` | none | `YYYY-MM-DD`. This filters to units the customer can actually take on that date. It answers a different question from `target_date`, and the two can be combined. |
 | `max_tier` | `3` | `1` vacant only, `2` + NR, `3` all. Leave it alone unless you have a reason. |
 | `property_id` | none | optional filter |
 | `limit` | `50` | max 200 |
 
-A malformed `target_date` is a **400**, deliberately — it is not silently ignored.
+A malformed `target_date` or `free_on` is a **400**, deliberately — it is not silently ignored.
 
 **Without `target_date` these keys are absent from the response — not null:** `target_date`,
 `max_gap_days`, `phrasing.earlier`, and the three per-unit gap fields `gap_days`, `gap_warning`,
@@ -58,7 +59,7 @@ coming free later, and until recently it reported units already re-let. Response
 
 ## 3. What comes back
 
-Real response, captured from production:
+Example response shape:
 
 ```json
 { "code": 200, "data": {
@@ -72,9 +73,11 @@ Real response, captured from production:
   "phrasing": { "certain": "…", "uncertain": "…", "earlier": "…" },
   "vacancies": [
     { "label": "Hollywood 5B", "tier": 2, "intent": "NR",
+      "source": "lease", "manual": null,
       "unit_id": "123", "listing_url": "https://taneresidence.com/product/hollywood-5b/",
+      "property_name": "Hollywood", "district": "Sheung Wan", "city": "Hong Kong",
       "availability": { "status": "from_date", "available_from": "2026-10-12",
-                        "days_until": 60, "certain": true },
+                        "next_move_in_date": null, "days_until": 60, "certain": true },
       "gap_days": 0, "gap_warning": false, "available_after_target": false }
   ]
 }}
@@ -85,11 +88,22 @@ Real response, captured from production:
 Each vacancy includes `unit_id` and `listing_url`. `listing_url` is `null` when the unit has none
 (roughly a third of units), so treat it as a fast exact path when present, not a guarantee.
 
+Use `district` and `city` for "I want to live in X" filtering. Property names do not reliably encode
+the area.
+
+`availability.next_move_in_date` means somebody is already moving in then, so the unit is only free
+until that date. Send `free_on` when the customer has a firm date and Tenafy will remove those rows for
+you.
+
 ## 4. The four fields that decide your wording
 
 **`availability.certain`** — branch on **this**, not on `tier`. `true` means the unit will definitely
-be free (vacant now, or the tenant has confirmed they are leaving). `false` means the tenant *may
-renew*. If a tier is ever added or re-numbered, `certain` keeps your logic correct.
+be free (vacant now, or the tenant has confirmed they are leaving). `false` means the tenant may renew
+or may move out early. If a tier is ever added or re-numbered, `certain` keeps your logic correct.
+
+**`source`** — always present. `"lease"` means availability comes from lease records. `"manual"` means
+an operator-authored override because the tenant may move out early. Manual rows also include
+`manual.override_id`, `manual.expires_on`, and `manual.reason`.
 
 **`gap_days`** — signed, and the sign matters:
 
@@ -112,11 +126,14 @@ costs the operator nothing.
 | `certain: true`, `status: "now"` | "available now" |
 | `certain: true`, `status: "from_date"` | "available from {available_from}" |
 | `gap_warning: true` | still offer it — use `phrasing.earlier` |
-| `certain: false` | **must** use `phrasing.uncertain`. Never state it as firm availability. |
+| `certain: false`, `source: "manual"` | **must** use `phrasing.manual`. Never state it as firm availability. |
+| `certain: false`, `source: "lease"` | **must** use `phrasing.uncertain`. Never state it as firm availability. |
 
 The `phrasing` templates are operator-authored and returned **unsubstituted**. Fill them yourself.
 They exist so the operator controls the wording in one place — please use them rather than composing
 your own.
+
+`phrasing.manual` is returned when a manual early-move-out override is present in the response.
 
 `phrasing.earlier` currently reads:
 
@@ -178,6 +195,7 @@ If you cannot fill one, drop that clause cleanly rather than sending a literal `
 `no_match_reason` is for the operator's reporting, not your logic:
 
 - `"all_beyond_hard_cap"` — units exist, none within policy
+- `"none_free_on_date"` — units exist, none are free on the requested `free_on` date
 - `"no_vacancies"` — nothing at all
 - `null` — the list is non-empty
 
@@ -372,6 +390,7 @@ Automatic sending is **off**. Nudges are drafts too until the operator enables i
 ## 18. Migration checklist
 
 - [ ] Swap `/units/available` → `/vacancies`, and send `target_date` whenever known
+- [ ] Send `free_on` when the customer has a firm date and you need a hard availability filter
 - [ ] Branch wording on `availability.certain`, never on `tier`
 - [ ] Use the `phrasing` templates rather than your own copy
 - [ ] Do not re-sort or re-filter `vacancies`

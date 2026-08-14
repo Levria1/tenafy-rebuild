@@ -28,6 +28,7 @@ const config = require('../config');
 const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings } = require('./advertising');
 const {
   vacancyToPublicShape,
+  matchesFreeOn,
   formatLocalDate,
   vacancyFit,
   exceedsHardGapCap,
@@ -35,6 +36,7 @@ const {
   partnerForwardBlock,
   compareVacancyFit,
   resolveAvailabilityWindows,
+  hasActiveManualVacancyOverride,
 } = require('../utils/advertisingPlan');
 const { findUnitByListingUrl } = require('../utils/listingUrl');
 
@@ -71,6 +73,7 @@ router.post('/posting-plan/mark', async (req, res) => {
 
 const CERTAIN_AVAILABILITY_PHRASE = '{units} available from {date}';
 const UNCERTAIN_AVAILABILITY_PHRASE = "We may also have {units} available, however the tenant may renew, they're not sure";
+const MANUAL_AVAILABILITY_PHRASE = '{units} may become available from {date} — the current tenant is considering moving out early, so this one is not confirmed yet.';
 // Offered instead of hiding a poor fit: suppressing the unit forfeits the
 // negotiation that could remove the vacancy entirely.
 const EARLIER_AVAILABILITY_PHRASE = '{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long.';
@@ -104,6 +107,11 @@ router.get('/vacancies', async (req, res) => {
     if (hasTargetDate && !isStrictYmd(targetDate)) {
       return res.status(400).json({ code: 400, message: 'target_date must be in YYYY-MM-DD format' });
     }
+    const hasFreeOn = req.query.free_on !== undefined;
+    const freeOn = hasFreeOn ? String(req.query.free_on) : null;
+    if (hasFreeOn && !isStrictYmd(freeOn)) {
+      return res.status(400).json({ code: 400, message: 'free_on must be in YYYY-MM-DD format' });
+    }
 
     const settings = await loadSettings(req.pool, req.apiKey.orgId);
     const { vacancies } = await computeVacancies(
@@ -115,6 +123,7 @@ router.get('/vacancies', async (req, res) => {
       .filter(row => Number(row.tier) <= maxTier)
       .filter(row => !propertyId || String(row.property_id) === propertyId);
     let hiddenByGapCap = 0;
+    let hiddenByFreeOn = 0;
 
     if (hasTargetDate) {
       const today = formatLocalDate(new Date());
@@ -131,15 +140,24 @@ router.get('/vacancies', async (req, res) => {
           hiddenByGapCap += 1;
           return false;
         })
-        .sort(compareVacancyFit)
-        .slice(0, limit);
+        .sort(compareVacancyFit);
     } else {
       rows = rows
-        .slice(0, limit)
         .map(vacancyToPublicShape);
     }
 
-    const noMatchReason = vacancyNoMatchReason(rows.length, hiddenByGapCap);
+    if (hasFreeOn) {
+      rows = rows.filter(row => {
+        if (matchesFreeOn(row, freeOn)) return true;
+        hiddenByFreeOn += 1;
+        return false;
+      });
+    }
+
+    rows = rows.slice(0, limit);
+
+    const hasManualRows = rows.some(row => row.source === 'manual');
+    const noMatchReason = vacancyNoMatchReason(rows.length, hiddenByGapCap, hiddenByFreeOn);
     const data = {
       vacancies: rows,
       count: rows.length,
@@ -156,10 +174,15 @@ router.get('/vacancies', async (req, res) => {
         uncertain: UNCERTAIN_AVAILABILITY_PHRASE,
       },
     };
+    if (hasManualRows) data.phrasing.manual = MANUAL_AVAILABILITY_PHRASE;
     if (hasTargetDate) {
       data.phrasing.earlier = EARLIER_AVAILABILITY_PHRASE;
       data.target_date = targetDate;
       data.max_gap_days = settings.max_gap_days;
+    }
+    if (hasFreeOn) {
+      data.free_on = freeOn;
+      data.hidden_by_free_on = hiddenByFreeOn;
     }
 
     res.json({
@@ -1088,6 +1111,7 @@ async function resolveMarketedUnit(pool, orgId, unitId) {
   );
   // Occupied + opted in → marketable (the tenant will be asked).
   if (lease && Number(lease.viewing_enabled)) return { unit, lease };
+  if (await hasActiveManualVacancyOverride(pool, orgId, unitId)) return { unit, lease };
   // Vacant (no current lease) → marketable IF staff have set up a host link for
   // it. No tenant to ask, so viewings are confirmed against the host directly.
   if (!lease) {

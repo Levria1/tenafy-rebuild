@@ -4,7 +4,8 @@ const { authenticate } = require('../middleware/auth');
 const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold } = require('../services/advertisingTemplate');
 const { DAY_NAMES, weekdayOf, postsOnDay, parseDays, validateDays, dayLabel } = require('../utils/advertisingSchedule');
 const { slotLabel, findRepeatViolations, suggestReplacements, forumWeeklyLoad,
-  gapIsAdvertisable, priorityOf, resolveAvailabilityWindows, sortByPriority, assignBundlesToSlots } = require('../utils/advertisingPlan');
+  gapIsAdvertisable, priorityOf, resolveAvailabilityWindows, sortByPriority, assignBundlesToSlots,
+  manualVacancyToRow, overrideAppliesTo, leaseChangedForOverride, pickVacancyRow } = require('../utils/advertisingPlan');
 const { hkDate } = require('../utils/inquiryFacts');
 
 // Snowflake id (same pattern used across the app).
@@ -25,6 +26,27 @@ function lengthError(body, limits = FIELD_LIMITS) {
     }
   }
   return null;
+}
+
+function isStrictYmd(value) {
+  if (typeof value !== 'string') return false;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+}
+
+function deriveDefaultVacancyExpiry(availableFrom) {
+  const [year, month, day] = availableFrom.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + 3));
+  return date.toISOString().slice(0, 10);
+}
+
+function boolFlag(value) {
+  return Number(value) === 1 || value === true ? 1 : 0;
 }
 
 function isMissingColumn(err, column) {
@@ -119,7 +141,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
           u.rent_price_min, u.rent_price_max, u.listing_url AS listing_url,
           at.id AS template_id, at.name AS template_name,
-          p.id AS property_id, p.display_name AS property_name, p.street_address,
+          p.id AS property_id, p.display_name AS property_name, p.street_address, p.district, p.city,
           t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name
        FROM leasing l
        JOIN unit u ON l.unit_id = u.id
@@ -159,7 +181,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
           u.rent_price_min, u.rent_price_max, u.listing_url AS listing_url,
           at.id AS template_id, at.name AS template_name,
-          p.id AS property_id, p.display_name AS property_name, p.street_address,
+          p.id AS property_id, p.display_name AS property_name, p.street_address, p.district, p.city,
           ll.id AS last_lease_id,
           DATE_FORMAT(ll.end_date, '%Y-%m-%d') AS vacant_since,
           DATEDIFF(CURDATE(), ll.end_date) AS days_vacant,
@@ -179,6 +201,37 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
          AND ${NOT_TEST}
          AND ${NO_CURRENT_LEASE}`,
       [orgId]
+    );
+
+    const [manualOverrides] = await pool.execute(
+      `SELECT
+          m.id, m.lease_id, cl.id AS current_lease_id, DATE_FORMAT(m.available_from, '%Y-%m-%d') AS available_from,
+          DATE_FORMAT(m.expires_on, '%Y-%m-%d') AS expires_on,
+          m.advertising_enabled, m.inquiry_enabled, m.reason,
+          DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today,
+          u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
+          u.rent_price_min, u.rent_price_max, u.rent_price_min AS rent, u.listing_url AS listing_url,
+          at.id AS template_id, at.name AS template_name,
+          p.id AS property_id, p.display_name AS property_name, p.street_address, p.district, p.city
+       FROM manual_vacancy_override m
+       JOIN unit u ON m.unit_id = u.id
+       JOIN property p ON u.property_id = p.id
+       LEFT JOIN advertising_template at ON at.id = u.advertising_template_id AND at.deleted_at IS NULL
+       LEFT JOIN leasing cl ON cl.id = (
+         SELECT l.id FROM leasing l
+          WHERE l.unit_id = m.unit_id
+            AND l.deleted_at IS NULL
+            AND l.start_date <= CURDATE()
+            AND (l.end_date IS NULL OR l.end_date >= CURDATE())
+          ORDER BY l.start_date DESC, l.id DESC LIMIT 1)
+       WHERE m.org_id = ?
+         AND p.org_id = ?
+         AND m.status = 1
+         AND m.expires_on >= CURDATE()
+         AND u.active_status = 1
+         AND ${NOT_TEST}
+       ORDER BY m.created_at DESC`,
+      [orgId, orgId]
     );
 
     const moveoutByLease = {};
@@ -246,6 +299,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       template_id: r.template_id ? String(r.template_id) : null,
       template_name: r.template_name || null,
       property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
+      district: r.district, city: r.city,
       tenant_id: r.tenant_id ? String(r.tenant_id) : null,
       tenant_name: (r.tenant_name || '').trim() || '(no tenant)',
       moveout_notes: moveoutByLease[String(r.lease_id)]?.moveout_notes || null,
@@ -288,6 +342,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
         template_id: r.template_id ? String(r.template_id) : null,
         template_name: r.template_name || null,
         property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
+        district: r.district, city: r.city,
         tenant_id: r.tenant_id ? String(r.tenant_id) : null,   // last tenant
         tenant_name: (r.tenant_name || '').trim() || null,
         moveout_notes: moveoutByLease[String(r.last_lease_id)]?.moveout_notes || null,
@@ -303,23 +358,218 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       };
     }).filter(row => page || row.gap_ok);
 
+    const selectedRealRows = new Map([...vacantRows, ...expiringRows].map(row => [String(row.unit_id), row]));
+    const manualRows = [];
+    for (const override of manualOverrides) {
+      const leaseChanged = leaseChangedForOverride(override);
+      if (!overrideAppliesTo(override, audience, { page })) continue;
+      const manualRow = manualVacancyToRow({ ...override, lease_changed: leaseChanged }, override, override.today);
+      const unitKey = String(manualRow.unit_id);
+      const realRow = selectedRealRows.get(unitKey);
+      // Stale overrides describe a conversation about a specific tenancy. If the
+      // lease was renewed, replaced or re-dated, that conversation may no longer
+      // apply, and the operator must re-confirm rather than keep offering it.
+      if (leaseChanged) {
+        if (page) {
+          selectedRealRows.delete(unitKey);
+          manualRows.push(manualRow);
+        }
+        continue;
+      }
+      const winner = pickVacancyRow(manualRow, realRow);
+      if (winner === manualRow) {
+        selectedRealRows.delete(unitKey);
+        manualRows.push(manualRow);
+      }
+    }
+    const realRows = [...selectedRealRows.values()];
+    const selectedVacantRows = realRows.filter(row => row.status === 'vacant');
+    const selectedExpiringRows = realRows.filter(row => row.status === 'expiring');
+
     // Urgency sort: longest-vacant (most negative) → soonest-expiring (small
     // positive) → later-expiring → never-leased (no date) last.
     const NEVER_LEASED = Number.POSITIVE_INFINITY;
     const sortKey = (x) => (x.days_left == null ? NEVER_LEASED : x.days_left);
-    const urgencySorted = [...vacantRows, ...expiringRows].sort((a, b) => {
+    const urgencySorted = [...realRows, ...manualRows].sort((a, b) => {
       const ka = sortKey(a), kb = sortKey(b);
       if (ka !== kb) return ka - kb;
       return (a.property_name || '').localeCompare(b.property_name || '');
     });
-    const vacancies = page ? urgencySorted : sortByPriority([...vacantRows, ...expiringRows]);
+    const vacancies = page ? urgencySorted : sortByPriority([...realRows, ...manualRows]);
 
-    return { vacancies, vacant_count: vacantRows.length, expiring_count: expiringRows.length };
+    return { vacancies, vacant_count: selectedVacantRows.length, expiring_count: selectedExpiringRows.length, manual_count: manualRows.length };
 }
+
+router.get('/vacancy-override', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const leaseId = req.query.lease_id != null && String(req.query.lease_id).trim() !== ''
+      ? String(req.query.lease_id).trim()
+      : null;
+    const params = [orgId, orgId];
+    const leaseFilter = leaseId ? ' AND m.lease_id = ?' : '';
+    if (leaseId) params.push(leaseId);
+    const [rows] = await req.pool.execute(
+      `SELECT
+          m.id, m.unit_id, m.lease_id, DATE_FORMAT(m.available_from, '%Y-%m-%d') AS available_from,
+          DATE_FORMAT(m.expires_on, '%Y-%m-%d') AS expires_on,
+          m.advertising_enabled, m.inquiry_enabled, m.reason, m.status,
+          m.created_by, m.created_at, m.updated_at,
+          u.name AS unit_name,
+          p.id AS property_id, p.display_name AS property_name
+       FROM manual_vacancy_override m
+       JOIN unit u ON m.unit_id = u.id
+       JOIN property p ON u.property_id = p.id
+       WHERE m.org_id = ?
+         AND p.org_id = ?
+         AND m.status = 1
+         AND m.expires_on >= CURDATE()
+         ${leaseFilter}
+       ORDER BY m.created_at DESC
+       ${leaseId ? 'LIMIT 1' : ''}`,
+      params
+    );
+    res.json({
+      code: 200,
+      data: rows.map(r => ({
+        id: String(r.id),
+        unit_id: String(r.unit_id),
+        lease_id: r.lease_id == null ? null : String(r.lease_id),
+        unit_name: r.unit_name,
+        property_id: String(r.property_id),
+        property_name: r.property_name,
+        available_from: r.available_from,
+        expires_on: r.expires_on,
+        advertising_enabled: Number(r.advertising_enabled) === 1,
+        inquiry_enabled: Number(r.inquiry_enabled) === 1,
+        reason: r.reason || null,
+        status: Number(r.status),
+        created_by: r.created_by == null ? null : String(r.created_by),
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      })),
+    });
+  } catch (err) {
+    console.error('[advertising/vacancy-override list] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load vacancy overrides' });
+  }
+});
+
+router.post('/vacancy-override', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { unit_id, lease_id, available_from, expires_on, advertising_enabled, inquiry_enabled, reason } = req.body || {};
+    const requestedLeaseId = lease_id != null && String(lease_id).trim() !== '' ? String(lease_id).trim() : null;
+    const requestedUnitId = unit_id != null && String(unit_id).trim() !== '' ? String(unit_id).trim() : null;
+    if (!requestedLeaseId && !requestedUnitId) return res.status(400).json({ code: 400, message: 'unit_id or lease_id is required' });
+    if (!isStrictYmd(available_from)) return res.status(400).json({ code: 400, message: 'available_from is required in YYYY-MM-DD format' });
+    const hasExplicitExpiry = expires_on != null && String(expires_on).trim() !== '';
+    if (hasExplicitExpiry && !isStrictYmd(String(expires_on))) return res.status(400).json({ code: 400, message: 'expires_on must be in YYYY-MM-DD format' });
+    // Without an explicit expiry, the requested move-out date is the availability
+    // date. If the tenant has not left by three days after that, the claim is
+    // stale; the grace covers late recording of the real move-out.
+    const effectiveExpiresOn = hasExplicitExpiry ? String(expires_on) : deriveDefaultVacancyExpiry(available_from);
+    const today = hkDate(new Date().toISOString());
+    if (effectiveExpiresOn < today) return res.status(400).json({ code: 400, message: 'expires_on must be today or later' });
+    if (effectiveExpiresOn < available_from) return res.status(400).json({ code: 400, message: 'expires_on must be on or after available_from' });
+    const advertisingEnabled = boolFlag(advertising_enabled);
+    const inquiryEnabled = boolFlag(inquiry_enabled);
+    const normalizedReason = reason == null || String(reason).trim() === '' ? null : String(reason).trim();
+    if (normalizedReason && normalizedReason.length > 255) {
+      return res.status(400).json({ code: 400, message: 'reason must be 255 characters or fewer' });
+    }
+    let unitId = requestedUnitId;
+    let leaseId = null;
+    if (requestedLeaseId) {
+      // If both ids are sent, lease_id wins: the request is about that specific
+      // tenancy, and the unit must be derived from the org-scoped lease lookup.
+      const [[lease]] = await req.pool.execute(
+        `SELECT l.id, l.unit_id
+           FROM leasing l
+           JOIN unit u ON l.unit_id = u.id
+           JOIN property p ON u.property_id = p.id
+          WHERE l.id = ?
+            AND p.org_id = ?
+            AND l.deleted_at IS NULL
+          LIMIT 1`,
+        [requestedLeaseId, orgId]
+      );
+      if (!lease) return res.status(404).json({ code: 404, message: 'Lease not found' });
+      unitId = lease.unit_id;
+      leaseId = lease.id;
+    } else {
+      const [[unit]] = await req.pool.execute(
+        `SELECT u.id
+           FROM unit u
+           JOIN property p ON u.property_id = p.id
+          WHERE u.id = ? AND p.org_id = ?
+          LIMIT 1`,
+        [unitId, orgId]
+      );
+      if (!unit) return res.status(404).json({ code: 404, message: 'Unit not found' });
+      const [[activeLease]] = await req.pool.execute(
+        `SELECT id FROM leasing
+          WHERE unit_id = ?
+            AND deleted_at IS NULL
+            AND start_date <= CURDATE()
+            AND (end_date IS NULL OR end_date >= CURDATE())
+          ORDER BY start_date DESC, id DESC LIMIT 1`,
+        [unitId]
+      );
+      leaseId = activeLease ? activeLease.id : null;
+    }
+
+    const [[existing]] = await req.pool.execute(
+      `SELECT id FROM manual_vacancy_override
+        WHERE org_id = ? AND unit_id = ? AND status = 1
+        LIMIT 1`,
+      [orgId, unitId]
+    );
+    if (existing) {
+      await req.pool.execute(
+        `UPDATE manual_vacancy_override
+            SET available_from = ?, expires_on = ?, advertising_enabled = ?, inquiry_enabled = ?,
+                lease_id = ?, reason = ?, updated_at = NOW()
+          WHERE id = ? AND org_id = ? AND status = 1`,
+        [available_from, effectiveExpiresOn, advertisingEnabled, inquiryEnabled, leaseId, normalizedReason, existing.id, orgId]
+      );
+      return res.json({ code: 200, data: { id: String(existing.id), action: 'updated' } });
+    }
+
+    const id = newId();
+    await req.pool.execute(
+      `INSERT INTO manual_vacancy_override
+         (id, org_id, unit_id, lease_id, available_from, expires_on, advertising_enabled, inquiry_enabled, reason, status, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NOW())`,
+      [id, orgId, unitId, leaseId, available_from, effectiveExpiresOn, advertisingEnabled, inquiryEnabled, normalizedReason, req.user.id || null]
+    );
+    res.json({ code: 200, data: { id, action: 'created' } });
+  } catch (err) {
+    console.error('[advertising/vacancy-override save] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to save vacancy override' });
+  }
+});
+
+router.delete('/vacancy-override/:id', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [result] = await req.pool.execute(
+      `UPDATE manual_vacancy_override
+          SET status = 0, cleared_at = NOW(), cleared_by = ?, updated_at = NOW()
+        WHERE id = ? AND org_id = ? AND status = 1`,
+      [req.user.id || null, req.params.id, orgId]
+    );
+    if (!result.affectedRows) return res.status(404).json({ code: 404, message: 'Vacancy override not found' });
+    res.json({ code: 200, data: { id: String(req.params.id), status: 0 } });
+  } catch (err) {
+    console.error('[advertising/vacancy-override clear] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to clear vacancy override' });
+  }
+});
 
 router.get('/vacancies', authenticate, async (req, res) => {
   try {
-    const { vacancies, vacant_count, expiring_count } = await computeVacancies(req.pool, req.user.orgId, { page: true });
+    const { vacancies, vacant_count, expiring_count, manual_count } = await computeVacancies(req.pool, req.user.orgId, { page: true });
     res.json({
       code: 200,
       data: {
@@ -328,6 +578,7 @@ router.get('/vacancies', authenticate, async (req, res) => {
         count: vacancies.length,
         vacant_count,
         expiring_count,
+        manual_count,
         vacancies,
       },
     });
@@ -2096,3 +2347,4 @@ module.exports.buildPostingPlan = buildPostingPlan;
 module.exports.markPostingPlan = markPostingPlan;
 module.exports.computeVacancies = computeVacancies;
 module.exports.loadSettings = loadSettings;
+module.exports.deriveDefaultVacancyExpiry = deriveDefaultVacancyExpiry;
