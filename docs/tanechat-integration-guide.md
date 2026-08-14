@@ -8,7 +8,7 @@ Viewings (Part B) need a **read-write** key: four of its endpoints are POSTs —
 `prospect-reply`, `tenant-reply`, `draft-sent` — and a read-only key is rejected on any of them with a
 `403` before the handler runs. See the table in §9.
 
-Verified against production on 2026-08-13. Where this doc shows a payload, it was captured from a
+Verified against production on 2026-08-14. Where this doc shows a payload, it was captured from a
 real call, not written by hand.
 
 ---
@@ -73,7 +73,7 @@ Example response shape:
   "phrasing": { "certain": "…", "uncertain": "…", "earlier": "…" },
   "vacancies": [
     { "label": "Hollywood 5B", "tier": 2, "intent": "NR",
-      "source": "lease", "manual": null,
+      "source": "lease",
       "unit_id": "123", "listing_url": "https://taneresidence.com/product/hollywood-5b/",
       "property_name": "Hollywood", "district": "Sheung Wan", "city": "Hong Kong",
       "availability": { "status": "from_date", "available_from": "2026-10-12",
@@ -102,8 +102,9 @@ be free (vacant now, or the tenant has confirmed they are leaving). `false` mean
 or may move out early. If a tier is ever added or re-numbered, `certain` keeps your logic correct.
 
 **`source`** — always present. `"lease"` means availability comes from lease records. `"manual"` means
-an operator-authored override because the tenant may move out early. Manual rows also include
-`manual.override_id`, `manual.expires_on`, and `manual.reason`.
+an operator has flagged the unit because the tenant may move out early; nothing is confirmed and the
+lease has not ended. `source` is all you get and all you need — the override's internal details are
+deliberately not exposed, because the note behind it is staff-only.
 
 **`gap_days`** — signed, and the sign matters:
 
