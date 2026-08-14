@@ -62,6 +62,26 @@ function locationMatchScore(value, score, qSquish, qTokens) {
   return 0;
 }
 
+const ADDRESS_STOPWORDS = new Set([
+  'street', 'road', 'building', 'mansion', 'apartments', 'apartment', 'bazaar',
+  'tower', 'court', 'block', 'house', 'centre', 'center', 'commercial', 'floor',
+  'unit', 'flat', 'lane', 'terrace', 'estate', 'garden', 'gardens', 'st', 'rd',
+  'fl',
+]);
+
+function addressMatchScore(streetAddress, qTokens) {
+  const query = new Set(qTokens);
+  const tokens = toTokens(streetAddress);
+  return tokens.some(t => {
+    if (t.length < 4) return false;
+    // Numeric street-address parts and generic address words carry no property
+    // identity: "8 Cleverly Street" must not let "8" identify a unit or property.
+    if (/^\d+$/.test(t)) return false;
+    if (ADDRESS_STOPWORDS.has(t)) return false;
+    return query.has(t);
+  }) ? 2 : 0;
+}
+
 function scoreOne(qSquish, qTokens, unit) {
   const pName = unit.property_name || '';
   const pSquish = squish(pName);
@@ -77,10 +97,15 @@ function scoreOne(qSquish, qTokens, unit) {
              qTokens.some(t => t.length >= 4 && editDistance(t, pSquish, 1) <= 1)) prop = 2; // typo "mongok"
   }
   nameProp = prop;
+  // Address is location-like, never a property-name signal. Keeping it out of
+  // nameProp preserves scoreUnits' namedFull filter, so "mercer 5b" still beats
+  // location-only matches at other Sheung Wan 5B units. Score 2 matches district
+  // strength and remains below an exact property-name hit (3).
   prop = Math.max(
     prop,
     locationMatchScore(unit.district, 2, qSquish, qTokens),
-    locationMatchScore(unit.city, 1, qSquish, qTokens)
+    locationMatchScore(unit.city, 1, qSquish, qTokens),
+    addressMatchScore(unit.street_address, qTokens)
   );
   const core = unitCore(unit.name);
   let u = 0;
@@ -163,7 +188,7 @@ function scoreUnits(text, units) {
 // vacant with an active host link — i.e. what resolveMarketedUnit would accept).
 async function loadUnitsWithMarketable(pool, orgId) {
   const [rows] = await pool.execute(
-    `SELECT u.id, u.name, u.property_id, p.display_name AS property_name, p.district, p.city,
+    `SELECT u.id, u.name, u.property_id, p.display_name AS property_name, p.district, p.city, p.street_address,
             (SELECT l.viewing_enabled FROM leasing l
                WHERE l.unit_id = u.id AND l.deleted_at IS NULL
                  AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
@@ -180,7 +205,7 @@ async function loadUnitsWithMarketable(pool, orgId) {
   );
   return rows.map(r => ({
     id: r.id, name: r.name, property_id: r.property_id, property_name: r.property_name,
-    district: r.district, city: r.city,
+    district: r.district, city: r.city, street_address: r.street_address,
     marketable: (Number(r.has_lease) > 0 && Number(r.cur_ve) === 1) || (Number(r.has_lease) === 0 && Number(r.host_links) > 0),
   }));
 }

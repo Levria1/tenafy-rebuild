@@ -175,3 +175,95 @@ test('resolver: district matching property display name does not double-count', 
   assert.equal(r.status, 'confident');
   assert.equal(r.match.unit_id, 'mk-5b');
 });
+
+const REAL_PROPERTY_UNITS = [
+  { id: 'pearl-b6-22', name: 'Unit 22', property_id: 'pearl-b6', property_name: '12-B6 Pearl City Mansion', district: 'Causeway Bay', city: 'Hong Kong', street_address: '12-B6 Pearl City Mansion, 22-36 Paterson Street, Causeway Bay', marketable: true },
+  { id: 'pearl-b6-7a', name: '7A', property_id: 'pearl-b6', property_name: '12-B6 Pearl City Mansion', district: 'Causeway Bay', city: 'Hong Kong', street_address: '12-B6 Pearl City Mansion, 22-36 Paterson Street, Causeway Bay', marketable: true },
+  { id: 'pearl-c1-22', name: 'Unit 22', property_id: 'pearl-c1', property_name: '12-C1 Pearl City Mansion', district: 'Causeway Bay', city: 'Hong Kong', street_address: '12-C1 Pearl City Mansion, 22-36 Paterson Street, Causeway Bay', marketable: true },
+  { id: 'pearl-c1-7a', name: '7A', property_id: 'pearl-c1', property_name: '12-C1 Pearl City Mansion', district: 'Causeway Bay', city: 'Hong Kong', street_address: '12-C1 Pearl City Mansion, 22-36 Paterson Street, Causeway Bay', marketable: true },
+  { id: 'lai-yuen-2a', name: '2A', property_id: 'lai-yuen', property_name: '13B Lai Yuen Apartments', district: 'Causeway Bay', city: 'Hong Kong', street_address: '56-61 Russell Street', marketable: true },
+  { id: 'lai-yuen-7a', name: '7A', property_id: 'lai-yuen', property_name: '13B Lai Yuen Apartments', district: 'Causeway Bay', city: 'Hong Kong', street_address: '56-61 Russell Street', marketable: true },
+  { id: 'cleverly-1a', name: '1A', property_id: 'cleverly', property_name: 'Cleverly', district: 'Sheung Wan', city: 'Hong Kong', street_address: '8 Cleverly Street, Sheung Wan', marketable: true },
+  { id: 'cleverly-5b', name: '5B', property_id: 'cleverly', property_name: 'Cleverly', district: 'Sheung Wan', city: 'Hong Kong', street_address: '8 Cleverly Street, Sheung Wan', marketable: true },
+  { id: 'fuk-lo-tsun-7a', name: '7A', property_id: 'fuk-lo-tsun', property_name: 'Fuk Lo Tsun', district: 'Kowloon City', city: 'Hong Kong', street_address: '23 Fuk Lo Tsun Road, Kowloon City', marketable: true },
+  { id: 'gilmans-5b', name: '5B', property_id: 'gilmans', property_name: "Gilman's Bazaar", district: 'Central', city: 'Hong Kong', street_address: "36 Gilman's Bazaar", marketable: true },
+  { id: 'hillier-5b', name: '5B', property_id: 'hillier', property_name: 'Hillier', district: 'Sheung Wan', city: 'Hong Kong', street_address: '18 Hillier Street, Sheung Wan', marketable: true },
+  { id: 'hollywood-5b', name: '5B', property_id: 'hollywood', property_name: 'Hollywood', district: 'Sheung Wan', city: 'Hong Kong', street_address: '84 Hollywood Road, Sheung Wan', marketable: true },
+  { id: 'jardine-7a', name: '7A', property_id: 'jardine', property_name: 'Jardine', district: 'Causeway Bay', city: 'Hong Kong', street_address: "41-43 Jardine's Bazaar, Causeway Bay", marketable: true },
+  { id: 'jervois-5b', name: '5B', property_id: 'jervois', property_name: 'Jervois', district: 'Sheung Wan', city: 'Hong Kong', street_address: '3 Jervois Street, Sheung Wan', marketable: true },
+  { id: 'mercer-5b', name: '5B', property_id: 'mercer', property_name: 'Mercer', district: 'Sheung Wan', city: 'Hong Kong', street_address: '10 Mercer Street, Sheung Wan', marketable: true },
+  { id: 'mong-kok-5a', name: '5A', property_id: 'mong-kok', property_name: 'Mong Kok', district: 'Mong Kok', city: 'Hong Kong', street_address: '95 Tung Choi Street, Mong Kok', marketable: true },
+  { id: 'nam-pak-hong-7a', name: '7A', property_id: 'nam-pak-hong', property_name: 'Nam Pak Hong', district: 'Sheung Wan', city: 'Hong Kong', street_address: 'Nam Pak Hong Building, 24 Bonham Strand West, Sheung Wan', marketable: true },
+  { id: 'nam-pak-hong-5b', name: '5B', property_id: 'nam-pak-hong', property_name: 'Nam Pak Hong', district: 'Sheung Wan', city: 'Hong Kong', street_address: 'Nam Pak Hong Building, 24 Bonham Strand West, Sheung Wan', marketable: true },
+  { id: 'office-8', name: '8', property_id: 'office', property_name: 'Office', district: null, city: 'Hong Kong', street_address: '21/F Unit B, Man On Commercial Building', marketable: true },
+  { id: 'po-thai-3a', name: '3A', property_id: 'po-thai', property_name: 'Po Thai', district: 'Sheung Wan', city: 'Hong Kong', street_address: '9 Possession Street', marketable: true },
+  { id: 'poplar-5b', name: '5B', property_id: 'poplar', property_name: 'Poplar', district: 'Prince Edward', city: 'Hong Kong', street_address: '23 Poplar Street', marketable: true },
+  { id: 'tai-yuen-7a', name: '7A', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', district: 'Wan Chai', city: 'Hong Kong', street_address: '15 Tai Yuen St, Wan Chai, Hong Kong', marketable: true },
+  { id: 'test-property-1', name: '1', property_id: 'test-property', property_name: 'Test Property', district: null, city: 'Hong Kong', street_address: 'Kwai Chung Road - 1', marketable: true },
+  { id: 'test-property-2', name: '2', property_id: 'test-property-2', property_name: 'Test Property 2', district: null, city: 'Hong Kong', street_address: 'Kwai Chung Road - 1', marketable: true },
+];
+
+test('resolver: street address token resolves Nam Pak Hong 7A from Bonham Strand', () => {
+  // This is the bug that motivated the change: the street was previously not a property signal.
+  const r = scoreUnits('7A Bonham Strand West', REAL_PROPERTY_UNITS);
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'nam-pak-hong-7a');
+});
+
+test('resolver: address-only Russell token resolves Lai Yuen 2A', () => {
+  const r = scoreUnits('russell 2a', REAL_PROPERTY_UNITS);
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'lai-yuen-2a');
+});
+
+test('resolver: address-only Tung Choi tokens resolve Mong Kok 5A', () => {
+  const r = scoreUnits('tung choi 5a', REAL_PROPERTY_UNITS);
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'mong-kok-5a');
+});
+
+test('resolver: street number is never property identity', () => {
+  const r = scoreUnits('8 Cleverly Street', REAL_PROPERTY_UNITS);
+  assert.equal(r.status, 'property_only');
+  assert.deepEqual(
+    r.candidates.map(c => c.unit_id).sort(),
+    ['cleverly-1a', 'cleverly-5b']
+  );
+});
+
+test('resolver: generic address words alone match nothing', () => {
+  assert.equal(scoreUnits('street', REAL_PROPERTY_UNITS).status, 'none');
+  assert.equal(scoreUnits('building', REAL_PROPERTY_UNITS).status, 'none');
+  assert.equal(scoreUnits('road', REAL_PROPERTY_UNITS).status, 'none');
+});
+
+test('resolver: shared Paterson address remains ambiguous across both Pearl City properties', () => {
+  const r = scoreUnits('paterson 22', REAL_PROPERTY_UNITS);
+  assert.equal(r.status, 'ambiguous');
+  assert.deepEqual(
+    r.candidates.map(c => c.unit_id).sort(),
+    ['pearl-b6-22', 'pearl-c1-22']
+  );
+});
+
+test('resolver: property name match still beats location-only Sheung Wan 5B matches', () => {
+  const r = scoreUnits('mercer 5b', REAL_PROPERTY_UNITS);
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'mercer-5b');
+});
+
+test('resolver: Nam Pak Hong name match is unchanged', () => {
+  const r = scoreUnits('nam pak hong 7a', REAL_PROPERTY_UNITS);
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'nam-pak-hong-7a');
+});
+
+test('resolver: null and empty street addresses contribute no score and do not crash', () => {
+  const U = [
+    { id: 'null-street', name: '1A', property_id: 'null-street', property_name: 'Null Street', district: null, city: null, street_address: null, marketable: true },
+    { id: 'empty-street', name: '1A', property_id: 'empty-street', property_name: 'Empty Street', district: null, city: null, street_address: '', marketable: true },
+  ];
+  const r = scoreUnits('bonham 1a', U);
+  assert.equal(r.status, 'ambiguous');
+  assert.deepEqual(r.candidates.map(c => c.unit_id).sort(), ['empty-street', 'null-street']);
+});
