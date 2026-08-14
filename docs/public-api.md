@@ -148,8 +148,13 @@ All endpoints return JSON in this shape:
 
 #### `POST /units/resolve`
 
-Requires `X-API-Key`; read-only keys are allowed. This endpoint is read-only and
-safe to call on every inbound message. It resolves a unit reference without
+Requires `X-API-Key`. **Read-only keys are allowed**, despite the `POST` — this
+is one of a small allowlist of POSTs that write nothing (see
+`READ_ONLY_SAFE_POSTS`). It is `POST` rather than `GET` so a customer's raw
+message travels in a body instead of a query string, which would put it in every
+access log.
+
+Safe to call on every inbound message: it resolves a unit reference without
 starting a viewing negotiation, sending messages, or writing any records.
 
 Request body:

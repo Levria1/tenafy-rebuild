@@ -1,5 +1,25 @@
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 
+// POSTs that write nothing and exist only to read. The method is POST rather than
+// GET so that free text — a customer's raw inbound message — travels in a body
+// instead of a query string, which would put it in every access log.
+//
+// Membership here is a security assertion, not a convenience: a path in this set
+// is reachable by every read-only key. Add one ONLY if the handler performs no
+// writes of any kind, and prefer GET whenever the input is not sensitive.
+const READ_ONLY_SAFE_POSTS = new Set([
+  '/units/resolve',
+]);
+
+// The middleware is mounted inside the public router, so req.path is already
+// relative to /api/public. Compared with the trailing slash stripped so
+// "/units/resolve/" cannot slip past the set.
+function isReadOnlySafePost(req) {
+  if (req.method !== 'POST') return false;
+  const path = String(req.path || '').replace(/\/+$/, '') || '/';
+  return READ_ONLY_SAFE_POSTS.has(path);
+}
+
 /**
  * Middleware that authenticates via X-API-Key header.
  * Resolves the org pool and attaches it to req.pool.
@@ -57,7 +77,11 @@ const authenticateApiKey = async (req, res, next) => {
     };
 
     // Read-only keys may only read: allow GET/HEAD/OPTIONS, reject any write.
-    if (req.apiKey.readOnly && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    // The allowlist below covers the handful of POSTs that are semantically
+    // reads — see READ_ONLY_SAFE_POSTS.
+    if (req.apiKey.readOnly
+        && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+        && !isReadOnlySafePost(req)) {
       return res.status(403).json({ code: 403, message: 'This API key is read-only; write operations are not permitted.' });
     }
 
@@ -71,4 +95,4 @@ const authenticateApiKey = async (req, res, next) => {
   }
 };
 
-module.exports = { authenticateApiKey };
+module.exports = { authenticateApiKey, READ_ONLY_SAFE_POSTS, isReadOnlySafePost };
