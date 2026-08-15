@@ -8,6 +8,7 @@ const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 const config = require('../config');
 const inquiryExtractor = require('./inquiryExtractor');
+const { ORG_TIME_ZONE, orgToday, orgTodayDate } = require('../utils/orgTime');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -107,7 +108,7 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
 
   const result = { created: 0, skipped: 0, errors: 0, errorDetails: [] };
   const orgCurrency = {};
-  const today = new Date(toDateString(new Date()));
+  const today = orgTodayDate();
 
   // Look up the org's rental category ONCE before the loop. Used for both:
   //  (a) finding the latest RENT invoice's due_on (so non-rent invoices like
@@ -247,19 +248,23 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
 // ---------------------------------------------------------------------------
 
 async function sendLeaseExpiryForOrg(pool, orgId) {
+  // Bound ONCE and reused across the query: the 30/60/90-day notice is an exact
+  // day match, so two CURDATE() calls straddling midnight could silently drop a
+  // lease from the window it belongs to.
+  const today = orgToday();
   // landlord_expired_days is a bitmask: 1=30 days, 2=60 days, 4=90 days
   const [leases] = await pool.execute(
     `SELECT l.id, l.end_date, l.landlord_expired_days, l.tenant_id,
        t.email AS tenant_email, t.first_name AS tenant_first_name,
        t.last_name AS tenant_last_name, p.display_name AS property_name, p.org_id AS org_id,
-       u.name AS unit_name, DATEDIFF(l.end_date, CURDATE()) AS days_remaining
+       u.name AS unit_name, DATEDIFF(l.end_date, ?) AS days_remaining
      FROM leasing l JOIN unit u ON l.unit_id = u.id JOIN property p ON u.property_id = p.id JOIN tenant t ON l.tenant_id = t.id
      WHERE l.status = 1 AND l.deleted_at IS NULL AND l.lease_state = 'active'
        AND l.landlord_expired = 1
-       AND l.type = 0 AND l.end_date IS NOT NULL AND l.end_date >= CURDATE()
-       AND l.end_date <= DATE_ADD(CURDATE(), INTERVAL 90 DAY)
+       AND l.type = 0 AND l.end_date IS NOT NULL AND l.end_date >= ?
+       AND l.end_date <= DATE_ADD(?, INTERVAL 90 DAY)
        AND p.org_id = ?`,
-    [orgId]
+    [today, today, today, orgId]
   );
 
   if (leases.length === 0) return;
@@ -313,6 +318,9 @@ async function sendLeaseExpiryForOrg(pool, orgId) {
 const DEFAULT_INVOICE_REMINDER_LEAD = 7;
 
 async function sendUpcomingInvoiceRemindersForOrg(pool, orgId) {
+  // Exact-day match (due_on is N days out), so "today" is read once — see the
+  // note in sendLeaseExpiryForOrg.
+  const today = orgToday();
   // Rent category — only rent invoices get the courtesy reminder (mirrors what
   // the generation job used to send). Deposits / stamp duty etc. are excluded.
   const [[rentalCat]] = await pool.execute(
@@ -343,13 +351,13 @@ async function sendUpcomingInvoiceRemindersForOrg(pool, orgId) {
   const offsets = [...new Set([leadDays, secondLead].filter(n => Number(n) > 0))];
 
   const [invoices] = await pool.execute(
-    `SELECT i.id, i.invoice_code, i.leasing_id, i.due_on, DATEDIFF(i.due_on, CURDATE()) AS days_until
+    `SELECT i.id, i.invoice_code, i.leasing_id, i.due_on, DATEDIFF(i.due_on, ?) AS days_until
        FROM invoice i
        JOIN tenant t ON i.tenant_id = t.id
       WHERE i.org_id = ? AND i.status = 0 AND i.deleted_at IS NULL
         AND i.category = ? AND i.leasing_id IS NOT NULL
-        AND DATEDIFF(i.due_on, CURDATE()) IN (${offsets.map(() => '?').join(',')})`,
-    [orgId, catId, ...offsets]
+        AND DATEDIFF(i.due_on, ?) IN (${offsets.map(() => '?').join(',')})`,
+    [today, orgId, catId, today, ...offsets]
   );
 
   if (invoices.length === 0) return;
@@ -383,11 +391,11 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
   const [invoices] = await pool.execute(
     `SELECT i.id, i.invoice_code, i.amount, i.due_on, i.org_id, i.leasing_id,
        t.email AS tenant_email, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
-       p.display_name AS property_name, u.name AS unit_name, DATEDIFF(CURDATE(), i.due_on) AS days_overdue
+       p.display_name AS property_name, u.name AS unit_name, DATEDIFF(?, i.due_on) AS days_overdue
      FROM invoice i JOIN tenant t ON i.tenant_id = t.id JOIN unit u ON i.unit_id = u.id JOIN property p ON u.property_id = p.id
-     WHERE i.status = 0 AND i.due_on < CURDATE() AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
+     WHERE i.status = 0 AND i.due_on < ? AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
      ORDER BY i.due_on ASC LIMIT 50`,
-    [orgId]
+    [today, today, orgId]
   );
 
   if (invoices.length === 0) return;
@@ -426,11 +434,11 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
 async function markOverdueInvoicesForOrg(pool, orgId) {
   const [result] = await pool.execute(
     `UPDATE invoice i SET i.status = 2
-     WHERE i.status = 0 AND i.due_on < CURDATE() AND i.deleted_at IS NULL AND i.org_id = ?
+     WHERE i.status = 0 AND i.due_on < ? AND i.deleted_at IS NULL AND i.org_id = ?
        AND i.amount > COALESCE(
          (SELECT SUM(al.amount) FROM accounting_line al JOIN accounting a ON al.accounting_id = a.id
           WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id AND a.deleted_at IS NULL), 0)`,
-    [orgId]
+    [orgToday(), orgId]
   );
   if (result.affectedRows > 0) console.log(`[Scheduler][org:${orgId}] Marked ${result.affectedRows} invoice(s) as overdue.`);
 
@@ -468,10 +476,10 @@ async function sendCheckinEmailsForOrg(pool, orgId) {
      JOIN tenant t ON l.tenant_id = t.id
      WHERE l.status = 1 AND l.deleted_at IS NULL AND l.lease_state = 'active'
        AND l.tenant_checkin = 1
-       AND l.start_date >= CURDATE()
+       AND l.start_date >= ?
        AND t.email IS NOT NULL AND t.email != ''
        AND p.org_id = ?`,
-    [orgId]
+    [orgToday(), orgId]
   );
   if (leases.length === 0) return;
 
@@ -480,7 +488,7 @@ async function sendCheckinEmailsForOrg(pool, orgId) {
   const dateFirstDays = template ? (Number(template.date_first) || 0) : 0;
 
   let sent = 0;
-  const today = new Date(toDateString(new Date()));
+  const today = orgTodayDate();
   for (const lease of leases) {
     try {
       const startDate = new Date(toDateString(new Date(lease.start_date)));
@@ -540,7 +548,7 @@ async function sendCheckoutEmailsForOrg(pool, orgId) {
   }
 
   let sent = 0;
-  const today = new Date(toDateString(new Date()));
+  const today = orgTodayDate();
   for (const lease of leases) {
     try {
       const endDate = new Date(toDateString(new Date(lease.end_date)));
@@ -599,7 +607,7 @@ async function sendRenewalEmailsForOrg(pool, orgId) {
   if (leases.length === 0) return;
 
   let sent = 0;
-  const today = new Date(toDateString(new Date()));
+  const today = orgTodayDate();
   for (const lease of leases) {
     try {
       const endDate = new Date(toDateString(new Date(lease.end_date)));
@@ -631,8 +639,8 @@ async function promoteServiceTasksForOrg(pool, orgId) {
   const [result] = await pool.execute(
     `UPDATE service SET status = 1, updated_at = NOW()
      WHERE org_id = ? AND status = 0 AND service_date_start IS NOT NULL
-       AND DATE(service_date_start) <= CURDATE()`,
-    [orgId]
+       AND DATE(service_date_start) <= ?`,
+    [orgId, orgToday()]
   );
   if (result.affectedRows > 0) {
     console.log(`[Scheduler] Promoted ${result.affectedRows} service task(s) to in-progress for org ${orgId}`);
@@ -710,9 +718,9 @@ async function sendInquiryRemindersForOrg(pool, orgId) {
        WHERE i.org_id = ?
          AND i.deleted_at IS NULL
          AND i.reminder_date IS NOT NULL
-         AND i.reminder_date <= CURDATE()
+         AND i.reminder_date <= ?
          AND i.reminder_sent_at IS NULL`,
-      [orgId]
+      [orgId, orgToday()]
     );
   } catch (err) {
     // Table or columns may not exist yet on older DBs — skip silently
@@ -894,8 +902,8 @@ async function reExtractInquiriesForOrg(pool, orgId) {
           for (const line of diff) {
             await pool.execute(
               `INSERT INTO inquiry_fact_staging (id, org_id, inquiry_id, session_id, fact_line, occurred_on)
-               VALUES (?, ?, ?, ?, ?, CURDATE())`,
-              [newId(), orgId, r.inquiry_id, r.session_id, String(line)]
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [newId(), orgId, r.inquiry_id, r.session_id, String(line), orgToday()]
             );
           }
         } else {
@@ -1011,59 +1019,68 @@ async function checkFactDeliveryHealthForOrg(pool, orgId) {
 function startScheduler() {
   console.log('[Scheduler] Starting background jobs...');
 
+  // EVERY time below is Hong Kong local (ORG_TIME_ZONE), not server time.
+  // Production runs Etc/UTC; node-cron defaults to the server zone, so before this
+  // was made explicit the "10:00" invoice run actually went out at 18:00 HK.
+  // Two rules for anything added here:
+  //   1. always pass { timezone: ORG_TIME_ZONE };
+  //   2. never derive a date from CURDATE() or local getters — use orgToday() /
+  //      orgTodayDate(), or the job reads the UTC calendar date and is a day out
+  //      for the eight hours HK is already into tomorrow.
+
   // Daily at 00:05 AM - mark overdue invoices
   cron.schedule('5 0 * * *', () => {
     console.log('[Scheduler] Updating invoice statuses...');
     runForAllOrgs('markOverdue', markOverdueInvoicesForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Daily at 10:00 AM - generate recurring invoices
   cron.schedule('0 10 * * *', () => {
     console.log('[Scheduler] Running recurring invoice generation...');
     runForAllOrgs('recurringInvoices', generateRecurringInvoicesForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Daily at 08:00 - lease expiry notifications
   cron.schedule('0 8 * * *', () => {
     console.log('[Scheduler] Checking for expiring leases...');
     runForAllOrgs('leaseExpiry', sendLeaseExpiryForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Daily at 09:30 - upcoming invoice reminders (N days before due, per template date_first; default 7)
   cron.schedule('30 9 * * *', () => {
     console.log('[Scheduler] Sending upcoming invoice reminders...');
     runForAllOrgs('upcomingInvoiceReminders', sendUpcomingInvoiceRemindersForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Every Monday at 09:00 - overdue reminders
   cron.schedule('0 9 * * 1', () => {
     console.log('[Scheduler] Sending overdue invoice reminders...');
     runForAllOrgs('overdueReminders', sendOverdueRemindersForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Daily at 07:00 - check-in emails (X days before lease start, based on template date_first)
   cron.schedule('0 7 * * *', () => {
     console.log('[Scheduler] Sending check-in emails...');
     runForAllOrgs('checkinEmails', sendCheckinEmailsForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Daily at 07:30 - check-out emails (X days before/after lease end, based on template date_first)
   cron.schedule('30 7 * * *', () => {
     console.log('[Scheduler] Sending check-out emails...');
     runForAllOrgs('checkoutEmails', sendCheckoutEmailsForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Daily at 07:45 - renewal emails (tenant_renewal_days before lease end)
   cron.schedule('45 7 * * *', () => {
     console.log('[Scheduler] Sending renewal emails...');
     runForAllOrgs('renewalEmails', sendRenewalEmailsForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Daily at 06:00 - auto-promote pending service tasks to in-progress
   cron.schedule('0 6 * * *', () => {
     console.log('[Scheduler] Promoting pending service tasks to in-progress...');
     runForAllOrgs('serviceAutoProgress', promoteServiceTasksForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Hourly - auto-decline pending viewing bookings older than 24h
   cron.schedule('15 * * * *', () => {
@@ -1072,26 +1089,25 @@ function startScheduler() {
     // Also escalate stale relay-scheduler negotiations (no activity for 24h).
     const { autoEscalateStaleNegotiationsForOrg } = require('./viewingNegotiation');
     runForAllOrgs('viewingNegotiationReap', autoEscalateStaleNegotiationsForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Daily at 08:30 - inquiry reminders (Inquiry-Reminder template to creator)
   cron.schedule('30 8 * * *', () => {
     console.log('[Scheduler] Sending inquiry reminders...');
     runForAllOrgs('inquiryReminders', sendInquiryRemindersForOrg);
-  });
+  }, { timezone: ORG_TIME_ZONE });
 
-  // Daily at 23:00 HK - re-extract WhatsApp inquiries (Option A: diff into notes).
-  // Server runs in UTC on prod; 23:00 HK = 15:00 UTC. Wrap in TZ to be safe.
+  // Daily at 23:00 - re-extract WhatsApp inquiries (Option A: diff into notes).
   cron.schedule('0 23 * * *', () => {
     console.log('[Scheduler] Re-extracting WhatsApp inquiries...');
     runForAllOrgs('inquiryReExtract', reExtractInquiriesForOrg);
-  }, { timezone: 'Asia/Hong_Kong' });
+  }, { timezone: ORG_TIME_ZONE });
 
-  // Daily at 04:00 HK - TaneChat fact-delivery health (their heartbeat lands 02:00)
+  // Daily at 04:00 - TaneChat fact-delivery health (their heartbeat lands 02:00)
   cron.schedule('0 4 * * *', () => {
     console.log('[Scheduler] Checking TaneChat fact-delivery health...');
     runForAllOrgs('factDeliveryHealth', checkFactDeliveryHealthForOrg);
-  }, { timezone: 'Asia/Hong_Kong' });
+  }, { timezone: ORG_TIME_ZONE });
 
   // Run once at startup to fix stale statuses
   runForAllOrgs('startupFix', markOverdueInvoicesForOrg);
@@ -1101,3 +1117,7 @@ function startScheduler() {
 }
 
 module.exports = { startScheduler, createNotification };
+// Exported for tests: these are the jobs whose correctness depends on "today"
+// being the operator's calendar date rather than the server's.
+module.exports.markOverdueInvoicesForOrg = markOverdueInvoicesForOrg;
+module.exports.promoteServiceTasksForOrg = promoteServiceTasksForOrg;

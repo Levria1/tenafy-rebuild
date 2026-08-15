@@ -801,8 +801,12 @@ async function sendTemplateEmail(pool, orgId, {
     }
   } catch (err) {
     status = 'failed';
-    error = err.message;
-    console.error(`[EmailService] Send failed for type=${templateType}:`, err.message);
+    // mailer retries transient SMTP errors and attaches the attempt count. Record
+    // it: "failed after 3 attempts" is a real outage, "failed after 1" is the
+    // server refusing the message outright, and email_log is the only place
+    // anyone can tell them apart afterwards.
+    error = err.attempts > 1 ? `${err.message} (after ${err.attempts} attempts)` : err.message;
+    console.error(`[EmailService] Send failed for type=${templateType}:`, error);
   }
 
   // 7. Log to email_log

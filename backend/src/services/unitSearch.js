@@ -11,6 +11,8 @@
 // optional soft margin) rather than a hard cut, so close-but-not-exact options
 // can be shown with a note instead of returning nothing.
 
+const { orgToday } = require('../utils/orgTime');
+
 function toDateStr(d) {
   return (d instanceof Date ? d : new Date(d)).toISOString().split('T')[0];
 }
@@ -51,7 +53,7 @@ function gapBandDays(leaseDurationDays) {
 async function searchUnits(pool, criteria = {}) {
   const {
     orgId,
-    moveIn = new Date().toISOString().split('T')[0],
+    moveIn = orgToday(),
     moveOut = null,
     bedrooms = null,
     bathrooms = null,
@@ -73,7 +75,7 @@ async function searchUnits(pool, criteria = {}) {
     excludeRenewing = true,
   } = criteria;
   const NR_CONTRACT = 3; // contract_type: Not Renewing
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = orgToday();
 
   let where = 'p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL AND u.active_status = 1 AND u.deleted_at IS NULL';
   const params = [orgId];
@@ -219,7 +221,7 @@ async function searchUnits(pool, criteria = {}) {
   }
 
   const today = new Date(moveIn);
-  const realToday = new Date(new Date().toISOString().split('T')[0]);
+  const realToday = new Date(orgToday());
   const leaseDurationDays = moveOut
     ? Math.max(0, Math.round((new Date(moveOut) - new Date(moveIn)) / 86400000))
     : null;

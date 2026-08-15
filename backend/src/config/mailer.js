@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const { sendWithRetry } = require('../utils/mailRetry');
 
 /**
  * Creates a Nodemailer transporter from env variables.
@@ -70,7 +71,7 @@ async function sendMail({ to, subject, html, text, from, cc, bcc, replyTo, attac
 
   console.log(`[Mailer.sendMail] from=${mailOptions.from} to=${mailOptions.to} cc=${mailOptions.cc || '(none)'} bcc=${mailOptions.bcc || '(none)'}`);
 
-  const info = await transport.sendMail(mailOptions);
+  const info = await sendWithRetry(transport, mailOptions, { label: 'Mailer.sendMail' });
 
   console.log(`[Mailer.sendMail] sent ok messageId=${info.messageId} accepted=${JSON.stringify(info.accepted)} rejected=${JSON.stringify(info.rejected)}`);
 
@@ -137,7 +138,7 @@ async function sendMailWithAccount(account, { to, subject, html, text, from, cc,
 
   console.log(`[Mailer.sendMailWithAccount] account=${account.email} from=${mailOptions.from} to=${mailOptions.to} cc=${mailOptions.cc || '(none)'} bcc=${mailOptions.bcc || '(none)'}`);
 
-  const info = await transport.sendMail(mailOptions);
+  const info = await sendWithRetry(transport, mailOptions, { label: 'Mailer.sendMailWithAccount' });
 
   console.log(`[Mailer.sendMailWithAccount] sent ok messageId=${info.messageId} accepted=${JSON.stringify(info.accepted)} rejected=${JSON.stringify(info.rejected)}`);
 

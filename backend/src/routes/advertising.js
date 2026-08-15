@@ -1,4 +1,5 @@
 const express = require('express');
+const { orgToday } = require('../utils/orgTime');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold } = require('../services/advertisingTemplate');
@@ -573,7 +574,7 @@ router.get('/vacancies', authenticate, async (req, res) => {
     res.json({
       code: 200,
       data: {
-        as_of: new Date().toISOString().slice(0, 10),
+        as_of: orgToday(),
         lead_days: EXPIRING_WINDOW,
         count: vacancies.length,
         vacant_count,
@@ -1010,7 +1011,7 @@ router.get('/scheduler', authenticate, async (req, res) => {
     res.json({
       code: 200,
       data: {
-        as_of: new Date().toISOString().slice(0, 10),
+        as_of: orgToday(),
         slot_count: SCHEDULER_SLOTS,
         filled: Math.min(bundles.length, SCHEDULER_SLOTS),
         overflow: Math.max(bundles.length - SCHEDULER_SLOTS, 0),  // bundles beyond the 20 slots
@@ -1176,8 +1177,13 @@ async function resolveUnitLine(pool, orgId, template) {
 
 async function renderBundle(pool, orgId, bundle, template, footer) {
   const resolved = [];
+  // Kept aligned with bundle.units (null where the unit vanished), so callers can
+  // report the price this post ACTUALLY advertises rather than re-deriving it and
+  // risking a badge that disagrees with the ad text.
+  const unitValues = [];
   for (const u of bundle.units) {
     const values = await resolveUnitValues(pool, orgId, u.unit_id, template);
+    unitValues.push(values || null);
     if (values) resolved.push(values);
   }
   const amt = (v) => {
@@ -1198,7 +1204,36 @@ async function renderBundle(pool, orgId, bundle, template, footer) {
     .map(s => (s || '').trim()).filter(Boolean);
   const text = convertBold(parts.join('\n\n'));
   return { title: convertBold(title), body: convertBold(body), unit_lines: unitLines.map(convertBold),
-           webpage_link: template.webpage_link || null, footer: footer || null, text };
+           webpage_link: template.webpage_link || null, footer: footer || null, text,
+           unit_values: unitValues };
+}
+
+// The rent this post advertises, per unit. Two sources, in order:
+//   1. the rendered %PostingRentAmount% — the exact number in the ad text, which
+//      also covers units whose range is blank and fall back to the last lease;
+//   2. computePostingRent from the vacancy row — used when there is no template to
+//      render (needs_template / no_slot rows), so the operator still sees a price.
+// `tier` is the step-down band (high/mid/low/discount): it is how the operator sees
+// at a glance that a unit is being advertised at a discount.
+function postingPrices(bundle, rendered) {
+  return bundle.units.map((u, i) => {
+    const step = computePostingRent(u.rent_price_min, u.rent_price_max, u.days_left);
+    const values = rendered && rendered.unit_values ? rendered.unit_values[i] : null;
+    let amount = step ? step.amount : null;
+    if (values) {
+      const n = Number(String(values['%PostingRentAmount%'] || '').replace(/[^0-9.]/g, ''));
+      if (Number.isFinite(n) && n > 0) amount = n;
+    }
+    // Field names match the /scheduler slot payload so the frontend reads one shape.
+    return {
+      unit_id: String(u.unit_id),
+      unit_name: u.unit_name,
+      posting_rent: amount != null ? Number(amount) : null,
+      posting_tier: step ? step.tier : null,
+      rent_price_min: u.rent_price_min != null ? Number(u.rent_price_min) : null,
+      rent_price_max: u.rent_price_max != null ? Number(u.rent_price_max) : null,
+    };
+  });
 }
 
 // Org-wide advertising settings (shared footer + photo root).
@@ -1568,7 +1603,7 @@ async function buildPostingPlan(pool, orgId, { date } = {}) {
       const rendered = await renderBundle(pool, orgId, b, tpl, settings.footer);
 
       posts.push({
-        ...bundleSummary(b),
+        ...bundleSummary(b, rendered),
         status: 'ready',
         reason: null,
         extra,
@@ -1636,12 +1671,13 @@ router.get('/posting-plan', authenticate, async (req, res) => {
   }
 });
 
-function bundleSummary(b) {
+function bundleSummary(b, rendered = null) {
   return {
     property_id: b.property_id ? String(b.property_id) : null,
     property_name: b.property_name,
     unit_ids: b.units.map(u => String(u.unit_id)),
     unit_names: b.units.map(u => u.unit_name),
+    unit_prices: postingPrices(b, rendered),
     tier: b.tier,
     intent: b.intent,
     image_hint: b.units.map(u => `${b.property_name}/${u.unit_name}`),
@@ -2348,3 +2384,4 @@ module.exports.markPostingPlan = markPostingPlan;
 module.exports.computeVacancies = computeVacancies;
 module.exports.loadSettings = loadSettings;
 module.exports.deriveDefaultVacancyExpiry = deriveDefaultVacancyExpiry;
+module.exports.postingPrices = postingPrices;

@@ -107,30 +107,10 @@ function dateLikeToLocalDate(value) {
 // anywhere else. We deliberately do NOT set process.env.TZ — mysql2 parses stored
 // DATETIMEs against the process timezone, so changing it would reinterpret every
 // timestamp already in the database.
-const ORG_TIME_ZONE = process.env.ORG_TIME_ZONE || 'Asia/Hong_Kong';
-
-// Accepts either a real instant (Date) or a value that is ALREADY operator wall
-// clock (a 'YYYY-MM-DDTHH:MM' string, which is how prospect times and tests carry
-// them). Only an instant needs converting; converting a wall-clock string again
-// would shift it a second time.
-function toOrgWallClock(value) {
-  if (value instanceof Date) return orgWallClock(value);
-  return value;
-}
-
-function orgWallClock(instant = new Date(), timeZone = ORG_TIME_ZONE) {
-  const d = (instant instanceof Date) ? instant : new Date(instant);
-  if (isNaN(d.getTime())) return null;
-  const p = (n) => String(n).padStart(2, '0');
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone, hour12: false,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  }).formatToParts(d).reduce((acc, part) => { acc[part.type] = part.value; return acc; }, {});
-  // Intl renders midnight as hour "24" in some ICU versions; normalise it.
-  const hour = parts.hour === '24' ? '00' : parts.hour;
-  return `${parts.year}-${parts.month}-${parts.day}T${p(hour)}:${parts.minute}:${parts.second}`;
-}
+// These moved to utils/orgTime.js so the scheduler and the viewing relay read the
+// same clock. Re-exported below, unchanged, so every existing caller and test keeps
+// importing them from here.
+const { ORG_TIME_ZONE, orgWallClock, toOrgWallClock } = require('../utils/orgTime');
 
 function dateToWallClockMinute(d) {
   if (!d) return null;

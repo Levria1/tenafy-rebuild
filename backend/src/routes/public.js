@@ -1,4 +1,5 @@
 const express = require('express');
+const { orgToday } = require('../utils/orgTime');
 const crypto = require('crypto');
 const router = express.Router();
 const { authenticateApiKey } = require('../middleware/apiKeyAuth');
@@ -2212,7 +2213,7 @@ async function autoCreateInquiryForSession(pool, orgId, sessionId) {
 router.get('/units/available', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
-    const date = req.query.date || new Date().toISOString().split('T')[0];
+    const date = req.query.date || orgToday();
     const propertyId = req.query.propertyId || req.query.property_id || null;
 
     // DEPRECATED in favour of GET /vacancies, which also reports units coming free
@@ -2291,7 +2292,7 @@ router.get('/units/available', async (req, res) => {
 router.get('/units/search', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
-    const moveIn = req.query.move_in_date || new Date().toISOString().split('T')[0];
+    const moveIn = req.query.move_in_date || orgToday();
     const moveOut = req.query.move_out_date || null;
     const bedrooms = req.query.bedrooms !== undefined ? Number(req.query.bedrooms) : null;
     const bathrooms = req.query.bathrooms !== undefined ? Number(req.query.bathrooms) : null;
@@ -2446,7 +2447,7 @@ router.post('/units/resolve', async (req, res) => {
 router.get('/properties', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
-    const date = req.query.date || new Date().toISOString().split('T')[0];
+    const date = req.query.date || orgToday();
     const onlyAvailable = req.query.has_available_units === 'true' || req.query.has_available_units === '1';
 
     const [properties] = await req.pool.execute(
@@ -2614,7 +2615,7 @@ router.get('/units/:id', async (req, res) => {
       [id]
     );
     let currentMoveOut = null;
-    let availableFrom = new Date().toISOString().split('T')[0];
+    let availableFrom = orgToday();
     if (latestLease && latestLease.end_date) {
       const endStr = latestLease.end_date instanceof Date
         ? latestLease.end_date.toISOString().split('T')[0]
@@ -2665,7 +2666,7 @@ router.get('/units/:id/availability', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
     const { id } = req.params;
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
     const fromDate = req.query.from_date || today;
     let toDate = req.query.to_date;
     if (!toDate) {
@@ -2844,7 +2845,7 @@ router.get('/tenants/lookup', async (req, res) => {
       return ok(res, { matched: false, classification: 'unknown', count: 0, tenants: [] });
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = orgToday();
     const asDate = (d) => d ? (typeof d === 'string' ? d.slice(0, 10) : new Date(d).toISOString().slice(0, 10)) : null;
     const leaseStatus = (l) => {
       const s = asDate(l.start_date), e = asDate(l.end_date);

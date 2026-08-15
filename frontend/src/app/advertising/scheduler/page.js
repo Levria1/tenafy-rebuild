@@ -8,6 +8,7 @@ import {
 } from 'antd';
 import {
   SoundOutlined, ReloadOutlined, ThunderboltOutlined, PlusOutlined, DeleteOutlined,
+  EyeOutlined, CopyOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
 import { advertisingApi } from '../../../lib/api';
@@ -37,6 +38,9 @@ export default function SchedulerPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
+
+  // Post preview modal — holds the plan row being previewed, or null.
+  const [previewPost, setPreviewPost] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -132,6 +136,38 @@ export default function SchedulerPage() {
     }
   };
 
+  // The advertised rate steps DOWN as availability nears, so the tier is not
+  // decoration — it is how the operator spots that a unit is being discounted.
+  const TIER_COLOR = { high: 'green', mid: 'blue', low: 'orange', discount: 'red' };
+  const TIER_HINT = {
+    high: 'Top of range — 8+ weeks before it frees up',
+    mid: 'Midpoint — 6 to 8 weeks out',
+    low: 'Bottom of range — under 6 weeks out',
+    discount: '10% under the bottom of range — already vacant',
+  };
+  const money = (n) => (n == null ? null : `HK$${Number(n).toLocaleString('en-US')}`);
+
+  // One price row per unit: the figure that actually appears in the post.
+  const renderPrices = (prices) => {
+    if (!prices || prices.length === 0) return <Text type="secondary">—</Text>;
+    return (
+      <Space direction="vertical" size={2}>
+        {prices.map(p => (
+          <span key={p.unit_id}>
+            {p.posting_rent == null
+              ? <Tooltip title="No advertised rent range set on this unit"><Text type="secondary">— no price —</Text></Tooltip>
+              : <Text strong style={{ fontVariantNumeric: 'tabular-nums' }}>{money(p.posting_rent)}</Text>}
+            {p.posting_tier && (
+              <Tooltip title={TIER_HINT[p.posting_tier]}>
+                <Tag color={TIER_COLOR[p.posting_tier]} style={{ marginLeft: 6 }}>{p.posting_tier}</Tag>
+              </Tooltip>
+            )}
+          </span>
+        ))}
+      </Space>
+    );
+  };
+
   const slotColumns = [
     {
       title: '#',
@@ -168,6 +204,14 @@ export default function SchedulerPage() {
       },
     },
     {
+      title: 'Posting Price',
+      key: 'posting_price',
+      width: 190,
+      // The roster rows already carry posting_rent/posting_tier per unit, so this
+      // reads the same shape the plan table does.
+      render: (_, r) => renderPrices(r.units),
+    },
+    {
       title: 'Vacant Date',
       dataIndex: 'vacant_date',
       key: 'vacant_date',
@@ -198,6 +242,12 @@ export default function SchedulerPage() {
       ),
     },
     {
+      title: 'Posting Price',
+      key: 'unit_prices',
+      width: 190,
+      render: (_, r) => renderPrices(r.unit_prices),
+    },
+    {
       title: 'Status',
       dataIndex: 'status',
       key: 'status',
@@ -220,6 +270,14 @@ export default function SchedulerPage() {
       key: 'account',
       width: 220,
       render: (_, r) => r.account ? (r.account.name || r.account.email) : <Text type="secondary">—</Text>,
+    },
+    {
+      title: 'Post',
+      key: 'preview',
+      width: 100,
+      render: (_, r) => (r.post_text
+        ? <a onClick={() => setPreviewPost(r)}><EyeOutlined /> Preview</a>
+        : <Tooltip title={r.reason || 'Nothing rendered for this row yet'}><Text type="secondary">—</Text></Tooltip>),
     },
   ];
 
@@ -506,6 +564,62 @@ export default function SchedulerPage() {
             <Input.TextArea rows={2} placeholder="Anything to remember" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={previewPost
+          ? <Space direction="vertical" size={0}>
+              <Text strong>{previewPost.property_name} — {(previewPost.unit_names || []).join(', ')}</Text>
+              <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+                {previewPost.forum?.forum_name || 'no forum'} · {previewPost.account?.name || previewPost.account?.email || 'no account'}
+              </Text>
+            </Space>
+          : 'Post preview'}
+        open={!!previewPost}
+        onCancel={() => setPreviewPost(null)}
+        width={720}
+        footer={[
+          <Button key="copy" icon={<CopyOutlined />} onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(previewPost?.post_text || '');
+              message.success('Post copied');
+            } catch {
+              // Clipboard is blocked on insecure origins — the text is on screen
+              // and selectable, so say so rather than failing silently.
+              message.warning('Copy blocked by the browser — select the text and copy manually');
+            }
+          }}>Copy post</Button>,
+          <Button key="close" type="primary" onClick={() => setPreviewPost(null)}>Close</Button>,
+        ]}
+      >
+        {previewPost && (
+          <>
+            <Space size={[8, 8]} wrap style={{ marginBottom: 12 }}>
+              <Tag color="geekblue">{previewPost.template_name}</Tag>
+              {(previewPost.unit_prices || []).map(p => (
+                <Tag key={p.unit_id}>
+                  {p.unit_name}: {p.posting_rent == null ? 'no price' : money(p.posting_rent)}
+                </Tag>
+              ))}
+            </Space>
+            {/* Exactly what gets pasted into the forum — whitespace preserved, since
+                the blank lines between sections are part of the rendered post. */}
+            <div style={{
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13, lineHeight: 1.6,
+              background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6,
+              padding: 16, maxHeight: '55vh', overflowY: 'auto',
+            }}>
+              {previewPost.post_text}
+            </div>
+            {previewPost.image_hint?.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  Photos: {previewPost.image_hint.join(' · ')}
+                </Text>
+              </div>
+            )}
+          </>
+        )}
       </Modal>
 
       <style jsx global>{`

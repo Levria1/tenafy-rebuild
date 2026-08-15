@@ -13,6 +13,7 @@
  */
 
 const crypto = require('crypto');
+const { orgToday } = require('../utils/orgTime');
 const { buildViewingIcs } = require('../utils/ics');
 const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
@@ -87,7 +88,7 @@ const search_available_units = {
     const { pool } = ctx;
     const limit = clampLimit(args.limit, 10, 25);
 
-    let moveIn = new Date().toISOString().split('T')[0];
+    let moveIn = orgToday();
     const dateArg = args.move_in_date || args.available_on; // accept the legacy arg name too
     if (dateArg) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateArg))) {
@@ -406,7 +407,7 @@ const list_properties = {
   cap: 'can_search',
   async execute(ctx, args = {}) {
     const { pool } = ctx;
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
     const where = ['p.org_id = ?', 'p.status = 1', 'p.deleted_at IS NULL'];
     const params = [today, today, ctx.orgId];
     if (args.location) {
@@ -1309,7 +1310,7 @@ const search_vacancies = {
   },
   async execute(ctx, args) {
     const orgId = ctx.orgId;
-    const asOf = /^\d{4}-\d{2}-\d{2}$/.test(String(args.as_of || '')) ? args.as_of : new Date().toISOString().split('T')[0];
+    const asOf = /^\d{4}-\d{2}-\d{2}$/.test(String(args.as_of || '')) ? args.as_of : orgToday();
     const horizon = clampLimit(args.horizon_days, 60, 3650);
     const minGap = Number.isInteger(args.min_gap_days) ? args.min_gap_days : 15;
     const limit = clampLimit(args.limit, 500, 1000);
