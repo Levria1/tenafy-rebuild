@@ -26,8 +26,8 @@ const STATE_META = {
   RELAY_TO_PROSPECT: { label: 'Relaying to prospect', color: 'purple' },
   CONFIRM_TIME: { label: 'Confirming time', color: 'geekblue' },
   CONFIRMED: { label: 'Confirmed', color: 'green' },
-  // Booked because the occupant stayed silent past the opt-out deadline they were
-  // given. Distinguished from CONFIRMED on purpose: nobody explicitly agreed, so
+  // Booked because the occupant stayed silent past the internal response window.
+  // Distinguished from CONFIRMED on purpose: nobody explicitly agreed, so
   // it is the one confirmed state that can still be reversed by the tenant.
   AUTO_CONFIRMED: { label: 'Auto-confirmed', color: 'green' },
   TENANT_CANCELS_AFTER_X: { label: 'Tenant reversed', color: 'red' },
@@ -578,14 +578,14 @@ function SetupDrawer({ open, onClose }) {
 
           <Title level={5} style={{ marginTop: 20 }}>Asking the current tenant</Title>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            Once the viewer confirms, we tell the occupant and give them a deadline to object. If they
-            say nothing by then, the viewing is confirmed automatically. Per-tenant overrides (a longer
+            Once the viewer confirms, we notify the occupant. If they say nothing during the response
+            window, the viewing is confirmed automatically. Per-tenant overrides (a longer
             window, or requiring an explicit yes) take priority over these.
           </Text>
           <Space size="large" wrap style={{ marginTop: 8 }}>
             <div>
-              <div><Text type="secondary">Deadline to object</Text></div>
-              <InputNumber min={1} max={168} value={settings.tenant_opt_out_hours}
+              <div><Text type="secondary">Tenant response window</Text></div>
+              <InputNumber min={1} max={48} value={settings.tenant_opt_out_hours}
                 onChange={(v) => setSettings({ ...settings, tenant_opt_out_hours: v })} addonAfter="hours" />
             </div>
             <div>
@@ -601,8 +601,8 @@ function SetupDrawer({ open, onClose }) {
           </Space>
           <div style={{ marginTop: 6 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              An occupant on the deadline-to-object path is never nudged — their silence is already a
-              valid answer, and we told them so. Nudges only apply when an explicit yes is required.
+              An occupant on the auto-confirm path is never nudged; silence is already a valid
+              answer. Nudges only apply when an explicit yes is required.
             </Text>
           </div>
 

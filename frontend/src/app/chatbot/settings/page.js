@@ -6,7 +6,7 @@ import {
 } from 'antd';
 import { SaveOutlined, ReloadOutlined } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
-import { chatApi, advertisingApi } from '../../../lib/api';
+import { chatApi, advertisingApi, viewingApi } from '../../../lib/api';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -235,9 +235,10 @@ export default function ChatSettingsPage() {
 
   const reload = useCallback(() => {
     setLoading(true);
-    chatApi.getSettings()
-      .then((r) => {
-        const s = r.data.data;
+    Promise.all([chatApi.getSettings(), viewingApi.getViewingSettings()])
+      .then(([chatRes, viewingRes]) => {
+        const s = chatRes.data.data;
+        const viewing = viewingRes.data.data || {};
         setSettings(s);
         form.setFieldsValue({
           enabled: Boolean(s.enabled),
@@ -245,6 +246,7 @@ export default function ChatSettingsPage() {
           max_bookings_per_session: s.max_bookings_per_session,
           max_messages_per_session: s.max_messages_per_session,
           max_messages_per_day: s.max_messages_per_day,
+          tenant_opt_out_hours: viewing.tenant_opt_out_hours ?? 4,
         });
       })
       .catch(() => message.error('Failed to load settings'))
@@ -270,6 +272,9 @@ export default function ChatSettingsPage() {
         max_bookings_per_session: values.max_bookings_per_session,
         max_messages_per_session: values.max_messages_per_session,
         max_messages_per_day: values.max_messages_per_day,
+      });
+      await viewingApi.updateViewingSettings({
+        tenant_opt_out_hours: values.tenant_opt_out_hours,
       });
       message.success('Settings saved');
       reload();
@@ -369,6 +374,36 @@ export default function ChatSettingsPage() {
               </Form.Item>
             </Col>
           </Row>
+        </Card>
+
+        <Card size="small" title="Viewing relay" style={{ marginBottom: 16 }}>
+          <Row gutter={16}>
+            <Col xs={24} md={8}>
+              <Form.Item
+                name="tenant_opt_out_hours"
+                label="Tenant response window (hours)"
+                extra="How long we wait after the notice is sent before confirming the viewing. If the tenant does not reply in this time, the viewing is confirmed automatically. The tenant is not told this time."
+                rules={[
+                  { required: true, message: 'Enter a whole number from 1 to 48 hours.' },
+                  {
+                    validator: (_, value) => {
+                      const n = Number(value);
+                      return Number.isInteger(n) && n >= 1 && n <= 48
+                        ? Promise.resolve()
+                        : Promise.reject(new Error('Enter a whole number from 1 to 48 hours.'));
+                    },
+                  },
+                ]}
+              >
+                <InputNumber min={1} max={48} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Alert
+            type="warning"
+            showIcon
+            message="Viewings starting sooner than this window ask the tenant to reply yes instead — silence will not confirm those. Raising this number makes more viewings need an explicit yes."
+          />
         </Card>
 
         <Space>

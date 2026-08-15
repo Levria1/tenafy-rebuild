@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const {
   DEFAULT_SETTING, STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
   TERMINAL_STATES, CLOSED_STATES,
+  DRAFT_FRESH_MINUTES,
   combineDateTime, minutesOf, withinWindow, withinQuietHours, viewingWindow, nextStep, buildRouting,
   resolvePolicy, optOutDeadline, autoConfirmDecision, nudgeDecision, reversalClassification,
   sendModeFor, idempotencyKeyFor, reminderTarget, activeNegotiationPayload, draftQueryOptions,
@@ -44,7 +45,7 @@ test('withinWindow: custom viewing_days honoured (Sunday-only org)', () => {
 });
 
 test('draftQueryOptions: defaults with an empty query', () => {
-  assert.deepEqual(draftQueryOptions({}), { limit: 50, maxAgeHours: 168, party: null });
+  assert.deepEqual(draftQueryOptions({}), { limit: 50, maxAgeMinutes: DRAFT_FRESH_MINUTES, party: null });
 });
 
 test('draftQueryOptions: limit clamps and non-numeric falls back', () => {
@@ -54,9 +55,11 @@ test('draftQueryOptions: limit clamps and non-numeric falls back', () => {
 });
 
 test('draftQueryOptions: max_age_hours clamps and non-numeric falls back', () => {
-  assert.equal(draftQueryOptions({ max_age_hours: '0' }).maxAgeHours, 1);
-  assert.equal(draftQueryOptions({ max_age_hours: '99999' }).maxAgeHours, 8760);
-  assert.equal(draftQueryOptions({ max_age_hours: 'many' }).maxAgeHours, 168);
+  assert.equal(draftQueryOptions({ max_age_hours: '0' }).maxAgeMinutes, DRAFT_FRESH_MINUTES);
+  assert.equal(draftQueryOptions({ max_age_hours: '99999' }).maxAgeMinutes, DRAFT_FRESH_MINUTES);
+  assert.equal(draftQueryOptions({ max_age_hours: 'many' }).maxAgeMinutes, DRAFT_FRESH_MINUTES);
+  // A caller may still narrow the window; only widening is refused.
+  assert.equal(draftQueryOptions({ max_age_hours: '0.25' }).maxAgeMinutes, 15);
 });
 
 test('draftQueryOptions: party only accepts TaneChat-sendable parties', () => {
@@ -456,7 +459,7 @@ test('nudgeDecision: customer nudges at 1h and 6h, caps, and times out at 24h', 
     { action: 'escalate', party: 'prospect', nudgeNumber: null, reason: 'customer_timeout' });
 });
 
-test('nudgeDecision: tenant opt-out path is intentionally not nudged', () => {
+test('nudgeDecision: tenant auto-confirm path is intentionally not nudged', () => {
   assert.deepEqual(nudgeDecision({
     state: 'AWAIT_TENANT', awaiting: 'tenant', tenant_notified_at: '2099-01-06T10:00:00',
     tenant_nudge_count: 0, policy_explicit_confirm: 0,
@@ -590,7 +593,7 @@ test('nudgeDecision: a recent nudge does not suppress escalation', () => {
 
 // Without this branch the reschedule-after-commit path was a dead end: we relayed
 // the occupant's new time to the customer, and their YES fell through to `ignore`.
-test('nextStep: customer accepting a post-commit reschedule confirms without a second opt-out', () => {
+test('nextStep: customer accepting a post-commit reschedule confirms without a second tenant window', () => {
   const accept = nextStep({
     state: STATE_RESCHEDULE_AFTER_COMMIT, party: 'prospect',
     intent: { accepted: true, currentWhen: '2099-01-07T15:00:00' }, roundCount: 0, maxRounds: 3,
@@ -609,10 +612,9 @@ test('nextStep: customer accepting a post-commit reschedule confirms without a s
   }
 });
 
-// In manual relay mode the opt-out deadline is rendered into the draft body at
-// composition, but staff approve it later. Recomputing the deadline at send time
-// would enforce a moment that appears nowhere in the message the tenant read, so we
-// act only on the QUOTED deadline — and only while it still leaves room to object.
+// Historical opt-out notices rendered a deadline into the draft body at composition.
+// Those rows act only on the QUOTED deadline, and only while it still leaves room
+// to object.
 test('noticeIsActionable: only a quoted deadline with time left can justify silence', () => {
   const { noticeIsActionable } = require('../src/services/viewingNegotiationLogic');
   // Composed 11:00 with a 4h window, approved promptly at 11:05 → 3h55m left.
@@ -639,9 +641,9 @@ test('noticeIsActionable: only a quoted deadline with time left can justify sile
 });
 
 // The explicit-path nudge must be independent of tenant_opt_out_hours. Borrowing
-// that setting meant widening the opt-out window to 24h pushed the nudge out to the
+// that setting meant widening the auto-confirm window to 24h pushed the nudge out to the
 // 24h escalation, so the tenant was never nudged at all before being handed to staff.
-test('nudgeDecision: explicit-path nudge is unaffected by the opt-out window', () => {
+test('nudgeDecision: explicit-path nudge is unaffected by the auto-confirm window', () => {
   const now = new Date('2026-08-12T14:00:00');
   const row = {
     state: 'AWAIT_TENANT', awaiting: 'tenant', policy_explicit_confirm: 1,
@@ -704,19 +706,19 @@ test('outboundSendDecision: quiet hours suppress auto nudges only', () => {
   });
 });
 
-test('chooseTenantNoticeTemplate: deadline-less opt-out falls back to explicit', () => {
+test('chooseTenantNoticeTemplate: normal policy uses silence-confirm ask even without a deadline', () => {
   assert.deepEqual(viewingService.chooseTenantNoticeTemplate(
     { require_explicit_confirmation: true }, '2099-01-06T14:00:00'
   ), { templateType: 'Viewing-Tenant-Explicit', eventType: 'tenant_explicit_confirm_request', deadline: null });
   assert.deepEqual(viewingService.chooseTenantNoticeTemplate(
     { require_explicit_confirmation: false }, '2099-01-06T14:00:00'
-  ), { templateType: 'Viewing-Tenant-OptOut', eventType: 'tenant_opt_out_notice', deadline: '2099-01-06T14:00:00' });
+  ), { templateType: 'Viewing-Tenant-Ask', eventType: 'tenant_silence_confirm', deadline: null });
   assert.deepEqual(viewingService.chooseTenantNoticeTemplate(
     { require_explicit_confirmation: false }, null
-  ), { templateType: 'Viewing-Tenant-Explicit', eventType: 'tenant_explicit_confirm_request', deadline: null });
+  ), { templateType: 'Viewing-Tenant-Ask', eventType: 'tenant_silence_confirm', deadline: null });
 });
 
-test('boardNextDeadline: opt-out deadline agrees with autoConfirmDecision', () => {
+test('boardNextDeadline: auto-confirm deadline agrees with autoConfirmDecision', () => {
   const waiting = {
     state: 'AWAIT_TENANT', awaiting: 'tenant', policy_explicit_confirm: 0,
     tenant_notified_at: '2099-01-06T10:00:00', opt_out_deadline_at: '2099-01-06T14:00:00',

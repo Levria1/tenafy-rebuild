@@ -32,11 +32,11 @@ const {
   RESUMABLE_HOLD_REASONS, nextStep, buildRouting,
   reminderTarget, activeNegotiationPayload,
   STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
-  TERMINAL_STATES, CLOSED_STATES,
+  TERMINAL_STATES, CLOSED_STATES, DRAFT_FRESH_MINUTES,
   resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
   reversalClassification,
   sendModeFor, idempotencyKeyFor, withinQuietHours,
-  draftQueryOptions,
+  draftQueryOptions, chooseTenantNoticeTemplate, composeStep, orgWallClock, toOrgWallClock,
 } = require('./viewingNegotiationLogic');
 const { findActiveLeaseForUnit } = require('./viewingBooking');
 const { resolveUnit, optionsText } = require('./unitResolver');
@@ -412,12 +412,7 @@ const FALLBACKS = {
   'Viewing-Prospect-Day-Ask': `Hi! We'd love to arrange a viewing of %Unit Name% at %Property Name%. Which day and time would suit you? (Viewings run Mon–Sat, 11am–7pm.)`,
   'Viewing-Slot-Taken': `Sorry, %Proposed Time% isn't available. Could you suggest another day and time?`,
   'Viewing-Checking': `Thanks! Let me check on %Proposed Time% for you and confirm the viewing.`,
-  'Viewing-Tenant-Ask': `Hi, a prospective viewer would like to see %Unit Name% at %Proposed Time%. Would that be okay?`,
-  // The deadline substitution is load-bearing: if %Opt Out Deadline% renders
-  // empty, the message stops being an informed opt-out and the auto-confirm that
-  // follows is no longer consented to. chooseTenantNoticeTemplate falls back to
-  // the explicit-YES wording whenever the deadline is missing.
-  'Viewing-Tenant-OptOut': `Hi %Tenant Name%, %Prospect Name% would like to view %Unit Name% on %Proposed Time%. Unless you reply no or ask to reschedule by %Opt Out Deadline%, we'll confirm this viewing. If the time doesn't work, please reply here.`,
+  'Viewing-Tenant-Ask': `Hi %Name - Lease%, we have a guest interested in viewing your unit, %Property Name% %Unit Name%, at %Proposed Time%. A member of our team will accompany the guest and secure the unit afterwards. If the timing is not convenient, please let us know an alternative time. Thank you!`,
   'Viewing-Tenant-Explicit': `Hi %Tenant Name%, %Prospect Name% would like to view %Unit Name% on %Proposed Time%. Please reply yes to confirm this works, or send another time that would be better.`,
   'Viewing-Tenant-Alt-Ask': `Got it, no problem. May I ask which day and time would work best for you?`,
   'Viewing-Relay-Prospect': `Sorry, %Old Time% doesn't work for the occupant. Would %Proposed Time% work for you instead?`,
@@ -445,6 +440,8 @@ const EVENT_TYPES = [
   'customer_confirm_request',
   'customer_nudge',
   'tenant_nudge',
+  'tenant_silence_confirm',
+  // Retained for historical rows only; new tenant silence-confirm notices never emit it.
   'tenant_opt_out_notice',
   'tenant_explicit_confirm_request',
   'customer_booking_confirmed',
@@ -456,9 +453,8 @@ const EVENT_TYPES = [
 const EVENT_TYPE_BY_TEMPLATE = {
   'Viewing-Prospect-Day-Ask': 'customer_confirm_request',
   'Viewing-Confirm-Time': 'customer_confirm_request',
-  'Viewing-Tenant-OptOut': 'tenant_opt_out_notice',
   'Viewing-Tenant-Explicit': 'tenant_explicit_confirm_request',
-  'Viewing-Tenant-Ask': 'tenant_explicit_confirm_request',
+  'Viewing-Tenant-Ask': 'tenant_silence_confirm',
   'Viewing-Relay-Confirmed': 'customer_booking_confirmed',
   'Viewing-Relay-Prospect': 'customer_reschedule_request',
   'Viewing-Relay-Escalated': 'customer_reschedule_request',
@@ -479,23 +475,13 @@ function outboundSendDecision(eventType, setting, now = new Date()) {
   const mode = sendModeFor(eventType, setting);
   let shouldSend = mode === 'auto' || setting.relay_mode === 'auto';
   let quietSuppressed = false;
-  if (mode === 'auto' && setting.respect_quiet_hours && withinQuietHours(dateToWallClock(now), setting)) {
+  if (mode === 'auto' && setting.respect_quiet_hours && withinQuietHours(toOrgWallClock(now), setting)) {
     // A nudge is never urgent enough to wake someone; the next hourly cron tick
     // will pick it up when the org's viewing window is open again.
     shouldSend = false;
     quietSuppressed = true;
   }
   return { mode, shouldSend, quietSuppressed };
-}
-
-function chooseTenantNoticeTemplate(policy, deadline) {
-  if (policy && policy.require_explicit_confirmation) {
-    return { templateType: 'Viewing-Tenant-Explicit', eventType: 'tenant_explicit_confirm_request', deadline: null };
-  }
-  if (!deadline) {
-    return { templateType: 'Viewing-Tenant-Explicit', eventType: 'tenant_explicit_confirm_request', deadline: null };
-  }
-  return { templateType: 'Viewing-Tenant-OptOut', eventType: 'tenant_opt_out_notice', deadline };
 }
 
 function isClosedState(state) {
@@ -699,7 +685,7 @@ async function applySentEventSideEffects(pool, orgId, eventId, sentAt = new Date
       );
       return;
     }
-    if (!['tenant_opt_out_notice', 'tenant_explicit_confirm_request'].includes(ev.event_type)) return;
+    if (!['tenant_silence_confirm', 'tenant_opt_out_notice', 'tenant_explicit_confirm_request'].includes(ev.event_type)) return;
 
     const setting = await getSetting(pool, orgId);
     const policy = resolvePolicy({
@@ -709,21 +695,21 @@ async function applySentEventSideEffects(pool, orgId, eventId, sentAt = new Date
       },
       setting,
       viewingStartAt: dateToWallClock(ev.current_proposed_datetime),
+      // A real instant; resolvePolicy normalises it onto the operator clock to
+      // match viewingStartAt. opt_out_deadline_at below deliberately keeps the
+      // raw instant, because SQL compares that against NOW().
       noticeSentAt: sentAt,
     });
-    // The deadline the tenant was ACTUALLY SHOWN is the only one we may act on.
-    // It was rendered into the message body at composition time and stored on the
-    // event row; we must not recompute it here. In manual relay mode (the default)
-    // composition and approval can be hours apart, so recomputing from `sentAt`
-    // would enforce a deadline that appears nowhere in the message the tenant read —
-    // and auto-confirming off that is not informed consent, it is a guess.
+    // Historical opt-out notices quoted a deadline, so those rows can only arm if
+    // the quoted time is still actionable. The new silence-confirm ask quotes no
+    // deadline; its internal timer starts from the actual send time instead.
     const staleNotice = ev.event_type === 'tenant_opt_out_notice'
       && !noticeIsActionable({ quotedDeadlineAt: ev.deadline_at, sentAt });
 
     if (ev.event_type === 'tenant_explicit_confirm_request' || policy.require_explicit_confirmation
         || staleNotice) {
-      // Staff may approve an opt-out draft hours later, by which time either short
-      // notice or an expired quoted deadline makes silence unsafe. Force explicit
+      // Staff may approve a historical opt-out draft hours later, by which time
+      // either short notice or an expired quoted deadline makes silence unsafe. Force explicit
       // confirmation from that point and leave no deadline, so silence cannot confirm.
       await pool.execute(
         `UPDATE viewing_negotiation
@@ -737,18 +723,21 @@ async function applySentEventSideEffects(pool, orgId, eventId, sentAt = new Date
         // The tenant received a deadline that had already lapsed. We will not act on
         // their silence, so a human has to close the loop.
         notifyStaff(pool, orgId, 'Viewing notice approved too late',
-          'A tenant opt-out notice was approved after the deadline it quoted had passed. '
-          + 'The viewing will NOT auto-confirm — please confirm with the occupant directly.');
+          'A tenant notice was approved after the deadline it quoted had passed. '
+          + 'The viewing will NOT auto-confirm; please confirm with the occupant directly.');
       }
       return;
     }
+    const armedDeadline = ev.event_type === 'tenant_silence_confirm'
+      ? optOutDeadline({ noticeSentAt: sentAt, optOutWindowHours: policy.opt_out_window_hours })
+      : ev.deadline_at;
     await pool.execute(
       `UPDATE viewing_negotiation
           SET tenant_notified_at = ?, opt_out_deadline_at = ?,
               policy_opt_out_hours = ?, policy_explicit_confirm = 0, policy_source = ?,
               updated_at = updated_at
         WHERE id = ?`,
-      [sentAt, ev.deadline_at, policy.opt_out_window_hours, policy.source, ev.negotiation_id]
+      [sentAt, armedDeadline, policy.opt_out_window_hours, policy.source, ev.negotiation_id]
     );
   } catch (e) {
     if (!isSchemaMissingError(e)) throw e;
@@ -1046,6 +1035,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     '%Unit Name%': ctx.unit_name || '', '%Property Name%': ctx.property_name || '',
     '%Property Address%': ctx.address || '', '%Prospect Name%': neg.prospect_name || '',
     '%Tenant Name%': tenantDisplayName(ctx),
+    '%Name - Lease%': tenantDisplayName(ctx),
   };
   const prospectPhone = neg.prospect_phone;
   const tenantPhone = ctx.tenant_phone;
@@ -1169,6 +1159,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
       storedPolicy,
       setting,
       viewingStartAt: whenIso,
+      // A real instant; resolvePolicy normalises it. See the send-time call.
       noticeSentAt,
     });
     const deadline = policy.require_explicit_confirmation ? null
@@ -1181,7 +1172,12 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
     outbounds.push({
       party: 'tenant', to_phone: tenantPhone, templateType: tenantNotice.templateType, eventType: tenantNotice.eventType,
       deadlineAt: tenantNotice.deadline ? tenantNotice.deadline.replace('T', ' ') : null,
-      vars: { ...vProp, '%Tenant Name%': tenantDisplayName(ctx), '%Opt Out Deadline%': tenantNotice.deadline || '' },
+      vars: {
+        ...vProp,
+        '%Tenant Name%': tenantDisplayName(ctx),
+        '%Name - Lease%': tenantDisplayName(ctx),
+        '%Opt Out Deadline%': tenantNotice.deadline || '',
+      },
     });
   }
 
@@ -1317,7 +1313,7 @@ async function handleReply(pool, orgId, neg, party, rawIntent, rawText, messageI
 
   if (neg.state === STATE_RESCHEDULE_AFTER_COMMIT && party === 'prospect' && intent.accepted === true) {
     // The tenant proposed this post-commit time themselves, so a customer YES
-    // confirms it directly; opening a second tenant opt-out window would ask for
+    // confirms it directly; opening a second tenant response window would ask for
     // consent we already received in the tenant's counter.
     const whenIso = intent.currentWhen;
     const staff = await resolveStaffOfDay(pool, neg.property_id, whenIso);
@@ -1640,6 +1636,8 @@ function viewingNegotiationVars(ctx) {
   return {
     '%Unit Name%': (ctx && ctx.unit_name) || '',
     '%Property Name%': (ctx && ctx.property_name) || '',
+    '%Tenant Name%': tenantDisplayName(ctx),
+    '%Name - Lease%': tenantDisplayName(ctx),
   };
 }
 
@@ -1824,12 +1822,13 @@ module.exports = {
   RESUMABLE_HOLD_REASONS,
   reminderTarget, activeNegotiationPayload,
   DEFAULT_SETTING, STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
-  TERMINAL_STATES, CLOSED_STATES, EVENT_TYPES, EVENT_TYPE_BY_TEMPLATE,
+  TERMINAL_STATES, CLOSED_STATES, DRAFT_FRESH_MINUTES, EVENT_TYPES, EVENT_TYPE_BY_TEMPLATE, FALLBACKS,
   resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
   reversalClassification,
   sendModeFor, idempotencyKeyFor, withinQuietHours, draftQueryOptions,
-  eventTypeForOutbound, outboundSendDecision, chooseTenantNoticeTemplate,
+  eventTypeForOutbound, outboundSendDecision, chooseTenantNoticeTemplate, composeStep,
   boardNextDeadline, isNudgeCandidate, isStaleCandidate, isSchemaMissingError, dateToWallClock,
+  renderMessage, viewingNegotiationVars, formatWhen,
   // orchestration
   getSetting, startNegotiation, startNegotiationFromText, handleReply, loadNegotiation,
   resolveStaffOfDay, loadStaffById, checkStaffFree, confirmNegotiation,

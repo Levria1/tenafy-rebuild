@@ -20,6 +20,10 @@ const STATE_TENANT_REVERSED = 'TENANT_CANCELS_AFTER_X';
 const STATE_RESCHEDULE_AFTER_COMMIT = 'RESCHEDULE_AFTER_COMMIT';
 const TERMINAL_STATES = ['CONFIRMED', STATE_AUTO_CONFIRMED, 'CANCELLED'];
 const CLOSED_STATES = [...TERMINAL_STATES, 'NEEDS_STAFF'];
+// A draft is a short-lived suggestion, not a stored artifact. Past this it is no
+// longer offered for sending — staff ask for a fresh one instead of releasing a
+// message composed against facts that may have moved.
+const DRAFT_FRESH_MINUTES = 30;
 
 // The current tenant is only contacted when their lease ends within a lead
 // window that depends on renewal status: Not Renewing (contract_type 3) gets
@@ -90,6 +94,44 @@ function dateLikeToLocalDate(value) {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// The operator's wall clock, which is NOT the server's.
+//
+// The droplet, node and MySQL all run UTC; the operator is in Hong Kong and both
+// configures viewing hours and receives prospect times as HK wall clock. Deriving
+// "now" with local getters therefore reads 8 hours early, which inverts the
+// quiet-hours window and — worse — makes a viewing an hour away look like nine,
+// defeating the short-notice rule that forces explicit tenant consent.
+//
+// An IANA zone rather than a fixed offset: HK has no DST so the numbers are the
+// same today, but a fixed offset silently becomes wrong the first time this runs
+// anywhere else. We deliberately do NOT set process.env.TZ — mysql2 parses stored
+// DATETIMEs against the process timezone, so changing it would reinterpret every
+// timestamp already in the database.
+const ORG_TIME_ZONE = process.env.ORG_TIME_ZONE || 'Asia/Hong_Kong';
+
+// Accepts either a real instant (Date) or a value that is ALREADY operator wall
+// clock (a 'YYYY-MM-DDTHH:MM' string, which is how prospect times and tests carry
+// them). Only an instant needs converting; converting a wall-clock string again
+// would shift it a second time.
+function toOrgWallClock(value) {
+  if (value instanceof Date) return orgWallClock(value);
+  return value;
+}
+
+function orgWallClock(instant = new Date(), timeZone = ORG_TIME_ZONE) {
+  const d = (instant instanceof Date) ? instant : new Date(instant);
+  if (isNaN(d.getTime())) return null;
+  const p = (n) => String(n).padStart(2, '0');
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(d).reduce((acc, part) => { acc[part.type] = part.value; return acc; }, {});
+  // Intl renders midnight as hour "24" in some ICU versions; normalise it.
+  const hour = parts.hour === '24' ? '00' : parts.hour;
+  return `${parts.year}-${parts.month}-${parts.day}T${p(hour)}:${parts.minute}:${parts.second}`;
+}
+
 function dateToWallClockMinute(d) {
   if (!d) return null;
   const p = (n) => String(n).padStart(2, '0');
@@ -97,7 +139,9 @@ function dateToWallClockMinute(d) {
 }
 
 // Returns null if `whenIso` is within the org viewing window, else an error string.
-function withinWindow(whenIso, setting) {
+// `nowWallClock` is injectable so the past-check is testable deterministically;
+// it defaults to the operator clock, never the server's.
+function withinWindow(whenIso, setting, nowWallClock = orgWallClock()) {
   setting = setting || DEFAULT_SETTING;
   const m = String(whenIso).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
   if (!m) return 'Invalid date/time';
@@ -108,11 +152,23 @@ function withinWindow(whenIso, setting) {
   const startMin = +m[4] * 60 + +m[5];
   if (startMin < minutesOf(setting.viewing_start)) return 'Before opening time';
   if (startMin + 30 > minutesOf(setting.viewing_end)) return 'After closing time';
-  if (new Date(whenIso).getTime() < Date.now()) return 'In the past';
+  // Compare wall clock with wall clock. `whenIso` carries no zone and means the
+  // OPERATOR's local time, so parsing it into an instant on a UTC server reads it
+  // 8 hours late and lets a time that has already passed look like the future.
+  // Both sides are zero-padded YYYY-MM-DDTHH:MM:SS, so string order is time order.
+  if (String(whenIso) < String(nowWallClock)) return 'In the past';
   return null;
 }
 
 function resolvePolicy({ callerPolicy, storedPolicy, setting, viewingStartAt, noticeSentAt } = {}) {
+  // `viewingStartAt` is OPERATOR wall clock (a prospect's "Tuesday 3pm"), while
+  // callers naturally hand us a real instant for `noticeSentAt` (new Date()).
+  // Comparing those directly on a UTC server inflates the gap by 8 hours, so a
+  // viewing an hour away reads as nine and skips the short-notice rule that
+  // forces explicit tenant consent. Normalise here rather than at each call site:
+  // a caller that forgets is silent, and the failure is a real viewing confirmed
+  // without the occupant having any chance to object.
+  noticeSentAt = toOrgWallClock(noticeSentAt);
   const choices = [
     { source: 'caller', policy: callerPolicy },
     { source: 'stored', policy: storedPolicy },
@@ -165,15 +221,12 @@ function optOutDeadline({ noticeSentAt, optOutWindowHours } = {}) {
   return dateToWallClockMinute(deadline);
 }
 
-// Can we still act on the tenant's silence against the deadline they were SHOWN?
+// Can we still act on a historical tenant notice against the deadline they were SHOWN?
 //
-// The opt-out deadline is rendered into the message body at composition time. In
-// manual relay mode (the default) staff approve that draft later — sometimes much
-// later — so the quoted deadline is the only one the tenant ever saw, and it must
-// not be recomputed at send time. This decides whether that quoted deadline is
-// still usable: a tenant who receives "reply by 15:00" at 18:00, or with minutes to
-// spare, has not been given a real opportunity to object, so silence cannot be
-// treated as consent and the negotiation must fall back to requiring an explicit yes.
+// Old opt-out templates rendered a deadline into the message body at composition
+// time. In manual relay mode staff approve that draft later, so the quoted
+// deadline is the only one the tenant saw and cannot be recomputed at send time.
+// New silence-confirm asks do not show a deadline and do not use this check.
 function noticeIsActionable({ quotedDeadlineAt, sentAt, minRemainingMs = 3600000 } = {}) {
   const deadline = dateLikeToLocalDate(quotedDeadlineAt);
   const sent = dateLikeToLocalDate(sentAt);
@@ -190,8 +243,8 @@ function autoConfirmDecision(row, now) {
     return { action: 'skip', reason: 'explicit_confirmation_required' };
   }
   if (!row.tenant_notified_at) {
-    // Manual relay mode creates the tenant opt-out notice as a draft. If staff
-    // never approve it, the tenant was never told anything. Auto-confirming off a
+    // Manual relay mode creates the tenant notice as a draft. If staff never
+    // approve it, the tenant was never told anything. Auto-confirming off a
     // draft would send a viewer to a flat whose occupant has no idea.
     return { action: 'skip', reason: 'notice_not_sent' };
   }
@@ -229,11 +282,58 @@ function clampedInteger(value, fallback, min, max) {
 
 function draftQueryOptions(query = {}) {
   const party = ['prospect', 'tenant'].includes(query.party) ? query.party : null;
+  const parsedHours = Number(query.max_age_hours);
+  const requestedHours = Number.isFinite(parsedHours) && parsedHours > 0
+    ? Math.min(parsedHours, 8760)
+    : 1;
   return {
     limit: clampedInteger(query.limit, 50, 1, 200),
-    maxAgeHours: clampedInteger(query.max_age_hours, 168, 1, 8760),
+    // max_age_hours may only NARROW the window, never widen it. Honouring a
+    // caller's max_age_hours=168 would reinstate exactly the week-old drafts the
+    // freshness rule exists to remove, via a parameter they already send.
+    maxAgeMinutes: Math.max(1, Math.floor(Math.min(requestedHours * 60, DRAFT_FRESH_MINUTES))),
     party,
   };
+}
+
+function chooseTenantNoticeTemplate(policy, deadline) {
+  if (policy && policy.require_explicit_confirmation) {
+    return { templateType: 'Viewing-Tenant-Explicit', eventType: 'tenant_explicit_confirm_request', deadline: null };
+  }
+  return { templateType: 'Viewing-Tenant-Ask', eventType: 'tenant_silence_confirm', deadline: null };
+}
+
+// What should we say to this party RIGHT NOW, given only the conversation's
+// current state? Deliberately separate from nextStep, which interprets an inbound
+// reply — this answers the question when nothing new has arrived.
+// null means there is nothing appropriate to send. An unknown state returns null
+// rather than guessing a template: a wrong message to a real customer is worse
+// than no message, and NEEDS_STAFF already has a human on it.
+function composeStep({ state, awaiting, hasCandidates, hasPendingUnit, policy, deadline } = {}) {
+  const party = awaiting === 'prospect' || awaiting === 'tenant' ? awaiting : null;
+  if (!party) return null;
+  if (state === 'RESOLVE_UNIT' && party === 'prospect') {
+    return { templateType: hasCandidates ? 'Viewing-Choose-Unit' : 'Viewing-Unit-NotFound', party };
+  }
+  if (state === 'CONFIRM_UNIT' && party === 'prospect') {
+    return hasPendingUnit ? { templateType: 'Viewing-Confirm-Unit', party } : null;
+  }
+  if (state === 'ASK_PROSPECT_DAY' && party === 'prospect') {
+    return { templateType: 'Viewing-Prospect-Day-Ask', party };
+  }
+  if (state === 'CONFIRM_TIME' && party === 'prospect') {
+    return { templateType: 'Viewing-Confirm-Time', party };
+  }
+  if (state === 'RELAY_TO_PROSPECT' && party === 'prospect') {
+    return { templateType: 'Viewing-Relay-Prospect', party };
+  }
+  if (state === 'AWAIT_TENANT' && party === 'tenant') {
+    return { ...chooseTenantNoticeTemplate(policy, deadline), party };
+  }
+  if (state === 'ASK_TENANT_ALT' && party === 'tenant') {
+    return { templateType: 'Viewing-Tenant-Alt-Ask', party };
+  }
+  return null;
 }
 
 function nudgeDecision(row, setting, now) {
@@ -281,9 +381,8 @@ function nudgeDecision(row, setting, now) {
   const notifiedAt = dateLikeToLocalDate(row.tenant_notified_at);
   if (!notifiedAt || !nowDate) return { action: 'none', party, nudgeNumber: null, reason: 'anchor_missing' };
   if (!row.policy_explicit_confirm) {
-    // On the opt-out path, silence is a valid expected answer. Nudging someone
-    // whose non-reply you already told them you will treat as consent is pointless
-    // and rude.
+    // On the auto-confirm path, silence is a valid expected answer. Nudges only
+    // belong on the explicit-YES path.
     return { action: 'none', party, nudgeNumber: null, reason: 'opt_out_path_no_nudge' };
   }
   const idle = (nowDate.getTime() - notifiedAt.getTime()) / 3600000;
@@ -293,9 +392,9 @@ function nudgeDecision(row, setting, now) {
   if (idle >= timeout) {
     return { action: 'escalate', party, nudgeNumber: null, reason: 'tenant_timeout' };
   }
-  // Deliberately NOT read from tenant_opt_out_hours. The opt-out window is a
+  // Deliberately NOT read from tenant_opt_out_hours. The response window is a
   // different concept that does not apply on this path, and borrowing it couples two
-  // settings destructively: widening the opt-out window to 24h to give tenants more
+  // settings destructively: widening the auto-confirm window to 24h to give tenants more
   // room would push this nudge out to the 24h escalation, so the tenant would never
   // be nudged at all. Instead: 4h by default (a viewing that sits unanswered longer
   // than that is already costing the booking), capped at half the timeout so the
@@ -404,7 +503,7 @@ function nextStep({ state, party, intent, roundCount, maxRounds, readBack = fals
     // The occupant reversed an already-confirmed viewing and offered another time,
     // which we relayed to the customer. Accepting it confirms IMMEDIATELY with
     // confirmOnFree — the tenant proposed this slot themselves, so re-opening a
-    // second opt-out window would ask them to consent to their own suggestion.
+    // second tenant response window would ask them to consent to their own suggestion.
     // Anything other than a clean yes goes to staff: this booking has already been
     // promised and broken once, so restarting the relay loop is the wrong instinct.
     if (state === STATE_RESCHEDULE_AFTER_COMMIT) {
@@ -498,10 +597,12 @@ function activeNegotiationPayload(rows, targetDigits) {
 
 module.exports = {
   DEFAULT_SETTING, STATE_AUTO_CONFIRMED, STATE_TENANT_REVERSED, STATE_RESCHEDULE_AFTER_COMMIT,
-  TERMINAL_STATES, CLOSED_STATES,
+  TERMINAL_STATES, CLOSED_STATES, DRAFT_FRESH_MINUTES,
   combineDateTime, minutesOf, withinWindow, withinQuietHours, viewingWindow, marketabilityDecision,
   isResumableHold, RESUMABLE_HOLD_REASONS, nextStep, buildRouting,
   resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
   reversalClassification,
   sendModeFor, idempotencyKeyFor, reminderTarget, activeNegotiationPayload, draftQueryOptions,
+  orgWallClock, toOrgWallClock, ORG_TIME_ZONE,
+  chooseTenantNoticeTemplate, composeStep,
 };

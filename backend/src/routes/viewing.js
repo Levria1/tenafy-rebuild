@@ -1106,7 +1106,7 @@ router.put('/settings', async (req, res) => {
       customer_nudge_2_hours: [1, 168],
       customer_nudge_cap: [0, 5],
       customer_timeout_hours: [1, 336],
-      tenant_opt_out_hours: [1, 168],
+      tenant_opt_out_hours: [1, 48],
       tenant_explicit_timeout_hours: [1, 336],
       tenant_nudge_cap: [0, 5],
     };
@@ -1138,14 +1138,23 @@ router.put('/settings', async (req, res) => {
       return fail(res, 'customer_nudge_2_hours must be less than customer_timeout_hours so the second nudge can happen before escalation moves the negotiation to NEEDS_STAFF and stops nudging', 400);
     }
 
-    // Upsert the single row for this org.
-    const cols = ['org_id', ...fields];
+    // First-ever saves must materialise the whole DEFAULT_SETTING-shaped row.
+    // Inserting only the edited field lets SQL defaults silently replace runtime defaults.
+    const fullCols = [
+      'relay_mode', 'max_rounds', 'read_back',
+      'viewing_days', 'viewing_start', 'viewing_end',
+      'lead_days_nr', 'lead_days_other',
+      'customer_nudge_1_hours', 'customer_nudge_2_hours', 'customer_nudge_cap',
+      'customer_timeout_hours', 'tenant_opt_out_hours', 'tenant_explicit_timeout_hours',
+      'tenant_nudge_cap', 'auto_send_nudges', 'respect_quiet_hours',
+    ];
+    const cols = ['org_id', ...fullCols];
     const placeholders = cols.map(() => '?').join(', ');
     const updates = fields.map(f => `${f} = VALUES(${f})`).join(', ');
     await req.pool.execute(
       `INSERT INTO viewing_setting (${cols.join(', ')}) VALUES (${placeholders})
        ON DUPLICATE KEY UPDATE ${updates}`,
-      [orgId, ...params]
+      [orgId, ...fullCols.map(col => merged[col])]
     );
     ok(res, await viewingNegotiation.getSetting(req.pool, orgId));
   } catch (err) {

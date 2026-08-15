@@ -21,7 +21,7 @@ const {
   shouldApplyUnitResolution,
   payloadHash,
 } = require('../utils/inquiryFacts');
-const { resolveUnit, loadUnitsWithMarketable, unitOut } = require('../services/unitResolver');
+const { resolveUnit, loadUnitsWithMarketable, unitOut, optionsText } = require('../services/unitResolver');
 const { validateChannel } = require('../utils/chatChannel');
 const { createNotification } = require('../services/scheduler');
 const config = require('../config');
@@ -313,7 +313,7 @@ function boardRow(row, lastEvent, setting) {
 }
 function draftRow(row) {
   const hasUnit = row.unit_id != null && row.unit_name;
-  return {
+  const out = {
     event_id: row.event_id == null ? null : String(row.event_id),
     negotiation_id: row.negotiation_id == null ? null : String(row.negotiation_id),
     negotiation_state: row.negotiation_state || null,
@@ -327,6 +327,7 @@ function draftRow(row) {
     idempotency_key: row.idempotency_key || null,
     deadline_at: viewingNegotiation.dateToWallClock(row.deadline_at),
     created_at: viewingNegotiation.dateToWallClock(row.created_at),
+    expires_at: viewingNegotiation.dateToWallClock(row.expires_at),
     age_hours: row.age_hours == null ? null : Number(row.age_hours),
     unit: {
       id: row.unit_id == null ? null : String(row.unit_id),
@@ -334,6 +335,62 @@ function draftRow(row) {
     },
     customer: { name: row.prospect_name || null, phone: row.prospect_phone || null },
   };
+  return out;
+}
+
+function safeParseCandidates(value) {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function nothingToSend(res, state) {
+  return res.status(409).json({ code: 409, reason: 'nothing_to_send', state });
+}
+
+function requireVars(vars, names) {
+  return names.every((name) => vars[name] != null && String(vars[name]).trim() !== '');
+}
+
+function requiredVarsForTemplate(templateType) {
+  switch (templateType) {
+    case 'Viewing-Choose-Unit':
+      return ['%Unit Options%'];
+    case 'Viewing-Confirm-Unit':
+      return ['%Unit Full Name%'];
+    case 'Viewing-Prospect-Day-Ask':
+      return ['%Unit Name%', '%Property Name%'];
+    case 'Viewing-Confirm-Time':
+      return ['%Unit Name%', '%Property Name%', '%Proposed Time%'];
+    case 'Viewing-Relay-Prospect':
+      return ['%Proposed Time%'];
+    case 'Viewing-Tenant-Ask':
+      return ['%Unit Name%', '%Property Name%', '%Proposed Time%', '%Name - Lease%'];
+    default:
+      return [];
+  }
+}
+
+async function selectDraftForResponse(pool, eventId) {
+  const [[row]] = await pool.execute(
+    `SELECT e.id AS event_id, e.negotiation_id, n.state AS negotiation_state,
+            n.awaiting, e.party, e.to_phone, e.body, e.template_type,
+            e.event_type, e.send_mode, e.idempotency_key, e.deadline_at,
+            e.created_at, DATE_ADD(e.created_at, INTERVAL ${viewingNegotiation.DRAFT_FRESH_MINUTES} MINUTE) AS expires_at,
+            TIMESTAMPDIFF(HOUR, e.created_at, NOW()) AS age_hours,
+            n.unit_id, n.prospect_name, n.prospect_phone,
+            u.name AS unit_name, p.display_name AS property_name
+       FROM viewing_negotiation_event e
+       JOIN viewing_negotiation n ON n.id = e.negotiation_id
+       LEFT JOIN unit u ON u.id = n.unit_id
+       LEFT JOIN property p ON p.id = n.property_id
+      WHERE e.id = ? LIMIT 1`,
+    [eventId]
+  );
+  return row || null;
 }
 
 const MAX_FACTS = 50;
@@ -1582,7 +1639,7 @@ async function handleNegotiationReply(req, res, party) {
 router.get('/viewing-negotiation/drafts', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
-    const { limit, maxAgeHours, party } = viewingNegotiation.draftQueryOptions(req.query);
+    const { limit, maxAgeMinutes, party } = viewingNegotiation.draftQueryOptions(req.query);
     const where = [
       'n.org_id = ?',
       "e.direction = 'out'",
@@ -1591,10 +1648,9 @@ router.get('/viewing-negotiation/drafts', async (req, res) => {
       // happening; sending a queued "can you confirm Tuesday?" would restart a
       // dead conversation.
       "n.state <> 'CANCELLED'",
-      // max_age_hours defaults to seven days because an unapproved week-old
-      // draft probably refers to a time that has already passed. Operators can
-      // widen it deliberately, but the safe default avoids confusing recipients.
-      `e.created_at >= DATE_SUB(NOW(), INTERVAL ${maxAgeHours} HOUR)`,
+      // Drafts are short-lived suggestions. Old rows remain as audit trail, but
+      // callers never see them as sendable work after the freshness window.
+      `e.created_at >= DATE_SUB(NOW(), INTERVAL ${maxAgeMinutes} MINUTE)`,
       // Draft AGE is not enough on its own. A booking-confirmed draft written on
       // Monday for a Tuesday viewing is only three days old on Thursday, so it would
       // still be returned — and sending "your viewing is confirmed for Tuesday" on
@@ -1631,7 +1687,8 @@ router.get('/viewing-negotiation/drafts', async (req, res) => {
         `SELECT e.id AS event_id, e.negotiation_id, n.state AS negotiation_state,
                 n.awaiting, e.party, e.to_phone, e.body, e.template_type,
                 e.event_type, e.send_mode, e.idempotency_key, e.deadline_at,
-                e.created_at, TIMESTAMPDIFF(HOUR, e.created_at, NOW()) AS age_hours,
+                e.created_at, DATE_ADD(e.created_at, INTERVAL ${viewingNegotiation.DRAFT_FRESH_MINUTES} MINUTE) AS expires_at,
+                TIMESTAMPDIFF(HOUR, e.created_at, NOW()) AS age_hours,
                 n.unit_id, n.prospect_name, n.prospect_phone,
                 u.name AS unit_name, p.display_name AS property_name,
                 t.phone AS tenant_phone, t.first_name AS tenant_first_name,
@@ -1646,6 +1703,7 @@ router.get('/viewing-negotiation/drafts', async (req, res) => {
                 n.awaiting, e.party, e.to_phone, e.body, e.template_type,
                 NULL AS event_type, NULL AS send_mode, NULL AS idempotency_key,
                 NULL AS deadline_at, e.created_at,
+                DATE_ADD(e.created_at, INTERVAL ${viewingNegotiation.DRAFT_FRESH_MINUTES} MINUTE) AS expires_at,
                 TIMESTAMPDIFF(HOUR, e.created_at, NOW()) AS age_hours,
                 n.unit_id, n.prospect_name, n.prospect_phone,
                 u.name AS unit_name, p.display_name AS property_name,
@@ -1656,10 +1714,127 @@ router.get('/viewing-negotiation/drafts', async (req, res) => {
       );
     }
     const drafts = rows.map(draftRow);
-    return ok(res, { drafts, count: drafts.length, max_age_hours: maxAgeHours });
+    return ok(res, {
+      drafts,
+      count: drafts.length,
+      max_age_minutes: maxAgeMinutes,
+      fresh_minutes: viewingNegotiation.DRAFT_FRESH_MINUTES,
+    });
   } catch (err) {
     console.error('Public viewing-negotiation/drafts error:', err);
     fail(res, 'Failed to load viewing negotiation drafts');
+  }
+});
+
+// POST /api/public/viewing-negotiation/:id/compose
+//
+// Renders a fresh outbound suggestion from the current negotiation row only. It
+// deliberately does not advance the state machine or touch nudge counters: a
+// draft is not a delivered message.
+router.post('/viewing-negotiation/:id/compose', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const negId = req.params.id;
+    const [[neg]] = await req.pool.execute(
+      `SELECT * FROM viewing_negotiation WHERE id = ? AND org_id = ? LIMIT 1`,
+      [negId, orgId]
+    );
+    if (!neg) return fail(res, 'Negotiation not found', 404);
+
+    const candidates = safeParseCandidates(neg.unit_candidates);
+    // Current tenant asks do not show the internal response window; send-time
+    // side effects arm it from the actual delivery timestamp.
+    const step = viewingNegotiation.composeStep({
+      state: neg.state,
+      awaiting: neg.awaiting,
+      hasCandidates: candidates.length > 0,
+      hasPendingUnit: Boolean(neg.pending_unit_id),
+      policy: {
+        require_explicit_confirmation: neg.policy_explicit_confirm == null ? undefined : Boolean(neg.policy_explicit_confirm),
+      },
+      deadline: null,
+    });
+    if (!step) return nothingToSend(res, neg.state);
+
+    let ctx = {};
+    if (neg.unit_id) {
+      ctx = await viewingNegotiation.loadContext(req.pool, neg);
+    } else if (neg.pending_unit_id) {
+      const [[pending]] = await req.pool.execute(
+        `SELECT u.name AS unit_name, p.display_name AS property_name
+           FROM unit u JOIN property p ON p.id = u.property_id
+          WHERE u.id = ? AND p.org_id = ? LIMIT 1`,
+        [neg.pending_unit_id, orgId]
+      );
+      ctx = pending || {};
+    }
+
+    const unitFullName = [ctx.property_name, ctx.unit_name].filter(Boolean).join(' ');
+    const tenantName = [ctx.company_name, [ctx.tenant_first_name, ctx.tenant_last_name].filter(Boolean).join(' ')]
+      .filter(Boolean)[0] || '';
+    const vars = {
+      ...viewingNegotiation.viewingNegotiationVars(ctx),
+      '%Unit Options%': optionsText(candidates),
+      '%Unit Full Name%': unitFullName,
+      '%Proposed Time%': viewingNegotiation.formatWhen(neg.current_proposed_datetime),
+      '%Tenant Name%': tenantName,
+      '%Name - Lease%': tenantName,
+      '%Prospect Name%': neg.prospect_name || '',
+    };
+    if (!requireVars(vars, requiredVarsForTemplate(step.templateType))) {
+      return nothingToSend(res, neg.state);
+    }
+
+    const eventType = viewingNegotiation.eventTypeForOutbound(step);
+    const setting = await viewingNegotiation.getSetting(req.pool, orgId);
+    const { mode } = viewingNegotiation.outboundSendDecision(eventType, setting, new Date());
+    const body = await viewingNegotiation.renderMessage(req.pool, orgId, step.templateType, vars);
+    const [[prior]] = await req.pool.execute(
+      `SELECT id, body, created_at
+         FROM viewing_negotiation_event
+        WHERE negotiation_id = ? AND direction = 'out' AND status = 'draft'
+        ORDER BY created_at DESC LIMIT 1`,
+      [negId]
+    );
+    const unchanged = Boolean(prior && prior.body === body);
+    if (unchanged && prior && prior.created_at) {
+      const created = new Date(prior.created_at);
+      if (!Number.isNaN(created.getTime())
+          && Date.now() - created.getTime() < viewingNegotiation.DRAFT_FRESH_MINUTES * 60000) {
+        const row = await selectDraftForResponse(req.pool, prior.id);
+        return ok(res, { ...draftRow(row), unchanged: true });
+      }
+    }
+
+    let idempotencyKey = null;
+    if (eventType) {
+      const [[countRow]] = await req.pool.execute(
+        `SELECT COUNT(*) AS c FROM viewing_negotiation_event
+          WHERE negotiation_id = ? AND event_type = ?`,
+        [negId, eventType]
+      );
+      idempotencyKey = viewingNegotiation.idempotencyKeyFor(
+        negId,
+        eventType,
+        (Number(countRow && countRow.c) || 0) + 1
+      );
+    }
+
+    const id = newId();
+    const toPhone = step.party === 'tenant' ? (ctx.tenant_phone || null) : (neg.prospect_phone || null);
+    await req.pool.execute(
+      `INSERT INTO viewing_negotiation_event
+         (id, negotiation_id, direction, party, to_phone, template_type, body, status, sent_at,
+          send_mode, event_type, idempotency_key, deadline_at)
+       VALUES (?, ?, 'out', ?, ?, ?, ?, 'draft', NULL, ?, ?, ?, ?)`,
+      [id, negId, step.party, toPhone, step.templateType, body, mode, eventType, idempotencyKey,
+       step.deadline ? step.deadline.replace('T', ' ') : null]
+    );
+    const row = await selectDraftForResponse(req.pool, id);
+    return ok(res, { ...draftRow(row), unchanged });
+  } catch (err) {
+    console.error('Public viewing-negotiation/compose error:', err);
+    fail(res, 'Failed to compose viewing negotiation draft');
   }
 });
 
