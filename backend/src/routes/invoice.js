@@ -349,10 +349,28 @@ router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE
       return res.status(400).json({ code: 400, message: 'leasing_id and due_date are required' });
     }
 
-    // Check for duplicate: don't create if invoice already exists for this lease + due date
+    // Resolve category BEFORE the duplicate check — the check is scoped to it.
+    // The publish button always creates the next recurring RENT invoice, so it must
+    // always be "Rental Income" — never copy the category from the most recent
+    // invoice (which could be a deposit/utility/other charge and would wrongly
+    // carry over). An explicit category in the body still wins.
+    let catId = category || null;
+    if (!catId) {
+      const [[rentalCat]] = await req.pool.execute(
+        "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 AND name LIKE '%Rental Income%' ORDER BY id LIMIT 1",
+        [orgId]
+      );
+      if (rentalCat) catId = rentalCat.id;
+    }
+
+    // Check for duplicate, scoped to the SAME category we are about to create.
+    // Unscoped, a stamp fee or utility bill sharing this due date blocked the user
+    // from publishing rent at all — the same defect that silently skipped rent in
+    // the nightly scheduler, just louder.
     const [[existing]] = await req.pool.execute(
-      'SELECT id FROM invoice WHERE leasing_id = ? AND due_on = ? AND org_id = ? AND deleted_at IS NULL',
-      [leasing_id, due_date, orgId]
+      `SELECT id FROM invoice WHERE leasing_id = ? AND due_on = ? AND org_id = ?
+         AND category ${catId ? '= ?' : 'IS NOT NULL'} AND deleted_at IS NULL LIMIT 1`,
+      catId ? [leasing_id, due_date, orgId, catId] : [leasing_id, due_date, orgId]
     );
     if (existing) {
       return res.status(409).json({ code: 409, message: 'Invoice already exists for this date' });
@@ -375,18 +393,7 @@ router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE
     // Auto-generate invoice_code — skips codes with orphaned accounting_line records
     const code = await generateInvoiceCode(req.pool, orgId);
 
-    // Resolve category: the publish button always creates the next recurring RENT
-    // invoice, so it must always be "Rental Income" — never copy the category from
-    // the most recent invoice (which could be a deposit/utility/other charge and
-    // would wrongly carry over). An explicit category in the body still wins.
-    let catId = category || null;
-    if (!catId) {
-      const [[rentalCat]] = await req.pool.execute(
-        "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1",
-        [orgId]
-      );
-      if (rentalCat) catId = rentalCat.id;
-    }
+    // catId was resolved above, before the duplicate check that depends on it.
 
     // Resolve currency
     let currId = currency_id;

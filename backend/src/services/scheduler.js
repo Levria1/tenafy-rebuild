@@ -117,7 +117,12 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
   // Skip the whole org if there's no rental category — can't create rent invoices
   // without one and old behavior already errored out per-lease in that case.
   const [[rentalCat]] = await pool.execute(
-    "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1", [orgId]
+    // MUST resolve to the same category lease creation/confirmation uses
+    // (leasing.js), because the duplicate check below is now scoped to it — a
+    // mismatch would make every night's check miss and create DUPLICATE rent.
+    // '%Rental%' alone is ambiguous and unordered: org 8300127259922432 also has
+    // a "Rental Expense" category, and another org has four %Rental% matches.
+    "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 AND name LIKE '%Rental Income%' ORDER BY id LIMIT 1", [orgId]
   );
   const catId = rentalCat ? rentalCat.id : null;
   if (!catId) {
@@ -154,11 +159,55 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
         const nextDueDateStr = toDateString(nextDueDate);
         if (lease.end_date && nextDueDate > new Date(lease.end_date)) break;
 
+        // "Has this period's RENT already been billed?" — two things had to change.
+        //
+        // 1. Scope to the RENTAL category (and the org), matching the cursor query
+        //    above and the move-out push in leasing.js. Unscoped, this asked "is
+        //    there ANY invoice on this date?", so a stamp fee or utility bill that
+        //    happened to share a rent due date read as "rent already exists" and
+        //    the period was skipped.
+        //
+        // 2. Also match rent that was raised MANUALLY and never linked to a lease.
+        //    117 such invoices exist in the main org: staff noticed the skipped
+        //    month and billed it by hand, leaving leasing_id NULL. Those are
+        //    invisible to a leasing_id-only lookup, so fixing (1) alone would have
+        //    re-created rent the tenant had already been charged. Every one of
+        //    those rows carries tenant_id, and all but one carry unit_id.
         const [[existing]] = await pool.execute(
-          `SELECT id FROM invoice WHERE leasing_id = ? AND due_on = ? AND deleted_at IS NULL`, [lease.id, nextDueDateStr]
+          `SELECT id FROM invoice
+            WHERE org_id = ? AND due_on = ? AND category = ? AND deleted_at IS NULL
+              AND (leasing_id = ?
+                   OR (leasing_id IS NULL AND tenant_id = ?
+                       AND (unit_id = ? OR unit_id IS NULL)))
+            LIMIT 1`,
+          [orgId, nextDueDateStr, catId, lease.id, lease.tenant_id, lease.unit_id]
         );
 
-        if (!existing) {
+        // Do NOT back-fill periods the old category-blind check suppressed.
+        //
+        // Those months were almost always billed by hand once staff noticed —
+        // there are 137 such manually-raised rent invoices — and raising them again
+        // now would chase a tenant who has often already moved out. So when a past
+        // due date is occupied by some OTHER invoice, skip it and say so, rather
+        // than silently resurrecting it.
+        //
+        // Deliberately narrow: it only triggers for a date in the past that
+        // something else already occupies. Ordinary catch-up after a late or failed
+        // scheduler run creates past-dated rent exactly as before.
+        let skipBackfill = false;
+        if (!existing && nextDueDate < today) {
+          const [[occupied]] = await pool.execute(
+            `SELECT id FROM invoice WHERE leasing_id = ? AND org_id = ? AND due_on = ?
+               AND category <> ? AND deleted_at IS NULL LIMIT 1`,
+            [lease.id, orgId, nextDueDateStr, catId]
+          );
+          if (occupied) {
+            skipBackfill = true;
+            console.warn(`[Scheduler][org:${orgId}] Not back-filling rent for lease ${lease.id} due ${nextDueDateStr} — another invoice already sits on that date. Check by hand if the rent is genuinely unbilled.`);
+          }
+        }
+
+        if (!existing && !skipBackfill) {
           // Prorate the final invoice if the lease ends mid-period
           const periodAfter = advanceInvoiceDate(nextDueDate, lease.invoicing, lease.due_date);
           const periodEnd = new Date(periodAfter);
@@ -324,7 +373,12 @@ async function sendUpcomingInvoiceRemindersForOrg(pool, orgId) {
   // Rent category — only rent invoices get the courtesy reminder (mirrors what
   // the generation job used to send). Deposits / stamp duty etc. are excluded.
   const [[rentalCat]] = await pool.execute(
-    "SELECT id FROM category_setting WHERE org_id = ? AND name LIKE '%Rental%' AND enabled = 1 LIMIT 1", [orgId]
+    // MUST resolve to the same category lease creation/confirmation uses
+    // (leasing.js), because the duplicate check below is now scoped to it — a
+    // mismatch would make every night's check miss and create DUPLICATE rent.
+    // '%Rental%' alone is ambiguous and unordered: org 8300127259922432 also has
+    // a "Rental Expense" category, and another org has four %Rental% matches.
+    "SELECT id FROM category_setting WHERE org_id = ? AND enabled = 1 AND name LIKE '%Rental Income%' ORDER BY id LIMIT 1", [orgId]
   );
   if (!rentalCat) return;
   const catId = rentalCat.id;
@@ -1121,3 +1175,4 @@ module.exports = { startScheduler, createNotification };
 // being the operator's calendar date rather than the server's.
 module.exports.markOverdueInvoicesForOrg = markOverdueInvoicesForOrg;
 module.exports.promoteServiceTasksForOrg = promoteServiceTasksForOrg;
+module.exports.generateRecurringInvoicesForOrg = generateRecurringInvoicesForOrg;
