@@ -30,6 +30,7 @@ const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const crypto = require('crypto');
 const { findAnchors } = require('./pdfAnchorFinder');
 const { SIGNATURE_MARKERS } = require('./leaseTemplateVariables');
+const { orgWallClock } = require('../utils/orgTime');
 
 const PAGE_PADDING = 50;
 const SIG_WIDTH = 160;
@@ -222,7 +223,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
         y -= 14;
       }
       if (party.signed_at) {
-        sigPage.drawText(`Signed: ${new Date(party.signed_at).toISOString().replace('T', ' ').slice(0, 19)} UTC`, {
+        sigPage.drawText(`Signed: ${stampTimestamp(party.signed_at)}`, {
           x: PAGE_PADDING, y, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4),
         });
         y -= 24;
@@ -243,7 +244,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
       y -= 14;
       sigPage.drawText(`Name:  ${landlordSig.label}`, { x: PAGE_PADDING, y, size: 10, font: helv });
       y -= 14;
-      sigPage.drawText(`Signed: ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`, {
+      sigPage.drawText(`Signed: ${stampTimestamp(new Date())}`, {
         x: PAGE_PADDING, y, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4),
       });
     }
@@ -266,8 +267,8 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     cy -= 14;
   };
   writeKV('Request ID:', String(request.id));
-  writeKV('Sent:',      request.sent_at ? new Date(request.sent_at).toISOString() : '—');
-  writeKV('Completed:', new Date().toISOString());
+  writeKV('Sent:',      stampTimestamp(request.sent_at));
+  writeKV('Completed:', stampTimestamp(new Date()));
   writeKV('Document SHA-256:', docHash);
   cy -= 10;
 
@@ -279,11 +280,11 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     });
     cy -= 14;
     if (party.viewed_at) {
-      cert.drawText(`    Viewed:  ${new Date(party.viewed_at).toISOString().replace('T', ' ').slice(0, 19)} UTC`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
+      cert.drawText(`    Viewed:  ${stampTimestamp(party.viewed_at)}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
       cy -= 12;
     }
     if (party.signed_at) {
-      cert.drawText(`    Signed:  ${new Date(party.signed_at).toISOString().replace('T', ' ').slice(0, 19)} UTC`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
+      cert.drawText(`    Signed:  ${stampTimestamp(party.signed_at)}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
       cy -= 12;
     }
     if (party.signer_ip) {
@@ -305,4 +306,19 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   return Buffer.from(bytes);
 }
 
-module.exports = { stampLease };
+// Timestamps on the Certificate of Completion.
+//
+// Hong Kong, and labelled HKT. signed_at/viewed_at/sent_at are absolute instants,
+// so toISOString() rendered them in UTC — correctly labelled, but it meant a tenant
+// signing at 00:30 in Hong Kong saw the PREVIOUS day on their own legal record.
+//
+// The label moves with the value on purpose: an audit trail that states the wrong
+// zone is worse than one that states an inconvenient zone.
+function stampTimestamp(value) {
+  if (!value) return '—';
+  const wall = orgWallClock(new Date(value));
+  if (!wall) return '—';
+  return `${wall.replace('T', ' ')} HKT`;
+}
+
+module.exports = { stampLease, stampTimestamp };

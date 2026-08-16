@@ -256,3 +256,42 @@ test('nothing in the renderer reaches for puppeteer via require()', () => {
     "use the cached import('puppeteer') via loadPuppeteer() instead of require()");
   assert.match(src, /import\('puppeteer'\)/, 'the dynamic import must still be there');
 });
+
+// ---------------------------------------------------------------------------
+// The signature Certificate of Completion.
+//
+// This is the audit trail on a legal document: when each party viewed and signed.
+// It used to print UTC — correctly labelled, so not misleading, but it meant a
+// Hong Kong tenant signing at 00:30 saw the previous day's date on their own
+// certificate. Operator's call: show Hong Kong, and label it Hong Kong.
+// ---------------------------------------------------------------------------
+
+const { stampTimestamp } = require('../src/services/signatureStamper');
+
+test('the certificate timestamps a signature in Hong Kong', () => {
+  assert.equal(stampTimestamp(STRADDLE), '2026-08-16 00:05:00 HKT');
+});
+
+test('the certificate never prints a UTC-labelled time', () => {
+  const out = stampTimestamp(STRADDLE);
+  assert.ok(!out.includes('UTC'), `still labelled UTC: ${out}`);
+  assert.ok(!out.startsWith('2026-08-15'), 'must not show the UTC calendar date');
+});
+
+test('the certificate timestamp is stable across server timezones', () => {
+  // A legal record must not read differently depending on where the server runs.
+  const { execFileSync } = require('child_process');
+  const path = require('path');
+  const mod = path.join(__dirname, '..', 'src/services/signatureStamper').replace(/\\/g, '/');
+  const run = (tz) => execFileSync(process.execPath, ['-e',
+    `process.stdout.write(require('${mod}').stampTimestamp(new Date('2026-08-15T16:05:00Z')))`],
+    { env: { ...process.env, TZ: tz }, encoding: 'utf8' }).trim();
+  assert.equal(run('UTC'), '2026-08-16 00:05:00 HKT');
+  assert.equal(run('Asia/Hong_Kong'), '2026-08-16 00:05:00 HKT');
+  assert.equal(run('America/New_York'), '2026-08-16 00:05:00 HKT');
+});
+
+test('a missing timestamp renders as a dash, not a bogus date', () => {
+  assert.equal(stampTimestamp(null), '—');
+  assert.equal(stampTimestamp(undefined), '—');
+});
