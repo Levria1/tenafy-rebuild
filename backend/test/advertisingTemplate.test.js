@@ -109,7 +109,9 @@ test('resolveUnitValues builds a full token map (rent range + available date)', 
         }]];
       }
       // current lease lookup → occupied, ends 2026-09-30
-      if (/start_date <= CURDATE\(\) AND \(end_date IS NULL OR end_date >= CURDATE\(\)\)/.test(sql)) {
+      // Matched loosely on shape: the 'today' term is now an inlined Hong Kong
+      // date literal rather than CURDATE(), and this fake must not care which.
+      if (/start_date <= \S+ AND \(end_date IS NULL OR end_date >= \S+\)/.test(sql)) {
         return [[{ d: '2026-09-30' }]];
       }
       return [[]];
@@ -137,7 +139,9 @@ test('resolveUnitValues: occupied unit on an OPEN-ENDED lease → blank Availabl
                    rent_price_min: 10000, rent_price_max: 10000, deposit_price: 20000 }]];
       }
       // current lease EXISTS but end_date is NULL (month-to-month) → d: null
-      if (/start_date <= CURDATE\(\) AND \(end_date IS NULL OR end_date >= CURDATE\(\)\)/.test(sql)) {
+      // Matched loosely on shape: the 'today' term is now an inlined Hong Kong
+      // date literal rather than CURDATE(), and this fake must not care which.
+      if (/start_date <= \S+ AND \(end_date IS NULL OR end_date >= \S+\)/.test(sql)) {
         return [[{ d: null }]];
       }
       // past-lease fallback — must NOT be reached

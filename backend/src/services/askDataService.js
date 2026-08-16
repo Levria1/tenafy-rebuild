@@ -16,6 +16,8 @@
  * layer 1. The caller passes ctx.roPool, which is null when DB_RO_USER is unset.
  */
 
+const { orgTodaySql } = require('../utils/orgTime');
+
 const MAX_ROWS = 500;
 
 // Verbs/targets that must never appear anywhere in an ask_data query. Checked
@@ -62,6 +64,22 @@ function validateSelect(raw) {
   if (FORBIDDEN_TARGETS.test(sql)) {
     return { ok: false, reason: 'querying system schemas is not allowed' };
   }
+
+  // Pin "today" to Hong Kong.
+  //
+  // The model writes this SQL itself and so cannot bind a parameter; the prompt
+  // tells it the date, and this is the safety net for when it reaches for
+  // CURDATE() out of habit. CURDATE() resolves against the MySQL server's clock,
+  // which is UTC — a day behind Hong Kong from midnight to 08:00, so an overdue
+  // count asked for at 07:00 would quietly miss everything due yesterday.
+  //
+  // Rewritten rather than rejected: a rejected query loses the answer, a
+  // rewritten one is simply right. NOW() is deliberately left alone — DATETIME
+  // columns hold UTC instants, so substituting a Hong Kong wall clock there
+  // would be eight hours out.
+  sql = sql
+    .replace(/\bCURDATE\s*\(\s*\)/gi, orgTodaySql())
+    .replace(/\bCURRENT_DATE\b(\s*\(\s*\))?/gi, orgTodaySql());
 
   // Cap the result size. Only append when the query has no LIMIT of its own.
   if (!/\blimit\b/i.test(sql)) sql = `${sql} LIMIT ${MAX_ROWS}`;

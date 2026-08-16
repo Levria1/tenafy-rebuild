@@ -8,6 +8,8 @@
  * "6A Test" still matches "6a" (unit "core" token = the first token of the name).
  */
 
+const { orgTodaySql } = require('../utils/orgTime');
+
 function norm(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
@@ -191,11 +193,11 @@ async function loadUnitsWithMarketable(pool, orgId) {
     `SELECT u.id, u.name, u.property_id, p.display_name AS property_name, p.district, p.city, p.street_address,
             (SELECT l.viewing_enabled FROM leasing l
                WHERE l.unit_id = u.id AND l.deleted_at IS NULL
-                 AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+                 AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
                ORDER BY l.start_date DESC LIMIT 1) AS cur_ve,
             (SELECT COUNT(*) FROM leasing l
                WHERE l.unit_id = u.id AND l.deleted_at IS NULL
-                 AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)) AS has_lease,
+                 AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)) AS has_lease,
             (SELECT COUNT(*) FROM viewing_link vl
                WHERE vl.unit_id = u.id AND vl.status = 1 AND vl.employee_id IS NOT NULL) AS host_links
        FROM unit u JOIN property p ON u.property_id = p.id

@@ -4,6 +4,7 @@ const { authenticate, isSuperAdmin } = require('../middleware/auth');
 const { getMasterPool } = require('../config/poolRegistry');
 
 const bcrypt = require('bcryptjs');
+const { orgTodaySql } = require('../utils/orgTime');
 
 // GET /api/user/profile - Get current user profile with permissions
 router.get('/profile', authenticate, async (req, res) => {
@@ -90,7 +91,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     const [[{ occupiedUnits }]] = await req.pool.execute(
       `SELECT COUNT(*) as occupiedUnits FROM unit u JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND u.active_status = 1 AND EXISTS (
         SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
-          AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+          AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
       )`,
       [orgId]
     );
@@ -105,7 +106,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        JOIN property p ON u.property_id = p.id
        WHERE p.org_id = ? AND u.active_status = 1
          AND NOT EXISTS (SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
-           AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL))
+           AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL))
        ORDER BY p.display_name, u.name
        LIMIT 20`,
       [orgId]
@@ -135,7 +136,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     const [overdueRentals] = await req.pool.execute(
       `SELECT i.id, p.display_name AS property, u.name AS unit_name,
               i.due_on, i.amount AS outstanding,
-              GREATEST(DATEDIFF(CURDATE(), i.due_on), 0) AS days_late,
+              GREATEST(DATEDIFF(${orgTodaySql()}, i.due_on), 0) AS days_late,
               t.first_name, t.last_name
        FROM invoice i
        LEFT JOIN tenant t ON i.tenant_id = t.id
@@ -159,7 +160,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     const [overduePayments] = await req.pool.execute(
       `SELECT i.id, p.display_name AS property, u.name AS unit_name,
               i.due_on AS due_date, i.amount AS outstanding,
-              GREATEST(DATEDIFF(CURDATE(), i.due_on), 0) AS days_late,
+              GREATEST(DATEDIFF(${orgTodaySql()}, i.due_on), 0) AS days_late,
               t.first_name, t.last_name
        FROM invoice i
        LEFT JOIN tenant t ON i.tenant_id = t.id
@@ -183,7 +184,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     const [outstandingBalance] = await req.pool.execute(
       `SELECT t.id AS tenant_id, t.first_name, t.last_name,
               SUM(i.amount) AS outstanding,
-              GREATEST(DATEDIFF(CURDATE(), MIN(i.due_on)), 0) AS days_late
+              GREATEST(DATEDIFF(${orgTodaySql()}, MIN(i.due_on)), 0) AS days_late
        FROM invoice i
        JOIN tenant t ON i.tenant_id = t.id
        WHERE i.org_id = ? AND i.status = 2 AND i.deleted_at IS NULL
@@ -210,7 +211,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        LEFT JOIN tenant t ON l.tenant_id = t.id
        WHERE p.org_id = ? AND l.deleted_at IS NULL
          AND l.end_date IS NOT NULL
-         AND DATEDIFF(l.end_date, CURDATE()) BETWEEN 0 AND ?
+         AND DATEDIFF(l.end_date, ${orgTodaySql()}) BETWEEN 0 AND ?
        ORDER BY l.end_date ASC
        LIMIT 20`,
       [orgId, expiringDays]
@@ -221,7 +222,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        JOIN property p ON u.property_id = p.id
        WHERE p.org_id = ? AND l.deleted_at IS NULL
          AND l.end_date IS NOT NULL
-         AND DATEDIFF(l.end_date, CURDATE()) BETWEEN 0 AND ?`,
+         AND DATEDIFF(l.end_date, ${orgTodaySql()}) BETWEEN 0 AND ?`,
       [orgId, expiringDays]
     );
 
@@ -235,7 +236,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        JOIN property p ON u.property_id = p.id
        WHERE p.org_id = ? AND l.deleted_at IS NULL
          AND l.end_date IS NOT NULL
-         AND DATEDIFF(l.end_date, CURDATE()) BETWEEN 0 AND ?
+         AND DATEDIFF(l.end_date, ${orgTodaySql()}) BETWEEN 0 AND ?
          AND NOT EXISTS (
            SELECT 1 FROM leasing l2 WHERE l2.unit_id = u.id AND l2.deleted_at IS NULL
              AND l2.id != l.id AND l2.start_date > l.end_date AND l2.status IN (0, 1)
@@ -250,7 +251,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        JOIN property p ON u.property_id = p.id
        WHERE p.org_id = ? AND l.deleted_at IS NULL
          AND l.end_date IS NOT NULL
-         AND DATEDIFF(l.end_date, CURDATE()) BETWEEN 0 AND ?
+         AND DATEDIFF(l.end_date, ${orgTodaySql()}) BETWEEN 0 AND ?
          AND NOT EXISTS (
            SELECT 1 FROM leasing l2 WHERE l2.unit_id = u.id AND l2.deleted_at IS NULL
              AND l2.id != l.id AND l2.start_date > l.end_date AND l2.status IN (0, 1)

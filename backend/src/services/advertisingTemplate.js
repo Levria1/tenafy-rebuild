@@ -7,6 +7,8 @@
 // `resolveUnitValues` does the DB lookup.
 // ---------------------------------------------------------------------------
 
+const { orgTodaySql } = require('../utils/orgTime');
+
 // The public list — shown in the editor so staff know what they can insert.
 const PLACEHOLDERS = [
   { token: '%PropertyName%',    description: 'Property / building display name' },
@@ -173,10 +175,10 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
   // Available date + days-to-available. Current lease → becomes available at its
   // end (days_to_end); else the last ended lease → already vacant (negative days).
   const [[cur]] = await pool.execute(
-    `SELECT DATE_FORMAT(end_date, '%Y-%m-%d') AS d, DATEDIFF(end_date, CURDATE()) AS days_to_end
+    `SELECT DATE_FORMAT(end_date, '%Y-%m-%d') AS d, DATEDIFF(end_date, ${orgTodaySql()}) AS days_to_end
        FROM leasing
       WHERE unit_id = ? AND deleted_at IS NULL
-        AND start_date <= CURDATE() AND (end_date IS NULL OR end_date >= CURDATE())
+        AND start_date <= ${orgTodaySql()} AND (end_date IS NULL OR end_date >= ${orgTodaySql()})
       ORDER BY end_date DESC LIMIT 1`,
     [String(unitId)]
   );
@@ -187,9 +189,9 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
     daysToAvailable = cur.days_to_end != null ? Number(cur.days_to_end) : null;
   } else {
     const [[past]] = await pool.execute(
-      `SELECT DATE_FORMAT(MAX(end_date), '%Y-%m-%d') AS d, DATEDIFF(CURDATE(), MAX(end_date)) AS days_vacant
+      `SELECT DATE_FORMAT(MAX(end_date), '%Y-%m-%d') AS d, DATEDIFF(${orgTodaySql()}, MAX(end_date)) AS days_vacant
          FROM leasing
-        WHERE unit_id = ? AND deleted_at IS NULL AND end_date IS NOT NULL AND end_date < CURDATE()`,
+        WHERE unit_id = ? AND deleted_at IS NULL AND end_date IS NOT NULL AND end_date < ${orgTodaySql()}`,
       [String(unitId)]
     );
     availableDate = past && past.d ? past.d : null;

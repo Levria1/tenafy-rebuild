@@ -7,6 +7,7 @@ const { generateSequenceCode } = require('../utils/sequenceCode');
 const { sendReceiptToTenant } = require('../services/emailService');
 const { generateReceiptPdfBuffer } = require('./pdf');
 const { recalcInvoiceStatuses } = require('../utils/invoiceStatus');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 
 // POST /api/accounting/accounts - List transactions with paging
 router.post('/accounts', authenticate, async (req, res) => {
@@ -511,7 +512,7 @@ router.delete('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTI
       );
       const amt = parseFloat(invoice.amount) || 0;
       const paid = parseFloat(total_paid) || 0;
-      const today = new Date().toISOString().split('T')[0];
+      const today = orgToday();
       const dueOn = invoice.due_on ? new Date(invoice.due_on).toISOString().split('T')[0] : null;
       const isPastDue = dueOn && today > dueOn;
       // $0/negative amount or fully paid → Paid; otherwise Overdue if past due, else Open
@@ -766,7 +767,7 @@ router.get('/invoice/property/graph/:property_id', authenticate, async (req, res
        FROM invoice i
        JOIN unit u ON i.unit_id = u.id
        WHERE u.property_id = ? AND i.org_id = ?
-         AND i.due_on >= DATE_SUB(CURDATE(), INTERVAL ? MONTH)
+         AND i.due_on >= DATE_SUB(${orgTodaySql()}, INTERVAL ? MONTH)
          AND i.deleted_at IS NULL
        GROUP BY DATE_FORMAT(i.due_on, '%Y-%m')
        ORDER BY month ASC`,

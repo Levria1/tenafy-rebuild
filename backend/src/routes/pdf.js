@@ -4,6 +4,7 @@ const PDFDocument = require('pdfkit');
 const { authenticate } = require('../middleware/auth');
 const { renderFromTemplate } = require('../services/leasePdfRenderer');
 const { resolveLeaseTemplateId } = require('../services/leaseTemplateResolver');
+const { orgToday } = require('../utils/orgTime');
 
 
 // Org-level info for document headers.
@@ -346,7 +347,7 @@ router.get('/lease/:id', authenticate, async (req, res) => {
 
     // ── Status ──────────────────────────────────────────────────────────────
     // Compute active status from dates, not stored status column
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
     const start = lease.start_date ? new Date(lease.start_date).toISOString().split('T')[0] : null;
     const end = lease.end_date ? new Date(lease.end_date).toISOString().split('T')[0] : null;
     const isActive = !lease.deleted_at && (!start || start <= today) && (!end || end >= today);

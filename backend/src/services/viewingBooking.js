@@ -20,6 +20,7 @@ const { getFreeBusy } = require('./googleCalendar');
 const { sendViewingMail } = require('./viewingNotify');
 const { sendWhatsApp } = require('./whatsappService');
 const { KIND_ACTION, KIND_MANAGE } = require('../middleware/viewingTokenAuth');
+const { orgTodaySql } = require('../utils/orgTime');
 
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -51,7 +52,7 @@ async function findActiveLeaseForUnit(pool, unitId) {
             DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date, t.email, t.phone
      FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
      WHERE l.unit_id = ? AND l.deleted_at IS NULL
-       AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+       AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
      ORDER BY l.start_date DESC LIMIT 1`,
     [unitId]
   );

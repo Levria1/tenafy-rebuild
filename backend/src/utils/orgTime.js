@@ -58,4 +58,68 @@ function orgTodayDate(instant = new Date()) {
   return today ? new Date(today) : null;
 }
 
-module.exports = { ORG_TIME_ZONE, orgWallClock, toOrgWallClock, orgToday, orgTodayDate };
+// `orgToday` as a quoted SQL literal, e.g. `'2026-08-16'`. Drop this in wherever a
+// query used to say CURDATE().
+//
+// Inlining rather than binding a `?` is deliberate. Most of these queries are built
+// by string concatenation — a WHERE clause assembled from optional filters, a CASE
+// in the SELECT list, a shared fragment interpolated into several statements. Adding
+// placeholders to those means keeping a params array in step with the SQL by hand,
+// and getting the order wrong there is both silent and severe: MySQL would happily
+// compare a date column against an org id. Inlining removes that entire class of
+// mistake, and the value is one this module generated, never anything a caller sent.
+//
+// The regex is not decoration. It is the reason inlining is safe, so it is enforced
+// here rather than assumed — and it throws rather than degrade, because emitting SQL
+// we cannot vouch for would turn a clock problem into a wrong-results problem.
+function orgTodaySql(instant = new Date()) {
+  return sqlDateLiteral(orgToday(instant));
+}
+
+// Quote a 'YYYY-MM-DD' for inlining, refusing anything else.
+//
+// Shape is checked AND the date is round-tripped, because the regex alone would
+// wave through '2026-02-30'. Split out from orgTodaySql so the rejection path is
+// reachable from a test — orgToday() cannot be made to emit a bad date on demand.
+function sqlDateLiteral(date) {
+  // Parsed first and checked for NaN, because '2026-13-01' yields an Invalid Date
+  // whose toISOString() throws a RangeError before any comparison can run.
+  const parsed = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? new Date(`${date}T00:00:00Z`)
+    : null;
+  const ok = parsed && !Number.isNaN(parsed.getTime())
+    && parsed.toISOString().slice(0, 10) === date;
+  if (!ok) {
+    throw new Error(`sqlDateLiteral: refusing to build SQL from a malformed date: ${JSON.stringify(date)}`);
+  }
+  return `'${date}'`;
+}
+
+// The calendar date a DATE column holds, 'YYYY-MM-DD'.
+//
+// mysql2 parses a DATE into `new Date(y, m-1, d)` — LOCAL midnight — so the local
+// getters are the only zone-safe way to read one back. `toISOString()` on that value
+// lands on the previous day anywhere east of UTC, which is the off-by-one this
+// exists to prevent.
+//
+// This is NOT orgToday(). orgToday() answers "what day is it in Hong Kong"; dbDate()
+// answers "what day does this stored value mean". They coincide by accident and
+// diverge under load, so keep them apart.
+function dbDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    const p = (n) => String(n).padStart(2, '0');
+    return `${value.getFullYear()}-${p(value.getMonth() + 1)}-${p(value.getDate())}`;
+  }
+  if (typeof value === 'string') {
+    const s = value.slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  }
+  return null;
+}
+
+module.exports = {
+  ORG_TIME_ZONE, orgWallClock, toOrgWallClock, orgToday, orgTodayDate,
+  orgTodaySql, sqlDateLiteral, dbDate,
+};

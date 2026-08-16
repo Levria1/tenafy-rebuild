@@ -6,7 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT, ASK_DATA,
+  toolsForCapabilities, toolsForInternal, internalSystemPrompt, ASK_DATA,
 } = require('../src/services/chatTools');
 
 test('internal toolset contains the staff data tools + vacancy + chats + reconciliation', () => {
@@ -33,13 +33,26 @@ test('prospect toolset EXCLUDES internal-only tools even with all caps on', () =
 });
 
 test('internal system prompt is a non-empty ops persona (no qualify gate)', () => {
-  assert.ok(typeof INTERNAL_SYSTEM_PROMPT === 'string' && INTERNAL_SYSTEM_PROMPT.length > 50);
-  assert.match(INTERNAL_SYSTEM_PROMPT, /STAFF/);
-  assert.doesNotMatch(INTERNAL_SYSTEM_PROMPT, /qualify the lead/i);
+  const prompt = internalSystemPrompt();
+  assert.ok(typeof prompt === 'string' && prompt.length > 50);
+  assert.match(prompt, /STAFF/);
+  assert.doesNotMatch(prompt, /qualify the lead/i);
   // ask_data needs the schema allowlist to write valid SQL
-  assert.match(INTERNAL_SYSTEM_PROMPT, /leasing\(id, lease_no/);
+  assert.match(prompt, /leasing\(id, lease_no/);
   // sensitive tables must NOT be advertised
-  assert.doesNotMatch(INTERNAL_SYSTEM_PROMPT, /password/i);
+  assert.doesNotMatch(prompt, /password/i);
+});
+
+test('the prompt tells the model today in Hong Kong, and to avoid CURDATE()', () => {
+  // The model writes its own SQL for ask_data and cannot bind a parameter, so the
+  // date has to come from the prompt. A build-time constant would have frozen it
+  // at boot; this asserts it tracks the clock.
+  const { orgToday } = require('../src/utils/orgTime');
+  const prompt = internalSystemPrompt();
+  assert.ok(prompt.includes(`'${orgToday()}'`), "today's Hong Kong date must appear in the prompt");
+  assert.match(prompt, /NEVER CURDATE\(\) or CURRENT_DATE/);
+  // NOW() must stay allowed: DATETIME columns are stored in UTC.
+  assert.match(prompt, /keep using NOW\(\)/);
 });
 
 test('ask_data is opt-in: only present when explicitly passed (needs a read-only pool)', () => {

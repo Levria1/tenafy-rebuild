@@ -27,6 +27,7 @@ const { createViewingEvent, deleteViewingEvent, getFreeBusy } = require('../serv
 const { sendWhatsApp } = require('../services/whatsappService');
 const { sendViewingMail } = require('../services/viewingNotify');
 const { createCandidateBooking, cancelCandidateBookingRow } = require('../services/viewingBooking');
+const { orgTodaySql } = require('../utils/orgTime');
 
 const {
   resolveOrgByViewingToken,
@@ -318,7 +319,7 @@ async function findActiveLeaseForUnit(pool, unitId) {
      FROM leasing l
      LEFT JOIN tenant t ON l.tenant_id = t.id
      WHERE l.unit_id = ? AND l.deleted_at IS NULL
-       AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+       AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
      ORDER BY l.start_date DESC LIMIT 1`,
     [unitId]
   );

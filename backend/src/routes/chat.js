@@ -15,8 +15,9 @@ const config = require('../config');
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { chat: llmChat } = require('../services/llmClient');
 const visionClient = require('../services/visionClient');
-const { toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT, ASK_DATA } = require('../services/chatTools');
+const { toolsForCapabilities, toolsForInternal, internalSystemPrompt, ASK_DATA } = require('../services/chatTools');
 const { getReadOnlyOrgPool } = require('../config/poolRegistry');
+const { orgToday } = require('../utils/orgTime');
 
 router.use(authenticate);
 
@@ -105,7 +106,7 @@ function parseCapabilities(settings) {
 
 function defaultSystemPrompt(orgDisplayName) {
   const org = orgDisplayName || 'our property team';
-  const todayIso = new Date().toISOString().split('T')[0];
+  const todayIso = orgToday();
   return [
     // ── Identity ──────────────────────────────────────────────────────────
     `You are the customer-facing assistant for ${org}, a property management company. You handle inbound enquiries from prospective tenants: qualify the lead, answer questions about available units, and either guide them toward booking a viewing or capture their contact details for the team to follow up.`,
@@ -554,7 +555,7 @@ router.post('/internal/message', requirePermission('LANDLORD/CHAT_SETTINGS_VIEW'
       sessionRow = await createSession(req.pool, {
         channel: 'staff-internal',
         channelUserId: `staff-${req.user.id}-${Date.now()}`,
-        seedSystemPrompt: INTERNAL_SYSTEM_PROMPT,
+        seedSystemPrompt: internalSystemPrompt(),
       });
     }
 

@@ -1,5 +1,5 @@
 const express = require('express');
-const { orgToday } = require('../utils/orgTime');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const crypto = require('crypto');
 const router = express.Router();
 const { authenticateApiKey } = require('../middleware/apiKeyAuth');
@@ -1140,7 +1140,7 @@ router.post('/viewing-link', async (req, res) => {
     const [[lease]] = await req.pool.execute(
       `SELECT id, viewing_enabled FROM leasing
         WHERE unit_id = ? AND deleted_at IS NULL
-          AND start_date <= CURDATE() AND (end_date >= CURDATE() OR end_date IS NULL)
+          AND start_date <= ${orgTodaySql()} AND (end_date >= ${orgTodaySql()} OR end_date IS NULL)
         ORDER BY start_date DESC LIMIT 1`,
       [unit_id]
     );
@@ -1199,7 +1199,7 @@ async function resolveMarketedUnit(pool, orgId, unitId) {
   const [[lease]] = await pool.execute(
     `SELECT id, viewing_enabled FROM leasing
       WHERE unit_id = ? AND deleted_at IS NULL
-        AND start_date <= CURDATE() AND (end_date >= CURDATE() OR end_date IS NULL)
+        AND start_date <= ${orgTodaySql()} AND (end_date >= ${orgTodaySql()} OR end_date IS NULL)
       ORDER BY start_date DESC LIMIT 1`,
     [unitId]
   );
@@ -2513,7 +2513,7 @@ router.get('/properties/:id', async (req, res) => {
               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1) as total_units,
               (SELECT COUNT(*) FROM unit u WHERE u.property_id = p.id AND u.active_status = 1 AND EXISTS (
                 SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
-                  AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+                  AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
               )) as occupied_units
        FROM property p WHERE p.id = ? AND p.org_id = ? AND p.deleted_at IS NULL`,
       [id, orgId]
@@ -2584,7 +2584,7 @@ router.get('/units/:id', async (req, res) => {
       `SELECT l.*, t.first_name, t.last_name, t.company_name, t.email, t.phone
        FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
        WHERE l.unit_id = ? AND l.deleted_at IS NULL
-         AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+         AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
        ORDER BY l.start_date DESC LIMIT 1`,
       [id]
     );
@@ -3075,13 +3075,13 @@ router.get('/leases/expiring', async (req, res) => {
     const [leases] = await req.pool.execute(
       `SELECT l.*, u.name AS unit_name, p.display_name AS property_name,
               t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
-              DATEDIFF(l.end_date, NOW()) AS days_until_expiry
+              DATEDIFF(l.end_date, ${orgTodaySql()}) AS days_until_expiry
        FROM leasing l
        LEFT JOIN unit u ON l.unit_id = u.id
        LEFT JOIN property p ON u.property_id = p.id
        LEFT JOIN tenant t ON l.tenant_id = t.id
        WHERE p.org_id = ? AND l.deleted_at IS NULL
-         AND DATEDIFF(l.end_date, NOW()) BETWEEN 0 AND ?
+         AND DATEDIFF(l.end_date, ${orgTodaySql()}) BETWEEN 0 AND ?
        ORDER BY l.end_date ASC`,
       [orgId, days]
     );
@@ -3104,11 +3104,11 @@ router.get('/leases', async (req, res) => {
     if (tenant_id) { whereClause += ' AND l.tenant_id = ?'; params.push(tenant_id); }
 
     if (status === 'active') {
-      whereClause += ' AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)';
+      whereClause += ` AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)`;
     } else if (status === 'upcoming') {
-      whereClause += ' AND l.start_date > CURDATE()';
+      whereClause += ` AND l.start_date > ${orgTodaySql()}`;
     } else if (status === 'inactive') {
-      whereClause += ' AND l.end_date < CURDATE()';
+      whereClause += ` AND l.end_date < ${orgTodaySql()}`;
     }
     // 'terminated' is handled by deleted_at, which is always excluded above
 
@@ -3117,8 +3117,8 @@ router.get('/leases', async (req, res) => {
               t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
               t.company_name AS tenant_company_name, t.email AS tenant_email, t.phone AS tenant_phone,
               CASE
-                WHEN l.start_date > CURDATE() THEN 'upcoming'
-                WHEN l.end_date < CURDATE() THEN 'inactive'
+                WHEN l.start_date > ${orgTodaySql()} THEN 'upcoming'
+                WHEN l.end_date < ${orgTodaySql()} THEN 'inactive'
                 ELSE 'active'
               END AS lease_status
        FROM leasing l
@@ -3146,8 +3146,8 @@ router.get('/leases/:id', async (req, res) => {
               t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
               t.company_name AS tenant_company_name, t.email AS tenant_email, t.phone AS tenant_phone,
               CASE
-                WHEN l.start_date > CURDATE() THEN 'upcoming'
-                WHEN l.end_date < CURDATE() THEN 'inactive'
+                WHEN l.start_date > ${orgTodaySql()} THEN 'upcoming'
+                WHEN l.end_date < ${orgTodaySql()} THEN 'inactive'
                 ELSE 'active'
               END AS lease_status
        FROM leasing l

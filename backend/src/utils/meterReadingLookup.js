@@ -30,9 +30,11 @@
  *   notes: string | null
  * }>}
  */
+const { orgToday } = require('./orgTime');
+
 async function findLastMeterReadingForUnit(pool, unitId, beforeDate) {
   if (!unitId) return null;
-  const cutoff = beforeDate || new Date().toISOString().split('T')[0];
+  const cutoff = beforeDate || orgToday();
 
   // Most recent reading across all unit-mapped meters on this unit, before `cutoff`.
   // Strict `<` so a same-day move-in doesn't include its own move-out reading.

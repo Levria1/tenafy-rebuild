@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
+const { orgToday } = require('../utils/orgTime');
 
 const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
@@ -106,7 +107,7 @@ router.delete('/cleaner/:id', authenticate, async (req, res) => {
 router.get('/config', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
 
     // Get all active units with property info, LEFT JOIN cleaning config, and current tenant via active lease
     const [rows] = await req.pool.execute(
@@ -466,7 +467,7 @@ router.post('/schedule/generate', authenticate, async (req, res) => {
     }
 
     // 4. Get active tenant cleaning notes for all units
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
     const [tenantNotes] = await req.pool.execute(
       `SELECT l.unit_id, t.cleaning_notes
        FROM leasing l

@@ -2,6 +2,8 @@
 // accounting_lines (and the header) of the given transaction, then updates each
 // invoice's status from total payments vs amount vs due date.
 // `db` may be a pool or a transaction connection — both expose .execute().
+const { orgToday, dbDate } = require('./orgTime');
+
 async function recalcInvoiceStatuses(db, accountingId, orgId) {
   if (!orgId) {
     // Look up org_id from the accounting record itself
@@ -45,8 +47,10 @@ async function recalcInvoiceStatuses(db, accountingId, orgId) {
 
     const amount = parseFloat(invoice.amount) || 0;
     const paid = parseFloat(total_paid) || 0;
-    const today = new Date().toISOString().split('T')[0];
-    const dueOn = invoice.due_on ? new Date(invoice.due_on).toISOString().split('T')[0] : null;
+    // dbDate, not toISOString: mysql2 hands back a DATE as LOCAL midnight, so
+    // toISOString() would report the previous day anywhere east of UTC.
+    const today = orgToday();
+    const dueOn = dbDate(invoice.due_on);
     const isPastDue = dueOn && today > dueOn;
 
     let newStatus;

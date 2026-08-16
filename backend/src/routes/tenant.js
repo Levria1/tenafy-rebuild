@@ -7,6 +7,7 @@ const { authenticate } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const visionClient = require('../services/visionClient');
 const llmClient = require('../services/llmClient');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 
 // In-memory multer for the Smart Extract /parse endpoint. Files NEVER touch
 // disk — we OCR the buffer and discard. This is deliberately stricter than
@@ -54,17 +55,17 @@ router.post('/contacts', authenticate, async (req, res) => {
     // Tenant Status: active = has a lease where today falls within start_date..end_date (inclusive)
     // Tenant Status: inactive = no such lease
     if (tenantStatus === 'active') {
-      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND l.start_date <= CURDATE() AND l.end_date >= CURDATE())';
+      whereClause += ` AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND l.start_date <= ${orgTodaySql()} AND l.end_date >= ${orgTodaySql()})`;
     } else if (tenantStatus === 'inactive') {
-      whereClause += ' AND NOT EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND l.start_date <= CURDATE() AND l.end_date >= CURDATE())';
+      whereClause += ` AND NOT EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND l.start_date <= ${orgTodaySql()} AND l.end_date >= ${orgTodaySql()})`;
     }
 
     // Lease Status: active = has a current or upcoming lease (end_date >= today OR end_date IS NULL)
     // Lease Status: inactive = no current or upcoming lease
     if (leaseFilter === 'active') {
-      whereClause += ' AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND (l.end_date >= CURDATE() OR l.end_date IS NULL))';
+      whereClause += ` AND EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL))`;
     } else if (leaseFilter === 'inactive') {
-      whereClause += ' AND NOT EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND (l.end_date >= CURDATE() OR l.end_date IS NULL))';
+      whereClause += ` AND NOT EXISTS (SELECT 1 FROM leasing l WHERE l.tenant_id = t.id AND l.deleted_at IS NULL AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL))`;
     }
 
     // Lease Type filter: tenant has at least one lease of this type
@@ -557,7 +558,7 @@ router.get('/:id/leases', authenticate, async (req, res) => {
     );
 
     // For each lease, compute date-based status and calculate next_invoice_date
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
 
     // Look up the org's "Rental Income" category once so we can filter the
     // "latest invoice" lookup below. WHY: invoices on a lease can be many things
@@ -622,10 +623,10 @@ router.get('/:id/leases/sum', authenticate, async (req, res) => {
     const { id } = req.params;
     const [[sum]] = await req.pool.execute(
       `SELECT COUNT(*) as total,
-              SUM(CASE WHEN start_date > CURDATE() THEN 0
-                       WHEN end_date IS NOT NULL AND end_date < CURDATE() THEN 0
+              SUM(CASE WHEN start_date > ${orgTodaySql()} THEN 0
+                       WHEN end_date IS NOT NULL AND end_date < ${orgTodaySql()} THEN 0
                        ELSE 1 END) as active,
-              SUM(CASE WHEN end_date IS NOT NULL AND end_date < CURDATE() THEN 1
+              SUM(CASE WHEN end_date IS NOT NULL AND end_date < ${orgTodaySql()} THEN 1
                        ELSE 0 END) as expired
        FROM leasing WHERE tenant_id = ? AND deleted_at IS NULL`,
       [id]

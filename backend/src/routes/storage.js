@@ -4,6 +4,7 @@ const { authenticate } = require('../middleware/auth');
 
 const fs = require('fs');
 const path = require('path');
+const { orgTodaySql } = require('../utils/orgTime');
 
 // Helper: get directory size in bytes
 function getDirSize(dirPath) {
@@ -62,7 +63,7 @@ router.get('/usage', authenticate, async (req, res) => {
     // Count total records by type
     const [[propertyCount]] = await req.pool.execute('SELECT COUNT(*) as count FROM property WHERE org_id = ? AND status = 1', [orgId]).catch(() => [[{ count: 0 }]]);
     const [[tenantCount]] = await req.pool.execute('SELECT COUNT(*) as count FROM tenant WHERE org_id = ? AND status = 1', [orgId]).catch(() => [[{ count: 0 }]]);
-    const [[leasingCount]] = await req.pool.execute('SELECT COUNT(*) as count FROM leasing l JOIN unit u ON l.unit_id = u.id JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND l.deleted_at IS NULL AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)', [orgId]).catch(() => [[{ count: 0 }]]);
+    const [[leasingCount]] = await req.pool.execute(`SELECT COUNT(*) as count FROM leasing l JOIN unit u ON l.unit_id = u.id JOIN property p ON u.property_id = p.id WHERE p.org_id = ? AND l.deleted_at IS NULL AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)`, [orgId]).catch(() => [[{ count: 0 }]]);
     const [[totalInvoiceCount]] = await req.pool.execute('SELECT COUNT(*) as count FROM invoice WHERE org_id = ?', [orgId]).catch(() => [[{ count: 0 }]]);
 
     res.json({

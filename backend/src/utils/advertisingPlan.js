@@ -1,3 +1,5 @@
+const { orgTodaySql } = require('./orgTime');
+
 function slotKey(row) {
   return `${String(row && row.slot_kind || '').toLowerCase()}:${Number(row && row.slot_no)}`;
 }
@@ -377,14 +379,14 @@ async function hasActiveManualVacancyOverride(pool, orgId, unitId) {
          SELECT l.id FROM leasing l
           WHERE l.unit_id = m.unit_id
             AND l.deleted_at IS NULL
-            AND l.start_date <= CURDATE()
-            AND (l.end_date IS NULL OR l.end_date >= CURDATE())
+            AND l.start_date <= ${orgTodaySql()}
+            AND (l.end_date IS NULL OR l.end_date >= ${orgTodaySql()})
           ORDER BY l.start_date DESC, l.id DESC LIMIT 1)
       WHERE m.org_id = ?
         AND p.org_id = ?
         AND m.unit_id = ?
         AND m.status = 1
-        AND m.expires_on >= CURDATE()
+        AND m.expires_on >= ${orgTodaySql()}
         AND (m.lease_id IS NULL OR m.lease_id = cl.id)
       LIMIT 1`,
     [orgId, orgId, unitId]

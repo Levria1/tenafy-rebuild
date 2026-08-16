@@ -21,6 +21,7 @@ const {
 } = require('../services/emailService');
 const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCalendarWebhook');
 const { loadResolutionData, resolveWithData, resolveLeaseTemplateId, derivePdfStatus, hasTemplateSql } = require('../services/leaseTemplateResolver');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
@@ -48,7 +49,7 @@ async function maybeSendPaymentOptions(pool, orgId, leaseId) {
 // 0=Inactive (past end date), 1=Active (current), 2=Upcoming (future start date)
 // Note: stored leasing.status column is NOT used — deleted_at handles termination
 function computeLeaseStatus(lease) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = orgToday();
   const start = lease.start_date ? (typeof lease.start_date === 'string' ? lease.start_date.slice(0, 10) : new Date(lease.start_date).toISOString().split('T')[0]) : null;
   const end = lease.end_date ? (typeof lease.end_date === 'string' ? lease.end_date.slice(0, 10) : new Date(lease.end_date).toISOString().split('T')[0]) : null;
   if (start && start > today) return 2; // upcoming
@@ -83,11 +84,16 @@ function isMovedOutEarly(moveOutDate, originalEndDate) {
 
 // SQL expression for computed lease status (for filtering/sorting)
 // Purely date-based — stored status column is not used
-const COMPUTED_STATUS_SQL = `CASE
-  WHEN l.start_date > CURDATE() THEN 2
-  WHEN l.end_date IS NOT NULL AND l.end_date < CURDATE() THEN 0
+//
+// A function, not a constant: it embeds today's date, and a module-level constant
+// would capture the day the process booted and hold it until the next restart.
+function computedStatusSql() {
+  return `CASE
+  WHEN l.start_date > ${orgTodaySql()} THEN 2
+  WHEN l.end_date IS NOT NULL AND l.end_date < ${orgTodaySql()} THEN 0
   ELSE 1
 END`;
+}
 
 // POST /api/leasing/list - List leases with paging
 router.post('/list', authenticate, async (req, res) => {
@@ -108,7 +114,7 @@ router.post('/list', authenticate, async (req, res) => {
     }
     // Filter by computed status (0=inactive, 1=active, 2=upcoming)
     if (status !== undefined && status !== null) {
-      whereClause += ` AND (${COMPUTED_STATUS_SQL}) = ?`;
+      whereClause += ` AND (${computedStatusSql()}) = ?`;
       params.push(status);
     }
     if (type !== undefined && type !== null) {
@@ -171,7 +177,7 @@ router.post('/list', authenticate, async (req, res) => {
       property: 'p.display_name',
       start_date: 'l.start_date',
       end_date: 'l.end_date',
-      status: `(${COMPUTED_STATUS_SQL})`,
+      status: `(${computedStatusSql()})`,
       price: 'l.amount',
       phone: 't.phone',
     };
@@ -1032,7 +1038,7 @@ router.post('/', authenticate, async (req, res) => {
     // 'active' and runs the same logic deferred from now).
     const invoiceAmount = amount || price;
     if (leaseState === 'active' && invoiceAmount && parseFloat(invoiceAmount) > 0) {
-      const today = new Date().toISOString().split('T')[0];
+      const today = orgToday();
       const todayMs = new Date(today).getTime();
 
       // Get property_id from unit
@@ -1145,7 +1151,7 @@ router.post('/', authenticate, async (req, res) => {
       const depositCategoryId = depCat ? depCat.id : null;
 
       const depInvoiceId = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
-      const today = new Date().toISOString().split('T')[0];
+      const today = orgToday();
 
       await req.pool.execute(
         `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
@@ -1169,7 +1175,7 @@ router.post('/', authenticate, async (req, res) => {
           const checkinTemplate = await loadTemplate(req.pool, orgId, 'Checkin-Tenant');
           const dateFirstDays = checkinTemplate ? (Number(checkinTemplate.date_first) || 0) : 0;
           const startMs = new Date(start_date).getTime();
-          const todayMs2 = new Date(new Date().toISOString().split('T')[0]).getTime();
+          const todayMs2 = new Date(orgToday()).getTime();
           const daysUntilStart = Math.round((startMs - todayMs2) / (1000 * 60 * 60 * 24));
           // Send if start date is today or within the date_first window
           if (daysUntilStart >= 0 && daysUntilStart <= dateFirstDays) {
@@ -1198,7 +1204,7 @@ router.post('/', authenticate, async (req, res) => {
           // Only send at creation if before_date is true (sending before end date)
           if (beforeDate) {
             const endMs = new Date(end_date).getTime();
-            const todayMs2 = new Date(new Date().toISOString().split('T')[0]).getTime();
+            const todayMs2 = new Date(orgToday()).getTime();
             const daysUntilEnd = Math.round((endMs - todayMs2) / (1000 * 60 * 60 * 24));
             if (daysUntilEnd >= 0 && daysUntilEnd <= dateFirstDays) {
               await sendCheckoutToTenant(req.pool, orgId, leaseId.toString());
@@ -1420,7 +1426,7 @@ router.put('/:id', authenticate, async (req, res) => {
 
     // Mark past invoices as paid if requested
     if (mark_past_paid) {
-      const today = new Date().toISOString().split('T')[0];
+      const today = orgToday();
       await req.pool.execute(
         'UPDATE invoice SET status = 1 WHERE leasing_id = ? AND org_id = ? AND status = 0 AND due_on <= ? AND deleted_at IS NULL',
         [id, orgId, today]
@@ -1907,7 +1913,7 @@ router.post('/:id/confirm', authenticate, async (req, res) => {
     // through this endpoint — staff can mark them paid manually if needed.
     const invoiceAmount = lease.amount || lease.price;
     if (invoiceAmount && parseFloat(invoiceAmount) > 0) {
-      const today = new Date().toISOString().split('T')[0];
+      const today = orgToday();
       const todayMs = new Date(today).getTime();
 
       const [[rentCat]] = await req.pool.execute(
@@ -1969,7 +1975,7 @@ router.post('/:id/confirm', authenticate, async (req, res) => {
       );
       const depCategoryId = depCat ? depCat.id : null;
       const depInvoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
-      const today = new Date().toISOString().split('T')[0];
+      const today = orgToday();
       await req.pool.execute(
         `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
           invoice_code, amount, due_on, status, category, currency_id, type,
@@ -2058,13 +2064,13 @@ router.get('/list/expiring', authenticate, async (req, res) => {
     const [leases] = await req.pool.execute(
       `SELECT l.*, u.name as unit_name, p.display_name as property_name,
               t.first_name as tenant_first_name, t.last_name as tenant_last_name,
-              DATEDIFF(l.end_date, NOW()) as days_until_expiry
+              DATEDIFF(l.end_date, ${orgTodaySql()}) as days_until_expiry
        FROM leasing l
        LEFT JOIN unit u ON l.unit_id = u.id
        LEFT JOIN property p ON u.property_id = p.id
        LEFT JOIN tenant t ON l.tenant_id = t.id
        WHERE p.org_id = ? AND l.deleted_at IS NULL
-         AND DATEDIFF(l.end_date, NOW()) BETWEEN 0 AND 30
+         AND DATEDIFF(l.end_date, ${orgTodaySql()}) BETWEEN 0 AND 30
        ORDER BY l.end_date ASC LIMIT ${limit} OFFSET ${offset}`,
       [orgId]
     );
@@ -2154,7 +2160,7 @@ router.post('/unit/available', authenticate, async (req, res) => {
        LEFT JOIN property p ON u.property_id = p.id
        WHERE p.org_id = ? AND u.active_status = 1 AND NOT EXISTS (
          SELECT 1 FROM leasing l WHERE l.unit_id = u.id AND l.deleted_at IS NULL
-           AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+           AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
        )
        ORDER BY p.display_name, u.name`,
       [orgId]
@@ -2314,7 +2320,7 @@ router.put('/:id/revisions/:rid', authenticate, async (req, res) => {
       [rid, id]
     );
     if (!existing) return res.status(404).json({ code: 404, message: 'Revision not found' });
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
     const existingDateStr = existing.effective_from instanceof Date
       ? existing.effective_from.toISOString().split('T')[0]
       : String(existing.effective_from).split('T')[0];
@@ -2370,7 +2376,7 @@ router.delete('/:id/revisions/:rid', authenticate, async (req, res) => {
       [rid, id]
     );
     if (!existing) return res.status(404).json({ code: 404, message: 'Revision not found' });
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
     const existingDateStr = existing.effective_from instanceof Date
       ? existing.effective_from.toISOString().split('T')[0]
       : String(existing.effective_from).split('T')[0];

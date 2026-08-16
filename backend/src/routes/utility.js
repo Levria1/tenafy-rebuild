@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 
 const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
@@ -96,7 +97,7 @@ router.put('/group/:id', authenticate, async (req, res) => {
 router.get('/properties-units', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
 
     const [rows] = await req.pool.execute(
       `SELECT u.id AS unit_id, u.name AS unit_name, u.property_id,
@@ -241,7 +242,7 @@ router.get('/meters', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { group_id } = req.query;
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
 
     let sql = `SELECT m.id, m.group_id, m.unit_id, m.meter_number, m.meter_type,
                       m.meter_category, m.current_reading, m.status,
@@ -329,7 +330,7 @@ router.post('/meter', authenticate, async (req, res) => {
       const readingId = genId();
       await req.pool.execute(
         `INSERT INTO utility_meter_reading (id, org_id, meter_id, reading_value, reading_date, reading_type, notes)
-         VALUES (?, ?, ?, ?, CURDATE(), 2, 'Initial meter reading')`,
+         VALUES (?, ?, ?, ?, ${orgTodaySql()}, 2, 'Initial meter reading')`,
         [readingId, orgId, id, initialReading]
       );
     }
@@ -425,7 +426,7 @@ router.post('/meter-reading', authenticate, async (req, res) => {
     await req.pool.execute(
       `INSERT INTO utility_meter_reading (id, org_id, meter_id, reading_value, reading_date, reading_type, tenant_id, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, orgId, meter_id, reading_value, reading_date || new Date().toISOString().split('T')[0], reading_type ?? 0, tenant_id || null, notes || null]
+      [id, orgId, meter_id, reading_value, reading_date || orgToday(), reading_type ?? 0, tenant_id || null, notes || null]
     );
 
     // Also update current_reading on meter for backward compat
@@ -447,7 +448,7 @@ router.post('/meter-reading', authenticate, async (req, res) => {
     if (readingTypeNum === 0 || readingTypeNum === 1) {
       const [[meterUnit]] = await req.pool.execute('SELECT unit_id FROM utility_meter WHERE id = ?', [meter_id]);
       const unitId = meterUnit?.unit_id;
-      const readingDate = reading_date || new Date().toISOString().split('T')[0];
+      const readingDate = reading_date || orgToday();
       const updates = []; // collect { leaseId, column, role } for response/logs
 
       if (!unitId) {
@@ -1274,7 +1275,7 @@ router.get('/highest-rate', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const { group_id } = req.query;
 
-    let sql = `SELECT MAX(rate_per_kw) AS highest_rate FROM utility_bill WHERE org_id = ? AND period_start >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)`;
+    let sql = `SELECT MAX(rate_per_kw) AS highest_rate FROM utility_bill WHERE org_id = ? AND period_start >= DATE_SUB(${orgTodaySql()}, INTERVAL 1 YEAR)`;
     const params = [orgId];
 
     if (group_id) {
@@ -1393,7 +1394,7 @@ router.post('/checkout-settlement', authenticate, async (req, res) => {
 
     // Prorate credit: (monthly_credit * 12 / 365) * days
     const utilityCredit = Number(lease.utility_credit) || 0;
-    const settlementDate = reading_date || new Date().toISOString().split('T')[0];
+    const settlementDate = reading_date || orgToday();
     const periodDays = daysBetween(startDate, settlementDate);
     const proratedCredit = utilityCredit > 0 ? Math.round((utilityCredit * 12 / 365) * periodDays * 100) / 100 : 0;
     const netAmount = Math.max(0, Math.round((grossAmount - proratedCredit) * 100) / 100);

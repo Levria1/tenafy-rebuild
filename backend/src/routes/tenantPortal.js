@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const { authenticate } = require('../middleware/auth');
 
 const config = require('../config');
+const { orgTodaySql } = require('../utils/orgTime');
 
 // POST /api/tenant-portal/login
 router.post('/login', async (req, res) => {
@@ -102,7 +103,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
        JOIN unit u ON l.unit_id = u.id
        JOIN property p ON u.property_id = p.id
        WHERE l.tenant_id = ? AND p.org_id = ? AND l.deleted_at IS NULL
-         AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)`,
+         AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)`,
       [tenantId, orgId]
     );
 

@@ -1,5 +1,5 @@
 const express = require('express');
-const { orgToday } = require('../utils/orgTime');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold } = require('../services/advertisingTemplate');
@@ -87,22 +87,30 @@ const TENANT_NAME_SQL = tenantNameSql('t');
 // The unit's NEXT upcoming lease (earliest start > today) → next move-in date +
 // tenant. Used by the "vacant now" query so the Leasing → Vacancy page can show a
 // unit that is empty TODAY even when someone is moving in later (for viewings).
-const NEXT_MOVE_IN_JOIN = `
+// Functions, not constants: each embeds today's date, and a module-level constant
+// would capture the day the process booted and hold it until the next restart.
+function nextMoveInJoin() {
+  return `
        LEFT JOIN leasing nl ON nl.id = (
          SELECT lm.id FROM leasing lm
-          WHERE lm.unit_id = u.id AND lm.deleted_at IS NULL AND lm.start_date > CURDATE()
+          WHERE lm.unit_id = u.id AND lm.deleted_at IS NULL AND lm.start_date > ${orgTodaySql()}
           ORDER BY lm.start_date ASC LIMIT 1)
        LEFT JOIN tenant nt ON nt.id = nl.tenant_id`;
-const NEXT_MOVE_IN_COLS = `
+}
+function nextMoveInCols() {
+  return `
           DATE_FORMAT(nl.start_date, '%Y-%m-%d') AS next_move_in_date,
-          DATEDIFF(nl.start_date, CURDATE()) AS days_to_move_in,
+          DATEDIFF(nl.start_date, ${orgTodaySql()}) AS days_to_move_in,
           nl.tenant_id AS next_tenant_id, ${tenantNameSql('nt')} AS next_tenant_name`;
+}
 
 // Sub-conditions reused for the "vacant now" query (correlated on u.id).
-const NO_CURRENT_LEASE = `NOT EXISTS (
+function noCurrentLease() {
+  return `NOT EXISTS (
   SELECT 1 FROM leasing lc
    WHERE lc.unit_id = u.id AND lc.deleted_at IS NULL
-     AND lc.start_date <= CURDATE() AND (lc.end_date IS NULL OR lc.end_date >= CURDATE()))`;
+     AND lc.start_date <= ${orgTodaySql()} AND (lc.end_date IS NULL OR lc.end_date >= ${orgTodaySql()}))`;
+}
 
 // Exclude placeholder/test units by name (unit or property). Substring match —
 // catches "Test Unit 1", "6A Test", "Test Property 2".
@@ -138,7 +146,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       `SELECT
           l.id AS lease_id, l.contract_type, l.amount AS rent, l.deposit, l.notice_period_days,
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
-          DATEDIFF(l.end_date, CURDATE()) AS days_left,
+          DATEDIFF(l.end_date, ${orgTodaySql()}) AS days_left,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
           u.rent_price_min, u.rent_price_max, u.listing_url AS listing_url,
           at.id AS template_id, at.name AS template_name,
@@ -152,10 +160,10 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
        WHERE p.org_id = ?
          AND l.deleted_at IS NULL
          AND u.active_status = 1
-         ${page ? 'AND l.start_date <= CURDATE()' : ''}
+         ${page ? `AND l.start_date <= ${orgTodaySql()}` : ''}
          AND l.end_date IS NOT NULL
-         AND l.end_date >= CURDATE()
-         AND DATEDIFF(l.end_date, CURDATE()) <= ${expiringWindow}
+         AND l.end_date >= ${orgTodaySql()}
+         AND DATEDIFF(l.end_date, ${orgTodaySql()}) <= ${expiringWindow}
          AND ${NOT_TEST}
          AND NOT EXISTS (
            -- a replacement/continuation lease that keeps the unit occupied past
@@ -185,22 +193,22 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           p.id AS property_id, p.display_name AS property_name, p.street_address, p.district, p.city,
           ll.id AS last_lease_id,
           DATE_FORMAT(ll.end_date, '%Y-%m-%d') AS vacant_since,
-          DATEDIFF(CURDATE(), ll.end_date) AS days_vacant,
+          DATEDIFF(${orgTodaySql()}, ll.end_date) AS days_vacant,
           ll.amount AS rent, ll.deposit, ll.contract_type,
-          t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name,${NEXT_MOVE_IN_COLS}
+          t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name,${nextMoveInCols()}
        FROM unit u
        JOIN property p ON u.property_id = p.id
        LEFT JOIN advertising_template at ON at.id = u.advertising_template_id AND at.deleted_at IS NULL
        LEFT JOIN leasing ll ON ll.id = (
           SELECT le.id FROM leasing le
            WHERE le.unit_id = u.id AND le.deleted_at IS NULL
-             AND le.end_date IS NOT NULL AND le.end_date < CURDATE()
+             AND le.end_date IS NOT NULL AND le.end_date < ${orgTodaySql()}
            ORDER BY le.end_date DESC, le.id DESC LIMIT 1)
-       LEFT JOIN tenant t ON t.id = ll.tenant_id${NEXT_MOVE_IN_JOIN}
+       LEFT JOIN tenant t ON t.id = ll.tenant_id${nextMoveInJoin()}
        WHERE p.org_id = ?
          AND u.active_status = 1
          AND ${NOT_TEST}
-         AND ${NO_CURRENT_LEASE}`,
+         AND ${noCurrentLease()}`,
       [orgId]
     );
 
@@ -209,7 +217,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           m.id, m.lease_id, cl.id AS current_lease_id, DATE_FORMAT(m.available_from, '%Y-%m-%d') AS available_from,
           DATE_FORMAT(m.expires_on, '%Y-%m-%d') AS expires_on,
           m.advertising_enabled, m.inquiry_enabled, m.reason,
-          DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today,
+          DATE_FORMAT(${orgTodaySql()}, '%Y-%m-%d') AS today,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
           u.rent_price_min, u.rent_price_max, u.rent_price_min AS rent, u.listing_url AS listing_url,
           at.id AS template_id, at.name AS template_name,
@@ -222,13 +230,13 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
          SELECT l.id FROM leasing l
           WHERE l.unit_id = m.unit_id
             AND l.deleted_at IS NULL
-            AND l.start_date <= CURDATE()
-            AND (l.end_date IS NULL OR l.end_date >= CURDATE())
+            AND l.start_date <= ${orgTodaySql()}
+            AND (l.end_date IS NULL OR l.end_date >= ${orgTodaySql()})
           ORDER BY l.start_date DESC, l.id DESC LIMIT 1)
        WHERE m.org_id = ?
          AND p.org_id = ?
          AND m.status = 1
-         AND m.expires_on >= CURDATE()
+         AND m.expires_on >= ${orgTodaySql()}
          AND u.active_status = 1
          AND ${NOT_TEST}
        ORDER BY m.created_at DESC`,
@@ -424,7 +432,7 @@ router.get('/vacancy-override', authenticate, async (req, res) => {
        WHERE m.org_id = ?
          AND p.org_id = ?
          AND m.status = 1
-         AND m.expires_on >= CURDATE()
+         AND m.expires_on >= ${orgTodaySql()}
          ${leaseFilter}
        ORDER BY m.created_at DESC
        ${leaseId ? 'LIMIT 1' : ''}`,
@@ -512,8 +520,8 @@ router.post('/vacancy-override', authenticate, async (req, res) => {
         `SELECT id FROM leasing
           WHERE unit_id = ?
             AND deleted_at IS NULL
-            AND start_date <= CURDATE()
-            AND (end_date IS NULL OR end_date >= CURDATE())
+            AND start_date <= ${orgTodaySql()}
+            AND (end_date IS NULL OR end_date >= ${orgTodaySql()})
           ORDER BY start_date DESC, id DESC LIMIT 1`,
         [unitId]
       );
@@ -1714,7 +1722,7 @@ async function markPostingPlan(pool, orgId, body) {
     const id = newId();
     await pool.execute(
       `INSERT INTO advertising_post_log (id, org_id, post_date, property_id, template_id, forum_id, account_id, unit_ids, source, status, created_at)
-       VALUES (?, ?, COALESCE(?, CURDATE()), ?, ?, ?, ?, ?, ?, ?, NOW())`,
+       VALUES (?, ?, COALESCE(?, ${orgTodaySql()}), ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [id, orgId, post_date, propertyId, templateId, forumId, accountId, unit_ids, source, status]
     );
     return { id };

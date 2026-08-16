@@ -37,6 +37,7 @@
 
 const xeroClient = require('./xeroClient');
 const llmClient = require('./llmClient');
+const { orgToday } = require('../utils/orgTime');
 
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -307,7 +308,7 @@ async function syncForOrg(pool, orgId, opts = {}) {
   const DEFAULT_SYNC_DAYS = 5;
   const sinceDate = opts.sinceDate
     || new Date(Date.now() - DEFAULT_SYNC_DAYS * 86400000).toISOString().split('T')[0];
-  const untilDate = opts.untilDate || new Date().toISOString().split('T')[0];
+  const untilDate = opts.untilDate || orgToday();
 
   const summary = {
     pulled: 0,

@@ -9,6 +9,7 @@ const { advanceInvoiceDate, periodEndFor } = require('../utils/invoiceSchedule')
 const { generateInvoicePdfBuffer } = require('./pdf');
 const { sendTemplateEmail } = require('../services/emailService');
 const { sendMail, sendMailWithAccount } = require('../config/mailer');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 
 // Internal helper used by both /publish and /publish-preview to figure out the
 // authoritative amount for a given lease + due_date. Returns:
@@ -181,7 +182,7 @@ router.post('/invoices', authenticate, async (req, res) => {
                 ELSE IF(i.amount IS NULL, 0, i.amount - COALESCE(paid.total_paid, 0))
               END as outstanding,
               CASE i.status
-                WHEN 2 THEN IF(i.due_on IS NULL, 0, IF(DATEDIFF(CURRENT_TIMESTAMP, i.due_on) >= 0, DATEDIFF(CURRENT_TIMESTAMP, i.due_on), 0))
+                WHEN 2 THEN IF(i.due_on IS NULL, 0, IF(DATEDIFF(${orgTodaySql()}, i.due_on) >= 0, DATEDIFF(${orgTodaySql()}, i.due_on), 0))
                 ELSE 0
               END as days_late
        FROM invoice i
@@ -670,15 +671,20 @@ router.get('/property/:unit_id', authenticate, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 // Recompute a restored invoice's status from its due date + payments.
-const RESTORE_STATUS_SQL = `
+//
+// A function, not a constant: it embeds today's date, and a module-level constant
+// would capture the day the process booted and hold it until the next restart.
+function restoreStatusSql() {
+  return `
   CASE
     WHEN i.amount <= COALESCE((SELECT SUM(al.amount) FROM accounting_line al
            JOIN accounting a ON al.accounting_id = a.id
           WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id
             AND a.deleted_at IS NULL AND al.deleted_at IS NULL), 0) THEN 1
-    WHEN i.due_on IS NOT NULL AND i.due_on < CURDATE() THEN 2
+    WHEN i.due_on IS NOT NULL AND i.due_on < ${orgTodaySql()} THEN 2
     ELSE 0
   END`;
+}
 
 // POST /api/invoice/write-off-bulk — write off many invoices at once
 router.post('/write-off-bulk', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), async (req, res) => {
@@ -727,7 +733,7 @@ router.post('/:id/restore', authenticate, requirePermission('LANDLORD/INVOICE_ED
   try {
     const orgId = req.user.orgId;
     const [result] = await req.pool.execute(
-      `UPDATE invoice i SET i.status = ${RESTORE_STATUS_SQL},
+      `UPDATE invoice i SET i.status = ${restoreStatusSql()},
               i.written_off_at = NULL, i.written_off_reason = NULL
         WHERE i.id = ? AND i.org_id = ? AND i.deleted_at IS NULL AND i.status = 3`,
       [req.params.id, orgId]
@@ -776,7 +782,7 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
     const amount = parseFloat(inv.amount) || 0;
     const paid = parseFloat(outRow?.paid) || 0;
     const outstanding = Math.max(0, amount - paid);
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = orgToday();
     const dueStr = inv.due_on
       ? (inv.due_on instanceof Date ? inv.due_on.toISOString().split('T')[0] : String(inv.due_on).split('T')[0])
       : null;
@@ -964,7 +970,7 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), asy
         );
         const invAmount = parseFloat(inv.amount) || 0;
         const paid = parseFloat(total_paid) || 0;
-        const today = new Date().toISOString().split('T')[0];
+        const today = orgToday();
         const dueOn = inv.due_on ? new Date(inv.due_on).toISOString().split('T')[0] : null;
         const isPastDue = dueOn && today > dueOn;
 

@@ -13,7 +13,7 @@
  */
 
 const crypto = require('crypto');
-const { orgToday } = require('../utils/orgTime');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { buildViewingIcs } = require('../utils/ics');
 const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
@@ -600,7 +600,7 @@ const request_viewing = {
       `SELECT l.id AS leasing_id, l.tenant_id, t.email AS tenant_email, t.first_name AS t_first, t.last_name AS t_last
        FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id
        WHERE l.unit_id = ? AND l.deleted_at IS NULL
-         AND l.start_date <= CURDATE() AND (l.end_date >= CURDATE() OR l.end_date IS NULL)
+         AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
        ORDER BY l.start_date DESC LIMIT 1`,
       [args.unit_id]
     );
@@ -872,14 +872,14 @@ const search_leases = {
 
     // Date-derived status filter — keeps the LLM honest about what "active" means
     if (args.status === 'active') {
-      where += ' AND l.start_date <= CURDATE() AND (l.end_date IS NULL OR l.end_date >= CURDATE())';
+      where += ` AND l.start_date <= ${orgTodaySql()} AND (l.end_date IS NULL OR l.end_date >= ${orgTodaySql()})`;
     } else if (args.status === 'upcoming') {
-      where += ' AND l.start_date > CURDATE()';
+      where += ` AND l.start_date > ${orgTodaySql()}`;
     } else if (args.status === 'past') {
-      where += ' AND l.end_date IS NOT NULL AND l.end_date < CURDATE()';
+      where += ` AND l.end_date IS NOT NULL AND l.end_date < ${orgTodaySql()}`;
     }
     if (Number.isInteger(args.expiring_within_days)) {
-      where += ' AND l.end_date IS NOT NULL AND l.end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL ? DAY)';
+      where += ` AND l.end_date IS NOT NULL AND l.end_date BETWEEN ${orgTodaySql()} AND DATE_ADD(${orgTodaySql()}, INTERVAL ? DAY)`;
       params.push(args.expiring_within_days);
     }
 
@@ -888,10 +888,10 @@ const search_leases = {
               l.invoicing,
               DATE_FORMAT(l.start_date, '%Y-%m-%d') AS start_date,
               DATE_FORMAT(l.end_date,   '%Y-%m-%d') AS end_date,
-              DATEDIFF(l.end_date, CURDATE()) AS days_until_end,
+              DATEDIFF(l.end_date, ${orgTodaySql()}) AS days_until_end,
               CASE
-                WHEN l.start_date > CURDATE() THEN 'upcoming'
-                WHEN l.end_date IS NOT NULL AND l.end_date < CURDATE() THEN 'past'
+                WHEN l.start_date > ${orgTodaySql()} THEN 'upcoming'
+                WHEN l.end_date IS NOT NULL AND l.end_date < ${orgTodaySql()} THEN 'past'
                 ELSE 'active'
               END AS lease_status,
               t.id AS tenant_id,
@@ -996,7 +996,7 @@ const search_invoices = {
     if (args.leasing_id)  { where += ' AND i.leasing_id = ?';  params.push(str(args.leasing_id)); }
     if (Number.isInteger(args.status)) { where += ' AND i.status = ?'; params.push(args.status); }
     if (args.overdue_only) {
-      where += ' AND i.status != 1 AND i.due_on < CURDATE()';
+      where += ` AND i.status != 1 AND i.due_on < ${orgTodaySql()}`;
     }
     if (args.due_from) { where += ' AND i.due_on >= ?'; params.push(args.due_from); }
     if (args.due_to)   { where += ' AND i.due_on <= ?'; params.push(args.due_to); }
@@ -1009,7 +1009,7 @@ const search_invoices = {
     const [rows] = await ctx.pool.execute(
       `SELECT i.id, i.invoice_code, i.amount, i.note, i.status, i.type,
               DATE_FORMAT(i.due_on, '%Y-%m-%d') AS due_on,
-              DATEDIFF(CURDATE(), i.due_on) AS days_overdue,
+              DATEDIFF(${orgTodaySql()}, i.due_on) AS days_overdue,
               c.name AS category_name,
               t.id AS tenant_id,
               CASE WHEN t.type = 1 THEN t.company_name
@@ -1964,7 +1964,10 @@ function toolsForInternal(extra = []) {
 // Curated schema summary for ask_data. Deliberately an ALLOWLIST — only tables/
 // columns staff legitimately query. Credentials, tokens and auth tables are
 // omitted on purpose (and the read-only user + SQL guard back this up).
-const ASK_DATA_SCHEMA = [
+// A function, not a constant: it embeds today's Hong Kong date, and a module-level
+// constant would capture the day the process booted and hold it until restart.
+function askDataSchema() {
+  return [
   'When using ask_data, the connection is already scoped to THIS organization\'s database, so do not filter by org except where noted. Available tables/columns:',
   '  property(id, display_name, street_address, district, city, state, country, zip_code, type, status, currency, org_id)  -- type 1=Residential 2=Commercial; filter status=1 AND deleted_at IS NULL',
   '  unit(id, name, type, property_id, beds, baths, size, status, active_status, rent_price_min, rent_price_max, deposit_price)  -- status 0=vacant 1=occupied; active_status 1=active; filter deleted_at IS NULL',
@@ -1977,10 +1980,21 @@ const ASK_DATA_SCHEMA = [
   '  chat_session(id, channel, channel_user_id, contact_id, viewer_name, viewer_email, viewer_phone, message_count, last_message_at, created_at)  -- channel: whatsapp/email/web = TaneChat prospect chats, staff-test/staff-internal = the in-Tenafy assistants',
   '  chat_message(id, session_id, role, content, created_at)  -- role: user/assistant (also system/tool — exclude those, they are prompts and raw JSON)',
   'Join hints: unit.property_id->property.id; leasing.unit_id->unit.id; leasing.tenant_id->tenant.id; invoice.leasing_id->leasing.id; accounting_line.invoice_code->invoice.invoice_code.',
-  'Money is HK$. Dates are DATE/DATETIME — use CURDATE() for "today".',
-].join('\n');
+  'Money is HK$.',
+  // The model writes its own SQL here, so it cannot bind a parameter — it has to be
+  // told the date. CURDATE() would resolve against the MySQL server's clock (UTC),
+  // which is a day behind Hong Kong between midnight and 08:00.
+  //
+  // DATE and DATETIME are deliberately split: a DATE column holds a Hong Kong
+  // calendar date, but a DATETIME is stored as a UTC instant, so comparing one
+  // against a Hong Kong wall-clock time would be eight hours out. NOW() stays.
+  `Today in Hong Kong is ${orgTodaySql()}. Business dates (due_on, start_date, end_date, payment_date) are DATE columns holding Hong Kong calendar dates — use ${orgTodaySql()} for "today" and NEVER CURDATE() or CURRENT_DATE, which resolve to UTC and are a day behind for part of every day. DATETIME columns (created_at, sent_at, last_message_at) are stored in UTC; keep using NOW() for those.`,
+  ].join('\n');
+}
 
-const INTERNAL_SYSTEM_PROMPT = [
+// Likewise a function — it embeds askDataSchema(), which carries today's date.
+function internalSystemPrompt() {
+  return [
   'You are the INTERNAL operations assistant for a property-management team using Tenafy.',
   'You are talking to STAFF, not prospects. Answer their data questions directly and completely.',
   'Do NOT use a sales tone. Do NOT ask for a move-in date, area, or budget. There is no qualification gate — just answer.',
@@ -1994,11 +2008,12 @@ const INTERNAL_SYSTEM_PROMPT = [
   'Be precise with numbers, dates (DD-MMM-YYYY), and money (HK$). If a tool returns nothing, say so plainly — never invent rows.',
   'When you list units/leases/invoices, include the identifying details (unit, property, tenant, dates, amounts). Group long lists sensibly.',
   '',
-  ASK_DATA_SCHEMA,
-].join('\n');
+  askDataSchema(),
+  ].join('\n');
+}
 
 module.exports = {
-  toolsForCapabilities, toolsForInternal, INTERNAL_SYSTEM_PROMPT, ALL_BY_NAME,
+  toolsForCapabilities, toolsForInternal, internalSystemPrompt, ALL_BY_NAME,
   ASK_DATA: ask_data,
   INTERNAL_ONLY,
   INTERNAL_TOOL_NAMES,

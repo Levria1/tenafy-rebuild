@@ -17,6 +17,7 @@ const { authenticate } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const visionClient = require('../services/visionClient');
 const llmClient = require('../services/llmClient');
+const { orgTodaySql } = require('../utils/orgTime');
 const {
   pairKey,
   normalizeReservationCode,
@@ -459,7 +460,7 @@ router.post('/:id/merge', async (req, res) => {
       return fail(res, `Inquiries are not duplicate candidates: ${candidate.reason}`, 409);
     }
 
-    const [[dateRow]] = await conn.execute("SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today");
+    const [[dateRow]] = await conn.execute(`SELECT DATE_FORMAT(${orgTodaySql()}, '%Y-%m-%d') AS today`);
     const dateStr = dateRow.today;
     const fieldPlan = mergeFieldPlan(survivor, loser);
     const notesPlan = buildMergedNotes(survivor.notes, loser.notes, loserId, dateStr);
