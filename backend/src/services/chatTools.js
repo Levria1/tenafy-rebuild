@@ -13,7 +13,7 @@
  */
 
 const crypto = require('crypto');
-const { orgToday, orgTodaySql } = require('../utils/orgTime');
+const { orgToday, orgTodaySql, orgTimeSql } = require('../utils/orgTime');
 const { buildViewingIcs } = require('../utils/ics');
 const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
@@ -483,7 +483,7 @@ const capture_lead = {
     const [first, ...rest] = String(args.name).trim().split(/\s+/);
     const last = rest.join(' ') || null;
     const noteBody = (args.notes || '').trim();
-    const ts = new Date().toISOString().slice(0, 10);
+    const ts = orgToday();
     const fullNote = `Lead captured via chatbot on ${ts}.` + (noteBody ? `\nRequirements: ${noteBody}` : '');
 
     const [existing] = await pool.execute(
@@ -1109,7 +1109,7 @@ const search_services = {
     const [rows] = await ctx.pool.execute(
       `SELECT s.id, s.code, s.category, s.sub_category, s.note, s.additional_info,
               s.status, s.priority,
-              DATE_FORMAT(s.created_at, '%Y-%m-%d') AS created_on,
+              DATE_FORMAT(${orgTimeSql('s.created_at')}, '%Y-%m-%d') AS created_on,
               DATE_FORMAT(s.service_date_start, '%Y-%m-%d') AS service_date_start,
               DATE_FORMAT(s.service_date_end,   '%Y-%m-%d') AS service_date_end,
               u.id AS unit_id, u.name AS unit_name,
@@ -1204,7 +1204,7 @@ const search_documents = {
       try {
         const [rows] = await ctx.pool.execute(
           `SELECT l.id, l.lease_no, l.signature_status,
-                  DATE_FORMAT(l.signed_at, '%Y-%m-%d %H:%i') AS signed_at,
+                  DATE_FORMAT(${orgTimeSql('l.signed_at')}, '%Y-%m-%d %H:%i') AS signed_at,
                   l.template_id, l.template_version_used, l.signed_file_id,
                   CASE WHEN t.type = 1 THEN t.company_name
                        ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
@@ -1255,8 +1255,8 @@ const search_documents = {
       try {
         const [rows] = await ctx.pool.execute(
           `SELECT id, name, current_version, status,
-                  DATE_FORMAT(created_at, '%Y-%m-%d') AS created_on,
-                  DATE_FORMAT(updated_at, '%Y-%m-%d') AS updated_on
+                  DATE_FORMAT(${orgTimeSql('created_at')}, '%Y-%m-%d') AS created_on,
+                  DATE_FORMAT(${orgTimeSql('updated_at')}, '%Y-%m-%d') AS updated_on
              FROM lease_template
             WHERE ${where}
             ORDER BY updated_at DESC, name

@@ -18,6 +18,7 @@
  */
 
 const llmClient = require('./llmClient');
+const { orgWallClock, orgToday } = require('../utils/orgTime');
 
 // ---------------------------------------------------------------------------
 // Field set we extract. Matches the inquiry table columns the form exposes.
@@ -36,7 +37,14 @@ function transcriptToText(messages) {
     .filter(m => m.role === 'user' || m.role === 'assistant')
     .map(m => {
       const role = m.role === 'user' ? 'PROSPECT' : 'BOT';
-      const ts = m.created_at ? new Date(m.created_at).toISOString().slice(0, 16).replace('T', ' ') : '';
+      // Hong Kong, and labelled. created_at is an absolute instant, so
+      // toISOString() renders it in UTC — telling the model a message arrived at
+      // "15 Aug 16:05" when the prospect sent it at 00:05 on the 16th. The model
+      // reasons about "tomorrow" and "this weekend" from these, so a silent
+      // eight-hour shift moves the dates it extracts.
+      const ts = m.created_at
+        ? `${orgWallClock(new Date(m.created_at)).slice(0, 16).replace('T', ' ')} HKT`
+        : '';
       return `[${ts} ${role}] ${m.content || ''}`;
     })
     .join('\n');
@@ -176,7 +184,9 @@ const UPDATES_HEADING = '── Updates from chat ──';
 
 function appendDiffToNotes(currentNotes, diff, when) {
   if (!diff || !diff.length) return currentNotes;
-  const dateStr = (when || new Date()).toISOString().slice(0, 10);
+  // orgToday, not toISOString: these notes are read by staff in Hong Kong, and a
+  // diff appended at 00:30 HK would otherwise be filed under the previous day.
+  const dateStr = orgToday(when || new Date());
   const lines = diff.map(d => `${dateStr}: ${d.trim()}`);
 
   const existing = currentNotes ? String(currentNotes).trimEnd() : '';

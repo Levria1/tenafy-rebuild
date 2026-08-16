@@ -20,7 +20,7 @@ const { getFreeBusy } = require('./googleCalendar');
 const { sendViewingMail } = require('./viewingNotify');
 const { sendWhatsApp } = require('./whatsappService');
 const { KIND_ACTION, KIND_MANAGE } = require('../middleware/viewingTokenAuth');
-const { orgTodaySql } = require('../utils/orgTime');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -66,7 +66,7 @@ async function createInquiryForViewer(pool, orgId, { name, email, phone, message
   const [firstName, ...rest] = String(name || '').trim().split(/\s+/);
   const lastName = rest.join(' ') || null;
   const note = `Submitted via viewing request for ${unitName || 'unit'}` +
-    (propertyName ? ` at ${propertyName}` : '') + ` on ${new Date().toISOString().slice(0, 10)}.` +
+    (propertyName ? ` at ${propertyName}` : '') + ` on ${orgToday()}.` +
     (message ? `\n\nMessage: ${String(message).slice(0, 2000)}` : '');
   await pool.execute(
     `INSERT INTO inquiry (id, org_id, inquiry_date, first_name, last_name, email, phone, notes, unit_id, property_id, source, status)

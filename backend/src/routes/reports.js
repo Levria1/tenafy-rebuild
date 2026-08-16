@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { periodsPerYear } = require('../utils/rentProrata');
+const { orgTodayDate } = require('../utils/orgTime');
 
 // GET /api/reports/vacancy-cost
 // Query params: startDate, endDate, propertyIds (comma-separated)
@@ -241,7 +242,7 @@ router.get('/vacancy-cost/units', authenticate, async (req, res) => {
       return res.status(400).json({ code: 400, message: 'Invalid date range' });
     }
 
-    const today = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+    const today = orgTodayDate();
 
     // Resolve properties in scope
     let propertyFilter = 'p.org_id = ? AND p.deleted_at IS NULL AND p.status = 1';

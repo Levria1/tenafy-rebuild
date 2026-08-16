@@ -4,7 +4,7 @@ const PDFDocument = require('pdfkit');
 const { authenticate } = require('../middleware/auth');
 const { renderFromTemplate } = require('../services/leasePdfRenderer');
 const { resolveLeaseTemplateId } = require('../services/leaseTemplateResolver');
-const { orgToday } = require('../utils/orgTime');
+const { orgToday, ORG_TIME_ZONE } = require('../utils/orgTime');
 
 
 // Org-level info for document headers.
@@ -23,6 +23,13 @@ const { orgToday } = require('../utils/orgTime');
 // rather than from here.
 const ORG_INFO_SQL =
   'SELECT display_name AS company_name, default_currency FROM organization WHERE id = ? LIMIT 1';
+
+// Renders an INSTANT in the operator's zone. Bare calendar dates (due_on,
+// payment_date) must NOT go through this — they carry no timezone and a
+// conversion would slide them a day.
+const fmtInstantHk = (d) => d ? new Date(d).toLocaleDateString('en-US', {
+  year: 'numeric', month: 'long', day: 'numeric', timeZone: ORG_TIME_ZONE,
+}) : '-';
 
 // Helper: draw a horizontal line
 function hLine(doc, y, margin = 50) {
@@ -95,6 +102,13 @@ function renderInvoicePdf(doc, { inv, org, amountTotal, amountPaid, outstanding 
   const currSymbol = { USD: '$', HKD: 'HK$', GBP: '£', EUR: '€', SGD: 'S$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$', MYR: 'RM', PHP: '₱', THB: '฿', JPY: '¥', CNY: '¥', KRW: '₩', INR: '₹', AED: 'AED ' }[currencyCode] || (currencyCode + ' ');
   const fmtCurr = (v) => `${currSymbol}${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';
+  // For true instants (created_at) only. These are absolute moments, so without an
+  // explicit zone they render in the server's — printing the previous day on a
+  // tenant's invoice for anything raised before 08:00 Hong Kong. due_on is NOT an
+  // instant: it is a bare calendar date and must keep using fmtDate.
+  const fmtInstant = (d) => d ? new Date(d).toLocaleDateString('en-US', {
+    year: 'numeric', month: 'long', day: 'numeric', timeZone: ORG_TIME_ZONE,
+  }) : '-';
 
   const invoiceNo = inv.invoice_code || inv.id;
   const today = new Date();
@@ -134,7 +148,7 @@ function renderInvoicePdf(doc, { inv, org, amountTotal, amountPaid, outstanding 
     doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
   }
   doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold')
-     .text(`Date: ${fmtDate(inv.created_at || inv.due_on || new Date())}`, W - M - 220, y + 15, { width: 220, align: 'right' });
+     .text(`Date: ${inv.created_at ? fmtInstant(inv.created_at) : (inv.due_on ? fmtDate(inv.due_on) : fmtInstant(new Date()))}`, W - M - 220, y + 15, { width: 220, align: 'right' });
   doc.fillColor('#666666').fontSize(9).font('Helvetica')
      .text(`Invoice: #${invoiceNo}`, W - M - 220, y + 36, { width: 220, align: 'right' });
 
@@ -341,7 +355,7 @@ router.get('/lease/:id', authenticate, async (req, res) => {
     doc.rect(0, 0, doc.page.width, 80).fill('#1a3c8f');
     doc.fillColor('#ffffff').fontSize(22).font('Helvetica-Bold').text('LEASE AGREEMENT', 50, 22);
     doc.fontSize(10).font('Helvetica').text(org.company_name || 'Property Management', 50, 50);
-    doc.fontSize(9).text(`Generated: ${new Date().toLocaleDateString()}`, doc.page.width - 200, 50, { width: 150, align: 'right' });
+    doc.fontSize(9).text(`Generated: ${new Date().toLocaleDateString('en-US', { timeZone: ORG_TIME_ZONE })}`, doc.page.width - 200, 50, { width: 150, align: 'right' });
 
     let y = 100;
 
@@ -420,7 +434,7 @@ router.get('/lease/:id', authenticate, async (req, res) => {
     // ── Footer ────────────────────────────────────────────────────────────────
     doc.rect(0, doc.page.height - 35, doc.page.width, 35).fill('#f0f4ff');
     doc.fillColor('#888888').fontSize(8).font('Helvetica')
-       .text(`Tenafy Property Management | Lease ID: ${id} | ${new Date().toLocaleDateString()}`, 50, doc.page.height - 20, { align: 'center', width: doc.page.width - 100 });
+       .text(`Tenafy Property Management | Lease ID: ${id} | ${new Date().toLocaleDateString('en-US', { timeZone: ORG_TIME_ZONE })}`, 50, doc.page.height - 20, { align: 'center', width: doc.page.width - 100 });
 
     doc.end();
   } catch (error) {
@@ -543,7 +557,7 @@ router.get('/receipt/:paymentId', authenticate, async (req, res) => {
 
     // Right side: date on top (larger), receipt number below (smaller)
     doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold')
-       .text(`Date: ${fmtDate(pmt.payment_date || new Date())}`, W - M - 200, y + 15, { width: 200, align: 'right' });
+       .text(`Date: ${(pmt.payment_date ? fmtDate(pmt.payment_date) : fmtInstantHk(new Date()))}`, W - M - 200, y + 15, { width: 200, align: 'right' });
     doc.fillColor('#666666').fontSize(9).font('Helvetica')
        .text(`Receipt: #${receiptNo}`, W - M - 200, y + 36, { width: 200, align: 'right' });
 
@@ -757,7 +771,7 @@ async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
     const titleText = companyName || 'RECEIPT';
     doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text(titleText, M, y + 12);
     if (companyName) doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
-    doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold').text(`Date: ${fmtDate(pmt.payment_date || new Date())}`, W - M - 200, y + 15, { width: 200, align: 'right' });
+    doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold').text(`Date: ${(pmt.payment_date ? fmtDate(pmt.payment_date) : fmtInstantHk(new Date()))}`, W - M - 200, y + 15, { width: 200, align: 'right' });
     doc.fillColor('#666666').fontSize(9).font('Helvetica').text(`Receipt: #${receiptNo}`, W - M - 200, y + 36, { width: 200, align: 'right' });
     y += 80;
 
@@ -847,3 +861,6 @@ async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
 module.exports = router;
 module.exports.generateReceiptPdfBuffer = generateReceiptPdfBuffer;
 module.exports.generateInvoicePdfBuffer = generateInvoicePdfBuffer;
+// Exported for tests: lets the renderer be driven against a stub `doc` so the
+// text it actually emits can be asserted, rather than a copy of its logic.
+module.exports.renderInvoicePdf = renderInvoicePdf;

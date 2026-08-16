@@ -27,7 +27,7 @@ const { createViewingEvent, deleteViewingEvent, getFreeBusy } = require('../serv
 const { sendWhatsApp } = require('../services/whatsappService');
 const { sendViewingMail } = require('../services/viewingNotify');
 const { createCandidateBooking, cancelCandidateBookingRow } = require('../services/viewingBooking');
-const { orgTodaySql } = require('../utils/orgTime');
+const { orgToday, orgTodaySql } = require('../utils/orgTime');
 
 const {
   resolveOrgByViewingToken,
@@ -220,7 +220,7 @@ async function createInquiryForViewer(pool, orgId, { name, email, phone, message
   const sourceNote =
     `Submitted via public viewing request for ${unitName || 'unit'}` +
     (propertyName ? ` at ${propertyName}` : '') +
-    ` on ${new Date().toISOString().slice(0, 10)}.` +
+    ` on ${orgToday()}.` +
     (message ? `\n\nMessage: ${String(message).slice(0, 2000)}` : '');
 
   await pool.execute(

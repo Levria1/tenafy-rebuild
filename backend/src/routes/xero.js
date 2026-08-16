@@ -33,6 +33,7 @@ const xeroSync = require('../services/xeroSync');
 const { generateSequenceCode } = require('../utils/sequenceCode');
 const { recalcInvoiceStatuses } = require('../utils/invoiceStatus');
 const { resolveHeaderInvoiceCode, validateSplitTotal } = require('../utils/reconcileSplit');
+const { orgToday } = require('../utils/orgTime');
 
 // Short-lived CSRF state cookie. Encoded as {orgId}.{random}.{hmac} so the
 // callback (which runs in the SAME browser tab as /connect) can recover the
@@ -336,9 +337,12 @@ router.get('/balances', authenticate, async (req, res) => {
 
     // Xero closing balances from BankSummary. Closing balance is as-of toDate
     // regardless of fromDate, so a short range keeps the report light.
-    const now = new Date();
-    const toDate = now.toISOString().split('T')[0];
-    const fromDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+    // Hong Kong, not the server clock: this window decides which bank
+    // transactions are reconciled, and before 08:00 HK the UTC date is still
+    // yesterday — which silently drops a day's activity.
+    const todayHk = orgToday();
+    const toDate = todayHk;
+    const fromDate = `${todayHk.slice(0, 7)}-01`;
     let xeroBalance = {};
     let reportError = null;
     try {

@@ -22,7 +22,34 @@
  *  libcairo2 libasound2` not having been run.
  */
 
-const puppeteer = require('puppeteer');
+// Loaded lazily via dynamic import(), not require().
+//
+// puppeteer ships as ESM. A top-level require() of it throws ERR_REQUIRE_ESM below
+// Node 22.12, so merely importing this module — or anything reaching it, such as
+// routes/pdf.js — failed outright. Moving that require() inside the function is NOT
+// enough: it only defers the same throw to the first render. import() works on
+// every supported version.
+//
+// `mod.default || mod` because an ESM namespace puts the default export on
+// `.default`, and reading `.launch` straight off the namespace yields undefined.
+//
+// The promise is cached so concurrent first calls share one load, and cleared on
+// failure so a transient error does not poison every later attempt.
+let _puppeteerPromise = null;
+function loadPuppeteer() {
+  if (!_puppeteerPromise) {
+    _puppeteerPromise = import('puppeteer')
+      .then(mod => {
+        const p = mod.default || mod;
+        if (!p || typeof p.launch !== 'function') {
+          throw new Error('puppeteer loaded but has no launch(); unexpected module shape');
+        }
+        return p;
+      })
+      .catch(err => { _puppeteerPromise = null; throw err; });
+  }
+  return _puppeteerPromise;
+}
 const {
   substitute, sampleContext, applyTermOverride, applyPageBreakMarkers,
 } = require('./leaseTemplateVariables');
@@ -30,6 +57,7 @@ const {
 let _browserPromise = null;
 
 async function getBrowser() {
+  const puppeteer = await loadPuppeteer();
   if (!_browserPromise) {
     _browserPromise = puppeteer.launch({
       headless: 'new',
@@ -309,9 +337,15 @@ async function renderHtmlToPdf({ body, header, footer, pageSize }) {
   }
 }
 
+// Exported for tests: proves the ESM loader resolves to something with launch(),
+// without paying for an actual browser launch.
 module.exports = {
   renderFromTemplate,
   renderTemplatePreview,
   renderInlinePreview,
   applyTermOverride,
 };
+
+// Exported for tests: proves the ESM loader resolves to something with launch(),
+// without paying for an actual browser launch.
+module.exports.loadPuppeteer = loadPuppeteer;

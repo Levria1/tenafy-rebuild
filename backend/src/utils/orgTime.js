@@ -119,7 +119,59 @@ function dbDate(value) {
   return null;
 }
 
+// The operator's current offset from UTC, in seconds (28800 for Hong Kong).
+//
+// Derived rather than hardcoded: read the wall clock, re-read those same digits
+// as if they were UTC, and the gap is the offset. Costs nothing and keeps working
+// if ORG_TIME_ZONE is ever pointed at a zone that observes DST.
+function orgUtcOffsetSeconds(instant = new Date()) {
+  const wall = orgWallClock(instant);
+  // Throws rather than falling back to 0. A silent zero means "UTC", which is
+  // precisely the bug this module exists to remove — it would look like a working
+  // conversion while shifting nothing.
+  if (!wall) {
+    throw new Error(`orgUtcOffsetSeconds: could not read the wall clock for ${String(instant)}`);
+  }
+  const parsed = Date.parse(`${wall}Z`);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`orgUtcOffsetSeconds: unparseable wall clock ${JSON.stringify(wall)}`);
+  }
+  // Rounded to whole minutes because the wall clock carries no milliseconds; real
+  // UTC offsets are always a whole number of minutes (including the 30- and
+  // 45-minute ones, which this handles without special casing).
+  return Math.round((parsed - instant.getTime()) / 60000) * 60;
+}
+
+// Wrap a SQL expression holding a TIMESTAMP — an absolute instant — so it comes out
+// as the operator's wall clock.
+//
+// ONLY for TIMESTAMP columns. Do NOT wrap a DATETIME: in this schema those hold a
+// wall clock that is ALREADY Hong Kong (appointment times such as
+// viewing_booking.proposed_datetime and service.service_date_start), so shifting one
+// moves an evening viewing to the next day. Do NOT wrap a DATE either — see dbDate.
+//
+// A TIMESTAMP is an absolute instant that MySQL renders in the CONNECTION's
+// timezone — UTC here — so formatting one straight out of the database shows a
+// London reading to a Hong Kong reader, and the wrong DATE from midnight to 08:00.
+//
+// The shift subtracts the connection's own offset instead of assuming it is UTC,
+// so this survives someone changing the MySQL session timezone later. CONVERT_TZ
+// with named zones is deliberately avoided: it returns NULL — silently, with no
+// error — unless the server's timezone tables have been loaded, and a NULL date
+// reads as "never" rather than as a failure.
+//
+// Only for true instants. A DATE column carries no timezone and must never be put
+// through this; use dbDate() for those.
+//
+// The offset is TODAY'S offset, applied to every row. Hong Kong has observed no
+// DST since 1979, so historical rows convert correctly. Pointing ORG_TIME_ZONE at
+// a zone that does observe DST would render pre-transition timestamps an hour out.
+function orgTimeSql(expr, instant = new Date()) {
+  const offset = orgUtcOffsetSeconds(instant);
+  return `DATE_ADD(${expr}, INTERVAL (${offset} - TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())) SECOND)`;
+}
+
 module.exports = {
   ORG_TIME_ZONE, orgWallClock, toOrgWallClock, orgToday, orgTodayDate,
-  orgTodaySql, sqlDateLiteral, dbDate,
+  orgTodaySql, sqlDateLiteral, dbDate, orgUtcOffsetSeconds, orgTimeSql,
 };

@@ -21,7 +21,7 @@ const {
 } = require('../services/emailService');
 const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCalendarWebhook');
 const { loadResolutionData, resolveWithData, resolveLeaseTemplateId, derivePdfStatus, hasTemplateSql } = require('../services/leaseTemplateResolver');
-const { orgToday, orgTodaySql } = require('../utils/orgTime');
+const { orgToday, orgTodaySql, orgTimeSql } = require('../utils/orgTime');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
@@ -236,7 +236,7 @@ router.get('/calendar', authenticate, async (req, res) => {
       return res.status(400).json({ code: 400, message: 'startDate and endDate are required' });
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = orgToday();
 
     // Get all active units with their property info + current tenant
     let unitWhere = 'u.active_status = 1 AND p.org_id = ? AND p.deleted_at IS NULL';
@@ -2195,7 +2195,7 @@ async function loadPaperwork(conn, orgId, leaseId, leaseEndDate) {
               DATE_FORMAT(term_start, '%Y-%m-%d')     AS term_start,
               DATE_FORMAT(term_end, '%Y-%m-%d')       AS term_end,
               DATE_FORMAT(term_stamp_end, '%Y-%m-%d') AS term_stamp_end,
-              DATE_FORMAT(completed_at, '%Y-%m-%d')   AS completed_at,
+              DATE_FORMAT(${orgTimeSql('completed_at')}, '%Y-%m-%d')   AS completed_at,
               sent_at
          FROM signature_request
         WHERE lease_id = ? AND org_id = ?

@@ -60,12 +60,17 @@ test('no application SQL uses the MySQL server clock for a business date', () =>
     + 'UTC date and is a day behind Hong Kong every night between 00:00 and 08:00.');
 });
 
+// Every way this codebase has actually spelled "the UTC calendar date". The first
+// sweep only looked for .split('T')[0] and so walked straight past five sites
+// written with .slice(0, 10) — hence a pattern, not a fixed string.
+const UTC_TODAY = /new Date\(\)\s*\.toISOString\(\)\s*\.\s*(split\('T'\)\[0\]|slice\(0,\s*10\)|substring\(0,\s*10\)|substr\(0,\s*10\))/;
+
 test('no JS derives "today" from the UTC clock', () => {
   const offenders = [];
   for (const file of jsFiles(SRC)) {
     const lines = fs.readFileSync(file, 'utf8').split('\n');
     lines.forEach((line, i) => {
-      if (!line.includes("new Date().toISOString().split('T')[0]")) return;
+      if (!UTC_TODAY.test(line)) return;
       if (isCommentLine(line)) return;
       offenders.push(`${rel(file)}:${i + 1}  ${line.trim().slice(0, 110)}`);
     });
@@ -101,10 +106,12 @@ test('the fence would actually catch a regression', () => {
   // above would pass on a codebase riddled with the bug and nobody would know.
   const sqlLine = '  const sql = `SELECT 1 WHERE d < CURDATE()`;';
   const jsLine = "    const today = new Date().toISOString().split('T')[0];";
+  const jsLine2 = "    const today = new Date().toISOString().slice(0, 10);";
   const frozen = 'const TODAY_SQL = `WHERE d = ${orgTodaySql()}`;';
 
   assert.ok(/\bCURDATE\s*\(\s*\)|\bCURRENT_DATE\b/.test(sqlLine) && !isCommentLine(sqlLine));
-  assert.ok(jsLine.includes("new Date().toISOString().split('T')[0]") && !isCommentLine(jsLine));
+  assert.ok(UTC_TODAY.test(jsLine) && !isCommentLine(jsLine));
+  assert.ok(UTC_TODAY.test(jsLine2), 'the .slice(0,10) spelling must be caught too');
   assert.ok(/^(const|let|var)\s+[A-Za-z_$][\w$]*\s*=.*\borgToday(Sql)?\s*\(/.test(frozen));
 
   // ...and that a comment mentioning them is still allowed through.
