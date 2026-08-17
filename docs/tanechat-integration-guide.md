@@ -41,7 +41,8 @@ GET /vacancies?free_on=2026-10-12
 | Param | Default | Notes |
 |---|---|---|
 | `target_date` | none | `YYYY-MM-DD`. Ranks and warns by move-in fit, and **hides** units with a positive gap past `hard_max_gap_days` (default 20). Use it to rank "what fits this move-in", not to answer a firm future date. Without it there is no gap to judge, so no ranking, no warnings and no hiding. |
-| `free_on` | none | `YYYY-MM-DD`. **Send this when the customer has a firm future move-in date.** Hard filter to units they can actually take that day. Never applies the gap cap. Anything it removes that merely frees up *later* comes back in `next_available` — see §7. Do **not** also send `target_date` for a future date: the gap cap runs first, so `free_on` can only filter what already survived, and a 6-week enquiry will look like no availability. |
+| `free_on` | none | `YYYY-MM-DD`. **Send this when the customer has a firm future move-in date.** Hard filter to units they can actually take that day. Does not apply `hard_max_gap_days`. Within 60 days, anything it removes that merely frees up *later* comes back in `next_available` — see §7. **Beyond 60 days a separate rule applies — see §2a.** Do **not** also send `target_date` for a future date: the gap cap runs first, so `free_on` can only filter what already survived, and a 6-week enquiry will look like no availability. |
+| `move_out` | none | `YYYY-MM-DD`. Optional. The customer's intended move-out. Only used **beyond** the 60-day booking horizon, where how much vacancy we accept depends on the stay length — see §2a. Malformed values are a `400`. |
 | `max_tier` | `3` | `1` vacant only, `2` + NR, `3` all. Leave it alone unless you have a reason. |
 | `property_id` | none | optional filter |
 | `limit` | `50` | max 200 |
@@ -56,6 +57,47 @@ or hidden. Don't assume those keys exist if you ever call without a date.
 `GET /units/available` is **deprecated**. It answers a strictly worse question: it cannot see units
 coming free later, and until recently it reported units already re-let. Responses carry
 `Deprecation: true`. Migrate off it.
+
+
+### 2a. Beyond 60 days we only offer confirmed units
+
+A requested date more than **60 days** out is beyond the **booking horizon**. Past that point we will
+not hold a flat empty on spec, so the answer narrows to units whose tenant has **confirmed they are
+leaving** and who free up close enough to the date. Already-empty units, may-renew units and manual
+overrides are all withheld.
+
+If nothing qualifies you get a distinct outcome — not "no availability":
+
+```json
+"no_match_reason": "too_far_out",
+"booking_horizon_days": 60,
+"booking_gap_days": 10,
+"check_back_in_days": 51,
+"check_back_on": "2026-10-07",
+"partner_forward": { "applies": false, "message": null }
+```
+
+- Tell the customer to **check back on `check_back_on`**. That is when their date comes inside the
+  horizon — the earliest the answer could change, **not** a promise that something will be free.
+- `phrasing.too_far_out` is the operator's template, `null` until they write one. If `null`, use your
+  own wording; do not invent ours.
+- **`partner_forward.applies` is `false` here even though `count` is `0`.** Do not forward this lead.
+  It is a customer to talk to later, not one to hand to an agency.
+- `next_available` is **absent** beyond the horizon. Inside it, unchanged.
+
+How much gap we accept scales with the stay, so send `move_out` when you know it:
+
+| Requested stay | Maximum gap |
+|---|---:|
+| 1 month | 3 days |
+| 2 months | 6 days |
+| 3 months or longer | 10 days |
+| Not stated | 10 days |
+
+Most far-future enquiries will land on `too_far_out`, and that is honest rather than evasive: of the
+units whose leases end beyond 60 days, the large majority are **may-renew** — the tenant has not yet
+said whether they are staying, so there is genuinely nothing to promise.
+
 
 ## 3. What comes back
 
@@ -454,6 +496,8 @@ Automatic sending is **off**. Nudges are drafts too until the operator enables i
 
 - [ ] Swap `/units/available` → `/vacancies`
 - [ ] For a firm future move-in date, send `free_on` — not `target_date`, and not both
+- [ ] **Branch on `no_match_reason: "too_far_out"`** — offer `check_back_on`, never forward the lead
+- [ ] Send `move_out` when the customer states their intended stay length
 - [ ] Send `target_date` only when you want ranking by move-in fit (it hides units past
       `hard_max_gap_days`)
 - [ ] **Read `next_available` and offer it with `phrasing.later` before telling anyone we have

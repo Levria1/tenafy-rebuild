@@ -3,8 +3,12 @@
 **Everything below is LIVE on production now.** Thank you for the detail in that list — the tables
 and the 18-of-18 check made items 1 and 5 quick to confirm, and you were right on both.
 
-Three of your items were bugs on our side and are fixed. Item 2 needs no change from us but does need
-a change from you, and it is the one costing you the most leads. Item 7 we are not doing yet.
+Three of your items were bugs on our side and are fixed. Item 2 is about which parameter you send —
+that is the one costing you the most leads — and it now comes with a behaviour change of ours, in §8.
+Item 7 we are not doing yet.
+
+**Read §8 before you change anything.** It is new, it is live, and it is the only part of this note
+that needs code from you.
 
 **Docs updated:** `public-api.md` and the integration guide. Two entries in them were actively wrong
 and told you to do the wrong thing — details under items 1 and 2.
@@ -51,18 +55,21 @@ but it was never meant to answer *"is anything available in December?"*
 | A customer with a **firm future move-in date** | `free_on` only |
 | Ranking of what best fits a move-in you already have options for | `target_date` |
 
-`free_on` **never applies the gap cap**. Units that free up after the requested date come back under
-`next_available` with `phrasing.later`, so you can say *"nothing on 6 Dec, but here is what frees up
-sooner"* instead of *"no availability"*. That is exactly why your `free_on=2026-12-06` probe returned
-all 18 units while `target_date` returned none.
+`free_on` does not apply the `hard_max_gap_days` cap. Within 60 days of today, units that free up
+after the requested date come back under `next_available` with `phrasing.later`, so you can say
+*"nothing on that date, but here is what frees up sooner"* instead of *"no availability"*.
 
 ⚠️ **Do not send both for a future date.** The `target_date` gap cap is applied **first**, so `free_on`
 can only filter what already survived the cap — you get the worst of both. Our guide said the two
 "can be combined"; that advice was wrong and has been removed.
 
 **c) Yes, `hard_max_gap_days` is configurable per organisation** (currently 20, must be ≥
-`max_gap_days`). We would rather you switched to `free_on` first — if that still leaves gaps for you,
-tell us and the operator can raise the cap.
+`max_gap_days`).
+
+**d) But your December probe will now behave differently — please read §8.** Your test that returned
+all 18 units for `free_on=2026-12-06` was the behaviour we were fixing, not the behaviour we wanted.
+Offering a flat that empties in September to a December enquiry means the operator carries a
+seventy-day void. §8 explains what happens instead.
 
 ---
 
@@ -226,6 +233,101 @@ per-building FAQ separately in the meantime.
 
 ---
 
+## 8. NEW — we no longer take bookings more than 60 days out (unless the unit is confirmed)
+
+**This is a behaviour change, live now, and it affects the advice in §2.** It is deliberate and it is
+the operator's commercial policy, not a bug.
+
+### Why
+
+Your December probe returned all 18 units. Every one of them frees up in September or October. Taking
+that booking means the operator holds an empty flat for seventy-plus days. We would rather tell the
+customer honestly to come back than quote them something that loses money.
+
+### What happens now
+
+We compare the requested date against a **60-day booking horizon**.
+
+| Requested date | Behaviour |
+|---|---|
+| Within 60 days | **Unchanged.** Exactly as §2 describes, `next_available` and all. |
+| Beyond 60 days | Only units whose tenant has **confirmed they are leaving** (`tier: 2`, `certain: true`) and who free up close enough to the date. Nothing else — no may-renew units, and no already-empty units. |
+| Beyond 60 days, nothing qualifies | `no_match_reason: "too_far_out"` plus **when to come back**. |
+
+### The too-far-out response
+
+```json
+{
+  "vacancies": [], "count": 0,
+  "free_on": "2026-12-06",
+  "no_match_reason": "too_far_out",
+  "booking_horizon_days": 60,
+  "booking_gap_days": 10,
+  "check_back_in_days": 51,
+  "check_back_on": "2026-10-07",
+  "partner_forward": { "applies": false, "message": null },
+  "phrasing": { "too_far_out": null }
+}
+```
+
+- **`check_back_on`** is the date the request comes inside the horizon — the earliest the answer could
+  change. It is not a promise that something will be free, and please do not present it as one.
+- **`check_back_in_days`** is the same thing as a count of days, for phrasing like *"do check back with
+  us in about seven weeks"*.
+- **`phrasing.too_far_out`** is an operator-authored template, `null` until they write one. **If it is
+  `null`, use your own wording or escalate — do not invent ours.**
+
+### Three things not to get wrong
+
+1. **`too_far_out` is not `no_vacancies`.** Branch on it separately. It means *"ask them to come
+   back"*, never *"we have nothing"*.
+2. **`partner_forward.applies` is always `false` on this outcome**, even though `count` is 0. This is a
+   lead the operator wants to keep, not one to hand to an agency. Do not forward it. (The operator may
+   later choose to offer a partner referral for these — if so it will arrive as their own authored
+   message, and we will tell you.)
+3. **`next_available` is absent beyond the horizon.** Inside the horizon it behaves exactly as before.
+
+### Optional: tell us the lease length and we can be more precise
+
+New optional parameter **`move_out=YYYY-MM-DD`**. Beyond the horizon, how much empty time we will
+accept before a move-in depends on how long the customer is staying:
+
+| Requested stay | Maximum gap we accept |
+|---|---:|
+| 1 month | 3 days |
+| 2 months | 6 days |
+| 3 months or longer | 10 days |
+| Not stated | 10 days |
+
+So a short stay has to line up much more tightly than a long one. Send `move_out` when the customer
+has told you, and we will apply the right band; leave it off and we use 10. Malformed values are a
+`400`, like `free_on`.
+
+The same bands now drive `gap_band_days` and `gap_within_tolerance` in `/units/search`, so those
+numbers have shifted: one-month stays tightened from 5 days to 3 and twelve-month stays from 20 to 10,
+while two-month and three-to-five-month stays loosened slightly. If you were reading
+`gap_within_tolerance`, it is still correct — just calibrated to the operator's actual policy now.
+
+### Worked examples, from today
+
+| Customer asks for | Days out | What you get |
+|---|---:|---|
+| 16 Sep | 30 | Normal answer, all tiers |
+| 16 Oct | 60 | Normal answer, all tiers |
+| 17 Oct | 61 | 2 confirmed units only |
+| 28 Oct | 72 | 1 confirmed unit |
+| 6 Dec | 111 | `too_far_out`, check back 7 Oct |
+| 6 Dec, 1-month stay | 111 | `too_far_out` (gap band tightens to 3) |
+
+### Why December is usually empty
+
+Not a system limit — the operator genuinely does not know yet. Of the 97 units whose leases end beyond
+60 days, **87 are may-renew**: the tenant has not said whether they are staying. Only 3 are confirmed
+leaving. So "check back nearer the time" is the honest answer, and worth saying to the customer in
+those terms rather than implying we are fully booked.
+
+---
+
 ## Summary of what to change on your side
 
 1. **Send `free_on` instead of `target_date`** for firm future move-in dates, and never both. This
@@ -237,6 +339,11 @@ per-building FAQ separately in the meantime.
 6. **Call `/cancel`** instead of sending a message you do not want to send.
 7. **Read `rent_basis`** and you can stop suppressing prices — quote `rent`, show the range where it
    helps, and show no price at all when `rent_basis` is `null`.
+8. **Handle `no_match_reason: "too_far_out"` as its own outcome** — offer the check-back date, never
+   the partner referral, and never treat it as "no availability". This is the one item in this note
+   that needs code from you before it behaves well.
+9. **Send `move_out` when you know the intended stay length**, so we apply the right gap band.
 
-Happy to take a call on any of this. Items 1, 2 and 5 are the ones we would most like confirmation
-you are seeing correctly at your end.
+Happy to take a call on any of this — and given §8 changes what a far-future date returns, a call may
+be quicker than a thread. Items 1, 5 and 8 are the ones we would most like confirmation you are
+handling correctly at your end.

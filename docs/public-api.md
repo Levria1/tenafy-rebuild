@@ -78,7 +78,7 @@ All endpoints return JSON in this shape:
 | GET | `/units` | `?property_id=&status=0\|1&active_status=0\|1` | All units (filtered) |
 | GET | `/units/:id` | | Unit detail + current lease + tenant + amenities + gallery |
 | POST | `/units/resolve` | | Read-only unit lookup from id, listing URL, or free text |
-| GET | `/vacancies` | `?max_tier=3&property_id=&limit=50&target_date=YYYY-MM-DD` | Chatbot availability using advertising vacancy logic |
+| GET | `/vacancies` | `?max_tier=3&property_id=&limit=50&free_on=YYYY-MM-DD&target_date=YYYY-MM-DD&move_out=YYYY-MM-DD` | Chatbot availability using advertising vacancy logic. Beyond the 60-day booking horizon only confirmed-leaving units are offered — see Booking horizon below |
 | GET | `/units/available` | `?date=YYYY-MM-DD&property_id=` | Deprecated; use `/vacancies` |
 
 ### Tenants & Contacts
@@ -331,6 +331,48 @@ result order is re-ranked by best fit. `max_gap_days` is advisory only: it sets
 normal vacancy logic plus `max_tier` and `property_id`, and **before** `free_on`
 and `limit`, a positive gap larger than the cap is removed (tier-1 and
 negative-gap exemptions below).
+
+### Booking horizon — beyond 60 days the answer narrows
+
+A requested date more than `inquiry_booking_horizon_days` (default **60**) from
+`orgToday()` is beyond the **booking horizon**. The horizon date is `free_on`
+first, else `target_date`, so `target_date` cannot bypass it.
+
+Beyond the horizon the endpoint answers from a separate, narrower query:
+
+| Beyond the horizon | Offered? |
+|---|---|
+| Tier 2 (`NR`, tenant confirmed leaving) within the gap band | **Yes** |
+| Tier 1 (vacant now) | No |
+| Tier 3 (`MR/other`) | No |
+| Manual vacancy overrides | No |
+
+Nothing qualifying returns `no_match_reason: "too_far_out"` with
+`check_back_in_days` and `check_back_on` — the date the request comes inside the
+horizon, which is the earliest the answer could change, **not** a promise of
+availability. `booking_horizon_days` and `booking_gap_days` echo the applied
+policy.
+
+On that outcome, and deliberately: `partner_forward.applies` is `false` even
+though `count` is `0` (it is a lead to keep, not to hand on), `next_available` is
+absent, and `phrasing.too_far_out` carries the operator-authored template — `null`
+until they write one, in which case the caller must supply its own wording.
+
+Inside the horizon nothing changes, `next_available` included.
+
+**`move_out=YYYY-MM-DD`** (optional) states the intended stay so the gap band can
+be applied. Malformed values return `400`. How much vacancy we accept before a
+move-in scales with the stay:
+
+| Requested stay | Maximum gap |
+|---|---:|
+| 1 month | 3 |
+| 2 months | 6 |
+| 3 months or longer | 10 |
+| Not stated | 10 |
+
+The same bands drive `gap_band_days` / `gap_within_tolerance` in `/units/search`,
+so the two surfaces cannot disagree about one lease.
 
 `target_date` is for ranking by move-in fit. For a customer with a firm future
 move-in date, send `free_on` instead — it never applies the gap cap, so a unit
