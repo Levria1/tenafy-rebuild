@@ -4,8 +4,8 @@
 **Covers:** answering availability inquiries, and running a viewing from first message to booked.
 **Base URL:** `https://platform.tenafy.com/api/public`
 **Auth:** `X-API-Key: <key>` on every request. Availability (Part A) needs only a **read-only** key.
-Viewings (Part B) need a **read-write** key: four of its endpoints are POSTs — `start`,
-`prospect-reply`, `tenant-reply`, `draft-sent` — and a read-only key is rejected on any of them with a
+Viewings (Part B) need a **read-write** key: six of its endpoints are POSTs — `start`,
+`compose`, `prospect-reply`, `tenant-reply`, `draft-sent`, `cancel` — and a read-only key is rejected on any of them with a
 `403` before the handler runs. See the table in §9.
 
 Verified against production on 2026-08-14. Where this doc shows a payload, it was captured from a
@@ -35,13 +35,13 @@ job is to read the flags and choose words.
 ## 2. The call
 
 ```
-GET /vacancies?target_date=2026-10-12&free_on=2026-10-12
+GET /vacancies?free_on=2026-10-12
 ```
 
 | Param | Default | Notes |
 |---|---|---|
-| `target_date` | none | `YYYY-MM-DD`. **Send it whenever you know it.** This ranks and warns by move-in fit. Without it there is no gap to judge, so no ranking, no warnings and no hiding. |
-| `free_on` | none | `YYYY-MM-DD`. A **hard filter** to units the customer can actually take on that date. It answers a different question from `target_date`, and the two can be combined. Anything it removes that merely frees up *later* comes back in `next_available` — see §7. |
+| `target_date` | none | `YYYY-MM-DD`. Ranks and warns by move-in fit, and **hides** units with a positive gap past `hard_max_gap_days` (default 20). Use it to rank "what fits this move-in", not to answer a firm future date. Without it there is no gap to judge, so no ranking, no warnings and no hiding. |
+| `free_on` | none | `YYYY-MM-DD`. **Send this when the customer has a firm future move-in date.** Hard filter to units they can actually take that day. Never applies the gap cap. Anything it removes that merely frees up *later* comes back in `next_available` — see §7. Do **not** also send `target_date` for a future date: the gap cap runs first, so `free_on` can only filter what already survived, and a 6-week enquiry will look like no availability. |
 | `max_tier` | `3` | `1` vacant only, `2` + NR, `3` all. Leave it alone unless you have a reason. |
 | `property_id` | none | optional filter |
 | `limit` | `50` | max 200 |
@@ -119,7 +119,8 @@ deliberately not exposed, because the note behind it is staff-only.
 **`available_after_target`** — the negative-gap case. Never carries a `gap_warning`, because waiting
 costs the operator nothing.
 
-`available_from` is **already the first free day** (lease end + 1). Do not add a day.
+`available_from` **is the lease end date** — the unit is free **on that day**
+(same-day turnover). Do not add a day.
 
 ## 5. What to say
 
@@ -153,7 +154,8 @@ Worked example from the payload in §3 plus two flagged units:
 
 ## 6. Units you will never see, and why
 
-Past `hard_max_gap_days` (20) a unit is **removed** from the response. Two exemptions:
+When you send `target_date`, past `hard_max_gap_days` (20) a unit is **removed**
+from the response. Two exemptions:
 
 - **A unit that is already vacant is never hidden**, however large its gap. It is the one most
   urgently needing a tenant.
@@ -167,8 +169,11 @@ an error or ask for `max_tier=3` to compensate.**
 
 ### 7a. `next_available` — what `free_on` took away
 
-`free_on` is a hard filter, and on a busy portfolio it can empty the list completely while the
-operator still has flats coming free three weeks later. So Tenafy now hands those back separately:
+`free_on` is a hard filter and **does not apply the gap cap**. That is why a firm
+future move-in date must go here, not in `target_date`: a unit freeing six weeks
+out still comes back under `next_available` instead of disappearing. On a busy
+portfolio it can empty `vacancies` while the operator still has flats coming free
+three weeks later. Tenafy hands those back separately:
 
 ```json
 "vacancies": [],
@@ -183,6 +188,8 @@ real, offerable units — the only thing wrong with them is the date.
 
 - `next_available` appears **only** when `free_on` was sent and something offerable frees up later.
   Absent otherwise — not an empty array.
+- Do **not** also send `target_date` for that future date. The gap cap runs first, so
+  `free_on` / `next_available` only see what survived `hard_max_gap_days`.
 - Sorted soonest-first, and `limit` applies to it independently.
 - Units **already re-let** by the requested date appear in neither list. That is deliberate: they are
   spoken for, and offering them would be a promise Tenafy cannot keep.
@@ -260,12 +267,22 @@ words Tenafy composes, and surface drafts to staff.
 | Call | Method | Read-only key? |
 |---|---|---|
 | `/viewing-negotiation/start` | POST | ✗ write |
+| `/viewing-negotiation/:id/compose` | POST | ✗ write |
 | `/viewing-negotiation/:id/prospect-reply` | POST | ✗ write |
 | `/viewing-negotiation/:id/tenant-reply` | POST | ✗ write |
 | `/viewing-negotiation/:id/draft-sent` | POST | ✗ write |
+| `/viewing-negotiation/:id/cancel` | POST | ✗ write |
 | `/viewing-negotiation/active?phone=` | GET | ✓ |
 | `/viewing-negotiation/drafts` | GET | ✓ |
 | `/viewing-negotiations` | GET | ✓ |
+
+`POST /viewing-negotiation/:id/cancel` — body `{ "reason": "..." }` optional, max 500
+characters, currently ignored (no column). Open → `{ cancelled: true,
+already_cancelled: false, state: "CANCELLED" }`. Already cancelled →
+`{ cancelled: true, already_cancelled: true }` (safe to retry). `CONFIRMED` /
+`AUTO_CONFIRMED` → `409 { reason: "already_confirmed" }`; cancelling a committed
+viewing stays a staff action so the tenant is told a human is not coming.
+Unknown id / other org → `404`. Write-only: a read-only key is `403`.
 
 ## 10. Starting one
 
@@ -409,6 +426,13 @@ via `cursor`. `status=active` includes `NEEDS_STAFF`, because a human still has 
 `next_deadline` is computed by the same code the cron runs, so the board cannot disagree with what
 will actually happen.
 
+All times in these payloads are **Asia/Hong_Kong wall clock**, with no timezone
+suffix. Do not convert. That includes appointment times (`viewing.proposed_start_at`
+— always were Hong Kong) and system-stamped times (`timestamps.*`,
+`last_event.created_at`, `next_deadline.due_at`, and on drafts `created_at` /
+`expires_at` / `deadline_at`). Drafts expire in 30 minutes, so treating a stamp as
+UTC misses the window.
+
 ---
 
 ## 17. Timers, for your information only
@@ -428,8 +452,10 @@ Automatic sending is **off**. Nudges are drafts too until the operator enables i
 
 ## 18. Migration checklist
 
-- [ ] Swap `/units/available` → `/vacancies`, and send `target_date` whenever known
-- [ ] Send `free_on` when the customer has a firm date and you need a hard availability filter
+- [ ] Swap `/units/available` → `/vacancies`
+- [ ] For a firm future move-in date, send `free_on` — not `target_date`, and not both
+- [ ] Send `target_date` only when you want ranking by move-in fit (it hides units past
+      `hard_max_gap_days`)
 - [ ] **Read `next_available` and offer it with `phrasing.later` before telling anyone we have
       nothing** — this is the one that loses real leads
 - [ ] Branch wording on `availability.certain`, never on `tier`
@@ -441,6 +467,8 @@ Automatic sending is **off**. Nudges are drafts too until the operator enables i
 - [ ] Accept the three new states; tolerate unknown ones
 - [ ] Read `needs_staff_reason`, and keep the relay row alive on `closed: true`
 - [ ] Poll `/drafts`, send `body` verbatim, then `draft-sent` — and never `draft-sent` on a failed send
+- [ ] Treat every time in a viewing-negotiation payload as Asia/Hong_Kong wall clock — no suffix, no conversion
+- [ ] `POST /viewing-negotiation/:id/cancel` to drop an open negotiation; `409 already_confirmed` means staff must cancel a booked viewing
 - [ ] Prefer `unit_id` or `listing_url` over `unit_text` when starting a viewing
 - [ ] Delete any timer you have for viewings
 
@@ -448,8 +476,9 @@ Automatic sending is **off**. Nudges are drafts too until the operator enables i
 
 Two behaviours in this doc are deliberate and get queried every time:
 
-**"Why is the list so short?"** — the hard cap removed the rest. `hidden_by_gap_cap` says how many.
-Working as intended.
+**"Why is the list so short?"** — you sent `target_date` and the hard cap removed the rest.
+`hidden_by_gap_cap` says how many. Working as intended. For a firm future date, send `free_on`
+instead.
 
 **"Why did the same draft appear twice?"** — you did not call `draft-sent`, or the call failed. That is
 the safety property, not a bug.

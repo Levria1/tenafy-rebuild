@@ -244,8 +244,8 @@ Query parameters:
 | `max_tier` | `3` | `1`-`3` | `1` vacant only, `2` vacant + NR, `3` all tiers |
 | `property_id` | | | Optional property filter |
 | `limit` | `50` | `1`-`200` | Maximum rows returned |
-| `target_date` | | | Optional prospect move-in date. Must be `YYYY-MM-DD`; malformed values return `400` |
-| `free_on` | | | Optional hard availability date. Must be `YYYY-MM-DD`; malformed values return `400` |
+| `target_date` | | | Ranks by move-in fit and hides units whose positive gap exceeds `hard_max_gap_days`. Must be `YYYY-MM-DD`; malformed values return `400`. Do not send this with `free_on` for a firm future date |
+| `free_on` | | | Hard availability filter; never applies the gap cap. Use this when the customer has a firm future move-in date. Must be `YYYY-MM-DD`; malformed values return `400` |
 
 All tiers are included by default. Tier 3 rows are deliberately returned with
 `availability.certain=false` so TaneChat can offer them with the configured
@@ -303,17 +303,29 @@ Availability rules:
 | Tier | `tier_name` | Meaning | `availability` |
 |---:|---|---|---|
 | 1 | `VACANT` | Empty now and passes the minimum gap rule | `status="now"`, `available_from=null`, `days_until=0`, `certain=true` |
-| 2 | `NR` | Tenant has confirmed they are not renewing | `status="from_date"`, `available_from=end_date+1`, `certain=true` |
-| 3 | `MR/other` | May renew / month-to-month / unconfirmed | `status="from_date"`, `available_from=end_date+1`, `certain=false` |
+| 2 | `NR` | Tenant has confirmed they are not renewing | `status="from_date"`, `available_from=end_date`, `certain=true` |
+| 3 | `MR/other` | May renew / month-to-month / unconfirmed | `status="from_date"`, `available_from=end_date`, `certain=false` |
 
-If a non-vacant row has no `end_date`, `available_from` is `null` and
-`certain` is `false`.
+Turnover is same-day, so `available_from` is the lease end date — the unit is
+free on that day. If a non-vacant row has no `end_date`, `available_from` is
+`null` and `certain` is `false`.
+
+`rent` is the rent actually invoiced (`leasing.price`, falling back to the
+legacy `amount` only when `price` is unset).
 
 When `target_date` is supplied, each row also includes move-in fit fields and the
 result order is re-ranked by best fit. `max_gap_days` is advisory only: it sets
-`gap_warning` but does not hide the unit. The endpoint filters only on
-`hard_max_gap_days`, after normal vacancy logic plus `max_tier` and
-`property_id`, and before `limit`.
+`gap_warning` but does not hide the unit. `hard_max_gap_days` does hide: after
+normal vacancy logic plus `max_tier` and `property_id`, and **before** `free_on`
+and `limit`, a positive gap larger than the cap is removed (tier-1 and
+negative-gap exemptions below).
+
+`target_date` is for ranking by move-in fit. For a customer with a firm future
+move-in date, send `free_on` instead — it never applies the gap cap, so a unit
+that frees more than `hard_max_gap_days` before the date is still returned (in
+`vacancies` if free on that date, otherwise under `next_available`). Do not send
+both for a future date: the `target_date` gap cap runs first, and `free_on` can
+only filter what already survived.
 
 Fit fields:
 
@@ -328,9 +340,10 @@ so it is the lost-rent case. `0` is an exact fit. Negative `gap_days` means the
 unit is not free until after the requested date; that is not a lost-rent warning,
 but callers should explain the wait.
 
-When `free_on` is supplied, it remains a hard filter for `vacancies`. Rows free
-on or before that date stay in `vacancies`; rows that are already re-let by that
-date, or have no known availability date, are hidden.
+When `free_on` is supplied, it is a hard filter for `vacancies` and does not
+apply `hard_max_gap_days`. Rows free on or before that date stay in `vacancies`;
+rows that are already re-let by that date, or have no known availability date,
+are hidden. If `target_date` was also sent, the gap cap has already run.
 
 If the hard `free_on` filter removes a row only because it frees up later,
 `next_available` appears with those rows, sorted by `availability.available_from`
@@ -582,6 +595,13 @@ Each row contains stable keys for TaneChat rendering:
 computed from the same decision helpers used by the scheduler, so the board and
 the hourly sweep should agree.
 
+All times in viewing-negotiation payloads are **Asia/Hong_Kong wall clock**,
+with no timezone suffix. Do not convert. That includes appointment times
+(`viewing.proposed_start_at` — always were Hong Kong) and system-stamped times
+(`timestamps.*`, `last_event.created_at`, `next_deadline.due_at`, and on drafts
+`created_at` / `expires_at` / `deadline_at`). Drafts expire in 30 minutes, so
+treating a stamp as UTC misses the window.
+
 `needs_staff_reason` is `null` unless `state` is `NEEDS_STAFF`. Current reason
 values are: `off_window`, `not_marketing`, `no_host`, `multi_unit`, `stale`,
 `tenant_no_phone`, `window_no_phone`, `auto_confirm_no_staff`,
@@ -606,6 +626,35 @@ from TaneChat and return the post-transition `state`, `needs_staff_reason`,
 `awaiting`, routing phones, and generated outbound events. If the negotiation is
 already closed to that sender, the `closed: true` response also includes
 `needs_staff_reason`.
+
+#### `POST /viewing-negotiation/:id/cancel`
+
+Requires a write-enabled `X-API-Key`; read-only keys receive `403`. Optional
+body `{ "reason": "..." }` (`reason` max 500 characters). The field is accepted
+and ignored — there is no column to store it. A non-string or over-length
+`reason` is `400`.
+
+Open negotiation:
+
+```json
+{ "code": 200, "data": { "cancelled": true, "already_cancelled": false, "state": "CANCELLED" } }
+```
+
+Already cancelled (safe to retry):
+
+```json
+{ "code": 200, "data": { "cancelled": true, "already_cancelled": true } }
+```
+
+`CONFIRMED` / `AUTO_CONFIRMED` — cancelling a committed viewing stays a staff
+action so the tenant is told a human is not coming:
+
+```json
+{ "code": 409, "reason": "already_confirmed", "message": "This viewing is already confirmed. Cancelling it is a staff action so the tenant can be notified." }
+```
+
+Unknown id, or a negotiation that belongs to another org: `404`
+`{ "code": 404, "message": "Negotiation not found" }`.
 
 #### `GET /viewing-negotiation/drafts`
 
