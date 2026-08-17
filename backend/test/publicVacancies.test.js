@@ -72,3 +72,63 @@ test('public vacancy dates are not Z-suffixed ISO strings', () => {
 
   assert(!JSON.stringify(result).includes('Z"'));
 });
+
+test('scheduled lease publishes the lease figure with rent_basis lease', () => {
+  const result = vacancyToPublicShape(row({
+    invoicing: 'monthly',
+    rent: 12000,
+    rent_price_min: 8800,
+    rent_price_max: 10000,
+  }));
+
+  assert.equal(result.rent, '12000.00');
+  assert.equal(result.rent_basis, 'lease');
+  assert.equal(result.rent_price_min, '8800.00');
+  assert.equal(result.rent_price_max, '10000.00');
+});
+
+test('invoicing NULL publishes advertised rent, not the lease figure', () => {
+  const result = vacancyToPublicShape(row({
+    invoicing: null,
+    rent: 10200,
+    rent_price_min: 8800,
+    rent_price_max: 10000,
+  }));
+
+  assert.equal(result.rent, '8800.00');
+  assert.equal(result.rent_basis, 'advertised');
+});
+
+test('empty invoicing is treated the same as NULL', () => {
+  const result = vacancyToPublicShape(row({
+    invoicing: '',
+    rent: 10200,
+    rent_price_min: 8800,
+  }));
+
+  assert.equal(result.rent, '8800.00');
+  assert.equal(result.rent_basis, 'advertised');
+});
+
+test('no schedule and no advertised rent publishes null rent and basis', () => {
+  const result = vacancyToPublicShape(row({
+    invoicing: null,
+    rent: 10200,
+    rent_price_min: null,
+  }));
+
+  assert.equal(result.rent, null);
+  assert.equal(result.rent_basis, null);
+});
+
+test('Mong Kok 3B-style stay total is never published as monthly rent', () => {
+  const result = vacancyToPublicShape(row({
+    invoicing: null,
+    rent: 113638.99,
+    rent_price_min: 8800,
+  }));
+
+  assert.equal(result.rent, '8800.00');
+  assert.equal(result.rent_basis, 'advertised');
+  assert.notEqual(result.rent, '113638.99');
+});

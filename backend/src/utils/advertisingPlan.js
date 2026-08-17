@@ -247,6 +247,12 @@ function vacancyToPublicShape(row) {
   // caveat wording, because an MR/MTM/UC tenant may renew and the unit may never
   // become free.
   const certain = tier === PRIORITY_VACANT ? true : Boolean(certaintyByTier && endDate);
+  // No recurring schedule: the stored lease figure is sometimes a whole-stay
+  // total and sometimes already-monthly, with no safe way to tell them apart.
+  const hasSchedule = row?.invoicing != null && String(row.invoicing).trim() !== '';
+  const publishedRent = hasSchedule ? row?.rent : row?.rent_price_min;
+  const rent = moneyString(publishedRent);
+  const rent_basis = rent == null ? null : (hasSchedule ? 'lease' : 'advertised');
 
   return {
     unit_id: row?.unit_id == null ? null : String(row.unit_id),
@@ -261,7 +267,10 @@ function vacancyToPublicShape(row) {
     beds: row?.beds != null ? Number(row.beds) : null,
     baths: row?.baths != null ? Number(row.baths) : null,
     size: row?.size != null ? Number(row.size) : null,
-    rent: moneyString(row?.rent),
+    rent,
+    rent_price_min: moneyString(row?.rent_price_min),
+    rent_price_max: moneyString(row?.rent_price_max),
+    rent_basis,
     tier,
     tier_name: tierName(tier),
     intent: row?.intent ?? null,

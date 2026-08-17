@@ -310,8 +310,20 @@ Turnover is same-day, so `available_from` is the lease end date — the unit is
 free on that day. If a non-vacant row has no `end_date`, `available_from` is
 `null` and `certain` is `false`.
 
-`rent` is the rent actually invoiced (`leasing.price`, falling back to the
-legacy `amount` only when `price` is unset).
+`rent` is accompanied by `rent_price_min`, `rent_price_max` and `rent_basis`
+(`"lease"` | `"advertised"` | `null`), so a caller can quote a range and knows
+which figure it is looking at.
+
+- **`rent_basis: "lease"`** — the unit's current or last lease has a recurring
+  invoice schedule, so `rent` is the rent actually invoiced (`leasing.price`,
+  falling back to the legacy `amount` only when `price` is unset).
+- **`rent_basis: "advertised"`** — that lease has **no** invoice schedule, so
+  `rent` is the unit's own advertised price (`rent_price_min`). A lease with no
+  schedule stores a figure that is sometimes a whole-stay total and sometimes an
+  already-monthly rent, with no reliable way to tell them apart, so it is never
+  published. Manual vacancy overrides always report this basis.
+- **`rent_basis: null`** — no schedule and no advertised price. `rent` is `null`;
+  present the unit without a price rather than inventing one.
 
 When `target_date` is supplied, each row also includes move-in fit fields and the
 result order is re-ranked by best fit. `max_gap_days` is advisory only: it sets

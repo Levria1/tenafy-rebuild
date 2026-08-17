@@ -149,6 +149,8 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           -- disagrees is a promise we do not keep. Fall back to amount only
           -- when price is missing or 0 (legacy rows).
           COALESCE(NULLIF(l.price, 0), l.amount) AS rent, l.deposit, l.notice_period_days,
+          -- Public feed needs the schedule to know whether this figure is monthly.
+          l.invoicing,
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
           DATEDIFF(l.end_date, ${orgTodaySql()}) AS days_left,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
@@ -202,6 +204,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           -- disagrees is a promise we do not keep. Fall back to amount only
           -- when price is missing or 0 (legacy rows).
           COALESCE(NULLIF(ll.price, 0), ll.amount) AS rent, ll.deposit, ll.contract_type,
+          ll.invoicing,
           t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name,${nextMoveInCols()}
        FROM unit u
        JOIN property p ON u.property_id = p.id
@@ -305,6 +308,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       end_date: r.end_date,
       vacant_since: null,
       rent: r.rent != null ? Number(r.rent) : null,
+      invoicing: r.invoicing ?? null,
       deposit: r.deposit != null ? Number(r.deposit) : null,
       unit_id: String(r.unit_id), unit_name: r.unit_name, unit_type: r.unit_type,
       beds: r.beds != null ? Number(r.beds) : null,
@@ -348,6 +352,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
         end_date: null,
         vacant_since: r.vacant_since,   // null when never leased
         rent: r.rent != null ? Number(r.rent) : null,      // last lease rent (reference)
+        invoicing: r.invoicing ?? null,
         deposit: r.deposit != null ? Number(r.deposit) : null,
         unit_id: String(r.unit_id), unit_name: r.unit_name, unit_type: r.unit_type,
         beds: r.beds != null ? Number(r.beds) : null,
