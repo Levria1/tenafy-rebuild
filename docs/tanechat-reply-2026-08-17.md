@@ -303,10 +303,19 @@ So a short stay has to line up much more tightly than a long one. Send `move_out
 has told you, and we will apply the right band; leave it off and we use 10. Malformed values are a
 `400`, like `free_on`.
 
-The same bands now drive `gap_band_days` and `gap_within_tolerance` in `/units/search`, so those
-numbers have shifted: one-month stays tightened from 5 days to 3 and twelve-month stays from 20 to 10,
-while two-month and three-to-five-month stays loosened slightly. If you were reading
-`gap_within_tolerance`, it is still correct — just calibrated to the operator's actual policy now.
+`/units/search` has its **own** bands, set separately from the booking ones above. They currently hold
+the same values, so `gap_band_days` and `gap_within_tolerance` behave as the table shows — but the
+operator can tighten booking without touching search, or the reverse, so **do not assume the two
+agree**. Read `gap_band_days` from the response rather than hardcoding the table.
+
+Those numbers have shifted against what you saw before today: one-month stays tightened from 5 days to
+3 and twelve-month stays from 20 to 10, while two-month and three-to-five-month stays loosened
+slightly. If you were reading `gap_within_tolerance`, it is still correct — just calibrated to the
+operator's actual policy now.
+
+Worth knowing the two carry different weight. On `/vacancies` beyond the horizon, a band is a **hard
+refusal** — outside it, you do not see the unit. On `/units/search` it is **advisory only**: nothing is
+filtered, and `gap_within_tolerance` simply tells you whether to caveat the result.
 
 ### Worked examples, from today
 
