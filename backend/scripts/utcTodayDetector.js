@@ -1,3 +1,10 @@
+// Detects code that derives TODAY'S CALENDAR DATE from the UTC clock, in a codebase
+// whose business dates are Hong Kong dates. Driven by test/utcTodayDetector.test.js.
+//
+// Lives in scripts/ rather than test/ because `node --test test/` executes EVERY .js
+// file under test/, which would run this library as an empty test file and quietly
+// inflate the reported test count.
+
 const acorn = require('acorn');
 
 function findUtcTodayDerivations(source, filename) {

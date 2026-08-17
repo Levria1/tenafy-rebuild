@@ -16,7 +16,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { findUtcTodayDerivations } = require('./lib/utcTodayDetector');
+const { findUtcTodayDerivations } = require('../scripts/utcTodayDetector');
 
 const find = (src) => findUtcTodayDerivations(src, 'sample.js');
 const hits = (src) => find(src).length;
