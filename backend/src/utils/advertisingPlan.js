@@ -153,6 +153,23 @@ function availabilityNumber(value, fallback) {
   return hasAvailabilityValue(value) ? Number(value) : fallback;
 }
 
+function gapBandDays(leaseDurationDays) {
+  if (leaseDurationDays == null) return null;
+  const days = Number(leaseDurationDays);
+  if (!Number.isFinite(days)) return null;
+  const rounded = Math.max(0, Math.round(days));
+  if (rounded <= 31) return 3;
+  if (rounded <= 62) return 6;
+  return 10;
+}
+
+function resolveInquiryBookingSettings(settings) {
+  return {
+    booking_horizon_days: availabilityNumber(settings?.inquiry_booking_horizon_days, 60),
+    too_far_out_phrase: settings?.inquiry_too_far_out_phrase ?? null,
+  };
+}
+
 /**
  * Effective availability windows for one audience.
  * audience: 'advertising' | 'inquiry'
@@ -221,6 +238,50 @@ function diffLocalDays(fromDate, toDate) {
   const to = parseYmdStrict(formatLocalDate(toDate));
   if (!from || !to) return null;
   return Math.round((to.time - from.time) / 86400000);
+}
+
+function addLocalDays(date, days) {
+  const parsed = parseYmdStrict(formatLocalDate(date));
+  const amount = Number(days);
+  if (!parsed || !Number.isFinite(amount)) return null;
+  const next = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day + Math.trunc(amount)));
+  return next.toISOString().slice(0, 10);
+}
+
+function bookingHorizonDecision(requestDate, { today, bookingHorizonDays = 60 } = {}) {
+  const daysOut = diffLocalDays(today, requestDate);
+  const configuredHorizon = Number(bookingHorizonDays);
+  const bookingHorizon = Number.isFinite(configuredHorizon) ? Math.trunc(configuredHorizon) : 60;
+  const tooFarOut = daysOut != null && daysOut > bookingHorizon;
+  const checkBackInDays = tooFarOut ? daysOut - bookingHorizon : null;
+  return {
+    request_date: formatLocalDate(requestDate),
+    today: formatLocalDate(today),
+    days_out: daysOut,
+    booking_horizon_days: bookingHorizon,
+    too_far_out: tooFarOut,
+    check_back_in_days: checkBackInDays,
+    check_back_on: checkBackInDays == null ? null : addLocalDays(today, checkBackInDays),
+  };
+}
+
+function leaseDurationDays(moveIn, moveOut) {
+  if (moveOut == null) return null;
+  const days = diffLocalDays(moveIn, moveOut);
+  return days == null ? null : Math.max(0, days);
+}
+
+function bookingGapLimitForLease(moveIn, moveOut) {
+  const duration = leaseDurationDays(moveIn, moveOut);
+  return duration == null ? 10 : gapBandDays(duration);
+}
+
+function matchesBeyondHorizonNrException(row, requestDate, maxGapDays) {
+  if (Number(row?.tier) !== PRIORITY_NR) return false;
+  const availableFrom = row?.availability?.available_from;
+  const gapDays = diffLocalDays(availableFrom, requestDate);
+  const maxGap = Number(maxGapDays);
+  return gapDays != null && gapDays >= 0 && Number.isFinite(maxGap) && gapDays <= Math.trunc(maxGap);
 }
 
 function moneyString(value) {
@@ -617,6 +678,12 @@ module.exports = {
   suggestReplacements,
   forumWeeklyLoad,
   gapIsAdvertisable,
+  gapBandDays,
+  resolveInquiryBookingSettings,
+  bookingHorizonDecision,
+  leaseDurationDays,
+  bookingGapLimitForLease,
+  matchesBeyondHorizonNrException,
   PRIORITY_VACANT,
   PRIORITY_NR,
   PRIORITY_OTHER,

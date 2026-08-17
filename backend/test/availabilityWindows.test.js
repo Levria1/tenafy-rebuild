@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { resolveAvailabilityWindows } = require('../src/utils/advertisingPlan');
+const {
+  resolveAvailabilityWindows,
+  resolveInquiryBookingSettings,
+} = require('../src/utils/advertisingPlan');
 
 const advertisingSettings = {
   min_gap_days: 40,
@@ -185,5 +188,38 @@ test('resolveAvailabilityWindows: every resolved window is a finite number', () 
         assert.ok(Number.isFinite(r[f]), `${f} must be finite for ${String(audience)} ${JSON.stringify(junk)}`);
       }
     }
+  }
+});
+
+test('inquiry booking settings default independently from advertising values', () => {
+  const resolved = resolveInquiryBookingSettings({
+    min_gap_days: 99,
+    lead_days_nr: 98,
+    inquiry_booking_horizon_days: undefined,
+    inquiry_too_far_out_phrase: null,
+  });
+
+  assert.deepEqual(resolved, {
+    booking_horizon_days: 60,
+    too_far_out_phrase: null,
+  });
+});
+
+test('inquiry booking settings treat 0 as real and junk as inquiry default', () => {
+  assert.equal(resolveInquiryBookingSettings({ inquiry_booking_horizon_days: 0 }).booking_horizon_days, 0);
+  for (const junk of ['  ', '', {}, [], true, '60abc']) {
+    assert.equal(
+      resolveInquiryBookingSettings({ inquiry_booking_horizon_days: junk }).booking_horizon_days,
+      60,
+      `${JSON.stringify(junk)} must fall back to the inquiry booking default`
+    );
+  }
+});
+
+test('inquiry booking horizon resolves to a finite number for SQL-safe callers', () => {
+  for (const junk of ['1 OR 1=1', {}, [], true, '  ', '9e999', '', null, undefined]) {
+    const resolved = resolveInquiryBookingSettings({ inquiry_booking_horizon_days: junk });
+    assert.equal(typeof resolved.booking_horizon_days, 'number');
+    assert.ok(Number.isFinite(resolved.booking_horizon_days));
   }
 });

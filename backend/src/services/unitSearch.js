@@ -12,21 +12,10 @@
 // can be shown with a note instead of returning nothing.
 
 const { orgToday } = require('../utils/orgTime');
+const { gapBandDays } = require('../utils/advertisingPlan');
 
 function toDateStr(d) {
   return (d instanceof Date ? d : new Date(d)).toISOString().split('T')[0];
-}
-
-// Acceptable forward-vacancy-gap band (days) by reservation length. Returns the
-// max gap we'll tolerate, or null when the reservation length is unknown.
-//   1–2 months  → 5    3–5 months → 7    6–11 months → 10    12+ months → 20
-function gapBandDays(leaseDurationDays) {
-  if (leaseDurationDays == null) return null;
-  const months = Math.round(leaseDurationDays / 30.44);
-  if (months <= 2) return 5;
-  if (months <= 5) return 7;
-  if (months <= 11) return 10;
-  return 20;
 }
 
 /**
@@ -314,4 +303,4 @@ async function searchUnits(pool, criteria = {}) {
   return { results: enriched.slice(0, limit), total };
 }
 
-module.exports = { searchUnits };
+module.exports = { searchUnits, gapBandDays };

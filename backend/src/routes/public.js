@@ -26,7 +26,7 @@ const { resolveUnit, loadUnitsWithMarketable, unitOut, optionsText } = require('
 const { validateChannel } = require('../utils/chatChannel');
 const { createNotification } = require('../services/scheduler');
 const config = require('../config');
-const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings } = require('./advertising');
+const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings, findBeyondHorizonNrVacancies } = require('./advertising');
 const {
   vacancyToPublicShape,
   classifyFreeOn,
@@ -36,6 +36,10 @@ const {
   partnerForwardBlock,
   compareVacancyFit,
   resolveAvailabilityWindows,
+  resolveInquiryBookingSettings,
+  bookingHorizonDecision,
+  bookingGapLimitForLease,
+  matchesBeyondHorizonNrException,
   hasActiveManualVacancyOverride,
 } = require('../utils/advertisingPlan');
 const { findUnitByListingUrl, normalizeListingUrl } = require('../utils/listingUrl');
@@ -119,8 +123,62 @@ router.get('/vacancies', async (req, res) => {
     if (hasFreeOn && !isStrictYmd(freeOn)) {
       return res.status(400).json({ code: 400, message: 'free_on must be in YYYY-MM-DD format' });
     }
+    const hasMoveOut = req.query.move_out !== undefined;
+    const moveOut = hasMoveOut ? String(req.query.move_out) : null;
+    if (hasMoveOut && !isStrictYmd(moveOut)) {
+      return res.status(400).json({ code: 400, message: 'move_out must be in YYYY-MM-DD format' });
+    }
 
     const settings = await loadSettings(req.pool, req.apiKey.orgId);
+    const bookingSettings = resolveInquiryBookingSettings(settings);
+    const requestDate = hasFreeOn ? freeOn : (hasTargetDate ? targetDate : null);
+    const horizon = requestDate
+      ? bookingHorizonDecision(requestDate, { today: orgToday(), bookingHorizonDays: bookingSettings.booking_horizon_days })
+      : null;
+
+    if (horizon?.too_far_out) {
+      const bookingGapDays = bookingGapLimitForLease(requestDate, hasMoveOut ? moveOut : null);
+      const rawNrRows = maxTier >= 2
+        ? await findBeyondHorizonNrVacancies(req.pool, req.apiKey.orgId, {
+          requestDate,
+          maxGapDays: bookingGapDays,
+          propertyId,
+          limit,
+        })
+        : [];
+      const rows = rawNrRows
+        .map(vacancyToPublicShape)
+        .filter(row => matchesBeyondHorizonNrException(row, requestDate, bookingGapDays))
+        .slice(0, limit);
+      const noMatchReason = rows.length > 0 ? null : 'too_far_out';
+      const data = {
+        vacancies: rows,
+        count: rows.length,
+        hard_max_gap_days: settings.hard_max_gap_days,
+        hidden_by_gap_cap: 0,
+        no_match_reason: noMatchReason,
+        booking_horizon_days: horizon.booking_horizon_days,
+        booking_gap_days: bookingGapDays,
+        partner_forward: { applies: false, message: null },
+        phrasing: {
+          certain: CERTAIN_AVAILABILITY_PHRASE,
+          uncertain: UNCERTAIN_AVAILABILITY_PHRASE,
+        },
+      };
+      if (hasTargetDate) {
+        data.target_date = targetDate;
+        data.max_gap_days = settings.max_gap_days;
+      }
+      if (hasFreeOn) data.free_on = freeOn;
+      if (hasMoveOut) data.move_out = moveOut;
+      if (noMatchReason === 'too_far_out') {
+        data.check_back_in_days = horizon.check_back_in_days;
+        data.check_back_on = horizon.check_back_on;
+        data.phrasing.too_far_out = bookingSettings.too_far_out_phrase;
+      }
+      return res.json({ code: 200, data });
+    }
+
     const { vacancies } = await computeVacancies(
       req.pool,
       req.apiKey.orgId,
@@ -200,14 +258,17 @@ router.get('/vacancies', async (req, res) => {
         uncertain: UNCERTAIN_AVAILABILITY_PHRASE,
       },
     };
+    if (horizon) data.booking_horizon_days = horizon.booking_horizon_days;
     if (hasManualRows) data.phrasing.manual = MANUAL_AVAILABILITY_PHRASE;
     if (hasTargetDate) {
       data.phrasing.earlier = EARLIER_AVAILABILITY_PHRASE;
       data.target_date = targetDate;
       data.max_gap_days = settings.max_gap_days;
+      if (hasMoveOut) data.move_out = moveOut;
     }
     if (hasFreeOn) {
       data.free_on = freeOn;
+      if (hasMoveOut) data.move_out = moveOut;
       data.hidden_by_free_on = hiddenByFreeOn;
       if (laterRows.length > 0) {
         data.next_available = laterRows;

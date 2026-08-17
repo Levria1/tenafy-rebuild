@@ -17,7 +17,7 @@ function newId() {
 // Column length caps (match migrations-org/015). Returns an error string when a
 // field is too long, so we can 400 instead of letting MySQL 500 on truncation.
 const FIELD_LIMITS = { name: 160, title: 255, webpage_link: 500, label: 255, forum_rule: 500 };
-const SETTINGS_LIMITS = { photo_root: 255, partner_forward_message: 2000 };
+const SETTINGS_LIMITS = { photo_root: 255, partner_forward_message: 2000, inquiry_too_far_out_phrase: 2000 };
 const UNIT_LINE_LIMITS = { name: 160, line_text: 500 };
 function lengthError(body, limits = FIELD_LIMITS) {
   for (const [field, max] of Object.entries(limits)) {
@@ -1257,6 +1257,96 @@ function postingPrices(bundle, rendered) {
 }
 
 // Org-wide advertising settings (shared footer + photo root).
+async function findBeyondHorizonNrVacancies(pool, orgId, { requestDate, maxGapDays, propertyId = null, limit = 200 } = {}) {
+  const configuredGap = Number(maxGapDays);
+  const gapLimit = Number.isFinite(configuredGap) ? Math.trunc(configuredGap) : 10;
+  const cappedLimit = Math.min(200, Math.max(1, Math.trunc(Number(limit) || 200)));
+  const propertyClause = propertyId ? 'AND p.id = ?' : '';
+  const params = [orgId, requestDate, gapLimit];
+  if (propertyId) params.push(propertyId);
+  const [rows] = await pool.execute(
+    `SELECT
+        l.id AS lease_id, l.contract_type,
+        COALESCE(NULLIF(l.price, 0), l.amount) AS rent, l.deposit, l.notice_period_days,
+        l.invoicing,
+        DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
+        DATEDIFF(l.end_date, ${orgTodaySql()}) AS days_left,
+        u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
+        u.rent_price_min, u.rent_price_max, u.listing_url AS listing_url,
+        at.id AS template_id, at.name AS template_name,
+        p.id AS property_id, p.display_name AS property_name, p.street_address, p.district, p.city,
+        t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name,
+        NULL AS next_move_in_date,
+        NULL AS days_to_move_in,
+        NULL AS next_tenant_id,
+        NULL AS next_tenant_name
+     FROM leasing l
+     JOIN unit u ON l.unit_id = u.id
+     JOIN property p ON u.property_id = p.id
+     LEFT JOIN advertising_template at ON at.id = u.advertising_template_id AND at.deleted_at IS NULL
+     LEFT JOIN tenant t ON l.tenant_id = t.id
+     WHERE p.org_id = ?
+       AND l.deleted_at IS NULL
+       AND u.active_status = 1
+       AND l.contract_type = 3
+       AND l.end_date IS NOT NULL
+       AND l.end_date >= ${orgTodaySql()}
+       AND DATEDIFF(?, l.end_date) BETWEEN 0 AND ?
+       ${propertyClause}
+       AND ${NOT_TEST}
+       AND NOT EXISTS (
+         SELECT 1 FROM leasing l2
+          WHERE l2.unit_id = l.unit_id AND l2.deleted_at IS NULL
+            AND l2.id <> l.id
+            AND (l2.end_date IS NULL
+                 OR l2.end_date > l.end_date
+                 OR (l2.end_date = l.end_date AND l2.id > l.id)))
+     ORDER BY l.end_date ASC, p.display_name ASC, u.name ASC
+     LIMIT ${cappedLimit}`,
+    params
+  );
+
+  return rows.map(r => ({
+    status: 'expiring',
+    lease_id: String(r.lease_id),
+    contract_type: r.contract_type,
+    notice_period_days: r.notice_period_days != null ? Number(r.notice_period_days) : null,
+    intent: INTENT[r.contract_type] || 'Unset',
+    days_left: r.days_left != null ? Number(r.days_left) : null,
+    end_date: r.end_date,
+    vacant_since: null,
+    rent: r.rent != null ? Number(r.rent) : null,
+    invoicing: r.invoicing ?? null,
+    deposit: r.deposit != null ? Number(r.deposit) : null,
+    unit_id: String(r.unit_id),
+    unit_name: r.unit_name,
+    unit_type: r.unit_type,
+    beds: r.beds != null ? Number(r.beds) : null,
+    baths: r.baths != null ? Number(r.baths) : null,
+    size: r.size != null ? Number(r.size) : null,
+    rent_price_min: r.rent_price_min != null ? Number(r.rent_price_min) : null,
+    rent_price_max: r.rent_price_max != null ? Number(r.rent_price_max) : null,
+    template_id: r.template_id ? String(r.template_id) : null,
+    template_name: r.template_name || null,
+    property_id: r.property_id == null ? null : String(r.property_id),
+    property_name: r.property_name,
+    street_address: r.street_address,
+    district: r.district,
+    city: r.city,
+    tenant_id: r.tenant_id == null ? null : String(r.tenant_id),
+    tenant_name: r.tenant_name,
+    moveout_notes: null,
+    moved_out_early: false,
+    next_move_in_date: null,
+    days_to_move_in: null,
+    next_tenant_id: null,
+    next_tenant_name: null,
+    tier: 2,
+    priority_reason: 'nr_booking_horizon',
+    source: 'lease',
+  }));
+}
+
 async function loadSettings(pool, orgId) {
   const defaults = {
     footer: null,
@@ -1270,12 +1360,15 @@ async function loadSettings(pool, orgId) {
     inquiry_min_gap_days: 40,
     inquiry_lead_days_nr: 60,
     inquiry_lead_days_other: 45,
+    inquiry_booking_horizon_days: 60,
+    inquiry_too_far_out_phrase: null,
   };
   const numberOrDefault = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
   try {
     const [[row]] = await pool.execute(
       `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other,
-              inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other
+              inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other,
+              inquiry_booking_horizon_days, inquiry_too_far_out_phrase
          FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
     return {
       footer: row?.footer || null,
@@ -1290,11 +1383,14 @@ async function loadSettings(pool, orgId) {
       inquiry_min_gap_days: numberOrDefault(row?.inquiry_min_gap_days, 40),
       inquiry_lead_days_nr: numberOrDefault(row?.inquiry_lead_days_nr, 60),
       inquiry_lead_days_other: numberOrDefault(row?.inquiry_lead_days_other, 45),
+      inquiry_booking_horizon_days: numberOrDefault(row?.inquiry_booking_horizon_days, 60),
+      inquiry_too_far_out_phrase: row?.inquiry_too_far_out_phrase ?? null,
     };
   } catch (err) {
     try {
       const [[row]] = await pool.execute(
-        `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other
+        `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other,
+                inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other
            FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
       return {
         ...defaults,
@@ -1307,32 +1403,53 @@ async function loadSettings(pool, orgId) {
         hard_max_gap_days: Number.isFinite(Number(row?.hard_max_gap_days)) ? Number(row.hard_max_gap_days) : 20,
         lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
         lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
+        inquiry_min_gap_days: numberOrDefault(row?.inquiry_min_gap_days, 40),
+        inquiry_lead_days_nr: numberOrDefault(row?.inquiry_lead_days_nr, 60),
+        inquiry_lead_days_other: numberOrDefault(row?.inquiry_lead_days_other, 45),
       };
     } catch {
       try {
         const [[row]] = await pool.execute(
-          `SELECT footer, photo_root, min_gap_days, max_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+          `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other
+             FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
         return {
-          ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT,
+          ...defaults,
+          footer: row?.footer || null,
+          photo_root: row?.photo_root || PHOTO_ROOT,
+          // Outward-facing partner-agency text is opt-in only. NULL means unauthored.
+          partner_forward_message: row?.partner_forward_message ?? null,
           min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
           max_gap_days: Number.isFinite(Number(row?.max_gap_days)) ? Number(row.max_gap_days) : 10,
+          hard_max_gap_days: Number.isFinite(Number(row?.hard_max_gap_days)) ? Number(row.hard_max_gap_days) : 20,
           lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
           lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
         };
       } catch {
         try {
           const [[row]] = await pool.execute(
-            `SELECT footer, photo_root, min_gap_days FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+            `SELECT footer, photo_root, min_gap_days, max_gap_days, lead_days_nr, lead_days_other FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
           return {
             ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT,
             min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+            max_gap_days: Number.isFinite(Number(row?.max_gap_days)) ? Number(row.max_gap_days) : 10,
+            lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
+            lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
           };
         } catch {
           try {
             const [[row]] = await pool.execute(
-              `SELECT footer, photo_root FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
-            return { ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT };
-          } catch { return defaults; }
+              `SELECT footer, photo_root, min_gap_days FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+            return {
+              ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT,
+              min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+            };
+          } catch {
+            try {
+              const [[row]] = await pool.execute(
+                `SELECT footer, photo_root FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+              return { ...defaults, footer: row?.footer || null, photo_root: row?.photo_root || PHOTO_ROOT };
+            } catch { return defaults; }
+          }
         }
       }
     }
@@ -1375,13 +1492,22 @@ router.put('/settings', authenticate, async (req, res) => {
       inquiry_min_gap_days,
       inquiry_lead_days_nr,
       inquiry_lead_days_other,
+      inquiry_booking_horizon_days,
+      inquiry_too_far_out_phrase,
     } = req.body || {};
-    const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message']);
+    const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message', 'inquiry_too_far_out_phrase']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     const normalizedPartnerForwardMessage = partner_forward_message !== undefined
       ? normalizePartnerForwardMessage(partner_forward_message)
       : undefined;
-    const lenErr = lengthError({ photo_root, partner_forward_message: normalizedPartnerForwardMessage }, SETTINGS_LIMITS);
+    const normalizedTooFarOutPhrase = inquiry_too_far_out_phrase !== undefined
+      ? normalizePartnerForwardMessage(inquiry_too_far_out_phrase)
+      : undefined;
+    const lenErr = lengthError({
+      photo_root,
+      partner_forward_message: normalizedPartnerForwardMessage,
+      inquiry_too_far_out_phrase: normalizedTooFarOutPhrase,
+    }, SETTINGS_LIMITS);
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     for (const field of ['min_gap_days', 'max_gap_days', 'hard_max_gap_days', 'lead_days_nr', 'lead_days_other']) {
       if (req.body?.[field] !== undefined
@@ -1389,7 +1515,7 @@ router.put('/settings', authenticate, async (req, res) => {
         return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
       }
     }
-    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other']) {
+    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days']) {
       if (req.body?.[field] !== undefined) {
         if (req.body[field] === null) {
           return res.status(400).json({
@@ -1431,6 +1557,8 @@ router.put('/settings', authenticate, async (req, res) => {
     if (inquiry_min_gap_days !== undefined) setClauses.push('inquiry_min_gap_days = VALUES(inquiry_min_gap_days)');
     if (inquiry_lead_days_nr !== undefined) setClauses.push('inquiry_lead_days_nr = VALUES(inquiry_lead_days_nr)');
     if (inquiry_lead_days_other !== undefined) setClauses.push('inquiry_lead_days_other = VALUES(inquiry_lead_days_other)');
+    if (inquiry_booking_horizon_days !== undefined) setClauses.push('inquiry_booking_horizon_days = VALUES(inquiry_booking_horizon_days)');
+    if (inquiry_too_far_out_phrase !== undefined) setClauses.push('inquiry_too_far_out_phrase = VALUES(inquiry_too_far_out_phrase)');
     if (!setClauses.length) return res.json({ code: 200, data: { ok: true } });
     const executeUpsert = ({
       includeMaxGap,
@@ -1439,6 +1567,8 @@ router.put('/settings', authenticate, async (req, res) => {
       includeInquiryMinGap,
       includeInquiryLeadNr,
       includeInquiryLeadOther,
+      includeInquiryBookingHorizon,
+      includeInquiryTooFarOutPhrase,
     }) => {
       const insertColumns = ['org_id', 'footer', 'photo_root'];
       const params = [
@@ -1474,6 +1604,14 @@ router.put('/settings', authenticate, async (req, res) => {
         insertColumns.push('inquiry_lead_days_other');
         params.push(inquiry_lead_days_other ?? 45);
       }
+      if (includeInquiryBookingHorizon) {
+        insertColumns.push('inquiry_booking_horizon_days');
+        params.push(inquiry_booking_horizon_days ?? 60);
+      }
+      if (includeInquiryTooFarOutPhrase) {
+        insertColumns.push('inquiry_too_far_out_phrase');
+        params.push(normalizedTooFarOutPhrase ?? null);
+      }
       insertColumns.push('created_at');
       const placeholders = [...params.map(() => '?'), 'NOW()'].join(', ');
       const clauses = setClauses.filter(clause => {
@@ -1483,6 +1621,8 @@ router.put('/settings', authenticate, async (req, res) => {
         if (!includeInquiryMinGap && clause.startsWith('inquiry_min_gap_days')) return false;
         if (!includeInquiryLeadNr && clause.startsWith('inquiry_lead_days_nr')) return false;
         if (!includeInquiryLeadOther && clause.startsWith('inquiry_lead_days_other')) return false;
+        if (!includeInquiryBookingHorizon && clause.startsWith('inquiry_booking_horizon_days')) return false;
+        if (!includeInquiryTooFarOutPhrase && clause.startsWith('inquiry_too_far_out_phrase')) return false;
         return true;
       });
       if (!clauses.length) return Promise.resolve();
@@ -1518,6 +1658,14 @@ router.put('/settings', authenticate, async (req, res) => {
         column: 'inquiry_lead_days_other',
         wasSent: inquiry_lead_days_other !== undefined,
       },
+      includeInquiryBookingHorizon: {
+        column: 'inquiry_booking_horizon_days',
+        wasSent: inquiry_booking_horizon_days !== undefined,
+      },
+      includeInquiryTooFarOutPhrase: {
+        column: 'inquiry_too_far_out_phrase',
+        wasSent: inquiry_too_far_out_phrase !== undefined,
+      },
     };
     const flags = {
       includeMaxGap: true,
@@ -1526,6 +1674,8 @@ router.put('/settings', authenticate, async (req, res) => {
       includeInquiryMinGap: true,
       includeInquiryLeadNr: true,
       includeInquiryLeadOther: true,
+      includeInquiryBookingHorizon: true,
+      includeInquiryTooFarOutPhrase: true,
     };
     while (true) {
       try {
@@ -2402,6 +2552,7 @@ module.exports = router;
 module.exports.buildPostingPlan = buildPostingPlan;
 module.exports.markPostingPlan = markPostingPlan;
 module.exports.computeVacancies = computeVacancies;
+module.exports.findBeyondHorizonNrVacancies = findBeyondHorizonNrVacancies;
 module.exports.loadSettings = loadSettings;
 module.exports.deriveDefaultVacancyExpiry = deriveDefaultVacancyExpiry;
 module.exports.postingPrices = postingPrices;
