@@ -389,6 +389,42 @@ test('gapBandDays implements the operator lease-length bands', () => {
   assert.equal(gapBandDays(365), 10);
 });
 
+test('gapBandDays applies operator band overrides', () => {
+  const bands = {
+    band_1m_days: 1,
+    band_2m_days: 2,
+    band_3m_plus_days: 4,
+  };
+  assert.equal(gapBandDays(31, bands), 1);
+  assert.equal(gapBandDays(45, bands), 2);
+  assert.equal(gapBandDays(90, bands), 4);
+});
+
+test('gapBandDays junk values fall back to the default and never loosen', () => {
+  for (const junk of ['  ', '', {}, [], true, '3abc', '20abc']) {
+    assert.equal(gapBandDays(31, { band_1m_days: junk }), 3);
+    assert.equal(gapBandDays(45, { band_2m_days: junk }), 6);
+    assert.equal(gapBandDays(90, { band_3m_plus_days: junk }), 10);
+    assert.ok(gapBandDays(31, { band_1m_days: junk }) <= 3);
+    assert.ok(gapBandDays(45, { band_2m_days: junk }) <= 6);
+    assert.ok(gapBandDays(90, { band_3m_plus_days: junk }) <= 10);
+  }
+});
+
+test('gapBandDays treats 0 as a real band value', () => {
+  assert.equal(gapBandDays(31, { band_1m_days: 0 }), 0);
+  assert.equal(gapBandDays(45, { band_2m_days: 0 }), 0);
+  assert.equal(gapBandDays(90, { band_3m_plus_days: 0 }), 0);
+  assert.equal(gapBandDays(31, { band_1m_days: '0' }), 0);
+});
+
+test('gapBandDays does not read audience-specific column names', () => {
+  assert.equal(gapBandDays(31, {
+    inquiry_gap_band_1m_days: 1,
+    search_gap_band_1m_days: 9,
+  }), 3);
+});
+
 test('booking horizon edges are inclusive through day 60', () => {
   const today = '2026-08-17';
   assert.equal(bookingHorizonDecision('2026-10-15', { today, bookingHorizonDays: 60 }).days_out, 59);
@@ -426,6 +462,8 @@ test('bookingGapLimitForLease uses flat 10 when length is unknown and bands when
   assert.equal(bookingGapLimitForLease('2026-11-15', '2027-01-15'), 6);
   assert.equal(bookingGapLimitForLease('2026-11-15', '2027-02-15'), 10);
   assert.equal(bookingGapLimitForLease('2026-11-15', '2027-03-20'), 10);
+  assert.equal(bookingGapLimitForLease('2026-11-15', '2026-12-15', { band_1m_days: 1 }), 1);
+  assert.equal(bookingGapLimitForLease('2026-11-15', null, { band_3m_plus_days: 4 }), 10);
 });
 
 test('GET /vacancies without target_date keeps order and reports no cap filtering', async () => {
@@ -990,6 +1028,48 @@ test('PUT /advertising/settings rejects invalid inquiry_booking_horizon_days', a
   assert.match(result.body.message, /inquiry_booking_horizon_days must be an integer between 0 and 365/);
 });
 
+test('GET /vacancies beyond horizon uses operator gap bands from settings', async () => {
+  const advertising = require('../src/routes/advertising');
+  const originalComputeVacancies = advertising.computeVacancies;
+  const originalLoadSettings = advertising.loadSettings;
+  const originalFindNr = advertising.findBeyondHorizonNrVacancies;
+  let lookupOptions = null;
+  advertising.loadSettings = async () => ({
+    max_gap_days: 10,
+    hard_max_gap_days: 20,
+    partner_forward_message: 'Forward message',
+    inquiry_booking_horizon_days: 60,
+    inquiry_gap_band_1m_days: 1,
+    inquiry_gap_band_2m_days: 2,
+    inquiry_gap_band_3m_plus_days: 4,
+    search_gap_band_1m_days: 9,
+    search_gap_band_2m_days: 9,
+    search_gap_band_3m_plus_days: 9,
+  });
+  advertising.computeVacancies = async () => ({ vacancies: [] });
+  advertising.findBeyondHorizonNrVacancies = async (_pool, _orgId, options) => {
+    lookupOptions = options;
+    return [];
+  };
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const result = await callVacanciesHandler(handler, { free_on: '2026-11-15', move_out: '2026-12-15' });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(lookupOptions.maxGapDays, 1);
+    assert.equal(result.body.data.booking_gap_days, 1);
+  } finally {
+    advertising.computeVacancies = originalComputeVacancies;
+    advertising.loadSettings = originalLoadSettings;
+    advertising.findBeyondHorizonNrVacancies = originalFindNr;
+  }
+});
+
 test('PUT /advertising/settings accepts inquiry booking fields', async () => {
   const advertising = require('../src/routes/advertising');
   const handler = advertising.stack
@@ -1031,6 +1111,349 @@ test('PUT /advertising/settings accepts inquiry booking fields', async () => {
   assert.match(upsert.sql, /inquiry_too_far_out_phrase/);
   assert.ok(upsert.params.includes(90));
   assert.ok(upsert.params.includes('Check back {check_back_on}'));
+});
+
+test('GET /units/search passes SEARCH gap bands, not inquiry', async () => {
+  const advertising = require('../src/routes/advertising');
+  const unitSearch = require('../src/services/unitSearch');
+  const originalLoadSettings = advertising.loadSettings;
+  const originalSearchUnits = unitSearch.searchUnits;
+  let capturedBands = null;
+  advertising.loadSettings = async () => ({
+    inquiry_gap_band_1m_days: 1,
+    inquiry_gap_band_2m_days: 2,
+    inquiry_gap_band_3m_plus_days: 4,
+    search_gap_band_1m_days: 7,
+    search_gap_band_2m_days: 8,
+    search_gap_band_3m_plus_days: 9,
+  });
+  unitSearch.searchUnits = async (_pool, criteria) => {
+    capturedBands = criteria.gapBands;
+    return { results: [], total: 0 };
+  };
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/units/search' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const result = await callVacanciesHandler(handler, { move_in_date: '2026-11-15', move_out_date: '2026-12-15' });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(capturedBands.band_1m_days, 7);
+    assert.equal(capturedBands.band_2m_days, 8);
+    assert.equal(capturedBands.band_3m_plus_days, 9);
+    assert.equal(capturedBands.source.band_1m_days, 'search');
+  } finally {
+    advertising.loadSettings = originalLoadSettings;
+    unitSearch.searchUnits = originalSearchUnits;
+    delete require.cache[require.resolve('../src/routes/public')];
+  }
+});
+
+test('search_available_units tool passes SEARCH gap bands, not inquiry', async () => {
+  const advertising = require('../src/routes/advertising');
+  const unitSearch = require('../src/services/unitSearch');
+  const originalLoadSettings = advertising.loadSettings;
+  const originalSearchUnits = unitSearch.searchUnits;
+  let capturedBands = null;
+  advertising.loadSettings = async () => ({
+    inquiry_gap_band_1m_days: 1,
+    inquiry_gap_band_2m_days: 2,
+    inquiry_gap_band_3m_plus_days: 4,
+    search_gap_band_1m_days: 7,
+    search_gap_band_2m_days: 8,
+    search_gap_band_3m_plus_days: 9,
+  });
+  unitSearch.searchUnits = async (_pool, criteria) => {
+    capturedBands = criteria.gapBands;
+    return { results: [], total: 0 };
+  };
+
+  try {
+    delete require.cache[require.resolve('../src/services/chatTools')];
+    const { toolsForCapabilities } = require('../src/services/chatTools');
+    const tool = toolsForCapabilities({ can_search: true }).byName.search_available_units;
+    await tool.execute(
+      { pool: {}, orgId: 'org1' },
+      { move_in_date: '2026-11-15', move_out_date: '2026-12-15', city: 'causeway bay', budget: 15000 },
+    );
+    assert.equal(capturedBands.band_1m_days, 7);
+    assert.equal(capturedBands.band_2m_days, 8);
+    assert.equal(capturedBands.band_3m_plus_days, 9);
+    assert.equal(capturedBands.source.band_1m_days, 'search');
+  } finally {
+    advertising.loadSettings = originalLoadSettings;
+    unitSearch.searchUnits = originalSearchUnits;
+    delete require.cache[require.resolve('../src/services/chatTools')];
+  }
+});
+
+test('PUT /advertising/settings accepts valid inquiry gap bands', async () => {
+  const advertising = require('../src/routes/advertising');
+  const handler = advertising.stack
+    .find(layer => layer.route?.path === '/settings' && layer.route.methods.put)
+    .route.stack.at(-1).handle;
+  const executed = [];
+  const pool = {
+    execute: async (sql, params) => {
+      executed.push({ sql, params });
+      if (/SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days/.test(sql)) {
+        return [[{
+          footer: null,
+          photo_root: '/photos',
+          partner_forward_message: null,
+          min_gap_days: 40,
+          max_gap_days: 10,
+          hard_max_gap_days: 20,
+          lead_days_nr: 60,
+          lead_days_other: 45,
+          inquiry_min_gap_days: 40,
+          inquiry_lead_days_nr: 60,
+          inquiry_lead_days_other: 45,
+          inquiry_booking_horizon_days: 60,
+          inquiry_too_far_out_phrase: null,
+          inquiry_gap_band_1m_days: 3,
+          inquiry_gap_band_2m_days: 6,
+          inquiry_gap_band_3m_plus_days: 10,
+        }]];
+      }
+      return [{ affectedRows: 1 }];
+    },
+  };
+
+  const result = await callSettingsPutHandler(handler, {
+    inquiry_gap_band_1m_days: 0,
+    inquiry_gap_band_2m_days: 4,
+    inquiry_gap_band_3m_plus_days: 8,
+  }, pool);
+
+  assert.equal(result.statusCode, 200);
+  const upsert = executed.find(item => /INSERT INTO advertising_setting/.test(item.sql));
+  assert.match(upsert.sql, /inquiry_gap_band_1m_days/);
+  assert.match(upsert.sql, /inquiry_gap_band_2m_days/);
+  assert.match(upsert.sql, /inquiry_gap_band_3m_plus_days/);
+  assert.ok(upsert.params.includes(0));
+  assert.ok(upsert.params.includes(4));
+  assert.ok(upsert.params.includes(8));
+});
+
+test('PUT /advertising/settings accepts valid search gap bands independently', async () => {
+  const advertising = require('../src/routes/advertising');
+  const handler = advertising.stack
+    .find(layer => layer.route?.path === '/settings' && layer.route.methods.put)
+    .route.stack.at(-1).handle;
+  const executed = [];
+  const pool = {
+    execute: async (sql, params) => {
+      executed.push({ sql, params });
+      if (/SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days/.test(sql)) {
+        return [[{
+          footer: null,
+          photo_root: '/photos',
+          partner_forward_message: null,
+          min_gap_days: 40,
+          max_gap_days: 10,
+          hard_max_gap_days: 20,
+          lead_days_nr: 60,
+          lead_days_other: 45,
+          inquiry_min_gap_days: 40,
+          inquiry_lead_days_nr: 60,
+          inquiry_lead_days_other: 45,
+          inquiry_booking_horizon_days: 60,
+          inquiry_too_far_out_phrase: null,
+          inquiry_gap_band_1m_days: 1,
+          inquiry_gap_band_2m_days: 2,
+          inquiry_gap_band_3m_plus_days: 4,
+          search_gap_band_1m_days: 3,
+          search_gap_band_2m_days: 6,
+          search_gap_band_3m_plus_days: 10,
+        }]];
+      }
+      return [{ affectedRows: 1 }];
+    },
+  };
+
+  const result = await callSettingsPutHandler(handler, {
+    search_gap_band_1m_days: 0,
+    search_gap_band_2m_days: 5,
+    search_gap_band_3m_plus_days: 11,
+  }, pool);
+
+  assert.equal(result.statusCode, 200);
+  const upsert = executed.find(item => /INSERT INTO advertising_setting/.test(item.sql));
+  assert.match(upsert.sql, /search_gap_band_1m_days/);
+  assert.match(upsert.sql, /search_gap_band_2m_days/);
+  assert.match(upsert.sql, /search_gap_band_3m_plus_days/);
+  assert.doesNotMatch(upsert.sql, /inquiry_gap_band_1m_days = VALUES/);
+  assert.ok(upsert.params.includes(0));
+  assert.ok(upsert.params.includes(5));
+  assert.ok(upsert.params.includes(11));
+});
+
+test('PUT /advertising/settings rejects out-of-range inquiry gap bands', async () => {
+  const advertising = require('../src/routes/advertising');
+  const handler = advertising.stack
+    .find(layer => layer.route?.path === '/settings' && layer.route.methods.put)
+    .route.stack.at(-1).handle;
+
+  const missing = await callSettingsPutHandler(handler, { inquiry_gap_band_1m_days: null }, { execute: async () => {
+    throw new Error('pool should not be used for invalid inquiry gap band input');
+  } });
+  assert.equal(missing.statusCode, 400);
+  assert.match(missing.body.message, /inquiry_gap_band_1m_days must be an integer between 0 and 365/);
+
+  const tooHigh = await callSettingsPutHandler(handler, { inquiry_gap_band_3m_plus_days: 366 }, { execute: async () => {
+    throw new Error('pool should not be used for invalid inquiry gap band input');
+  } });
+  assert.equal(tooHigh.statusCode, 400);
+  assert.match(tooHigh.body.message, /inquiry_gap_band_3m_plus_days must be an integer between 0 and 365/);
+
+  const searchMissing = await callSettingsPutHandler(handler, { search_gap_band_1m_days: null }, { execute: async () => {
+    throw new Error('pool should not be used for invalid search gap band input');
+  } });
+  assert.equal(searchMissing.statusCode, 400);
+  assert.match(searchMissing.body.message, /search_gap_band_1m_days must be an integer between 0 and 365/);
+
+  const searchTooHigh = await callSettingsPutHandler(handler, { search_gap_band_3m_plus_days: 366 }, { execute: async () => {
+    throw new Error('pool should not be used for invalid search gap band input');
+  } });
+  assert.equal(searchTooHigh.statusCode, 400);
+  assert.match(searchTooHigh.body.message, /search_gap_band_3m_plus_days must be an integer between 0 and 365/);
+});
+
+test('loadSettings falls back to default gap bands on an older schema', async () => {
+  const advertising = require('../src/routes/advertising');
+  const pool = {
+    execute: async (sql) => {
+      if (/inquiry_gap_band_1m_days/.test(sql)) {
+        const err = new Error("Unknown column 'inquiry_gap_band_1m_days' in 'field list'");
+        err.code = 'ER_BAD_FIELD_ERROR';
+        err.errno = 1054;
+        throw err;
+      }
+      if (/inquiry_booking_horizon_days/.test(sql)) {
+        return [[{
+          footer: null,
+          photo_root: '/photos',
+          partner_forward_message: null,
+          min_gap_days: 40,
+          max_gap_days: 10,
+          hard_max_gap_days: 20,
+          lead_days_nr: 60,
+          lead_days_other: 45,
+          inquiry_min_gap_days: 40,
+          inquiry_lead_days_nr: 60,
+          inquiry_lead_days_other: 45,
+          inquiry_booking_horizon_days: 90,
+          inquiry_too_far_out_phrase: 'hello',
+        }]];
+      }
+      throw new Error(`unexpected loadSettings query: ${sql}`);
+    },
+  };
+
+  const settings = await advertising.loadSettings(pool, 'org1');
+  assert.equal(settings.inquiry_gap_band_1m_days, 3);
+  assert.equal(settings.inquiry_gap_band_2m_days, 6);
+  assert.equal(settings.inquiry_gap_band_3m_plus_days, 10);
+  assert.equal(settings.search_gap_band_1m_days, 3);
+  assert.equal(settings.search_gap_band_2m_days, 6);
+  assert.equal(settings.search_gap_band_3m_plus_days, 10);
+  assert.equal(settings.inquiry_booking_horizon_days, 90);
+  assert.equal(settings.inquiry_too_far_out_phrase, 'hello');
+});
+
+test('loadSettings keeps inquiry bands and defaults search bands when search columns are absent', async () => {
+  const advertising = require('../src/routes/advertising');
+  const pool = {
+    execute: async (sql) => {
+      if (/search_gap_band_1m_days/.test(sql)) {
+        const err = new Error("Unknown column 'search_gap_band_1m_days' in 'field list'");
+        err.code = 'ER_BAD_FIELD_ERROR';
+        err.errno = 1054;
+        throw err;
+      }
+      if (/inquiry_gap_band_1m_days/.test(sql)) {
+        return [[{
+          footer: null,
+          photo_root: '/photos',
+          partner_forward_message: null,
+          min_gap_days: 40,
+          max_gap_days: 10,
+          hard_max_gap_days: 20,
+          lead_days_nr: 60,
+          lead_days_other: 45,
+          inquiry_min_gap_days: 40,
+          inquiry_lead_days_nr: 60,
+          inquiry_lead_days_other: 45,
+          inquiry_booking_horizon_days: 90,
+          inquiry_too_far_out_phrase: 'hello',
+          inquiry_gap_band_1m_days: 1,
+          inquiry_gap_band_2m_days: 2,
+          inquiry_gap_band_3m_plus_days: 4,
+        }]];
+      }
+      throw new Error(`unexpected loadSettings query: ${sql}`);
+    },
+  };
+
+  const settings = await advertising.loadSettings(pool, 'org1');
+  assert.equal(settings.inquiry_gap_band_1m_days, 1);
+  assert.equal(settings.inquiry_gap_band_2m_days, 2);
+  assert.equal(settings.inquiry_gap_band_3m_plus_days, 4);
+  assert.equal(settings.search_gap_band_1m_days, 3);
+  assert.equal(settings.search_gap_band_2m_days, 6);
+  assert.equal(settings.search_gap_band_3m_plus_days, 10);
+});
+
+test('PUT /advertising/settings still saves when search gap columns are missing', async () => {
+  const advertising = require('../src/routes/advertising');
+  const handler = advertising.stack
+    .find(layer => layer.route?.path === '/settings' && layer.route.methods.put)
+    .route.stack.at(-1).handle;
+  const executed = [];
+  const pool = {
+    execute: async (sql, params) => {
+      executed.push({ sql, params });
+      if (/SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days/.test(sql)) {
+        return [[{
+          footer: null,
+          photo_root: '/photos',
+          partner_forward_message: null,
+          min_gap_days: 40,
+          max_gap_days: 10,
+          hard_max_gap_days: 20,
+          lead_days_nr: 60,
+          lead_days_other: 45,
+          inquiry_min_gap_days: 40,
+          inquiry_lead_days_nr: 60,
+          inquiry_lead_days_other: 45,
+          inquiry_booking_horizon_days: 60,
+          inquiry_too_far_out_phrase: null,
+          inquiry_gap_band_1m_days: 3,
+          inquiry_gap_band_2m_days: 6,
+          inquiry_gap_band_3m_plus_days: 10,
+        }]];
+      }
+      if (/search_gap_band_1m_days/.test(sql)) {
+        const err = new Error("Unknown column 'search_gap_band_1m_days' in 'field list'");
+        err.code = 'ER_BAD_FIELD_ERROR';
+        err.errno = 1054;
+        throw err;
+      }
+      return [{ affectedRows: 1 }];
+    },
+  };
+
+  const result = await callSettingsPutHandler(handler, { inquiry_booking_horizon_days: 90 }, pool);
+  assert.equal(result.statusCode, 200);
+  const upserts = executed.filter(item => /INSERT INTO advertising_setting/.test(item.sql));
+  assert.ok(upserts.length >= 2);
+  assert.match(upserts[0].sql, /search_gap_band_1m_days/);
+  assert.doesNotMatch(upserts.at(-1).sql, /search_gap_band_1m_days/);
+  assert.match(upserts.at(-1).sql, /inquiry_booking_horizon_days/);
 });
 
 test('PUT /advertising/settings validates max_gap_days against merged hard_max_gap_days', async () => {
@@ -1087,7 +1510,13 @@ function vacancySourceRow(overrides = {}) {
 async function callVacanciesHandler(handler, query) {
   let statusCode = 200;
   let body = null;
-  const req = { query, pool: {}, apiKey: { orgId: 'org1' } };
+  const req = {
+    query,
+    pool: {},
+    apiKey: { orgId: 'org1' },
+    protocol: 'http',
+    get: () => 'localhost',
+  };
   const res = {
     status(code) {
       statusCode = code;

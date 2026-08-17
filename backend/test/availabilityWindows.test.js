@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   resolveAvailabilityWindows,
+  resolveGapBands,
   resolveInquiryBookingSettings,
 } = require('../src/utils/advertisingPlan');
 
@@ -213,6 +214,169 @@ test('inquiry booking settings treat 0 as real and junk as inquiry default', () 
       60,
       `${JSON.stringify(junk)} must fall back to the inquiry booking default`
     );
+  }
+});
+
+function gapBands(settings, audience) {
+  const { source, ...values } = resolveGapBands(settings, audience);
+  return values;
+}
+
+test('inquiry and search gap bands resolve independently', () => {
+  const settings = {
+    inquiry_gap_band_1m_days: 1,
+    inquiry_gap_band_2m_days: 2,
+    inquiry_gap_band_3m_plus_days: 4,
+    search_gap_band_1m_days: 7,
+    search_gap_band_2m_days: 8,
+    search_gap_band_3m_plus_days: 9,
+  };
+
+  assert.deepEqual(gapBands(settings, 'inquiry'), {
+    band_1m_days: 1,
+    band_2m_days: 2,
+    band_3m_plus_days: 4,
+  });
+  assert.deepEqual(gapBands(settings, 'search'), {
+    band_1m_days: 7,
+    band_2m_days: 8,
+    band_3m_plus_days: 9,
+  });
+});
+
+test('changing one gap-band audience does not change the other', () => {
+  const settings = {
+    inquiry_gap_band_1m_days: 1,
+    inquiry_gap_band_2m_days: 2,
+    inquiry_gap_band_3m_plus_days: 4,
+    search_gap_band_1m_days: 7,
+    search_gap_band_2m_days: 8,
+    search_gap_band_3m_plus_days: 9,
+  };
+
+  assert.deepEqual(gapBands({
+    ...settings,
+    inquiry_gap_band_1m_days: 11,
+    inquiry_gap_band_2m_days: 12,
+    inquiry_gap_band_3m_plus_days: 13,
+  }, 'search'), {
+    band_1m_days: 7,
+    band_2m_days: 8,
+    band_3m_plus_days: 9,
+  });
+  assert.deepEqual(gapBands({
+    ...settings,
+    search_gap_band_1m_days: 21,
+    search_gap_band_2m_days: 22,
+    search_gap_band_3m_plus_days: 23,
+  }, 'inquiry'), {
+    band_1m_days: 1,
+    band_2m_days: 2,
+    band_3m_plus_days: 4,
+  });
+});
+
+test('junk search bands fall back to hardcoded defaults, never inquiry values', () => {
+  const base = {
+    inquiry_gap_band_1m_days: 1,
+    inquiry_gap_band_2m_days: 2,
+    inquiry_gap_band_3m_plus_days: 4,
+  };
+  for (const junk of ['  ', '', {}, [], true, '3abc']) {
+    const r = resolveGapBands({
+      ...base,
+      search_gap_band_1m_days: junk,
+      search_gap_band_2m_days: junk,
+      search_gap_band_3m_plus_days: junk,
+    }, 'search');
+    assert.equal(r.band_1m_days, 3, `${JSON.stringify(junk)} must not inherit inquiry 1m`);
+    assert.equal(r.band_2m_days, 6, `${JSON.stringify(junk)} must not inherit inquiry 2m`);
+    assert.equal(r.band_3m_plus_days, 10, `${JSON.stringify(junk)} must not inherit inquiry 3m`);
+    assert.equal(r.source.band_1m_days, 'search');
+  }
+});
+
+test('junk inquiry bands fall back to hardcoded defaults, never search values', () => {
+  const base = {
+    search_gap_band_1m_days: 7,
+    search_gap_band_2m_days: 8,
+    search_gap_band_3m_plus_days: 9,
+  };
+  for (const junk of ['  ', '', {}, [], true, '3abc']) {
+    const r = resolveGapBands({
+      ...base,
+      inquiry_gap_band_1m_days: junk,
+      inquiry_gap_band_2m_days: junk,
+      inquiry_gap_band_3m_plus_days: junk,
+    }, 'inquiry');
+    assert.equal(r.band_1m_days, 3, `${JSON.stringify(junk)} must not inherit search 1m`);
+    assert.equal(r.band_2m_days, 6, `${JSON.stringify(junk)} must not inherit search 2m`);
+    assert.equal(r.band_3m_plus_days, 10, `${JSON.stringify(junk)} must not inherit search 3m`);
+    assert.equal(r.source.band_1m_days, 'inquiry');
+  }
+});
+
+test('zero is a real gap-band value for both audiences', () => {
+  assert.equal(resolveGapBands({ inquiry_gap_band_1m_days: 0 }, 'inquiry').band_1m_days, 0);
+  assert.equal(resolveGapBands({ search_gap_band_2m_days: 0 }, 'search').band_2m_days, 0);
+});
+
+test('unrecognised gap-band audiences use inquiry columns without throwing', () => {
+  for (const audience of ['facebook', undefined, null]) {
+    assert.deepEqual(gapBands({
+      inquiry_gap_band_1m_days: 1,
+      inquiry_gap_band_2m_days: 2,
+      inquiry_gap_band_3m_plus_days: 4,
+      search_gap_band_1m_days: 7,
+      search_gap_band_2m_days: 8,
+      search_gap_band_3m_plus_days: 9,
+    }, audience), {
+      band_1m_days: 1,
+      band_2m_days: 2,
+      band_3m_plus_days: 4,
+    });
+  }
+});
+
+test('resolveGapBands source reports which set was read', () => {
+  const inquiry = resolveGapBands({
+    inquiry_gap_band_1m_days: 1,
+    search_gap_band_1m_days: 7,
+  }, 'inquiry');
+  const search = resolveGapBands({
+    inquiry_gap_band_1m_days: 1,
+    search_gap_band_1m_days: 7,
+  }, 'search');
+
+  assert.deepEqual(inquiry.source, {
+    band_1m_days: 'inquiry',
+    band_2m_days: 'inquiry',
+    band_3m_plus_days: 'inquiry',
+  });
+  assert.deepEqual(search.source, {
+    band_1m_days: 'search',
+    band_2m_days: 'search',
+    band_3m_plus_days: 'search',
+  });
+});
+
+test('resolveGapBands: every resolved band is a finite number', () => {
+  const junkValues = ['1 OR 1=1', {}, [], true, '  ', '9e999', '', null, undefined];
+  for (const audience of ['inquiry', 'search', undefined]) {
+    for (const junk of junkValues) {
+      const r = resolveGapBands({
+        inquiry_gap_band_1m_days: junk,
+        inquiry_gap_band_2m_days: junk,
+        inquiry_gap_band_3m_plus_days: junk,
+        search_gap_band_1m_days: junk,
+        search_gap_band_2m_days: junk,
+        search_gap_band_3m_plus_days: junk,
+      }, audience);
+      for (const f of ['band_1m_days', 'band_2m_days', 'band_3m_plus_days']) {
+        assert.equal(typeof r[f], 'number', `${f} must be a number for ${String(audience)} ${JSON.stringify(junk)}`);
+        assert.ok(Number.isFinite(r[f]), `${f} must be finite for ${String(audience)} ${JSON.stringify(junk)}`);
+      }
+    }
   }
 });
 

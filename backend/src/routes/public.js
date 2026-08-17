@@ -36,6 +36,7 @@ const {
   partnerForwardBlock,
   compareVacancyFit,
   resolveAvailabilityWindows,
+  resolveGapBands,
   resolveInquiryBookingSettings,
   bookingHorizonDecision,
   bookingGapLimitForLease,
@@ -137,7 +138,11 @@ router.get('/vacancies', async (req, res) => {
       : null;
 
     if (horizon?.too_far_out) {
-      const bookingGapDays = bookingGapLimitForLease(requestDate, hasMoveOut ? moveOut : null);
+      const bookingGapDays = bookingGapLimitForLease(
+        requestDate,
+        hasMoveOut ? moveOut : null,
+        resolveGapBands(settings, 'inquiry'),
+      );
       const rawNrRows = maxTier >= 2
         ? await findBeyondHorizonNrVacancies(req.pool, req.apiKey.orgId, {
           requestDate,
@@ -2422,10 +2427,12 @@ router.get('/units/search', async (req, res) => {
     // Delegate to the shared search engine (also used by the internal chatbot
     // tool, so both bots rank/filter identically). budgetMarginPct=0 keeps the
     // public API's strict max_price behavior unchanged.
+    const settings = await loadSettings(req.pool, orgId);
     const { results, total } = await searchUnits(req.pool, {
       orgId,
       moveIn,
       moveOut,
+      gapBands: resolveGapBands(settings, 'search'),
       bedrooms: (bedrooms !== null && !Number.isNaN(bedrooms)) ? bedrooms : null,
       bathrooms: (bathrooms !== null && !Number.isNaN(bathrooms)) ? bathrooms : null,
       minPrice: (minPrice !== null && !Number.isNaN(minPrice)) ? minPrice : null,

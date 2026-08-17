@@ -4,6 +4,16 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Booking-horizon + gap-band settings UI (2026-08-17)
+
+- **UI** (`frontend/src/app/chatbot/settings/page.js` `LeasingAvailabilitySettings`) — booking horizon days, three stay-length gap bands, and the optional "too far out" phrase. Empty phrase stays empty (no default wording). Same Card / InputNumber / TextArea / save-reload pattern as the existing inquiry windows.
+- **Migration** (`backend/migrations-org/065_inquiry_gap_bands.sql`) — `inquiry_gap_band_1m_days` (3), `inquiry_gap_band_2m_days` (6), `inquiry_gap_band_3m_plus_days` (10). Idempotent, same style as 064.
+- **Engine** — `gapBandDays(leaseDurationDays, bands)` and `bookingGapLimitForLease(..., bands)` take optional operator bands. Junk values fall back to 3/6/10 via `availabilityNumber` (never looser than the default). `0` is a real setting. Unknown stay length still uses the flat 10.
+- **Wiring** — `searchUnits` accepts `gapBands`; both call sites (`GET /units/search` and `search_available_units`) load settings and pass them. `GET /vacancies` uses settings bands for the beyond-horizon gap check.
+- **Settings API** — `loadSettings` reads the three columns with defaults and a new fallback step for schemas that have 064 but not 065. `PUT /settings` validates 0–365 and extends the `includeX` ladder so a missing column does not block the rest of the save.
+
+---
+
 ## Session: E-Signature System + WhatsApp Auto-Inquiry + Chatbot Settings Refactor (2026-06-09)
 
 ### Phase 1 — Lease Template System

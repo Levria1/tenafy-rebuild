@@ -153,20 +153,59 @@ function availabilityNumber(value, fallback) {
   return hasAvailabilityValue(value) ? Number(value) : fallback;
 }
 
-function gapBandDays(leaseDurationDays) {
+function gapBandDays(leaseDurationDays, bands) {
   if (leaseDurationDays == null) return null;
   const days = Number(leaseDurationDays);
   if (!Number.isFinite(days)) return null;
   const rounded = Math.max(0, Math.round(days));
-  if (rounded <= 31) return 3;
-  if (rounded <= 62) return 6;
-  return 10;
+  // A junk band must not buy extra empty days — only a real number counts,
+  // because 0 is a legitimate "no gap at all" setting and Number('  ') is 0.
+  const band1m = availabilityNumber(bands?.band_1m_days, 3);
+  const band2m = availabilityNumber(bands?.band_2m_days, 6);
+  const band3m = availabilityNumber(bands?.band_3m_plus_days, 10);
+  if (rounded <= 31) return band1m;
+  if (rounded <= 62) return band2m;
+  return band3m;
 }
 
 function resolveInquiryBookingSettings(settings) {
   return {
     booking_horizon_days: availabilityNumber(settings?.inquiry_booking_horizon_days, 60),
     too_far_out_phrase: settings?.inquiry_too_far_out_phrase ?? null,
+  };
+}
+
+/**
+ * Effective stay-length gap bands for one audience.
+ * audience: 'inquiry' | 'search'
+ * Booking acceptance and search are independent policies; missing or junk values
+ * fall back only to that audience's own hardcoded defaults, never the other set.
+ */
+function resolveGapBands(settings, audience) {
+  const fields = audience === 'search'
+    ? {
+      band_1m_days: 'search_gap_band_1m_days',
+      band_2m_days: 'search_gap_band_2m_days',
+      band_3m_plus_days: 'search_gap_band_3m_plus_days',
+    }
+    : {
+      band_1m_days: 'inquiry_gap_band_1m_days',
+      band_2m_days: 'inquiry_gap_band_2m_days',
+      band_3m_plus_days: 'inquiry_gap_band_3m_plus_days',
+    };
+  const sourceName = audience === 'search' ? 'search' : 'inquiry';
+  const values = {
+    band_1m_days: availabilityNumber(settings?.[fields.band_1m_days], 3),
+    band_2m_days: availabilityNumber(settings?.[fields.band_2m_days], 6),
+    band_3m_plus_days: availabilityNumber(settings?.[fields.band_3m_plus_days], 10),
+  };
+  return {
+    ...values,
+    source: {
+      band_1m_days: sourceName,
+      band_2m_days: sourceName,
+      band_3m_plus_days: sourceName,
+    },
   };
 }
 
@@ -271,9 +310,9 @@ function leaseDurationDays(moveIn, moveOut) {
   return days == null ? null : Math.max(0, days);
 }
 
-function bookingGapLimitForLease(moveIn, moveOut) {
+function bookingGapLimitForLease(moveIn, moveOut, bands) {
   const duration = leaseDurationDays(moveIn, moveOut);
-  return duration == null ? 10 : gapBandDays(duration);
+  return duration == null ? 10 : gapBandDays(duration, bands);
 }
 
 function matchesBeyondHorizonNrException(row, requestDate, maxGapDays) {
@@ -702,6 +741,7 @@ module.exports = {
   partnerForwardBlock,
   compareVacancyFit,
   resolveAvailabilityWindows,
+  resolveGapBands,
   priorityOf,
   sortByPriority,
   assignBundlesToSlots,

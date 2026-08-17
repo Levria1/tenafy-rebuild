@@ -37,6 +37,7 @@ function toDateStr(d) {
  *   sortBy           'vacancy_gap' (default) | 'price_asc' | 'price_desc'
  *   limit            number (default 10)
  *   baseUrl          string | null — when set, photo gallery URLs are built absolute
+ *   gapBands         resolved generic bands ({ band_1m_days, ... }); missing/junk keep 3/6/10
  * @returns {Promise<{ results: object[], total: number }>}
  */
 async function searchUnits(pool, criteria = {}) {
@@ -57,6 +58,7 @@ async function searchUnits(pool, criteria = {}) {
     sortBy = 'vacancy_gap',
     limit = 10,
     baseUrl = null,
+    gapBands,
     // When true (default), a unit that is occupied RIGHT NOW is only offerable
     // if its current lease ends before the move-in date AND the tenant is Not
     // Renewing (contract_type=3). Empty-now units are always offerable. This
@@ -216,7 +218,7 @@ async function searchUnits(pool, criteria = {}) {
     : null;
   // Gap-tolerance verdict (deterministic; both bots consume it instead of doing
   // their own band math). Band is null when reservation length is unknown.
-  const gapBand = gapBandDays(leaseDurationDays);
+  const gapBand = gapBandDays(leaseDurationDays, gapBands);
   const needsManagerApproval = leaseDurationDays != null && Math.round(leaseDurationDays / 30.44) >= 12;
 
   const enriched = filtered.map(r => {

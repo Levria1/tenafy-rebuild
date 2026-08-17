@@ -18,6 +18,8 @@ const { buildViewingIcs } = require('../utils/ics');
 const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
 const { searchUnits } = require('./unitSearch');
+const { loadSettings } = require('../routes/advertising');
+const { resolveGapBands } = require('../utils/advertisingPlan');
 const { validateSelect, runReadOnly } = require('./askDataService');
 const taneChatClient = require('./taneChatClient');
 const { traceAmounts } = require('./paymentMatchService');
@@ -140,10 +142,12 @@ const search_available_units = {
     }
     // Shared engine — same ranking/enrichment the public API (TaneChat) uses.
     // budget => soft 15% ceiling (over-budget units flagged); max_price => hard cap.
+    const settings = await loadSettings(pool, ctx.orgId);
     const { results, total } = await searchUnits(pool, {
       orgId: ctx.orgId,
       moveIn,
       moveOut,
+      gapBands: resolveGapBands(settings, 'search'),
       bedrooms: args.beds != null ? Number(args.beds) : null,
       bathrooms: args.baths != null ? Number(args.baths) : null,
       maxPrice: args.max_price != null ? Number(args.max_price) : (budget != null ? budget : null),

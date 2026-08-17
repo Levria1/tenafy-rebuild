@@ -35,6 +35,14 @@ function LeasingAvailabilitySettings() {
   const [inquiryMinGap, setInquiryMinGap] = useState(null);
   const [inquiryLeadDaysNr, setInquiryLeadDaysNr] = useState(null);
   const [inquiryLeadDaysOther, setInquiryLeadDaysOther] = useState(null);
+  const [inquiryHorizon, setInquiryHorizon] = useState(null);
+  const [gapBand1m, setGapBand1m] = useState(null);
+  const [gapBand2m, setGapBand2m] = useState(null);
+  const [gapBand3mPlus, setGapBand3mPlus] = useState(null);
+  const [searchGapBand1m, setSearchGapBand1m] = useState(null);
+  const [searchGapBand2m, setSearchGapBand2m] = useState(null);
+  const [searchGapBand3mPlus, setSearchGapBand3mPlus] = useState(null);
+  const [tooFarOutPhrase, setTooFarOutPhrase] = useState('');
   const [effectiveAdvertising, setEffectiveAdvertising] = useState(null);
   const [partnerMsg, setPartnerMsg] = useState('');
   const [loading, setLoading] = useState(true);
@@ -56,6 +64,14 @@ function LeasingAvailabilitySettings() {
         setInquiryMinGap(d.inquiry_min_gap_days ?? 40);
         setInquiryLeadDaysNr(d.inquiry_lead_days_nr ?? 60);
         setInquiryLeadDaysOther(d.inquiry_lead_days_other ?? 45);
+        setInquiryHorizon(d.inquiry_booking_horizon_days ?? 60);
+        setGapBand1m(d.inquiry_gap_band_1m_days ?? 3);
+        setGapBand2m(d.inquiry_gap_band_2m_days ?? 6);
+        setGapBand3mPlus(d.inquiry_gap_band_3m_plus_days ?? 10);
+        setSearchGapBand1m(d.search_gap_band_1m_days ?? 3);
+        setSearchGapBand2m(d.search_gap_band_2m_days ?? 6);
+        setSearchGapBand3mPlus(d.search_gap_band_3m_plus_days ?? 10);
+        setTooFarOutPhrase(d.inquiry_too_far_out_phrase ?? '');
         setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       })
@@ -90,6 +106,14 @@ function LeasingAvailabilitySettings() {
         inquiry_min_gap_days: inquiryMinGap,
         inquiry_lead_days_nr: inquiryLeadDaysNr,
         inquiry_lead_days_other: inquiryLeadDaysOther,
+        inquiry_booking_horizon_days: inquiryHorizon,
+        inquiry_gap_band_1m_days: gapBand1m,
+        inquiry_gap_band_2m_days: gapBand2m,
+        inquiry_gap_band_3m_plus_days: gapBand3mPlus,
+        search_gap_band_1m_days: searchGapBand1m,
+        search_gap_band_2m_days: searchGapBand2m,
+        search_gap_band_3m_plus_days: searchGapBand3mPlus,
+        inquiry_too_far_out_phrase: tooFarOutPhrase,
         partner_forward_message: partnerMsg,
       });
       const d = r.data?.data;
@@ -99,6 +123,14 @@ function LeasingAvailabilitySettings() {
         setInquiryMinGap(d.inquiry_min_gap_days ?? 40);
         setInquiryLeadDaysNr(d.inquiry_lead_days_nr ?? 60);
         setInquiryLeadDaysOther(d.inquiry_lead_days_other ?? 45);
+        setInquiryHorizon(d.inquiry_booking_horizon_days ?? 60);
+        setGapBand1m(d.inquiry_gap_band_1m_days ?? 3);
+        setGapBand2m(d.inquiry_gap_band_2m_days ?? 6);
+        setGapBand3mPlus(d.inquiry_gap_band_3m_plus_days ?? 10);
+        setSearchGapBand1m(d.search_gap_band_1m_days ?? 3);
+        setSearchGapBand2m(d.search_gap_band_2m_days ?? 6);
+        setSearchGapBand3mPlus(d.search_gap_band_3m_plus_days ?? 10);
+        setTooFarOutPhrase(d.inquiry_too_far_out_phrase ?? '');
         setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       }
@@ -199,6 +231,99 @@ function LeasingAvailabilitySettings() {
             <div style={{ marginTop: 6 }}>{renderAdvertisingReference('lead_days_other')}</div>
           </Col>
         </Row>
+      </div>
+
+      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Booking horizon</Title>
+        <Row gutter={24}>
+          <Col xs={24} md={12} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>Offer only confirmed-leaving units after</div>
+            <InputNumber
+              min={0} max={365} value={inquiryHorizon} onChange={handleRequiredDays(setInquiryHorizon, 60)}
+              addonAfter="days from today" style={{ width: '100%', maxWidth: 240 }}
+            />
+            <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+              Beyond this, we only offer units whose tenant has confirmed they are leaving.
+              Everything else is withheld, and the customer is told when to check back.
+            </div>
+          </Col>
+        </Row>
+      </div>
+
+      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Booking acceptance</Title>
+        <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+          For a far-future date, a unit outside these bands is not offered at all.
+          A shorter stay must line up more tightly — the same empty week costs proportionally more.
+        </Paragraph>
+        <Row gutter={24}>
+          <Col xs={24} md={8} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>1 month</div>
+            <InputNumber
+              min={0} max={365} value={gapBand1m} onChange={handleRequiredDays(setGapBand1m, 3)}
+              addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
+            />
+          </Col>
+          <Col xs={24} md={8} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>2 months</div>
+            <InputNumber
+              min={0} max={365} value={gapBand2m} onChange={handleRequiredDays(setGapBand2m, 6)}
+              addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
+            />
+          </Col>
+          <Col xs={24} md={8} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>3+ months</div>
+            <InputNumber
+              min={0} max={365} value={gapBand3mPlus} onChange={handleRequiredDays(setGapBand3mPlus, 10)}
+              addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
+            />
+          </Col>
+        </Row>
+      </div>
+
+      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Search results</Title>
+        <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+          These only flag whether a result is within tolerance so the wording can reflect it.
+          Nothing is hidden.
+        </Paragraph>
+        <Row gutter={24}>
+          <Col xs={24} md={8} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>1 month</div>
+            <InputNumber
+              min={0} max={365} value={searchGapBand1m} onChange={handleRequiredDays(setSearchGapBand1m, 3)}
+              addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
+            />
+          </Col>
+          <Col xs={24} md={8} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>2 months</div>
+            <InputNumber
+              min={0} max={365} value={searchGapBand2m} onChange={handleRequiredDays(setSearchGapBand2m, 6)}
+              addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
+            />
+          </Col>
+          <Col xs={24} md={8} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>3+ months</div>
+            <InputNumber
+              min={0} max={365} value={searchGapBand3mPlus} onChange={handleRequiredDays(setSearchGapBand3mPlus, 10)}
+              addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
+            />
+          </Col>
+        </Row>
+      </div>
+
+      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>&quot;Too far out&quot; message</Title>
+        <Input.TextArea
+          rows={5} value={tooFarOutPhrase} onChange={e => setTooFarOutPhrase(e.target.value)}
+          maxLength={2000} showCount
+        />
+        <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+          Leave this blank and TaneChat uses its own wording. Placeholders are filled in by the
+          caller:{' '}
+          <code>{'{target_date}'}</code> <code>{'{booking_horizon_days}'}</code>{' '}
+          <code>{'{check_back_in_days}'}</code> <code>{'{check_back_on}'}</code>
+        </div>
       </div>
 
       <Alert

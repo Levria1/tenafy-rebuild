@@ -1362,13 +1362,21 @@ async function loadSettings(pool, orgId) {
     inquiry_lead_days_other: 45,
     inquiry_booking_horizon_days: 60,
     inquiry_too_far_out_phrase: null,
+    inquiry_gap_band_1m_days: 3,
+    inquiry_gap_band_2m_days: 6,
+    inquiry_gap_band_3m_plus_days: 10,
+    search_gap_band_1m_days: 3,
+    search_gap_band_2m_days: 6,
+    search_gap_band_3m_plus_days: 10,
   };
   const numberOrDefault = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
   try {
     const [[row]] = await pool.execute(
       `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other,
               inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other,
-              inquiry_booking_horizon_days, inquiry_too_far_out_phrase
+              inquiry_booking_horizon_days, inquiry_too_far_out_phrase,
+              inquiry_gap_band_1m_days, inquiry_gap_band_2m_days, inquiry_gap_band_3m_plus_days,
+              search_gap_band_1m_days, search_gap_band_2m_days, search_gap_band_3m_plus_days
          FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
     return {
       footer: row?.footer || null,
@@ -1385,8 +1393,66 @@ async function loadSettings(pool, orgId) {
       inquiry_lead_days_other: numberOrDefault(row?.inquiry_lead_days_other, 45),
       inquiry_booking_horizon_days: numberOrDefault(row?.inquiry_booking_horizon_days, 60),
       inquiry_too_far_out_phrase: row?.inquiry_too_far_out_phrase ?? null,
+      inquiry_gap_band_1m_days: numberOrDefault(row?.inquiry_gap_band_1m_days, 3),
+      inquiry_gap_band_2m_days: numberOrDefault(row?.inquiry_gap_band_2m_days, 6),
+      inquiry_gap_band_3m_plus_days: numberOrDefault(row?.inquiry_gap_band_3m_plus_days, 10),
+      search_gap_band_1m_days: numberOrDefault(row?.search_gap_band_1m_days, 3),
+      search_gap_band_2m_days: numberOrDefault(row?.search_gap_band_2m_days, 6),
+      search_gap_band_3m_plus_days: numberOrDefault(row?.search_gap_band_3m_plus_days, 10),
     };
   } catch (err) {
+    try {
+      const [[row]] = await pool.execute(
+        `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other,
+                inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other,
+                inquiry_booking_horizon_days, inquiry_too_far_out_phrase,
+                inquiry_gap_band_1m_days, inquiry_gap_band_2m_days, inquiry_gap_band_3m_plus_days
+           FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+      return {
+        ...defaults,
+        footer: row?.footer || null,
+        photo_root: row?.photo_root || PHOTO_ROOT,
+        // Outward-facing partner-agency text is opt-in only. NULL means unauthored.
+        partner_forward_message: row?.partner_forward_message ?? null,
+        min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+        max_gap_days: Number.isFinite(Number(row?.max_gap_days)) ? Number(row.max_gap_days) : 10,
+        hard_max_gap_days: Number.isFinite(Number(row?.hard_max_gap_days)) ? Number(row.hard_max_gap_days) : 20,
+        lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
+        lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
+        inquiry_min_gap_days: numberOrDefault(row?.inquiry_min_gap_days, 40),
+        inquiry_lead_days_nr: numberOrDefault(row?.inquiry_lead_days_nr, 60),
+        inquiry_lead_days_other: numberOrDefault(row?.inquiry_lead_days_other, 45),
+        inquiry_booking_horizon_days: numberOrDefault(row?.inquiry_booking_horizon_days, 60),
+        inquiry_too_far_out_phrase: row?.inquiry_too_far_out_phrase ?? null,
+        inquiry_gap_band_1m_days: numberOrDefault(row?.inquiry_gap_band_1m_days, 3),
+        inquiry_gap_band_2m_days: numberOrDefault(row?.inquiry_gap_band_2m_days, 6),
+        inquiry_gap_band_3m_plus_days: numberOrDefault(row?.inquiry_gap_band_3m_plus_days, 10),
+      };
+    } catch {
+    try {
+      const [[row]] = await pool.execute(
+        `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other,
+                inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other,
+                inquiry_booking_horizon_days, inquiry_too_far_out_phrase
+           FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
+      return {
+        ...defaults,
+        footer: row?.footer || null,
+        photo_root: row?.photo_root || PHOTO_ROOT,
+        // Outward-facing partner-agency text is opt-in only. NULL means unauthored.
+        partner_forward_message: row?.partner_forward_message ?? null,
+        min_gap_days: Number.isFinite(Number(row?.min_gap_days)) ? Number(row.min_gap_days) : 40,
+        max_gap_days: Number.isFinite(Number(row?.max_gap_days)) ? Number(row.max_gap_days) : 10,
+        hard_max_gap_days: Number.isFinite(Number(row?.hard_max_gap_days)) ? Number(row.hard_max_gap_days) : 20,
+        lead_days_nr: Number.isFinite(Number(row?.lead_days_nr)) ? Number(row.lead_days_nr) : 60,
+        lead_days_other: Number.isFinite(Number(row?.lead_days_other)) ? Number(row.lead_days_other) : 45,
+        inquiry_min_gap_days: numberOrDefault(row?.inquiry_min_gap_days, 40),
+        inquiry_lead_days_nr: numberOrDefault(row?.inquiry_lead_days_nr, 60),
+        inquiry_lead_days_other: numberOrDefault(row?.inquiry_lead_days_other, 45),
+        inquiry_booking_horizon_days: numberOrDefault(row?.inquiry_booking_horizon_days, 60),
+        inquiry_too_far_out_phrase: row?.inquiry_too_far_out_phrase ?? null,
+      };
+    } catch {
     try {
       const [[row]] = await pool.execute(
         `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other,
@@ -1453,6 +1519,8 @@ async function loadSettings(pool, orgId) {
         }
       }
     }
+    }
+    }
   }
 }
 
@@ -1494,6 +1562,12 @@ router.put('/settings', authenticate, async (req, res) => {
       inquiry_lead_days_other,
       inquiry_booking_horizon_days,
       inquiry_too_far_out_phrase,
+      inquiry_gap_band_1m_days,
+      inquiry_gap_band_2m_days,
+      inquiry_gap_band_3m_plus_days,
+      search_gap_band_1m_days,
+      search_gap_band_2m_days,
+      search_gap_band_3m_plus_days,
     } = req.body || {};
     const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message', 'inquiry_too_far_out_phrase']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
@@ -1515,7 +1589,7 @@ router.put('/settings', authenticate, async (req, res) => {
         return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
       }
     }
-    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days']) {
+    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days', 'inquiry_gap_band_1m_days', 'inquiry_gap_band_2m_days', 'inquiry_gap_band_3m_plus_days', 'search_gap_band_1m_days', 'search_gap_band_2m_days', 'search_gap_band_3m_plus_days']) {
       if (req.body?.[field] !== undefined) {
         if (req.body[field] === null) {
           return res.status(400).json({
@@ -1559,6 +1633,12 @@ router.put('/settings', authenticate, async (req, res) => {
     if (inquiry_lead_days_other !== undefined) setClauses.push('inquiry_lead_days_other = VALUES(inquiry_lead_days_other)');
     if (inquiry_booking_horizon_days !== undefined) setClauses.push('inquiry_booking_horizon_days = VALUES(inquiry_booking_horizon_days)');
     if (inquiry_too_far_out_phrase !== undefined) setClauses.push('inquiry_too_far_out_phrase = VALUES(inquiry_too_far_out_phrase)');
+    if (inquiry_gap_band_1m_days !== undefined) setClauses.push('inquiry_gap_band_1m_days = VALUES(inquiry_gap_band_1m_days)');
+    if (inquiry_gap_band_2m_days !== undefined) setClauses.push('inquiry_gap_band_2m_days = VALUES(inquiry_gap_band_2m_days)');
+    if (inquiry_gap_band_3m_plus_days !== undefined) setClauses.push('inquiry_gap_band_3m_plus_days = VALUES(inquiry_gap_band_3m_plus_days)');
+    if (search_gap_band_1m_days !== undefined) setClauses.push('search_gap_band_1m_days = VALUES(search_gap_band_1m_days)');
+    if (search_gap_band_2m_days !== undefined) setClauses.push('search_gap_band_2m_days = VALUES(search_gap_band_2m_days)');
+    if (search_gap_band_3m_plus_days !== undefined) setClauses.push('search_gap_band_3m_plus_days = VALUES(search_gap_band_3m_plus_days)');
     if (!setClauses.length) return res.json({ code: 200, data: { ok: true } });
     const executeUpsert = ({
       includeMaxGap,
@@ -1569,6 +1649,12 @@ router.put('/settings', authenticate, async (req, res) => {
       includeInquiryLeadOther,
       includeInquiryBookingHorizon,
       includeInquiryTooFarOutPhrase,
+      includeInquiryGapBand1m,
+      includeInquiryGapBand2m,
+      includeInquiryGapBand3mPlus,
+      includeSearchGapBand1m,
+      includeSearchGapBand2m,
+      includeSearchGapBand3mPlus,
     }) => {
       const insertColumns = ['org_id', 'footer', 'photo_root'];
       const params = [
@@ -1612,6 +1698,30 @@ router.put('/settings', authenticate, async (req, res) => {
         insertColumns.push('inquiry_too_far_out_phrase');
         params.push(normalizedTooFarOutPhrase ?? null);
       }
+      if (includeInquiryGapBand1m) {
+        insertColumns.push('inquiry_gap_band_1m_days');
+        params.push(inquiry_gap_band_1m_days ?? 3);
+      }
+      if (includeInquiryGapBand2m) {
+        insertColumns.push('inquiry_gap_band_2m_days');
+        params.push(inquiry_gap_band_2m_days ?? 6);
+      }
+      if (includeInquiryGapBand3mPlus) {
+        insertColumns.push('inquiry_gap_band_3m_plus_days');
+        params.push(inquiry_gap_band_3m_plus_days ?? 10);
+      }
+      if (includeSearchGapBand1m) {
+        insertColumns.push('search_gap_band_1m_days');
+        params.push(search_gap_band_1m_days ?? 3);
+      }
+      if (includeSearchGapBand2m) {
+        insertColumns.push('search_gap_band_2m_days');
+        params.push(search_gap_band_2m_days ?? 6);
+      }
+      if (includeSearchGapBand3mPlus) {
+        insertColumns.push('search_gap_band_3m_plus_days');
+        params.push(search_gap_band_3m_plus_days ?? 10);
+      }
       insertColumns.push('created_at');
       const placeholders = [...params.map(() => '?'), 'NOW()'].join(', ');
       const clauses = setClauses.filter(clause => {
@@ -1623,6 +1733,12 @@ router.put('/settings', authenticate, async (req, res) => {
         if (!includeInquiryLeadOther && clause.startsWith('inquiry_lead_days_other')) return false;
         if (!includeInquiryBookingHorizon && clause.startsWith('inquiry_booking_horizon_days')) return false;
         if (!includeInquiryTooFarOutPhrase && clause.startsWith('inquiry_too_far_out_phrase')) return false;
+        if (!includeInquiryGapBand1m && clause.startsWith('inquiry_gap_band_1m_days')) return false;
+        if (!includeInquiryGapBand2m && clause.startsWith('inquiry_gap_band_2m_days')) return false;
+        if (!includeInquiryGapBand3mPlus && clause.startsWith('inquiry_gap_band_3m_plus_days')) return false;
+        if (!includeSearchGapBand1m && clause.startsWith('search_gap_band_1m_days')) return false;
+        if (!includeSearchGapBand2m && clause.startsWith('search_gap_band_2m_days')) return false;
+        if (!includeSearchGapBand3mPlus && clause.startsWith('search_gap_band_3m_plus_days')) return false;
         return true;
       });
       if (!clauses.length) return Promise.resolve();
@@ -1666,6 +1782,30 @@ router.put('/settings', authenticate, async (req, res) => {
         column: 'inquiry_too_far_out_phrase',
         wasSent: inquiry_too_far_out_phrase !== undefined,
       },
+      includeInquiryGapBand1m: {
+        column: 'inquiry_gap_band_1m_days',
+        wasSent: inquiry_gap_band_1m_days !== undefined,
+      },
+      includeInquiryGapBand2m: {
+        column: 'inquiry_gap_band_2m_days',
+        wasSent: inquiry_gap_band_2m_days !== undefined,
+      },
+      includeInquiryGapBand3mPlus: {
+        column: 'inquiry_gap_band_3m_plus_days',
+        wasSent: inquiry_gap_band_3m_plus_days !== undefined,
+      },
+      includeSearchGapBand1m: {
+        column: 'search_gap_band_1m_days',
+        wasSent: search_gap_band_1m_days !== undefined,
+      },
+      includeSearchGapBand2m: {
+        column: 'search_gap_band_2m_days',
+        wasSent: search_gap_band_2m_days !== undefined,
+      },
+      includeSearchGapBand3mPlus: {
+        column: 'search_gap_band_3m_plus_days',
+        wasSent: search_gap_band_3m_plus_days !== undefined,
+      },
     };
     const flags = {
       includeMaxGap: true,
@@ -1676,6 +1816,12 @@ router.put('/settings', authenticate, async (req, res) => {
       includeInquiryLeadOther: true,
       includeInquiryBookingHorizon: true,
       includeInquiryTooFarOutPhrase: true,
+      includeInquiryGapBand1m: true,
+      includeInquiryGapBand2m: true,
+      includeInquiryGapBand3mPlus: true,
+      includeSearchGapBand1m: true,
+      includeSearchGapBand2m: true,
+      includeSearchGapBand3mPlus: true,
     };
     while (true) {
       try {
