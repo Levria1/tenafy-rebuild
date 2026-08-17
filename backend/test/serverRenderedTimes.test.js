@@ -295,3 +295,120 @@ test('a missing timestamp renders as a dash, not a bogus date', () => {
   assert.equal(stampTimestamp(null), '—');
   assert.equal(stampTimestamp(undefined), '—');
 });
+
+// ---------------------------------------------------------------------------
+// Public viewing-negotiation API. The payload is labelled Asia/Hong_Kong.
+//
+// Three column kinds live on the same row and need opposite treatment:
+//   TIMESTAMP / NOW()-written DATETIME → convert the instant to Hong Kong
+//   appointment DATETIME               → re-emit the stored digits unchanged
+//   pagination cursor                  → stay in server terms for the SQL compare
+//
+// This machine is already Asia/Hong_Kong, so a same-process assertion cannot
+// tell dateToWallClock from orgWallClock. Production is UTC; pin that.
+// ---------------------------------------------------------------------------
+
+function publicNegotiationTimesUnderTz(tz) {
+  const { execFileSync } = require('child_process');
+  const path = require('path');
+  const publicMod = path.join(__dirname, '..', 'src/routes/public').replace(/\\/g, '/');
+  const script = `
+    const Module = require('node:module');
+    const orig = Module._load;
+    Module._load = function (request, parent, isMain) {
+      if (request === 'googleapis') {
+        return { google: { auth: { GoogleAuth: class GoogleAuth {} }, calendar: () => ({ events: {} }) } };
+      }
+      return orig.call(this, request, parent, isMain);
+    };
+    const router = require('${publicMod}');
+    function handler(p, m) {
+      return router.stack.find(l => l.route && l.route.path === p && l.route.methods[m])
+        .route.stack.at(-1).handle;
+    }
+    const STRADDLE = new Date('2026-08-15T16:05:00Z');
+    const APPOINTMENT = new Date(2026, 7, 16, 19, 0, 0);
+    function call(h, query, pool) {
+      return new Promise((resolve, reject) => {
+        const res = { status(c) { this.statusCode = c; return this; }, json(b) { resolve(b); } };
+        Promise.resolve(h({ query, pool, apiKey: { orgId: 'ORG' }, params: {}, body: {} }, res)).catch(reject);
+      });
+    }
+    (async () => {
+      const draftPool = {
+        async execute(sql) {
+          if (/viewing_negotiation_event/.test(sql)) {
+            return [[{
+              event_id: '1', negotiation_id: 'n1', negotiation_state: 'RESOLVE_UNIT',
+              awaiting: 'prospect', party: 'prospect', to_phone: '+852',
+              body: 'x', template_type: 'Viewing-Choose-Unit', event_type: null,
+              send_mode: 'approve', idempotency_key: null,
+              deadline_at: STRADDLE, created_at: STRADDLE, expires_at: STRADDLE,
+              age_hours: 0, unit_id: null, prospect_name: 'P', prospect_phone: '+852',
+              unit_name: null, property_name: null,
+            }]];
+          }
+          return [[]];
+        },
+      };
+      const drafts = await call(handler('/viewing-negotiation/drafts', 'get'), {}, draftPool);
+
+      const row = {
+        id: '9', state: 'ASK_PROSPECT_DAY', awaiting: 'prospect',
+        unit_id: null, tenant_id: null, prospect_name: 'P', prospect_phone: '+852',
+        current_proposed_datetime: APPOINTMENT, needs_staff_reason: null,
+        policy_opt_out_hours: null, policy_explicit_confirm: null, policy_source: null,
+        customer_asked_at: STRADDLE, tenant_notified_at: null, auto_confirmed_at: null,
+        opt_out_deadline_at: null, created_at: STRADDLE, updated_at: STRADDLE,
+        unit_name: '1A', property_name: 'Alpha', street_address: null, city: null, state_name: null,
+        tenant_phone: null, tenant_first_name: null, tenant_last_name: null, tenant_company_name: null,
+      };
+      const boardPool = {
+        async execute(sql) {
+          if (/FROM viewing_setting/.test(sql)) return [[null]];
+          if (/FROM viewing_negotiation n/.test(sql)) return [[row, { ...row, id: '8' }]];
+          if (/FROM viewing_negotiation_event e/.test(sql)) {
+            return [[{ negotiation_id: '9', event_type: 'x', party: 'prospect',
+              send_mode: 'auto', status: 'sent', created_at: STRADDLE }]];
+          }
+          return [[]];
+        },
+      };
+      const board = await call(handler('/viewing-negotiations', 'get'), { limit: '1' }, boardPool);
+      const cursor = board.meta && board.meta.next_cursor;
+      const decoded = cursor ? JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) : null;
+      process.stdout.write(JSON.stringify({
+        draft_created_at: drafts.data.drafts[0].created_at,
+        proposed_start_at: board.data[0].viewing.proposed_start_at,
+        cursor_updated_at: decoded && decoded.updated_at,
+      }));
+    })().catch(err => { console.error(err && err.stack || err); process.exit(1); });
+  `;
+  return JSON.parse(execFileSync(process.execPath, ['-e', script], {
+    env: { ...process.env, TZ: tz }, encoding: 'utf8',
+  }).trim());
+}
+
+const UTC_PUBLIC = publicNegotiationTimesUnderTz('UTC');
+
+test('a draft created_at is published in Hong Kong, on a UTC server', () => {
+  // 16:05 UTC on the 15th is 00:05 on the 16th in Hong Kong. dateToWallClock
+  // would have printed the UTC digits and claimed they were Hong Kong.
+  assert.equal(UTC_PUBLIC.draft_created_at, '2026-08-16T00:05:00',
+    `expected Hong Kong wall clock, got ${UTC_PUBLIC.draft_created_at}`);
+});
+
+test('proposed_start_at keeps the stored appointment digits on a UTC server', () => {
+  // mysql2 parsed a Hong Kong DATETIME as if the digits were UTC. Re-emitting
+  // those digits is correct; converting the instant would move 19:00 to 03:00
+  // the next day.
+  assert.equal(UTC_PUBLIC.proposed_start_at, '2026-08-16T19:00:00',
+    `appointment must not shift. got ${UTC_PUBLIC.proposed_start_at}`);
+});
+
+test('the pagination cursor stays in server terms, not Hong Kong', () => {
+  // encodeCursor is compared back against raw DB values. Shifting it to Hong
+  // Kong would skip or repeat rows on a UTC database connection.
+  assert.equal(UTC_PUBLIC.cursor_updated_at, '2026-08-15T16:05:00',
+    `cursor must stay in server terms. got ${UTC_PUBLIC.cursor_updated_at}`);
+});

@@ -36,7 +36,7 @@ const {
   resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
   reversalClassification,
   sendModeFor, idempotencyKeyFor, withinQuietHours,
-  draftQueryOptions, chooseTenantNoticeTemplate, composeStep, orgWallClock, toOrgWallClock,
+  draftQueryOptions, chooseTenantNoticeTemplate, composeStep, toOrgWallClock,
 } = require('./viewingNegotiationLogic');
 const { findActiveLeaseForUnit } = require('./viewingBooking');
 const { resolveUnit, optionsText } = require('./unitResolver');
@@ -501,16 +501,18 @@ function boardNextDeadline(row, setting, now = new Date()) {
   if (autoDecision.action === 'auto_confirm' || autoDecision.action === 'wait') {
     return {
       kind: 'opt_out_expiry',
-      due_at: dateToWallClock(row && row.opt_out_deadline_at),
+      // Input may already be operator wall clock (string) or a mysql2 Date instant;
+      // conversion must be type-aware so a wall-clock string is not shifted twice.
+      due_at: (row && row.opt_out_deadline_at) ? toOrgWallClock(row.opt_out_deadline_at) : null,
       overdue: autoDecision.action === 'auto_confirm',
     };
   }
   const nudge = nudgeDecision(row, setting, now);
   if (nudge.action === 'nudge') {
-    return { kind: `${nudge.party}_nudge`, due_at: dateToWallClock(now), overdue: true };
+    return { kind: `${nudge.party}_nudge`, due_at: now ? toOrgWallClock(now) : null, overdue: true };
   }
   if (nudge.action === 'escalate') {
-    return { kind: nudge.party === 'prospect' ? 'customer_timeout' : 'tenant_timeout', due_at: dateToWallClock(now), overdue: true };
+    return { kind: nudge.party === 'prospect' ? 'customer_timeout' : 'tenant_timeout', due_at: now ? toOrgWallClock(now) : null, overdue: true };
   }
   return { kind: null, due_at: null, overdue: false };
 }

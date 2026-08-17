@@ -1,5 +1,5 @@
 const express = require('express');
-const { orgToday, orgTodaySql } = require('../utils/orgTime');
+const { orgToday, orgTodaySql, orgWallClock } = require('../utils/orgTime');
 const crypto = require('crypto');
 const router = express.Router();
 const { authenticateApiKey } = require('../middleware/apiKeyAuth');
@@ -30,7 +30,6 @@ const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings } = re
 const {
   vacancyToPublicShape,
   classifyFreeOn,
-  formatLocalDate,
   vacancyFit,
   exceedsHardGapCap,
   vacancyNoMatchReason,
@@ -135,7 +134,10 @@ router.get('/vacancies', async (req, res) => {
     let laterRows = [];
 
     if (hasTargetDate) {
-      const today = formatLocalDate(new Date());
+      // Production Node is UTC. A process-local "today" is still yesterday for
+      // the first eight hours of the operator's day, which knocks every tier-1
+      // gap_days off by one until 08:00 Hong Kong.
+      const today = orgToday();
       rows = rows
         .map(vacancyToPublicShape)
         .map(row => ({ ...row, ...vacancyFit(row, targetDate, { maxGapDays: settings.max_gap_days, today }) }))
@@ -245,6 +247,8 @@ function newId() {
 function encodeCursor(row) {
   if (!row) return null;
   return Buffer.from(JSON.stringify({
+    // Compared back against raw DATETIME/TIMESTAMP digits in SQL. Operator-zone
+    // rendering here would skip or repeat a page of rows.
     updated_at: viewingNegotiation.dateToWallClock(row.updated_at),
     id: String(row.id),
   })).toString('base64url');
@@ -286,6 +290,9 @@ function boardRow(row, lastEvent, setting) {
       phone: row.tenant_phone || null,
     },
     viewing: {
+      // Appointment DATETIME already holds Hong Kong digits. Converting the
+      // instant mysql2 built from them would slide an evening viewing to the
+      // next calendar day.
       proposed_start_at: viewingNegotiation.dateToWallClock(row.current_proposed_datetime),
       timezone: 'Asia/Hong_Kong',
     },
@@ -295,11 +302,13 @@ function boardRow(row, lastEvent, setting) {
       source: row.policy_source || null,
     },
     timestamps: {
-      created_at: viewingNegotiation.dateToWallClock(row.created_at),
-      customer_asked_at: viewingNegotiation.dateToWallClock(row.customer_asked_at),
-      tenant_notified_at: viewingNegotiation.dateToWallClock(row.tenant_notified_at),
-      auto_confirmed_at: viewingNegotiation.dateToWallClock(row.auto_confirmed_at),
-      updated_at: viewingNegotiation.dateToWallClock(row.updated_at),
+      // TIMESTAMP / NOW()-written DATETIME: mysql2's Date is a real instant, so
+      // re-emitting local digits publishes UTC while this payload claims Hong Kong.
+      created_at: row.created_at ? orgWallClock(row.created_at) : null,
+      customer_asked_at: row.customer_asked_at ? orgWallClock(row.customer_asked_at) : null,
+      tenant_notified_at: row.tenant_notified_at ? orgWallClock(row.tenant_notified_at) : null,
+      auto_confirmed_at: row.auto_confirmed_at ? orgWallClock(row.auto_confirmed_at) : null,
+      updated_at: row.updated_at ? orgWallClock(row.updated_at) : null,
     },
     next_deadline: next,
     risk_flags: flags,
@@ -308,7 +317,7 @@ function boardRow(row, lastEvent, setting) {
       party: lastEvent.party || null,
       send_mode: lastEvent.send_mode || null,
       status: lastEvent.status || null,
-      created_at: viewingNegotiation.dateToWallClock(lastEvent.created_at),
+      created_at: lastEvent.created_at ? orgWallClock(lastEvent.created_at) : null,
     } : { event_type: null, party: null, send_mode: null, status: null, created_at: null },
   };
 }
@@ -326,9 +335,9 @@ function draftRow(row) {
     event_type: row.event_type || null,
     send_mode: row.send_mode || null,
     idempotency_key: row.idempotency_key || null,
-    deadline_at: viewingNegotiation.dateToWallClock(row.deadline_at),
-    created_at: viewingNegotiation.dateToWallClock(row.created_at),
-    expires_at: viewingNegotiation.dateToWallClock(row.expires_at),
+    deadline_at: row.deadline_at ? orgWallClock(row.deadline_at) : null,
+    created_at: row.created_at ? orgWallClock(row.created_at) : null,
+    expires_at: row.expires_at ? orgWallClock(row.expires_at) : null,
     age_hours: row.age_hours == null ? null : Number(row.age_hours),
     unit: {
       id: row.unit_id == null ? null : String(row.unit_id),
@@ -1871,6 +1880,46 @@ router.post('/viewing-negotiation/:id/draft-sent', async (req, res) => {
   } catch (err) {
     console.error('Public draft-sent error:', err);
     fail(res, 'Failed to record draft as sent');
+  }
+});
+
+// POST /api/public/viewing-negotiation/:id/cancel  Body: { reason?: string }
+// CONFIRMED / AUTO_CONFIRMED stay refused: a tenant is expecting someone at
+// their door and a calendar event exists. Retiring that needs a human to notify
+// the tenant, so it remains a staff action — not an oversight.
+//
+// viewing_negotiation has no cancel-reason column (needs_staff_reason is a
+// 32-char hold code; reversal_reason is tenant withdrawal). Accept `reason` so
+// the partner can send it, then ignore it rather than invent a migration.
+router.post('/viewing-negotiation/:id/cancel', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const negId = req.params.id;
+    const reason = req.body ? req.body.reason : undefined;
+    if (reason !== undefined) {
+      if (typeof reason !== 'string') return fail(res, 'reason must be a string', 400);
+      if (reason.length > 500) return fail(res, 'reason must be at most 500 characters', 400);
+    }
+    const [[neg]] = await req.pool.execute(
+      `SELECT * FROM viewing_negotiation WHERE id = ? AND org_id = ? LIMIT 1`,
+      [negId, orgId]
+    );
+    if (!neg) return fail(res, 'Negotiation not found', 404);
+    if (neg.state === 'CANCELLED') {
+      return ok(res, { cancelled: true, already_cancelled: true });
+    }
+    if (neg.state === 'CONFIRMED' || neg.state === 'AUTO_CONFIRMED') {
+      return res.status(409).json({
+        code: 409,
+        reason: 'already_confirmed',
+        message: 'This viewing is already confirmed. Cancelling it is a staff action so the tenant can be notified.',
+      });
+    }
+    await viewingNegotiation.cancelNegotiation(req.pool, orgId, neg);
+    return ok(res, { cancelled: true, already_cancelled: false, state: 'CANCELLED' });
+  } catch (err) {
+    console.error('Public viewing-negotiation/cancel error:', err);
+    fail(res, 'Failed to cancel viewing negotiation');
   }
 });
 

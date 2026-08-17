@@ -16,7 +16,14 @@ test('a trailing slash cannot slip past the allowlist check', () => {
 });
 
 test('the allowlist does not open any other POST', () => {
-  for (const path of ['/viewing-negotiation/start', '/viewing-negotiation/reply', '/inquiries', '/units']) {
+  for (const path of [
+    '/viewing-negotiation/start',
+    '/viewing-negotiation/reply',
+    '/viewing-negotiation/:id/cancel',
+    '/viewing-negotiation/1/cancel',
+    '/inquiries',
+    '/units',
+  ]) {
     assert.equal(isReadOnlySafePost({ method: 'POST', path }), false, `${path} must stay closed`);
   }
 });

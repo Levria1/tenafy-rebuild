@@ -140,7 +140,7 @@ function candidateList(rows, cap = 8) {
 /**
  * Pure resolver. `units` = [{id,name,property_id,property_name,marketable}].
  * Returns { status, match, candidates, query }.
- *   status: 'confident' | 'ambiguous' | 'property_only' | 'none'
+ *   status: 'confident' | 'ambiguous' | 'property_only' | 'multi_unit' | 'none'
  */
 function scoreUnits(text, units) {
   const qSquish = squish(text);
