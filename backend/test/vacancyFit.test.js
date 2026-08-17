@@ -302,11 +302,12 @@ test('hard cap applies to the operator move-in scenario while preserving warning
   // Operator scenario: requested 2026-10-12, today 2026-08-12. Gap-9 is a clean
   // offer, gap-30 is hidden, and the already-vacant tier-1 row is still offered
   // and warned because it is the unit most urgent to fill.
+  // end_date is available_from (same-day turnover); dates chosen so gaps stay 9/30.
   const targetDate = '2026-10-12';
   const options = { maxGapDays: 10, today: '2026-08-12' };
   const rows = [
-    vacancySourceRow({ unit_id: 'u-gap-9', unit_name: '9', tier: 2, end_date: '2026-10-02' }),
-    vacancySourceRow({ unit_id: 'u-gap-30', unit_name: '30', tier: 2, end_date: '2026-09-11' }),
+    vacancySourceRow({ unit_id: 'u-gap-9', unit_name: '9', tier: 2, end_date: '2026-10-03' }),
+    vacancySourceRow({ unit_id: 'u-gap-30', unit_name: '30', tier: 2, end_date: '2026-09-12' }),
     vacancySourceRow({ unit_id: 'u-vacant', unit_name: 'V', tier: 1, end_date: null }),
   ].map(vacancyToPublicShape)
     .map(row => ({ ...row, ...vacancyFit(row, targetDate, options) }));
@@ -443,9 +444,10 @@ test('GET /vacancies with target_date ranks and warns without filtering on max_g
   advertising.loadSettings = async () => ({ footer: null, photo_root: '/photos', partner_forward_message: 'Forward message', min_gap_days: 40, max_gap_days: 14, hard_max_gap_days: 365, lead_days_nr: 60, lead_days_other: 45 });
   advertising.computeVacancies = async () => ({
     vacancies: [
-      vacancySourceRow({ unit_id: 'u-gap', unit_name: '8B', property_name: 'Harbour Court', end_date: '2026-09-14', days_left: 33 }),
-      vacancySourceRow({ unit_id: 'u-after', unit_name: '2C', property_name: 'Kowloon Loft', end_date: '2026-10-31', days_left: 80 }),
-      vacancySourceRow({ unit_id: 'u-exact', unit_name: '4A', property_name: 'Central House', end_date: '2026-10-14', days_left: 63 }),
+      // end_date === available_from; chosen so gaps stay exact / +30 / after-target.
+      vacancySourceRow({ unit_id: 'u-gap', unit_name: '8B', property_name: 'Harbour Court', end_date: '2026-09-15', days_left: 33 }),
+      vacancySourceRow({ unit_id: 'u-after', unit_name: '2C', property_name: 'Kowloon Loft', end_date: '2026-11-01', days_left: 80 }),
+      vacancySourceRow({ unit_id: 'u-exact', unit_name: '4A', property_name: 'Central House', end_date: '2026-10-15', days_left: 63 }),
     ],
   });
 
@@ -534,7 +536,7 @@ test('GET /vacancies offers later rows when free_on removes every shaped row', a
     assert.equal(result.statusCode, 200);
     assert.equal(result.body.data.count, 0);
     assert.deepEqual(result.body.data.next_available.map(row => row.unit_id), ['u-sep-a', 'u-sep-b', 'u-oct']);
-    assert.deepEqual(result.body.data.next_available.map(row => row.availability.available_from), ['2026-09-17', '2026-09-17', '2026-10-12']);
+    assert.deepEqual(result.body.data.next_available.map(row => row.availability.available_from), ['2026-09-16', '2026-09-16', '2026-10-11']);
     assert.equal(typeof result.body.data.phrasing.later, 'string');
     assert.equal(result.body.data.hidden_by_free_on, 3);
     assert.equal(result.body.data.partner_forward.applies, false);

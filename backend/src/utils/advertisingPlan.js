@@ -216,24 +216,6 @@ function parseYmdStrict(value) {
   return { year, month, day, time: Date.UTC(year, month - 1, day) };
 }
 
-function addOneLocalDay(value) {
-  const date = formatLocalDate(value);
-  if (!date) return null;
-  const [year, month, day] = date.split('-').map(Number);
-  const d = new Date(year, month - 1, day);
-  d.setDate(d.getDate() + 1);
-  return formatLocalDate(d);
-}
-
-function subtractOneLocalDay(value) {
-  const date = formatLocalDate(value);
-  if (!date) return null;
-  const [year, month, day] = date.split('-').map(Number);
-  const d = new Date(year, month - 1, day);
-  d.setDate(d.getDate() - 1);
-  return formatLocalDate(d);
-}
-
 function diffLocalDays(fromDate, toDate) {
   const from = parseYmdStrict(formatLocalDate(fromDate));
   const to = parseYmdStrict(formatLocalDate(toDate));
@@ -256,7 +238,9 @@ function tierName(tier) {
 function vacancyToPublicShape(row) {
   const tier = Number(row?.tier);
   const endDate = formatLocalDate(row?.end_date);
-  const availableFrom = tier === PRIORITY_VACANT ? null : addOneLocalDay(endDate);
+  // Same-day turnover: a lease ending on D means the unit is free on D, matching
+  // days_until from DATEDIFF(end_date, today). Do not shift to D+1.
+  const availableFrom = tier === PRIORITY_VACANT ? null : endDate;
   const certaintyByTier = tier === PRIORITY_VACANT || tier === PRIORITY_NR;
   const source = row?.source === 'manual' ? 'manual' : 'lease';
   // `certain: false` is what TaneChat branches on: offer the unit only with the
@@ -294,7 +278,9 @@ function vacancyToPublicShape(row) {
 
 function manualVacancyToRow(override, unitRow, today) {
   const availableFrom = formatLocalDate(override?.available_from);
-  const endDate = subtractOneLocalDay(availableFrom);
+  // end_date is the public available_from; storing the same day keeps the
+  // override round-trip exact through vacancyToPublicShape.
+  const endDate = availableFrom;
   return {
     status: 'manual',
     lease_id: null,

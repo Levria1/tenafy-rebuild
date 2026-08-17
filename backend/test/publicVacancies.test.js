@@ -30,11 +30,11 @@ test('tier 1 maps to available now and certain', () => {
   assert.equal(result.availability.certain, true);
 });
 
-test('tier 2 available_from is the day after lease end', () => {
+test('tier 2 available_from equals the lease end date', () => {
   const result = vacancyToPublicShape(row({ tier: 2, end_date: '2026-09-15', days_left: 34 }));
 
-  // Off by one here tells a customer they can move in while someone still lives there.
-  assert.equal(result.availability.available_from, '2026-09-16');
+  // Same-day turnover: free on the end date; must stay aligned with days_until.
+  assert.equal(result.availability.available_from, '2026-09-15');
   assert.equal(result.availability.status, 'from_date');
   assert.equal(result.availability.days_until, 34);
   assert.equal(result.availability.certain, true);
@@ -45,7 +45,7 @@ test('tier 3 stays uncertain even with a valid end date', () => {
 
   // TaneChat uses this false value to choose the caveated wording.
   assert.equal(result.availability.certain, false);
-  assert.equal(result.availability.available_from, '2026-09-16');
+  assert.equal(result.availability.available_from, '2026-09-15');
 });
 
 test('tier 2 with no end date has no promiseable date', () => {
@@ -55,16 +55,16 @@ test('tier 2 with no end date has no promiseable date', () => {
   assert.equal(result.availability.certain, false);
 });
 
-test('available_from crosses month end', () => {
+test('available_from preserves month-end end dates', () => {
   const result = vacancyToPublicShape(row({ end_date: '2026-08-31' }));
 
-  assert.equal(result.availability.available_from, '2026-09-01');
+  assert.equal(result.availability.available_from, '2026-08-31');
 });
 
-test('available_from crosses year boundary', () => {
+test('available_from preserves year-boundary end dates', () => {
   const result = vacancyToPublicShape(row({ end_date: '2026-12-31' }));
 
-  assert.equal(result.availability.available_from, '2027-01-01');
+  assert.equal(result.availability.available_from, '2026-12-31');
 });
 
 test('public vacancy dates are not Z-suffixed ISO strings', () => {

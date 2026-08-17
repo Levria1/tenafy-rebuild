@@ -144,7 +144,11 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
     //    A unit re-let with a LONG future lease stays hidden (its end is >window).
     const [expiring] = await pool.execute(
       `SELECT
-          l.id AS lease_id, l.contract_type, l.amount AS rent, l.deposit, l.notice_period_days,
+          l.id AS lease_id, l.contract_type,
+          -- Price is what the invoice generator bills; an advertised rent that
+          -- disagrees is a promise we do not keep. Fall back to amount only
+          -- when price is missing or 0 (legacy rows).
+          COALESCE(NULLIF(l.price, 0), l.amount) AS rent, l.deposit, l.notice_period_days,
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
           DATEDIFF(l.end_date, ${orgTodaySql()}) AS days_left,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
@@ -194,7 +198,10 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           ll.id AS last_lease_id,
           DATE_FORMAT(ll.end_date, '%Y-%m-%d') AS vacant_since,
           DATEDIFF(${orgTodaySql()}, ll.end_date) AS days_vacant,
-          ll.amount AS rent, ll.deposit, ll.contract_type,
+          -- Price is what the invoice generator bills; an advertised rent that
+          -- disagrees is a promise we do not keep. Fall back to amount only
+          -- when price is missing or 0 (legacy rows).
+          COALESCE(NULLIF(ll.price, 0), ll.amount) AS rent, ll.deposit, ll.contract_type,
           t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name,${nextMoveInCols()}
        FROM unit u
        JOIN property p ON u.property_id = p.id
