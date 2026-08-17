@@ -442,6 +442,9 @@ async function sendUpcomingInvoiceRemindersForOrg(pool, orgId) {
 // ---------------------------------------------------------------------------
 
 async function sendOverdueRemindersForOrg(pool, orgId) {
+  // Bound once and reused for both placeholders so the DATEDIFF and the
+  // comparison cannot straddle midnight and disagree.
+  const today = orgToday();
   const [invoices] = await pool.execute(
     `SELECT i.id, i.invoice_code, i.amount, i.due_on, i.org_id, i.leasing_id,
        t.email AS tenant_email, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
@@ -1176,3 +1179,6 @@ module.exports = { startScheduler, createNotification };
 module.exports.markOverdueInvoicesForOrg = markOverdueInvoicesForOrg;
 module.exports.promoteServiceTasksForOrg = promoteServiceTasksForOrg;
 module.exports.generateRecurringInvoicesForOrg = generateRecurringInvoicesForOrg;
+module.exports.sendOverdueRemindersForOrg = sendOverdueRemindersForOrg;
+module.exports.sendLeaseExpiryForOrg = sendLeaseExpiryForOrg;
+module.exports.sendUpcomingInvoiceRemindersForOrg = sendUpcomingInvoiceRemindersForOrg;

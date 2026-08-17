@@ -27,7 +27,7 @@ const { createViewingEvent, deleteViewingEvent, getFreeBusy } = require('../serv
 const { sendWhatsApp } = require('../services/whatsappService');
 const { sendViewingMail } = require('../services/viewingNotify');
 const { createCandidateBooking, cancelCandidateBookingRow } = require('../services/viewingBooking');
-const { orgToday, orgTodaySql } = require('../utils/orgTime');
+const { orgToday, orgTodaySql, dbDate } = require('../utils/orgTime');
 
 const {
   resolveOrgByViewingToken,
@@ -1331,7 +1331,7 @@ router.get('/invite/:token', resolveOrgByInviteToken, async (req, res) => {
       ready: true,
       state: 'active',
       already_sent: alreadySent,
-      prefill_date: invite.prefill_date ? toDateString(new Date(invite.prefill_date)) : null,
+      prefill_date: dbDate(invite.prefill_date),
       prefill_times: prefillTimes,
       max_candidates: INVITE_MAX_CANDIDATES,
       prospect: {
