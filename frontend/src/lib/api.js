@@ -672,7 +672,7 @@ export const icalApi = {
 export const advertisingApi = {
   // Advertising → Vacancy: units whose current lease is expiring within its
   // renewal-intent lead window (NR 45d / UC 30d / else 20d), soonest first.
-  getVacancies: () => api.get('/api/advertising/vacancies'),
+  getVacancies: (params) => api.get('/api/advertising/vacancies', { params }),
   // Advertising → Vacancy: manual, expiring vacancy overrides for early move-out conversations.
   listVacancyOverrides: (params) => api.get('/api/advertising/vacancy-override', { params }),
   saveVacancyOverride: (data) => api.post('/api/advertising/vacancy-override', data),

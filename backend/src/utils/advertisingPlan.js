@@ -175,6 +175,26 @@ function resolveInquiryBookingSettings(settings) {
   };
 }
 
+// The Leasing -> Vacancy page normally queries a flat 60-day window. When the
+// operator filters for a period that reaches past it (e.g. "October" in mid-August),
+// the window must widen or the month shows up truncated. Clamped both ends: never
+// narrower than the default, never wide enough to scan years of history.
+const PAGE_WINDOW_MAX_DAYS = 730;
+
+function resolvePageExpiringWindow(throughDate, today, defaultDays = 60) {
+  const fallback = Number.isSafeInteger(defaultDays) ? defaultDays : 60;
+  let windowDays = fallback;
+  const through = parseYmdStrict(throughDate);
+  const base = parseYmdStrict(today);
+  if (through && base) {
+    const daysOut = Math.round((through.time - base.time) / 86400000);
+    if (daysOut > fallback) windowDays = Math.min(daysOut, PAGE_WINDOW_MAX_DAYS);
+  }
+  if (!Number.isSafeInteger(windowDays)) windowDays = fallback;
+  if (!Number.isInteger(windowDays)) throw new Error('resolvePageExpiringWindow returned a non-integer');
+  return windowDays;
+}
+
 /**
  * Effective stay-length gap bands for one audience.
  * audience: 'inquiry' | 'search'
@@ -719,6 +739,8 @@ module.exports = {
   gapIsAdvertisable,
   gapBandDays,
   resolveInquiryBookingSettings,
+  PAGE_WINDOW_MAX_DAYS,
+  resolvePageExpiringWindow,
   bookingHorizonDecision,
   leaseDurationDays,
   bookingGapLimitForLease,

@@ -6,7 +6,8 @@ const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, 
 const { DAY_NAMES, weekdayOf, postsOnDay, parseDays, validateDays, dayLabel } = require('../utils/advertisingSchedule');
 const { slotLabel, findRepeatViolations, suggestReplacements, forumWeeklyLoad,
   gapIsAdvertisable, priorityOf, resolveAvailabilityWindows, sortByPriority, assignBundlesToSlots,
-  manualVacancyToRow, overrideAppliesTo, leaseChangedForOverride, pickVacancyRow } = require('../utils/advertisingPlan');
+  manualVacancyToRow, overrideAppliesTo, leaseChangedForOverride, pickVacancyRow,
+  resolvePageExpiringWindow, PAGE_WINDOW_MAX_DAYS } = require('../utils/advertisingPlan');
 const { hkDate } = require('../utils/inquiryFacts');
 
 // Snowflake id (same pattern used across the app).
@@ -29,6 +30,10 @@ function lengthError(body, limits = FIELD_LIMITS) {
   return null;
 }
 
+// Format AND calendar validity: rejects '2026-13-01' and '2026-02-30', not just
+// malformed strings. Round-trips through UTC rather than local time — a zone that
+// skips local midnight on a DST boundary would make a real calendar date fail a
+// local-time round-trip.
 function isStrictYmd(value) {
   if (typeof value !== 'string') return false;
   const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -36,8 +41,8 @@ function isStrictYmd(value) {
   const year = Number(m[1]);
   const month = Number(m[2]);
   const day = Number(m[3]);
-  const date = new Date(year, month - 1, day);
-  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 function deriveDefaultVacancyExpiry(availableFrom) {
@@ -127,13 +132,13 @@ const NOT_TEST = `LOWER(u.name) NOT LIKE '%test%' AND LOWER(p.display_name) NOT 
 //   - VACANT: the page includes every unit empty today. The scheduler filters a
 //     booked next move-in through the minimum-gap setting; `days_to_move_in`
 //     carries the length of that window and `gap_ok` records the decision.
-async function computeVacancies(pool, orgId, { page = false, minGapDays, settings: suppliedSettings, audience = 'advertising' } = {}) {
+async function computeVacancies(pool, orgId, { page = false, minGapDays, settings: suppliedSettings, audience = 'advertising', throughDate = null } = {}) {
     const settings = suppliedSettings || (page ? null : await loadSettings(pool, orgId));
     const availabilityWindows = resolveAvailabilityWindows(settings || {}, audience);
     // Precedence: explicit argument > audience override > advertising value.
     const effectiveMinGapDays = page ? 40 : (minGapDays ?? availabilityWindows.min_gap_days);
     const expiringWindow = page
-      ? EXPIRING_WINDOW
+      ? resolvePageExpiringWindow(throughDate, orgToday(), EXPIRING_WINDOW)
       : Math.max(availabilityWindows.lead_days_nr, availabilityWindows.lead_days_other);
     // 1. EXPIRING — the unit's LATEST lease (current OR a future one) ends within
     //    the window and nothing follows it. We intentionally do NOT require the
@@ -418,7 +423,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
     });
     const vacancies = page ? urgencySorted : sortByPriority([...realRows, ...manualRows]);
 
-    return { vacancies, vacant_count: selectedVacantRows.length, expiring_count: selectedExpiringRows.length, manual_count: manualRows.length };
+    return { vacancies, vacant_count: selectedVacantRows.length, expiring_count: selectedExpiringRows.length, manual_count: manualRows.length, expiring_window: expiringWindow };
 }
 
 router.get('/vacancy-override', authenticate, async (req, res) => {
@@ -590,12 +595,19 @@ router.delete('/vacancy-override/:id', authenticate, async (req, res) => {
 
 router.get('/vacancies', authenticate, async (req, res) => {
   try {
-    const { vacancies, vacant_count, expiring_count, manual_count } = await computeVacancies(req.pool, req.user.orgId, { page: true });
+    const requestedThrough = typeof req.query.through === 'string' ? req.query.through : null;
+    const throughDate = isStrictYmd(requestedThrough) ? requestedThrough : null;
+    const { vacancies, vacant_count, expiring_count, manual_count, expiring_window } = await computeVacancies(req.pool, req.user.orgId, { page: true, throughDate });
     res.json({
       code: 200,
       data: {
         as_of: orgToday(),
-        lead_days: EXPIRING_WINDOW,
+        lead_days: expiring_window,
+        default_lead_days: EXPIRING_WINDOW,
+        // How far `through` can reach before it is clamped. The page uses this to stop
+        // the operator picking a range it would silently only half-answer.
+        max_lead_days: PAGE_WINDOW_MAX_DAYS,
+        through: throughDate,
         count: vacancies.length,
         vacant_count,
         expiring_count,

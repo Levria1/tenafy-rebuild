@@ -7,6 +7,8 @@ const {
   suggestReplacements,
   forumWeeklyLoad,
   gapIsAdvertisable,
+  PAGE_WINDOW_MAX_DAYS,
+  resolvePageExpiringWindow,
   priorityOf,
   sortByPriority,
   assignBundlesToSlots,
@@ -185,6 +187,42 @@ test('gapIsAdvertisable rejects move-ins today, in the past, or invalid data', (
 test('gapIsAdvertisable defaults an invalid minimum to 40', () => {
   assert.equal(gapIsAdvertisable(39, null), false);
   assert.equal(gapIsAdvertisable(40, Number.NaN), true);
+});
+
+test('resolvePageExpiringWindow uses the default for missing through dates', () => {
+  for (const throughDate of [null, undefined, '']) {
+    const days = resolvePageExpiringWindow(throughDate, '2026-08-18', 60);
+    assert.equal(days, 60);
+    assert.equal(Number.isInteger(days), true);
+  }
+});
+
+test('resolvePageExpiringWindow ignores malformed through dates without throwing', () => {
+  for (const throughDate of ['2026-13-01', 'oct', '2026-10-01; DROP', new Date('2026-10-01T00:00:00Z'), 20261001]) {
+    const days = resolvePageExpiringWindow(throughDate, '2026-08-18', 60);
+    assert.equal(days, 60);
+    assert.equal(Number.isInteger(days), true);
+  }
+});
+
+test('resolvePageExpiringWindow keeps the default on or before the default window end', () => {
+  for (const throughDate of ['2026-08-18', '2026-09-01', '2026-10-17']) {
+    const days = resolvePageExpiringWindow(throughDate, '2026-08-18', 60);
+    assert.equal(days, 60);
+    assert.equal(Number.isInteger(days), true);
+  }
+});
+
+test('resolvePageExpiringWindow widens to the requested through date beyond the default', () => {
+  const days = resolvePageExpiringWindow('2026-10-31', '2026-08-18', 60);
+  assert.equal(days, 74);
+  assert.equal(Number.isInteger(days), true);
+});
+
+test('resolvePageExpiringWindow clamps requests beyond the page maximum', () => {
+  const days = resolvePageExpiringWindow('2028-10-31', '2026-08-18', 60);
+  assert.equal(days, PAGE_WINDOW_MAX_DAYS);
+  assert.equal(Number.isInteger(days), true);
 });
 
 function bundle(id) {

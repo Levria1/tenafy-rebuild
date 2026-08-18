@@ -9,6 +9,7 @@ import MainLayout from '../../../components/Layout';
 import { advertisingApi } from '../../../lib/api';
 
 const { Title, Text } = Typography;
+const { RangePicker } = DatePicker;
 
 // Renewal-intent colours + human labels.
 const INTENT_META = {
@@ -30,28 +31,41 @@ function daysColor(d) {
 export default function VacancyPage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [asOf, setAsOf] = useState(dayjs().format('YYYY-MM-DD'));
   const [leadDays, setLeadDays] = useState(60);
+  const [defaultLeadDays, setDefaultLeadDays] = useState(60);
+  const [maxLeadDays, setMaxLeadDays] = useState(730);
   const [counts, setCounts] = useState({ vacant: 0, expiring: 0, manual: 0 });
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState(null);        // null = All
   const [upcomingFilter, setUpcomingFilter] = useState('open');  // default: things not yet filled
   const [intentFilter, setIntentFilter] = useState([]);          // multi-select renewal intents
+  const [openingRange, setOpeningRange] = useState(null);
+  const [openingMode, setOpeningMode] = useState('opens');
+  const [pageSize, setPageSize] = useState(50);
   const [overrideRows, setOverrideRows] = useState([]);
   const [overrideModal, setOverrideModal] = useState(null);       // { row }
   const [savingOverride, setSavingOverride] = useState(false);
   const [overrideForm] = Form.useForm();
 
-  const load = async () => {
+  const load = async (range = openingRange) => {
     setLoading(true);
     try {
+      const params = {};
+      const rangeEnd = range?.[1] ? dayjs(range[1]).format('YYYY-MM-DD') : null;
+      const normalThrough = dayjs(asOf).add(defaultLeadDays, 'day').format('YYYY-MM-DD');
+      if (rangeEnd && rangeEnd > normalThrough) params.through = rangeEnd;
       const [res, overridesRes] = await Promise.all([
-        advertisingApi.getVacancies(),
+        advertisingApi.getVacancies(Object.keys(params).length ? params : undefined),
         advertisingApi.listVacancyOverrides(),
       ]);
       if (res.data.code === 200) {
         const d = res.data.data;
         setRows(d.vacancies || []);
+        if (d.as_of) setAsOf(d.as_of);
         if (d.lead_days) setLeadDays(d.lead_days);
+        if (d.default_lead_days) setDefaultLeadDays(d.default_lead_days);
+        if (d.max_lead_days) setMaxLeadDays(d.max_lead_days);
         setCounts({ vacant: d.vacant_count || 0, expiring: d.expiring_count || 0, manual: d.manual_count || 0 });
       } else {
         message.error(res.data.message || 'Failed to load vacancies');
@@ -69,6 +83,20 @@ export default function VacancyPage() {
   useEffect(() => { load(); }, []);
 
   const overrideById = new Map(overrideRows.map(o => [String(o.id), o]));
+  const todayForOpenDates = asOf || dayjs().format('YYYY-MM-DD');
+
+  const opensOn = (r) => {
+    if (r.source === 'manual') {
+      const override = r.override_id ? overrideById.get(String(r.override_id)) : null;
+      return override?.available_from || (r.end_date ? dayjs(r.end_date).add(1, 'day').format('YYYY-MM-DD') : null);
+    }
+    if (r.status === 'vacant') return r.vacant_since || todayForOpenDates;
+    return r.end_date || null;
+  };
+
+  const rangeFrom = openingRange?.[0] ? dayjs(openingRange[0]).format('YYYY-MM-DD') : null;
+  const rangeTo = openingRange?.[1] ? dayjs(openingRange[1]).format('YYYY-MM-DD') : null;
+  const hasOpeningRange = !!(rangeFrom && rangeTo);
 
   const openOverrideModal = (row) => {
     const override = row?.override_id ? overrideById.get(String(row.override_id)) : null;
@@ -95,7 +123,7 @@ export default function VacancyPage() {
       });
       message.success('Saved');
       setOverrideModal(null);
-      await load();
+      await load(openingRange);
     } catch (e) {
       if (!e?.errorFields) message.error(e.response?.data?.message || 'Failed to save vacancy override');
     } finally {
@@ -107,13 +135,13 @@ export default function VacancyPage() {
     try {
       await advertisingApi.clearVacancyOverride(id);
       message.success('Cleared');
-      await load();
+      await load(openingRange);
     } catch (e) {
       message.error(e.response?.data?.message || 'Failed to clear vacancy override');
     }
   };
 
-  const filtered = rows.filter(r => {
+  const matchesNonDateFilters = (r) => {
     if (statusFilter && r.status !== statusFilter) return false;
     const hasUpcoming = !!r.next_move_in_date;
     if (upcomingFilter === 'has' && !hasUpcoming) return false;
@@ -131,7 +159,30 @@ export default function VacancyPage() {
       );
     }
     return true;
-  });
+  };
+
+  const matchesOpeningRange = (r) => {
+    if (!hasOpeningRange) return true;
+    const date = opensOn(r);
+    if (!date) return false;
+    if (openingMode === 'by') return date <= rangeTo;
+    return date >= rangeFrom && date <= rangeTo;
+  };
+
+  const filteredBeforeDates = rows.filter(matchesNonDateFilters);
+  const filtered = filteredBeforeDates.filter(matchesOpeningRange);
+  const outsideDateCount = hasOpeningRange ? filteredBeforeDates.length - filtered.length : 0;
+
+  const handleOpeningRangeChange = (nextRange) => {
+    setOpeningRange(nextRange);
+    load(nextRange);
+  };
+
+  const activeRangeText = hasOpeningRange
+    ? openingMode === 'by'
+      ? <>Showing every unit free by <b>{rangeTo}</b> — including ones already empty. Switch to <i>Opens in range</i> for only the ones becoming free between {rangeFrom} and {rangeTo}.</>
+      : <>Showing units becoming free between <b>{rangeFrom}</b> and <b>{rangeTo}</b>. Switch to <i>Available by range end</i> to also include units that are already empty.</>
+    : null;
 
   const columns = [
     {
@@ -342,6 +393,11 @@ export default function VacancyPage() {
             incoming tenant. Defaults to <b>Open</b> (not yet filled) — switch <i>Upcoming booking</i> to see
             booked units.
           </Text>
+          {activeRangeText && (
+            <div style={{ marginTop: 8 }}>
+              <Text style={{ color: '#1677ff' }}>{activeRangeText}</Text>
+            </div>
+          )}
         </div>
 
         <Card styles={{ body: { padding: 16 } }} style={{ borderColor: '#e8e8e8' }}>
@@ -390,9 +446,35 @@ export default function VacancyPage() {
                 { value: 'UC', label: 'UC · Unconfirmed' },
               ]}
             />
-            <a onClick={load}><ReloadOutlined /> Refresh</a>
+            <RangePicker
+              allowClear
+              format="YYYY-MM-DD"
+              value={openingRange}
+              onChange={handleOpeningRangeChange}
+              presets={[
+                { label: 'This month', value: [dayjs(todayForOpenDates).startOf('month'), dayjs(todayForOpenDates).endOf('month')] },
+                { label: 'Next month', value: [dayjs(todayForOpenDates).add(1, 'month').startOf('month'), dayjs(todayForOpenDates).add(1, 'month').endOf('month')] },
+                { label: 'Next 3 months', value: [dayjs(todayForOpenDates), dayjs(todayForOpenDates).add(3, 'month').endOf('month')] },
+              ]}
+              placeholder={['Opening from', 'to']}
+              // Past the server's cap the window is clamped, so a further-out range
+              // would come back quietly half-answered. Better to not offer the date.
+              disabledDate={(d) => d && d.isAfter(dayjs(todayForOpenDates).add(maxLeadDays, 'day'), 'day')}
+            />
+            <Select
+              value={openingMode}
+              onChange={setOpeningMode}
+              disabled={!hasOpeningRange}
+              style={{ width: 210 }}
+              options={[
+                { value: 'opens', label: 'Opens in range' },
+                { value: 'by', label: 'Available by range end' },
+              ]}
+            />
+            <a onClick={() => load(openingRange)}><ReloadOutlined /> Refresh</a>
             <Text type="secondary">
               {filtered.length} unit{filtered.length === 1 ? '' : 's'}
+              {hasOpeningRange ? ` · ${outsideDateCount} outside the dates` : ''}
               {' '}({counts.vacant} vacant · {counts.expiring} expiring · {counts.manual} manual)
             </Text>
           </Space>
@@ -402,7 +484,15 @@ export default function VacancyPage() {
             columns={columns}
             dataSource={filtered}
             loading={loading}
-            pagination={{ pageSize: 20, showSizeChanger: true }}
+            pagination={{
+              // Keep this controlled; antd otherwise reverts page size on filter re-render.
+              pageSize,
+              showSizeChanger: true,
+              pageSizeOptions: ['20', '50', '100'],
+              showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}`,
+              onChange: (_page, size) => { if (size !== pageSize) setPageSize(size); },
+              onShowSizeChange: (_page, size) => setPageSize(size),
+            }}
             size="middle"
             scroll={{ x: 'max-content' }}
           />
