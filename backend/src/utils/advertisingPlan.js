@@ -196,24 +196,17 @@ function resolvePageExpiringWindow(throughDate, today, defaultDays = 60) {
 }
 
 /**
- * Effective stay-length gap bands for one audience.
- * audience: 'inquiry' | 'search'
- * Booking acceptance and search are independent policies; missing or junk values
- * fall back only to that audience's own hardcoded defaults, never the other set.
+ * Effective stay-length gap bands.
+ * audience is kept in the signature so callers stay explicit, but the operator
+ * decided on 2026-08-18 that inquiry and search share one set of numbers.
  */
 function resolveGapBands(settings, audience) {
-  const fields = audience === 'search'
-    ? {
-      band_1m_days: 'search_gap_band_1m_days',
-      band_2m_days: 'search_gap_band_2m_days',
-      band_3m_plus_days: 'search_gap_band_3m_plus_days',
-    }
-    : {
-      band_1m_days: 'inquiry_gap_band_1m_days',
-      band_2m_days: 'inquiry_gap_band_2m_days',
-      band_3m_plus_days: 'inquiry_gap_band_3m_plus_days',
-    };
-  const sourceName = audience === 'search' ? 'search' : 'inquiry';
+  void audience;
+  const fields = {
+    band_1m_days: 'inquiry_gap_band_1m_days',
+    band_2m_days: 'inquiry_gap_band_2m_days',
+    band_3m_plus_days: 'inquiry_gap_band_3m_plus_days',
+  };
   const values = {
     band_1m_days: availabilityNumber(settings?.[fields.band_1m_days], 3),
     band_2m_days: availabilityNumber(settings?.[fields.band_2m_days], 6),
@@ -222,9 +215,9 @@ function resolveGapBands(settings, audience) {
   return {
     ...values,
     source: {
-      band_1m_days: sourceName,
-      band_2m_days: sourceName,
-      band_3m_plus_days: sourceName,
+      band_1m_days: 'inquiry',
+      band_2m_days: 'inquiry',
+      band_3m_plus_days: 'inquiry',
     },
   };
 }
@@ -332,7 +325,7 @@ function leaseDurationDays(moveIn, moveOut) {
 
 function bookingGapLimitForLease(moveIn, moveOut, bands) {
   const duration = leaseDurationDays(moveIn, moveOut);
-  return duration == null ? 10 : gapBandDays(duration, bands);
+  return duration == null ? gapBandDays(63, bands) : gapBandDays(duration, bands);
 }
 
 function matchesBeyondHorizonNrException(row, requestDate, maxGapDays) {
@@ -341,6 +334,45 @@ function matchesBeyondHorizonNrException(row, requestDate, maxGapDays) {
   const gapDays = diffLocalDays(availableFrom, requestDate);
   const maxGap = Number(maxGapDays);
   return gapDays != null && gapDays >= 0 && Number.isFinite(maxGap) && gapDays <= Math.trunc(maxGap);
+}
+
+function inquiryGapBandFit(row, requestDate, { moveOut = null, gapBands, today } = {}) {
+  const request = formatLocalDate(requestDate);
+  if (!request) {
+    return {
+      request_date: null,
+      lease_duration_days: null,
+      gap_band_days: null,
+      gap_band_assumed: null,
+      gap_within_band: null,
+      suggested_move_in_date: null,
+    };
+  }
+  const duration = leaseDurationDays(request, moveOut);
+  const assumed = duration == null;
+  const band = bookingGapLimitForLease(request, assumed ? null : moveOut, gapBands);
+  const gapDays = Number(row?.gap_days);
+  const within = Number.isFinite(gapDays) && Number.isFinite(Number(band))
+    ? gapDays <= Number(band)
+    : null;
+  let suggested = null;
+  if (within === false && gapDays > 0) {
+    const availability = row?.availability || {};
+    const effectiveAvailableFrom = Number(row?.tier) === PRIORITY_VACANT && availability.status === 'now'
+      ? today
+      : availability.available_from;
+    suggested = addLocalDays(effectiveAvailableFrom, band);
+    if (suggested && today && suggested < today) suggested = today;
+  }
+  return {
+    request_date: request,
+    lease_duration_days: assumed ? null : duration,
+    gap_band_days: band,
+    gap_band_assumed: assumed,
+    gap_within_band: within,
+    suggested_move_in_date: suggested,
+    gap_warning: within === false,
+  };
 }
 
 function moneyString(value) {
@@ -596,6 +628,16 @@ function exceedsHardGapCap(unit, hardMaxGapDays) {
   return gapDays > Math.trunc(configuredCap);
 }
 
+function exceedsVacantMoveInCutoff(unit, vacantMaxMoveInDays) {
+  if (Number(unit?.tier) !== PRIORITY_VACANT) return false;
+  const configuredCap = Number(vacantMaxMoveInDays);
+  if (!Number.isFinite(configuredCap)) return false;
+  const gapDays = Number(unit?.gap_days);
+  if (!Number.isFinite(gapDays)) return false;
+  if (unit?.available_after_target === true || gapDays < 0) return false;
+  return gapDays > Math.trunc(configuredCap);
+}
+
 // A caller may act on this to forward the inquiry, so this must describe only
 // observable route decisions and never infer why a unit was unavailable.
 function vacancyNoMatchReason(returnedCount, hiddenByGapCap, hiddenByFreeOn = 0) {
@@ -745,6 +787,7 @@ module.exports = {
   leaseDurationDays,
   bookingGapLimitForLease,
   matchesBeyondHorizonNrException,
+  inquiryGapBandFit,
   PRIORITY_VACANT,
   PRIORITY_NR,
   PRIORITY_OTHER,
@@ -759,6 +802,7 @@ module.exports = {
   formatLocalDate,
   vacancyFit,
   exceedsHardGapCap,
+  exceedsVacantMoveInCutoff,
   vacancyNoMatchReason,
   partnerForwardBlock,
   compareVacancyFit,

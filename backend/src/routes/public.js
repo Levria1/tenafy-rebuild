@@ -32,6 +32,7 @@ const {
   classifyFreeOn,
   vacancyFit,
   exceedsHardGapCap,
+  exceedsVacantMoveInCutoff,
   vacancyNoMatchReason,
   partnerForwardBlock,
   compareVacancyFit,
@@ -39,8 +40,10 @@ const {
   resolveGapBands,
   resolveInquiryBookingSettings,
   bookingHorizonDecision,
+  leaseDurationDays,
   bookingGapLimitForLease,
   matchesBeyondHorizonNrException,
+  inquiryGapBandFit,
   hasActiveManualVacancyOverride,
 } = require('../utils/advertisingPlan');
 const { findUnitByListingUrl, normalizeListingUrl } = require('../utils/listingUrl');
@@ -86,6 +89,7 @@ const MANUAL_AVAILABILITY_PHRASE = '{units} may become available from {date} —
 // Offered instead of hiding a poor fit: suppressing the unit forfeits the
 // negotiation that could remove the vacancy entirely.
 const EARLIER_AVAILABILITY_PHRASE = '{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long.';
+const GAP_ASK_PHRASE = "We're unable to accept a booking that would leave {units} empty for {gap_days} days. Would you be able to move in by {suggested_move_in_date}?";
 // The prospect named a date we cannot meet. This offers the date we CAN meet and
 // asks — it must never read as though the unit is free on the date they asked for.
 const LATER_AVAILABILITY_PHRASE = '{units} available from {date} — a little later than you asked. Would that still work?';
@@ -133,27 +137,43 @@ router.get('/vacancies', async (req, res) => {
     const settings = await loadSettings(req.pool, req.apiKey.orgId);
     const bookingSettings = resolveInquiryBookingSettings(settings);
     const requestDate = hasFreeOn ? freeOn : (hasTargetDate ? targetDate : null);
-    const horizon = requestDate
-      ? bookingHorizonDecision(requestDate, { today: orgToday(), bookingHorizonDays: bookingSettings.booking_horizon_days })
+    const today = orgToday();
+    const inquiryGapBands = resolveGapBands(settings, 'inquiry');
+    const requestGapBandDays = requestDate
+      ? bookingGapLimitForLease(requestDate, hasMoveOut ? moveOut : null, inquiryGapBands)
       : null;
+    const requestLeaseDurationDays = requestDate && hasMoveOut
+      ? leaseDurationDays(requestDate, moveOut)
+      : null;
+    const horizon = requestDate
+      ? bookingHorizonDecision(requestDate, { today, bookingHorizonDays: bookingSettings.booking_horizon_days })
+      : null;
+    const enrichGap = row => {
+      const fit = vacancyFit(row, requestDate, { today });
+      return {
+        ...row,
+        ...fit,
+        ...inquiryGapBandFit({ ...row, ...fit }, requestDate, {
+          moveOut: hasMoveOut ? moveOut : null,
+          gapBands: inquiryGapBands,
+          today,
+        }),
+      };
+    };
 
     if (horizon?.too_far_out) {
-      const bookingGapDays = bookingGapLimitForLease(
-        requestDate,
-        hasMoveOut ? moveOut : null,
-        resolveGapBands(settings, 'inquiry'),
-      );
       const rawNrRows = maxTier >= 2
         ? await findBeyondHorizonNrVacancies(req.pool, req.apiKey.orgId, {
           requestDate,
-          maxGapDays: bookingGapDays,
+          maxGapDays: settings.hard_max_gap_days,
           propertyId,
           limit,
         })
         : [];
       const rows = rawNrRows
         .map(vacancyToPublicShape)
-        .filter(row => matchesBeyondHorizonNrException(row, requestDate, bookingGapDays))
+        .map(enrichGap)
+        .filter(row => matchesBeyondHorizonNrException(row, requestDate, settings.hard_max_gap_days))
         .slice(0, limit);
       const noMatchReason = rows.length > 0 ? null : 'too_far_out';
       const data = {
@@ -163,17 +183,20 @@ router.get('/vacancies', async (req, res) => {
         hidden_by_gap_cap: 0,
         no_match_reason: noMatchReason,
         booking_horizon_days: horizon.booking_horizon_days,
-        booking_gap_days: bookingGapDays,
+        booking_gap_days: requestGapBandDays,
+        lease_duration_days: requestLeaseDurationDays,
         partner_forward: { applies: false, message: null },
         phrasing: {
           certain: CERTAIN_AVAILABILITY_PHRASE,
           uncertain: UNCERTAIN_AVAILABILITY_PHRASE,
+          earlier: EARLIER_AVAILABILITY_PHRASE,
+          gap_ask: settings.inquiry_gap_ask_phrase || GAP_ASK_PHRASE,
         },
       };
       if (hasTargetDate) {
         data.target_date = targetDate;
-        data.max_gap_days = settings.max_gap_days;
       }
+      data.max_gap_days = settings.max_gap_days;
       if (hasFreeOn) data.free_on = freeOn;
       if (hasMoveOut) data.move_out = moveOut;
       if (noMatchReason === 'too_far_out') {
@@ -200,17 +223,12 @@ router.get('/vacancies', async (req, res) => {
       // Production Node is UTC. A process-local "today" is still yesterday for
       // the first eight hours of the operator's day, which knocks every tier-1
       // gap_days off by one until 08:00 Hong Kong.
-      const today = orgToday();
       rows = rows
         .map(vacancyToPublicShape)
-        .map(row => ({ ...row, ...vacancyFit(row, targetDate, { maxGapDays: settings.max_gap_days, today }) }))
+        .map(enrichGap)
         .filter(row => {
-          // Rank by fit; filter ONLY on the explicit hard cap, and never a
-          // tier-1 unit. Already-vacant units are sunk vacancy cost, so hiding
-          // them from someone who might start early is backwards.
-          // Negative gaps mean available after target, which costs no rent.
-          // Null gaps have no known lease-end date, so there is no gap to judge.
-          if (!exceedsHardGapCap(row, settings.hard_max_gap_days)) return true;
+          if (!exceedsHardGapCap(row, settings.hard_max_gap_days)
+              && !exceedsVacantMoveInCutoff(row, settings.vacant_max_move_in_days)) return true;
           hiddenByGapCap += 1;
           return false;
         })
@@ -218,6 +236,16 @@ router.get('/vacancies', async (req, res) => {
     } else {
       rows = rows
         .map(vacancyToPublicShape);
+      if (requestDate) {
+        rows = rows
+          .map(enrichGap)
+          .filter(row => {
+            if (!exceedsHardGapCap(row, settings.hard_max_gap_days)
+                && !exceedsVacantMoveInCutoff(row, settings.vacant_max_move_in_days)) return true;
+            hiddenByGapCap += 1;
+            return false;
+          });
+      }
     }
 
     if (hasFreeOn) {
@@ -261,12 +289,18 @@ router.get('/vacancies', async (req, res) => {
       phrasing: {
         certain: CERTAIN_AVAILABILITY_PHRASE,
         uncertain: UNCERTAIN_AVAILABILITY_PHRASE,
+        earlier: EARLIER_AVAILABILITY_PHRASE,
+        gap_ask: settings.inquiry_gap_ask_phrase || GAP_ASK_PHRASE,
       },
     };
     if (horizon) data.booking_horizon_days = horizon.booking_horizon_days;
+    if (requestDate) {
+      data.booking_gap_days = requestGapBandDays;
+      data.lease_duration_days = requestLeaseDurationDays;
+      data.max_gap_days = settings.max_gap_days;
+    }
     if (hasManualRows) data.phrasing.manual = MANUAL_AVAILABILITY_PHRASE;
     if (hasTargetDate) {
-      data.phrasing.earlier = EARLIER_AVAILABILITY_PHRASE;
       data.target_date = targetDate;
       data.max_gap_days = settings.max_gap_days;
       if (hasMoveOut) data.move_out = moveOut;

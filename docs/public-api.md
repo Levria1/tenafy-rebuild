@@ -244,8 +244,8 @@ Query parameters:
 | `max_tier` | `3` | `1`-`3` | `1` vacant only, `2` vacant + NR, `3` all tiers |
 | `property_id` | | | Optional property filter |
 | `limit` | `50` | `1`-`200` | Maximum rows returned |
-| `target_date` | | | Ranks by move-in fit and hides units whose positive gap exceeds `hard_max_gap_days`. Must be `YYYY-MM-DD`; malformed values return `400`. Do not send this with `free_on` for a firm future date |
-| `free_on` | | | Hard availability filter; never applies the gap cap. Use this when the customer has a firm future move-in date. Must be `YYYY-MM-DD`; malformed values return `400` |
+| `target_date` | | | Ranks by move-in fit and applies the same gap fields as `free_on`. Positive gaps beyond the band are still offered with an earlier move-in ask; positive gaps beyond the ceiling are hidden. Must be `YYYY-MM-DD`; malformed values return `400` |
+| `free_on` | | | Hard availability filter for the requested date. Rows free on or before the date stay in `vacancies` and now carry gap fields and earlier move-in asks. Must be `YYYY-MM-DD`; malformed values return `400` |
 
 All tiers are included by default. Tier 3 rows are deliberately returned with
 `availability.certain=false` so TaneChat can offer them with the configured
@@ -277,17 +277,24 @@ caveat instead of stating them as firm availability.
       },
       "gap_days": 29,
       "gap_warning": true,
-      "available_after_target": false
+      "available_after_target": false,
+      "gap_band_days": 10,
+      "gap_band_assumed": true,
+      "gap_within_band": false,
+      "suggested_move_in_date": "2026-09-26"
     }],
     "count": 1,
     "phrasing": {
       "certain": "{units} available from {date}",
       "uncertain": "We may also have {units} available, however the tenant may renew, they're not sure",
-      "earlier": "{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long."
+      "earlier": "{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long.",
+      "gap_ask": "We're unable to accept a booking that would leave {units} empty for {gap_days} days. Would you be able to move in by {suggested_move_in_date}?"
     },
     "target_date": "2026-10-15",
+    "booking_gap_days": 10,
+    "lease_duration_days": null,
     "max_gap_days": 10,
-    "hard_max_gap_days": 20,
+    "hard_max_gap_days": 15,
     "hidden_by_gap_cap": 0,
     "no_match_reason": null,
     "partner_forward": {
@@ -325,12 +332,13 @@ which figure it is looking at.
 - **`rent_basis: null`** — no schedule and no advertised price. `rent` is `null`;
   present the unit without a price rather than inventing one.
 
-When `target_date` is supplied, each row also includes move-in fit fields and the
-result order is re-ranked by best fit. `max_gap_days` is advisory only: it sets
-`gap_warning` but does not hide the unit. `hard_max_gap_days` does hide: after
-normal vacancy logic plus `max_tier` and `property_id`, and **before** `free_on`
-and `limit`, a positive gap larger than the cap is removed (tier-1 and
-negative-gap exemptions below).
+When `target_date` or `free_on` is supplied, each returned row includes move-in
+fit fields. `target_date` also re-ranks by best fit; `free_on` remains a hard
+availability filter. `max_gap_days` is compatibility-only and no longer drives
+offers or asks. `gap_warning` now means the row is outside the stay-length band
+(`gap_within_band=false`). The hard ceiling is separate: occupied units whose
+positive gap exceeds `hard_max_gap_days` are hidden, while vacant units use
+`vacant_max_move_in_days` from today to the requested move-in date.
 
 ### Booking horizon — beyond 60 days the answer narrows
 
@@ -342,7 +350,7 @@ Beyond the horizon the endpoint answers from a separate, narrower query:
 
 | Beyond the horizon | Offered? |
 |---|---|
-| Tier 2 (`NR`, tenant confirmed leaving) within the gap band | **Yes** |
+| Tier 2 (`NR`, tenant confirmed leaving) within the occupied-unit ceiling | **Yes** |
 | Tier 1 (vacant now) | No |
 | Tier 3 (`MR/other`) | No |
 | Manual vacancy overrides | No |
@@ -361,8 +369,10 @@ until they write one, in which case the caller must supply its own wording.
 Inside the horizon nothing changes, `next_available` included.
 
 **`move_out=YYYY-MM-DD`** (optional) states the intended stay so the gap band can
-be applied. Malformed values return `400`. How much vacancy we accept before a
-move-in scales with the stay:
+be applied. Malformed values return `400`. Bands apply to every requested date,
+near-term and beyond-horizon. Outside the band, the unit is still offered with
+`suggested_move_in_date` and `phrasing.gap_ask`; only the separate ceiling hides
+it.
 
 | Requested stay | Maximum gap |
 |---|---:|
@@ -371,33 +381,31 @@ move-in scales with the stay:
 | 3 months or longer | 10 |
 | Not stated | 10 |
 
-The same bands drive `gap_band_days` / `gap_within_tolerance` in `/units/search`,
-so the two surfaces cannot disagree about one lease.
-
-`target_date` is for ranking by move-in fit. For a customer with a firm future
-move-in date, send `free_on` instead — it never applies the gap cap, so a unit
-that frees more than `hard_max_gap_days` before the date is still returned (in
-`vacancies` if free on that date, otherwise under `next_available`). Do not send
-both for a future date: the `target_date` gap cap runs first, and `free_on` can
-only filter what already survived.
+The same inquiry bands drive `gap_band_days` / `gap_within_tolerance` in
+`/units/search`, but search remains advisory-only and filters nothing by band.
+The legacy `search_gap_band_*` database columns remain for compatibility but are
+no longer read.
 
 Fit fields:
 
 | Field | Meaning |
 |---|---|
-| `gap_days` | `target_date - effectiveAvailableFrom`, in days |
-| `gap_warning` | `true` only when `gap_days > max_gap_days`; advisory, not a cap |
+| `gap_days` | `request_date - effectiveAvailableFrom`, in days. For vacant-now units, `effectiveAvailableFrom` is `orgToday()` |
+| `gap_warning` | Compatibility field; `true` when `gap_within_band=false` |
 | `available_after_target` | `true` when `gap_days` is negative and the prospect would need to wait |
+| `gap_band_days` | Stay-length band applied to this row |
+| `gap_band_assumed` | `true` when `move_out` was absent and the 3+ month band was assumed |
+| `gap_within_band` | `true` when `gap_days <= gap_band_days` |
+| `suggested_move_in_date` | `effectiveAvailableFrom + gap_band_days`, clamped to today; `null` unless the earlier move-in ask applies |
 
 Positive `gap_days` means the unit would sit empty before the prospect arrives,
 so it is the lost-rent case. `0` is an exact fit. Negative `gap_days` means the
 unit is not free until after the requested date; that is not a lost-rent warning,
 but callers should explain the wait.
 
-When `free_on` is supplied, it is a hard filter for `vacancies` and does not
-apply `hard_max_gap_days`. Rows free on or before that date stay in `vacancies`;
-rows that are already re-let by that date, or have no known availability date,
-are hidden. If `target_date` was also sent, the gap cap has already run.
+When `free_on` is supplied, it is a hard filter for `vacancies`. Rows free on or
+before that date stay in `vacancies` and carry the gap fields above; rows that
+are already re-let by that date, or have no known availability date, are hidden.
 
 If the hard `free_on` filter removes a row only because it frees up later,
 `next_available` appears with those rows, sorted by `availability.available_from`
@@ -421,8 +429,8 @@ Hard gap cap fields:
 
 | Field | Meaning |
 |---|---|
-| `hard_max_gap_days` | Positive gaps greater than this are hidden from inquiry answers |
-| `hidden_by_gap_cap` | Count of rows removed by the hard cap; `0` when no `target_date` was supplied |
+| `hard_max_gap_days` | Occupied-unit positive gaps greater than this are hidden from inquiry answers |
+| `hidden_by_gap_cap` | Count of rows removed by the occupied ceiling or vacant cutoff |
 | `no_match_reason` | `null` when at least one unit is returned; otherwise one of the values below |
 | `partner_forward.applies` | `true` when both `vacancies` and `next_available` are empty, regardless of `no_match_reason` |
 | `partner_forward.message` | Operator-authored text to send to partner agencies, or `null` when unset |
@@ -466,18 +474,18 @@ these placeholders; the caller must fill them from chat context before sending:
 Tenafy only knows `{target_date}` at this point. The other values live in the
 chat/inquiry layer, so server-side partial substitution is intentionally avoided.
 
-Tier 1 (`VACANT`) rows are never hidden by `hard_max_gap_days`, even when their
-positive gap is larger than the cap. Already-vacant units are sunk vacancy cost
-and remain the most urgent units to offer. Rows with negative `gap_days` and rows
-with `gap_days=null` are also not hidden by the cap.
+Tier 1 (`VACANT`) rows are not hidden by `hard_max_gap_days`; they use
+`vacant_max_move_in_days` instead. Default: if the requested move-in is more than
+30 days from today, the vacant unit is not offered. Within 30 days it is offered,
+and if it is outside the band it carries the same earlier move-in ask as an
+occupied unit. Rows with negative `gap_days` and rows with `gap_days=null` are
+not hidden by the occupied ceiling.
 
 Advertising settings expose `min_gap_days`, `max_gap_days`, `hard_max_gap_days`,
-`lead_days_nr`, `lead_days_other`, and three inquiry override fields:
-`inquiry_min_gap_days`, `inquiry_lead_days_nr`, and
-`inquiry_lead_days_other`. The inquiry fields are nullable overrides, not
-duplicate policy values. Leaving them unset keeps one shared availability policy
-for Facebook advertising and chatbot inquiry answers. Setting one is an explicit
-decision to let that audience diverge for that one field.
+`vacant_max_move_in_days`, `lead_days_nr`, `lead_days_other`, inquiry
+availability fields, the booking horizon, the three `inquiry_gap_band_*` fields,
+`inquiry_too_far_out_phrase`, and `inquiry_gap_ask_phrase`. `max_gap_days` is
+kept in payloads for compatibility but is no longer used by `/vacancies`.
 
 Precedence is: explicit backend argument > audience override > advertising
 value. `GET /advertising/settings` returns the raw overrides as `null` when
@@ -511,12 +519,10 @@ unset, plus an `effective` block showing what is actually in force:
 }
 ```
 
-`PUT /advertising/settings` validates each numeric gap/lead field as an integer
-from `0` to `365`, treats absent fields as unchanged, and rejects merged settings
-where `max_gap_days > hard_max_gap_days` because the warning threshold would sit
-above the hide threshold. The three `inquiry_*` overrides each accept either an
-integer from `0` to `365` or `null`; send `null` to clear an override and fall
-back to the advertising value.
+`PUT /advertising/settings` validates each numeric gap/lead/horizon/band field
+as an integer from `0` to `365` and treats absent fields as unchanged. Text
+settings, including `inquiry_too_far_out_phrase` and `inquiry_gap_ask_phrase`,
+are capped at 2000 characters.
 
 #### `GET /units/available` (deprecated)
 

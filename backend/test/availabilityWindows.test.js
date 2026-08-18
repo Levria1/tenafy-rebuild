@@ -222,7 +222,7 @@ function gapBands(settings, audience) {
   return values;
 }
 
-test('inquiry and search gap bands resolve independently', () => {
+test('inquiry and search gap bands both resolve from inquiry columns', () => {
   const settings = {
     inquiry_gap_band_1m_days: 1,
     inquiry_gap_band_2m_days: 2,
@@ -238,13 +238,13 @@ test('inquiry and search gap bands resolve independently', () => {
     band_3m_plus_days: 4,
   });
   assert.deepEqual(gapBands(settings, 'search'), {
-    band_1m_days: 7,
-    band_2m_days: 8,
-    band_3m_plus_days: 9,
+    band_1m_days: 1,
+    band_2m_days: 2,
+    band_3m_plus_days: 4,
   });
 });
 
-test('changing one gap-band audience does not change the other', () => {
+test('changing inquiry gap bands changes every audience, search columns do not', () => {
   const settings = {
     inquiry_gap_band_1m_days: 1,
     inquiry_gap_band_2m_days: 2,
@@ -260,9 +260,9 @@ test('changing one gap-band audience does not change the other', () => {
     inquiry_gap_band_2m_days: 12,
     inquiry_gap_band_3m_plus_days: 13,
   }, 'search'), {
-    band_1m_days: 7,
-    band_2m_days: 8,
-    band_3m_plus_days: 9,
+    band_1m_days: 11,
+    band_2m_days: 12,
+    band_3m_plus_days: 13,
   });
   assert.deepEqual(gapBands({
     ...settings,
@@ -276,7 +276,7 @@ test('changing one gap-band audience does not change the other', () => {
   });
 });
 
-test('junk search bands fall back to hardcoded defaults, never inquiry values', () => {
+test('junk search columns are ignored in favour of inquiry values', () => {
   const base = {
     inquiry_gap_band_1m_days: 1,
     inquiry_gap_band_2m_days: 2,
@@ -289,10 +289,10 @@ test('junk search bands fall back to hardcoded defaults, never inquiry values', 
       search_gap_band_2m_days: junk,
       search_gap_band_3m_plus_days: junk,
     }, 'search');
-    assert.equal(r.band_1m_days, 3, `${JSON.stringify(junk)} must not inherit inquiry 1m`);
-    assert.equal(r.band_2m_days, 6, `${JSON.stringify(junk)} must not inherit inquiry 2m`);
-    assert.equal(r.band_3m_plus_days, 10, `${JSON.stringify(junk)} must not inherit inquiry 3m`);
-    assert.equal(r.source.band_1m_days, 'search');
+    assert.equal(r.band_1m_days, 1, `${JSON.stringify(junk)} must use inquiry 1m`);
+    assert.equal(r.band_2m_days, 2, `${JSON.stringify(junk)} must use inquiry 2m`);
+    assert.equal(r.band_3m_plus_days, 4, `${JSON.stringify(junk)} must use inquiry 3m`);
+    assert.equal(r.source.band_1m_days, 'inquiry');
   }
 });
 
@@ -318,7 +318,7 @@ test('junk inquiry bands fall back to hardcoded defaults, never search values', 
 
 test('zero is a real gap-band value for both audiences', () => {
   assert.equal(resolveGapBands({ inquiry_gap_band_1m_days: 0 }, 'inquiry').band_1m_days, 0);
-  assert.equal(resolveGapBands({ search_gap_band_2m_days: 0 }, 'search').band_2m_days, 0);
+  assert.equal(resolveGapBands({ inquiry_gap_band_2m_days: 0, search_gap_band_2m_days: 7 }, 'search').band_2m_days, 0);
 });
 
 test('unrecognised gap-band audiences use inquiry columns without throwing', () => {
@@ -354,9 +354,9 @@ test('resolveGapBands source reports which set was read', () => {
     band_3m_plus_days: 'inquiry',
   });
   assert.deepEqual(search.source, {
-    band_1m_days: 'search',
-    band_2m_days: 'search',
-    band_3m_plus_days: 'search',
+    band_1m_days: 'inquiry',
+    band_2m_days: 'inquiry',
+    band_3m_plus_days: 'inquiry',
   });
 });
 

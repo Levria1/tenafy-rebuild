@@ -30,8 +30,8 @@ const CAPABILITY_LABELS = [
 // (computeVacancies) reads its window settings. The table name is historical: this
 // card edits the inquiry audience's independent copy only.
 function LeasingAvailabilitySettings() {
-  const [maxGap, setMaxGap] = useState(null);
   const [hardMaxGap, setHardMaxGap] = useState(null);
+  const [vacantMaxMoveIn, setVacantMaxMoveIn] = useState(null);
   const [inquiryMinGap, setInquiryMinGap] = useState(null);
   const [inquiryLeadDaysNr, setInquiryLeadDaysNr] = useState(null);
   const [inquiryLeadDaysOther, setInquiryLeadDaysOther] = useState(null);
@@ -39,10 +39,8 @@ function LeasingAvailabilitySettings() {
   const [gapBand1m, setGapBand1m] = useState(null);
   const [gapBand2m, setGapBand2m] = useState(null);
   const [gapBand3mPlus, setGapBand3mPlus] = useState(null);
-  const [searchGapBand1m, setSearchGapBand1m] = useState(null);
-  const [searchGapBand2m, setSearchGapBand2m] = useState(null);
-  const [searchGapBand3mPlus, setSearchGapBand3mPlus] = useState(null);
   const [tooFarOutPhrase, setTooFarOutPhrase] = useState('');
+  const [gapAskPhrase, setGapAskPhrase] = useState('');
   const [effectiveAdvertising, setEffectiveAdvertising] = useState(null);
   const [partnerMsg, setPartnerMsg] = useState('');
   const [loading, setLoading] = useState(true);
@@ -59,8 +57,8 @@ function LeasingAvailabilitySettings() {
         // one means the request failed. Showing plausible-but-wrong numbers here and
         // then saving them over the real ones is the failure worth avoiding.
         if (!d) { setLoadError(true); return; }
-        setMaxGap(d.max_gap_days ?? null);
         setHardMaxGap(d.hard_max_gap_days ?? null);
+        setVacantMaxMoveIn(d.vacant_max_move_in_days ?? 30);
         setInquiryMinGap(d.inquiry_min_gap_days ?? 40);
         setInquiryLeadDaysNr(d.inquiry_lead_days_nr ?? 60);
         setInquiryLeadDaysOther(d.inquiry_lead_days_other ?? 45);
@@ -68,10 +66,8 @@ function LeasingAvailabilitySettings() {
         setGapBand1m(d.inquiry_gap_band_1m_days ?? 3);
         setGapBand2m(d.inquiry_gap_band_2m_days ?? 6);
         setGapBand3mPlus(d.inquiry_gap_band_3m_plus_days ?? 10);
-        setSearchGapBand1m(d.search_gap_band_1m_days ?? 3);
-        setSearchGapBand2m(d.search_gap_band_2m_days ?? 6);
-        setSearchGapBand3mPlus(d.search_gap_band_3m_plus_days ?? 10);
         setTooFarOutPhrase(d.inquiry_too_far_out_phrase ?? '');
+        setGapAskPhrase(d.inquiry_gap_ask_phrase ?? '');
         setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       })
@@ -80,10 +76,6 @@ function LeasingAvailabilitySettings() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-
-  // Mirrors the server-side rule. A warning threshold above the hide threshold is
-  // incoherent: nothing could ever be warned about, because it would already be hidden.
-  const invalid = maxGap != null && hardMaxGap != null && Number(maxGap) > Number(hardMaxGap);
 
   const handleRequiredDays = (setter, fallback) => value => {
     setter(value === null || value === undefined || value === '' ? fallback : Number(value));
@@ -101,8 +93,8 @@ function LeasingAvailabilitySettings() {
     setSaving(true);
     try {
       const r = await advertisingApi.updateAdSettings({
-        max_gap_days: maxGap,
         hard_max_gap_days: hardMaxGap,
+        vacant_max_move_in_days: vacantMaxMoveIn,
         inquiry_min_gap_days: inquiryMinGap,
         inquiry_lead_days_nr: inquiryLeadDaysNr,
         inquiry_lead_days_other: inquiryLeadDaysOther,
@@ -110,16 +102,14 @@ function LeasingAvailabilitySettings() {
         inquiry_gap_band_1m_days: gapBand1m,
         inquiry_gap_band_2m_days: gapBand2m,
         inquiry_gap_band_3m_plus_days: gapBand3mPlus,
-        search_gap_band_1m_days: searchGapBand1m,
-        search_gap_band_2m_days: searchGapBand2m,
-        search_gap_band_3m_plus_days: searchGapBand3mPlus,
         inquiry_too_far_out_phrase: tooFarOutPhrase,
+        inquiry_gap_ask_phrase: gapAskPhrase,
         partner_forward_message: partnerMsg,
       });
       const d = r.data?.data;
       if (d && d.max_gap_days !== undefined) {
-        setMaxGap(d.max_gap_days ?? null);
         setHardMaxGap(d.hard_max_gap_days ?? null);
+        setVacantMaxMoveIn(d.vacant_max_move_in_days ?? 30);
         setInquiryMinGap(d.inquiry_min_gap_days ?? 40);
         setInquiryLeadDaysNr(d.inquiry_lead_days_nr ?? 60);
         setInquiryLeadDaysOther(d.inquiry_lead_days_other ?? 45);
@@ -127,10 +117,8 @@ function LeasingAvailabilitySettings() {
         setGapBand1m(d.inquiry_gap_band_1m_days ?? 3);
         setGapBand2m(d.inquiry_gap_band_2m_days ?? 6);
         setGapBand3mPlus(d.inquiry_gap_band_3m_plus_days ?? 10);
-        setSearchGapBand1m(d.search_gap_band_1m_days ?? 3);
-        setSearchGapBand2m(d.search_gap_band_2m_days ?? 6);
-        setSearchGapBand3mPlus(d.search_gap_band_3m_plus_days ?? 10);
         setTooFarOutPhrase(d.inquiry_too_far_out_phrase ?? '');
+        setGapAskPhrase(d.inquiry_gap_ask_phrase ?? '');
         setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       }
@@ -158,46 +146,50 @@ function LeasingAvailabilitySettings() {
     );
   }
 
+  // A band above the ceiling can never fire: the unit is hidden before we get the
+  // chance to ask. Silently unreachable settings are worse than rejected ones.
+  const widestBand = Math.max(
+    Number(gapBand1m) || 0, Number(gapBand2m) || 0, Number(gapBand3mPlus) || 0,
+  );
+  const bandAboveCeiling = Number.isFinite(Number(hardMaxGap)) && widestBand > Number(hardMaxGap);
+
   return (
     <Card size="small" title="Leasing" style={{ marginBottom: 16 }}>
       <p style={{ color: '#888', marginBottom: 20 }}>
-        Availability settings for inquiries about what units are available
+        Availability settings for inquiry answers. Gap bands create earlier move-in asks; ceiling
+        limits decide when a unit is not offered.
       </p>
 
+      <div style={{ marginBottom: 16 }}>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Offer limits</Title>
+        <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+          These are hard cutoffs. Past them, the unit is not offered.
+        </Paragraph>
+      </div>
       <Row gutter={24}>
         <Col xs={24} md={12} style={{ marginBottom: 20 }}>
-          <div style={{ marginBottom: 4, fontWeight: 500 }}>Suggest an earlier move-in after</div>
+          <div style={{ marginBottom: 4, fontWeight: 500 }}>Never offer if empty longer than</div>
           <InputNumber
-            min={0} max={365} value={maxGap} onChange={setMaxGap}
+            min={0} max={365} value={hardMaxGap} onChange={handleRequiredDays(setHardMaxGap, 15)}
             addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
           />
           <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
-            If the unit would sit empty longer than this before the tenant moves in, we still offer it
-            — but we ask whether they can start a little earlier.
+            For occupied units, this is the maximum empty gap between the lease end date and the
+            requested move-in date.
           </div>
         </Col>
 
         <Col xs={24} md={12} style={{ marginBottom: 20 }}>
-          <div style={{ marginBottom: 4, fontWeight: 500 }}>Stop offering the unit after</div>
+          <div style={{ marginBottom: 4, fontWeight: 500 }}>Don&apos;t offer vacant units if the move-in is more than</div>
           <InputNumber
-            min={0} max={365} value={hardMaxGap} onChange={setHardMaxGap}
-            addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
+            min={0} max={365} value={vacantMaxMoveIn} onChange={handleRequiredDays(setVacantMaxMoveIn, 30)}
+            addonAfter="days from today" style={{ width: '100%', maxWidth: 240 }}
           />
           <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
-            Past this the unit is not offered at all. <strong>Units that are already vacant are
-            always offered</strong> regardless — they are the ones most needing a tenant, so hiding
-            them would be counter-productive.
+            This is measured from today to the customer&apos;s move-in date, not from a lease end date.
           </div>
         </Col>
       </Row>
-
-      {invalid && (
-        <Alert
-          type="error" showIcon style={{ marginBottom: 16 }}
-          message={`Suggest-earlier (${maxGap}d) must not be later than stop-offering (${hardMaxGap}d)`}
-          description="Otherwise nothing could ever be flagged — it would already have been hidden."
-        />
-      )}
 
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
         <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Availability for inquiries</Title>
@@ -251,11 +243,18 @@ function LeasingAvailabilitySettings() {
       </div>
 
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
-        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Booking acceptance</Title>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>How long a unit can sit empty</Title>
         <Paragraph type="secondary" style={{ marginBottom: 16 }}>
-          For a far-future date, a unit outside these bands is not offered at all.
-          A shorter stay must line up more tightly — the same empty week costs proportionally more.
+          Outside these bands, the unit is still offered and we ask the customer to move in earlier.
+          A shorter stay must line up more tightly because the same empty week costs proportionally more.
         </Paragraph>
+        {bandAboveCeiling && (
+          <Alert
+            type="warning" showIcon style={{ marginBottom: 16 }}
+            message={`A band of ${widestBand} days is above the ${hardMaxGap}-day ceiling`}
+            description="Past the ceiling the unit is not offered at all, so we never get to ask the customer to move in earlier. Raise 'Never offer if empty longer than' above the widest band, or lower the band."
+          />
+        )}
         <Row gutter={24}>
           <Col xs={24} md={8} style={{ marginBottom: 16 }}>
             <div style={{ marginBottom: 4, fontWeight: 500 }}>1 month</div>
@@ -282,48 +281,33 @@ function LeasingAvailabilitySettings() {
       </div>
 
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
-        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Search results</Title>
-        <Paragraph type="secondary" style={{ marginBottom: 16 }}>
-          These only flag whether a result is within tolerance so the wording can reflect it.
-          Nothing is hidden.
-        </Paragraph>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Customer messages</Title>
         <Row gutter={24}>
-          <Col xs={24} md={8} style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 4, fontWeight: 500 }}>1 month</div>
-            <InputNumber
-              min={0} max={365} value={searchGapBand1m} onChange={handleRequiredDays(setSearchGapBand1m, 3)}
-              addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
+          <Col xs={24} md={12} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>&quot;Can you move in earlier?&quot; ask</div>
+            <Input.TextArea
+              rows={5} value={gapAskPhrase} onChange={e => setGapAskPhrase(e.target.value)}
+              maxLength={2000} showCount
             />
+            <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+              Placeholders: <code>{'{units}'}</code> <code>{'{gap_days}'}</code>{' '}
+              <code>{'{suggested_move_in_date}'}</code>
+            </div>
           </Col>
-          <Col xs={24} md={8} style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 4, fontWeight: 500 }}>2 months</div>
-            <InputNumber
-              min={0} max={365} value={searchGapBand2m} onChange={handleRequiredDays(setSearchGapBand2m, 6)}
-              addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
+          <Col xs={24} md={12} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>&quot;Too far out&quot; message</div>
+            <Input.TextArea
+              rows={5} value={tooFarOutPhrase} onChange={e => setTooFarOutPhrase(e.target.value)}
+              maxLength={2000} showCount
             />
-          </Col>
-          <Col xs={24} md={8} style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 4, fontWeight: 500 }}>3+ months</div>
-            <InputNumber
-              min={0} max={365} value={searchGapBand3mPlus} onChange={handleRequiredDays(setSearchGapBand3mPlus, 10)}
-              addonAfter="days empty" style={{ width: '100%', maxWidth: 240 }}
-            />
+            <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+              Used only when a date is beyond the booking horizon and no confirmed-leaving unit
+              qualifies. Placeholders: <code>{'{target_date}'}</code>{' '}
+              <code>{'{booking_horizon_days}'}</code> <code>{'{check_back_in_days}'}</code>{' '}
+              <code>{'{check_back_on}'}</code>
+            </div>
           </Col>
         </Row>
-      </div>
-
-      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
-        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>&quot;Too far out&quot; message</Title>
-        <Input.TextArea
-          rows={5} value={tooFarOutPhrase} onChange={e => setTooFarOutPhrase(e.target.value)}
-          maxLength={2000} showCount
-        />
-        <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
-          Leave this blank and TaneChat uses its own wording. Placeholders are filled in by the
-          caller:{' '}
-          <code>{'{target_date}'}</code> <code>{'{booking_horizon_days}'}</code>{' '}
-          <code>{'{check_back_in_days}'}</code> <code>{'{check_back_on}'}</code>
-        </div>
       </div>
 
       <Alert
@@ -347,7 +331,7 @@ function LeasingAvailabilitySettings() {
 
       <div style={{ height: 20 }} />
 
-      <Button type="primary" loading={saving} disabled={invalid} onClick={handleSave}>Save</Button>
+      <Button type="primary" loading={saving} onClick={handleSave}>Save</Button>
     </Card>
   );
 }

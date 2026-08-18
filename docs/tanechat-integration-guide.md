@@ -40,19 +40,19 @@ GET /vacancies?free_on=2026-10-12
 
 | Param | Default | Notes |
 |---|---|---|
-| `target_date` | none | `YYYY-MM-DD`. Ranks and warns by move-in fit, and **hides** units with a positive gap past `hard_max_gap_days` (default 20). Use it to rank "what fits this move-in", not to answer a firm future date. Without it there is no gap to judge, so no ranking, no warnings and no hiding. |
-| `free_on` | none | `YYYY-MM-DD`. **Send this when the customer has a firm future move-in date.** Hard filter to units they can actually take that day. Does not apply `hard_max_gap_days`. Within 60 days, anything it removes that merely frees up *later* comes back in `next_available` — see §7. **Beyond 60 days a separate rule applies — see §2a.** Do **not** also send `target_date` for a future date: the gap cap runs first, so `free_on` can only filter what already survived, and a 6-week enquiry will look like no availability. |
-| `move_out` | none | `YYYY-MM-DD`. Optional. The customer's intended move-out. Only used **beyond** the 60-day booking horizon, where how much vacancy we accept depends on the stay length — see §2a. Malformed values are a `400`. |
+| `target_date` | none | `YYYY-MM-DD`. Ranks by move-in fit and applies gap fields. Outside the stay-length band, the unit is still offered with an earlier move-in ask. Past the separate ceiling, it is hidden. |
+| `free_on` | none | `YYYY-MM-DD`. **Send this when the customer has a firm future move-in date.** Hard filter to units they can actually take that day. It now carries the same gap fields and earlier move-in ask as `target_date`. |
+| `move_out` | none | `YYYY-MM-DD`. Optional. The customer's intended move-out. Used on every requested date to choose the stay-length band. If absent, Tenafy assumes the 3+ month band and marks `gap_band_assumed: true`. Malformed values are a `400`. |
 | `max_tier` | `3` | `1` vacant only, `2` + NR, `3` all. Leave it alone unless you have a reason. |
 | `property_id` | none | optional filter |
 | `limit` | `50` | max 200 |
 
 A malformed `target_date` or `free_on` is a **400**, deliberately — it is not silently ignored.
 
-**Without `target_date` these keys are absent from the response — not null:** `target_date`,
-`max_gap_days`, `phrasing.earlier`, and the three per-unit gap fields `gap_days`, `gap_warning`,
-`available_after_target`. There is no date to measure a gap against, so nothing is ranked, warned about
-or hidden. Don't assume those keys exist if you ever call without a date.
+With either `target_date` or `free_on`, Tenafy returns `booking_gap_days`,
+`max_gap_days`, `phrasing.earlier`, `phrasing.gap_ask`, and per-unit gap fields.
+Without either date there is no gap to measure, so the per-unit gap fields are
+absent.
 
 `GET /units/available` is **deprecated**. It answers a strictly worse question: it cannot see units
 coming free later, and until recently it reported units already re-let. Responses carry
@@ -61,10 +61,11 @@ coming free later, and until recently it reported units already re-let. Response
 
 ### 2a. Beyond 60 days we only offer confirmed units
 
-A requested date more than **60 days** out is beyond the **booking horizon**. Past that point we will
-not hold a flat empty on spec, so the answer narrows to units whose tenant has **confirmed they are
-leaving** and who free up close enough to the date. Already-empty units, may-renew units and manual
-overrides are all withheld.
+A requested date more than **60 days** out is beyond the **booking horizon**. Past that point the
+eligible pool narrows to units whose tenant has **confirmed they are leaving**. Already-empty units,
+may-renew units and manual overrides are all withheld. Within that NR pool, an out-of-band gap no
+longer drops the unit: if it is within the occupied-unit ceiling, Tenafy returns it with an earlier
+move-in ask.
 
 If nothing qualifies you get a distinct outcome — not "no availability":
 
@@ -85,7 +86,7 @@ If nothing qualifies you get a distinct outcome — not "no availability":
   It is a customer to talk to later, not one to hand to an agency.
 - `next_available` is **absent** beyond the horizon. Inside it, unchanged.
 
-How much gap we accept scales with the stay, so send `move_out` when you know it:
+How much empty time is clean scales with the stay, so send `move_out` when you know it:
 
 | Requested stay | Maximum gap |
 |---|---:|
@@ -93,6 +94,10 @@ How much gap we accept scales with the stay, so send `move_out` when you know it
 | 2 months | 6 days |
 | 3 months or longer | 10 days |
 | Not stated | 10 days |
+
+`/units/search` reports the same band numbers from `inquiry_gap_band_*`, but it remains
+advisory-only: nothing is filtered out by the band. The legacy `search_gap_band_*` columns still exist
+in the database but are no longer read.
 
 Most far-future enquiries will land on `too_far_out`, and that is honest rather than evasive: of the
 units whose leases end beyond 60 days, the large majority are **may-renew** — the tenant has not yet
@@ -110,9 +115,10 @@ Example response shape:
   "hidden_by_gap_cap": 3,
   "no_match_reason": null,
   "max_gap_days": 10,
-  "hard_max_gap_days": 20,
+  "hard_max_gap_days": 15,
+  "booking_gap_days": 10,
   "partner_forward": { "applies": false, "message": null },
-  "phrasing": { "certain": "…", "uncertain": "…", "earlier": "…" },
+  "phrasing": { "certain": "…", "uncertain": "…", "earlier": "…", "gap_ask": "…" },
   "vacancies": [
     { "label": "Hollywood 5B", "tier": 2, "intent": "NR",
       "source": "lease",
@@ -120,7 +126,9 @@ Example response shape:
       "property_name": "Hollywood", "district": "Sheung Wan", "city": "Hong Kong",
       "availability": { "status": "from_date", "available_from": "2026-10-12",
                         "next_move_in_date": null, "days_until": 60, "certain": true },
-      "gap_days": 0, "gap_warning": false, "available_after_target": false }
+      "gap_days": 0, "gap_warning": false, "available_after_target": false,
+      "gap_band_days": 10, "gap_band_assumed": true, "gap_within_band": true,
+      "suggested_move_in_date": null }
   ]
 }}
 ```
@@ -155,8 +163,14 @@ deliberately not exposed, because the note behind it is staff-only.
 - **zero** → perfect fit.
 - **negative** → the flat is not free until *after* they want it; they would wait. Costs nothing.
 
-**`gap_warning`** — `true` past `max_gap_days` (10). Advisory. The unit is still offered; use
-`phrasing.earlier`.
+**`gap_warning`** — compatibility field. It now means `gap_within_band: false`.
+The unit is still offered unless the separate ceiling removed it.
+
+**`gap_band_days` / `gap_within_band`** — the stay-length band and whether the row is inside it.
+`gap_band_assumed: true` means you did not send `move_out`, so Tenafy assumed the 3+ month band.
+
+**`suggested_move_in_date`** — non-null only when the earlier move-in ask applies. Use it with
+`phrasing.gap_ask`.
 
 **`available_after_target`** — the negative-gap case. Never carries a `gap_warning`, because waiting
 costs the operator nothing.
@@ -170,7 +184,7 @@ costs the operator nothing.
 |---|---|
 | `certain: true`, `status: "now"` | "available now" |
 | `certain: true`, `status: "from_date"` | "available from {available_from}" |
-| `gap_warning: true` | still offer it — use `phrasing.earlier` |
+| `gap_within_band: false` | still offer it — use `phrasing.gap_ask` and `suggested_move_in_date` |
 | the unit came from `next_available` | use `phrasing.later` — ask whether a later start works. Never present it as free on their date. |
 | `certain: false`, `source: "manual"` | **must** use `phrasing.manual`. Never state it as firm availability. |
 | `certain: false`, `source: "lease"` | **must** use `phrasing.uncertain`. Never state it as firm availability. |
@@ -181,7 +195,12 @@ your own.
 
 `phrasing.manual` is returned when a manual early-move-out override is present in the response.
 
-`phrasing.earlier` currently reads:
+`phrasing.gap_ask` is the current operator-authored ask for out-of-band units:
+
+> `We're unable to accept a booking that would leave {units} empty for {gap_days} days. Would you be able to move in by {suggested_move_in_date}?`
+
+`phrasing.earlier` is still returned for backward compatibility, but it is deprecated for gap-band
+asks. It currently reads:
 
 > `{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long.`
 
@@ -196,26 +215,25 @@ Worked example from the payload in §3 plus two flagged units:
 
 ## 6. Units you will never see, and why
 
-When you send `target_date`, past `hard_max_gap_days` (20) a unit is **removed**
-from the response. Two exemptions:
+Three independent rules decide the result:
 
-- **A unit that is already vacant is never hidden**, however large its gap. It is the one most
-  urgently needing a tenant.
-- **`available_after_target` units are never hidden.** Waiting costs no rent.
+- **Ceiling:** occupied units past `hard_max_gap_days` are removed. Vacant units past
+  `vacant_max_move_in_days` from today are removed.
+- **Horizon:** beyond `inquiry_booking_horizon_days`, only tier 2 / NR units are eligible.
+- **Band:** outside `inquiry_gap_band_*`, the unit is still offered with `phrasing.gap_ask` and
+  `suggested_move_in_date`.
 
-`hidden_by_gap_cap` tells you how many were removed. In §3 it is `3` — so the operator has six
-suitable-ish units and you were shown the best three. **This is normal. Do not treat a short list as
-an error or ask for `max_tier=3` to compensate.**
+`hidden_by_gap_cap` tells you how many were removed by the ceiling/cutoff. A unit outside the band is
+not counted there unless it also crossed the ceiling.
 
 ## 7. When there is nothing — later dates first, then the partner message
 
 ### 7a. `next_available` — what `free_on` took away
 
-`free_on` is a hard filter and **does not apply the gap cap**. That is why a firm
-future move-in date must go here, not in `target_date`: a unit freeing six weeks
-out still comes back under `next_available` instead of disappearing. On a busy
-portfolio it can empty `vacancies` while the operator still has flats coming free
-three weeks later. Tenafy hands those back separately:
+`free_on` is a hard date filter for `vacancies`. A unit free on or before that date stays in
+`vacancies` and carries gap fields; a unit freeing after that date comes back under `next_available`
+instead of disappearing. On a busy portfolio it can empty `vacancies` while the operator still has
+flats coming free three weeks later. Tenafy hands those back separately:
 
 ```json
 "vacancies": [],
@@ -230,8 +248,8 @@ real, offerable units — the only thing wrong with them is the date.
 
 - `next_available` appears **only** when `free_on` was sent and something offerable frees up later.
   Absent otherwise — not an empty array.
-- Do **not** also send `target_date` for that future date. The gap cap runs first, so
-  `free_on` / `next_available` only see what survived `hard_max_gap_days`.
+- Do **not** also send `target_date` for that future date. Use one requested date, preferably
+  `free_on` for a firm customer date.
 - Sorted soonest-first, and `limit` applies to it independently.
 - Units **already re-let** by the requested date appear in neither list. That is deliberate: they are
   spoken for, and offering them would be a promise Tenafy cannot keep.
@@ -498,8 +516,8 @@ Automatic sending is **off**. Nudges are drafts too until the operator enables i
 - [ ] For a firm future move-in date, send `free_on` — not `target_date`, and not both
 - [ ] **Branch on `no_match_reason: "too_far_out"`** — offer `check_back_on`, never forward the lead
 - [ ] Send `move_out` when the customer states their intended stay length
-- [ ] Send `target_date` only when you want ranking by move-in fit (it hides units past
-      `hard_max_gap_days`)
+- [ ] Send `target_date` only when you want ranking by move-in fit
+- [ ] Use `phrasing.gap_ask` when `suggested_move_in_date` is non-null
 - [ ] **Read `next_available` and offer it with `phrasing.later` before telling anyone we have
       nothing** — this is the one that loses real leads
 - [ ] Branch wording on `availability.certain`, never on `tier`
@@ -520,9 +538,8 @@ Automatic sending is **off**. Nudges are drafts too until the operator enables i
 
 Two behaviours in this doc are deliberate and get queried every time:
 
-**"Why is the list so short?"** — you sent `target_date` and the hard cap removed the rest.
-`hidden_by_gap_cap` says how many. Working as intended. For a firm future date, send `free_on`
-instead.
+**"Why is the list so short?"** — the ceiling/cutoff removed rows, or `free_on` moved later rows into
+`next_available`. `hidden_by_gap_cap` and `hidden_by_free_on` say which happened.
 
 **"Why did the same draft appear twice?"** — you did not call `draft-sent`, or the call failed. That is
 the safety property, not a bug.

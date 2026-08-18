@@ -18,7 +18,13 @@ function newId() {
 // Column length caps (match migrations-org/015). Returns an error string when a
 // field is too long, so we can 400 instead of letting MySQL 500 on truncation.
 const FIELD_LIMITS = { name: 160, title: 255, webpage_link: 500, label: 255, forum_rule: 500 };
-const SETTINGS_LIMITS = { photo_root: 255, partner_forward_message: 2000, inquiry_too_far_out_phrase: 2000 };
+const GAP_ASK_PHRASE = "We're unable to accept a booking that would leave {units} empty for {gap_days} days. Would you be able to move in by {suggested_move_in_date}?";
+const SETTINGS_LIMITS = {
+  photo_root: 255,
+  partner_forward_message: 2000,
+  inquiry_too_far_out_phrase: 2000,
+  inquiry_gap_ask_phrase: 2000,
+};
 const UNIT_LINE_LIMITS = { name: 160, line_text: 500 };
 function lengthError(body, limits = FIELD_LIMITS) {
   for (const [field, max] of Object.entries(limits)) {
@@ -1374,6 +1380,8 @@ async function loadSettings(pool, orgId) {
     inquiry_lead_days_other: 45,
     inquiry_booking_horizon_days: 60,
     inquiry_too_far_out_phrase: null,
+    vacant_max_move_in_days: 30,
+    inquiry_gap_ask_phrase: GAP_ASK_PHRASE,
     inquiry_gap_band_1m_days: 3,
     inquiry_gap_band_2m_days: 6,
     inquiry_gap_band_3m_plus_days: 10,
@@ -1387,8 +1395,8 @@ async function loadSettings(pool, orgId) {
       `SELECT footer, photo_root, partner_forward_message, min_gap_days, max_gap_days, hard_max_gap_days, lead_days_nr, lead_days_other,
               inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other,
               inquiry_booking_horizon_days, inquiry_too_far_out_phrase,
-              inquiry_gap_band_1m_days, inquiry_gap_band_2m_days, inquiry_gap_band_3m_plus_days,
-              search_gap_band_1m_days, search_gap_band_2m_days, search_gap_band_3m_plus_days
+              vacant_max_move_in_days, inquiry_gap_ask_phrase,
+              inquiry_gap_band_1m_days, inquiry_gap_band_2m_days, inquiry_gap_band_3m_plus_days
          FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
     return {
       footer: row?.footer || null,
@@ -1405,12 +1413,14 @@ async function loadSettings(pool, orgId) {
       inquiry_lead_days_other: numberOrDefault(row?.inquiry_lead_days_other, 45),
       inquiry_booking_horizon_days: numberOrDefault(row?.inquiry_booking_horizon_days, 60),
       inquiry_too_far_out_phrase: row?.inquiry_too_far_out_phrase ?? null,
+      vacant_max_move_in_days: numberOrDefault(row?.vacant_max_move_in_days, 30),
+      inquiry_gap_ask_phrase: row?.inquiry_gap_ask_phrase ?? GAP_ASK_PHRASE,
       inquiry_gap_band_1m_days: numberOrDefault(row?.inquiry_gap_band_1m_days, 3),
       inquiry_gap_band_2m_days: numberOrDefault(row?.inquiry_gap_band_2m_days, 6),
       inquiry_gap_band_3m_plus_days: numberOrDefault(row?.inquiry_gap_band_3m_plus_days, 10),
-      search_gap_band_1m_days: numberOrDefault(row?.search_gap_band_1m_days, 3),
-      search_gap_band_2m_days: numberOrDefault(row?.search_gap_band_2m_days, 6),
-      search_gap_band_3m_plus_days: numberOrDefault(row?.search_gap_band_3m_plus_days, 10),
+      search_gap_band_1m_days: 3,
+      search_gap_band_2m_days: 6,
+      search_gap_band_3m_plus_days: 10,
     };
   } catch (err) {
     try {
@@ -1574,6 +1584,8 @@ router.put('/settings', authenticate, async (req, res) => {
       inquiry_lead_days_other,
       inquiry_booking_horizon_days,
       inquiry_too_far_out_phrase,
+      vacant_max_move_in_days,
+      inquiry_gap_ask_phrase,
       inquiry_gap_band_1m_days,
       inquiry_gap_band_2m_days,
       inquiry_gap_band_3m_plus_days,
@@ -1581,7 +1593,7 @@ router.put('/settings', authenticate, async (req, res) => {
       search_gap_band_2m_days,
       search_gap_band_3m_plus_days,
     } = req.body || {};
-    const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message', 'inquiry_too_far_out_phrase']);
+    const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message', 'inquiry_too_far_out_phrase', 'inquiry_gap_ask_phrase']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     const normalizedPartnerForwardMessage = partner_forward_message !== undefined
       ? normalizePartnerForwardMessage(partner_forward_message)
@@ -1589,10 +1601,14 @@ router.put('/settings', authenticate, async (req, res) => {
     const normalizedTooFarOutPhrase = inquiry_too_far_out_phrase !== undefined
       ? normalizePartnerForwardMessage(inquiry_too_far_out_phrase)
       : undefined;
+    const normalizedGapAskPhrase = inquiry_gap_ask_phrase !== undefined
+      ? normalizePartnerForwardMessage(inquiry_gap_ask_phrase)
+      : undefined;
     const lenErr = lengthError({
       photo_root,
       partner_forward_message: normalizedPartnerForwardMessage,
       inquiry_too_far_out_phrase: normalizedTooFarOutPhrase,
+      inquiry_gap_ask_phrase: normalizedGapAskPhrase,
     }, SETTINGS_LIMITS);
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     for (const field of ['min_gap_days', 'max_gap_days', 'hard_max_gap_days', 'lead_days_nr', 'lead_days_other']) {
@@ -1601,7 +1617,7 @@ router.put('/settings', authenticate, async (req, res) => {
         return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
       }
     }
-    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days', 'inquiry_gap_band_1m_days', 'inquiry_gap_band_2m_days', 'inquiry_gap_band_3m_plus_days', 'search_gap_band_1m_days', 'search_gap_band_2m_days', 'search_gap_band_3m_plus_days']) {
+    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days', 'vacant_max_move_in_days', 'inquiry_gap_band_1m_days', 'inquiry_gap_band_2m_days', 'inquiry_gap_band_3m_plus_days', 'search_gap_band_1m_days', 'search_gap_band_2m_days', 'search_gap_band_3m_plus_days']) {
       if (req.body?.[field] !== undefined) {
         if (req.body[field] === null) {
           return res.status(400).json({
@@ -1614,21 +1630,7 @@ router.put('/settings', authenticate, async (req, res) => {
         }
       }
     }
-    const current = await loadSettings(req.pool, orgId);
-    const merged = {
-      ...current,
-      ...(min_gap_days !== undefined ? { min_gap_days } : {}),
-      ...(max_gap_days !== undefined ? { max_gap_days } : {}),
-      ...(hard_max_gap_days !== undefined ? { hard_max_gap_days } : {}),
-      ...(lead_days_nr !== undefined ? { lead_days_nr } : {}),
-      ...(lead_days_other !== undefined ? { lead_days_other } : {}),
-    };
-    if (merged.max_gap_days > merged.hard_max_gap_days) {
-      return res.status(400).json({
-        code: 400,
-        message: 'max_gap_days must be less than or equal to hard_max_gap_days; a warning threshold above the hide threshold is incoherent because the unit would already be hidden before it could be warned about',
-      });
-    }
+    await loadSettings(req.pool, orgId);
     // PARTIAL upsert — only touch the fields actually sent, so the footer editor
     // (Templates) and photo-root (Forums) can't overwrite each other.
     const setClauses = [];
@@ -1645,6 +1647,8 @@ router.put('/settings', authenticate, async (req, res) => {
     if (inquiry_lead_days_other !== undefined) setClauses.push('inquiry_lead_days_other = VALUES(inquiry_lead_days_other)');
     if (inquiry_booking_horizon_days !== undefined) setClauses.push('inquiry_booking_horizon_days = VALUES(inquiry_booking_horizon_days)');
     if (inquiry_too_far_out_phrase !== undefined) setClauses.push('inquiry_too_far_out_phrase = VALUES(inquiry_too_far_out_phrase)');
+    if (vacant_max_move_in_days !== undefined) setClauses.push('vacant_max_move_in_days = VALUES(vacant_max_move_in_days)');
+    if (inquiry_gap_ask_phrase !== undefined) setClauses.push('inquiry_gap_ask_phrase = VALUES(inquiry_gap_ask_phrase)');
     if (inquiry_gap_band_1m_days !== undefined) setClauses.push('inquiry_gap_band_1m_days = VALUES(inquiry_gap_band_1m_days)');
     if (inquiry_gap_band_2m_days !== undefined) setClauses.push('inquiry_gap_band_2m_days = VALUES(inquiry_gap_band_2m_days)');
     if (inquiry_gap_band_3m_plus_days !== undefined) setClauses.push('inquiry_gap_band_3m_plus_days = VALUES(inquiry_gap_band_3m_plus_days)');
@@ -1661,6 +1665,8 @@ router.put('/settings', authenticate, async (req, res) => {
       includeInquiryLeadOther,
       includeInquiryBookingHorizon,
       includeInquiryTooFarOutPhrase,
+      includeVacantMaxMoveIn,
+      includeInquiryGapAskPhrase,
       includeInquiryGapBand1m,
       includeInquiryGapBand2m,
       includeInquiryGapBand3mPlus,
@@ -1710,6 +1716,14 @@ router.put('/settings', authenticate, async (req, res) => {
         insertColumns.push('inquiry_too_far_out_phrase');
         params.push(normalizedTooFarOutPhrase ?? null);
       }
+      if (includeVacantMaxMoveIn) {
+        insertColumns.push('vacant_max_move_in_days');
+        params.push(vacant_max_move_in_days ?? 30);
+      }
+      if (includeInquiryGapAskPhrase) {
+        insertColumns.push('inquiry_gap_ask_phrase');
+        params.push(normalizedGapAskPhrase ?? GAP_ASK_PHRASE);
+      }
       if (includeInquiryGapBand1m) {
         insertColumns.push('inquiry_gap_band_1m_days');
         params.push(inquiry_gap_band_1m_days ?? 3);
@@ -1745,6 +1759,8 @@ router.put('/settings', authenticate, async (req, res) => {
         if (!includeInquiryLeadOther && clause.startsWith('inquiry_lead_days_other')) return false;
         if (!includeInquiryBookingHorizon && clause.startsWith('inquiry_booking_horizon_days')) return false;
         if (!includeInquiryTooFarOutPhrase && clause.startsWith('inquiry_too_far_out_phrase')) return false;
+        if (!includeVacantMaxMoveIn && clause.startsWith('vacant_max_move_in_days')) return false;
+        if (!includeInquiryGapAskPhrase && clause.startsWith('inquiry_gap_ask_phrase')) return false;
         if (!includeInquiryGapBand1m && clause.startsWith('inquiry_gap_band_1m_days')) return false;
         if (!includeInquiryGapBand2m && clause.startsWith('inquiry_gap_band_2m_days')) return false;
         if (!includeInquiryGapBand3mPlus && clause.startsWith('inquiry_gap_band_3m_plus_days')) return false;
@@ -1794,6 +1810,14 @@ router.put('/settings', authenticate, async (req, res) => {
         column: 'inquiry_too_far_out_phrase',
         wasSent: inquiry_too_far_out_phrase !== undefined,
       },
+      includeVacantMaxMoveIn: {
+        column: 'vacant_max_move_in_days',
+        wasSent: vacant_max_move_in_days !== undefined,
+      },
+      includeInquiryGapAskPhrase: {
+        column: 'inquiry_gap_ask_phrase',
+        wasSent: inquiry_gap_ask_phrase !== undefined,
+      },
       includeInquiryGapBand1m: {
         column: 'inquiry_gap_band_1m_days',
         wasSent: inquiry_gap_band_1m_days !== undefined,
@@ -1828,6 +1852,8 @@ router.put('/settings', authenticate, async (req, res) => {
       includeInquiryLeadOther: true,
       includeInquiryBookingHorizon: true,
       includeInquiryTooFarOutPhrase: true,
+      includeVacantMaxMoveIn: true,
+      includeInquiryGapAskPhrase: true,
       includeInquiryGapBand1m: true,
       includeInquiryGapBand2m: true,
       includeInquiryGapBand3mPlus: true,

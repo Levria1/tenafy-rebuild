@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const {
   vacancyFit,
   exceedsHardGapCap,
+  exceedsVacantMoveInCutoff,
+  inquiryGapBandFit,
   vacancyNoMatchReason,
   partnerForwardBlock,
   compareVacancyFit,
@@ -61,6 +63,12 @@ const BEYOND_HORIZON_MOVE_OUT = addOrgDays(120);
 const BEYOND_HORIZON_GAP_3 = addOrgDays(87);
 const BEYOND_HORIZON_GAP_5 = addOrgDays(85);
 const BEYOND_HORIZON_GAP_45 = addOrgDays(45);
+const NEAR_GAP_BAND_DATE = addOrgDays(10);
+const NEAR_GAP_BAND_PLUS_ONE_DATE = addOrgDays(11);
+const NEAR_OCCUPIED_CAP_DATE = addOrgDays(15);
+const NEAR_OCCUPIED_OVER_CAP_DATE = addOrgDays(16);
+const NEAR_VACANT_CUTOFF_DATE = addOrgDays(30);
+const NEAR_VACANT_OVER_CUTOFF_DATE = addOrgDays(31);
 
 function publicRow(overrides = {}) {
   return {
@@ -321,9 +329,14 @@ test('exceedsHardGapCap keeps the inclusive boundary', () => {
   assert.equal(exceedsHardGapCap({ tier: 2, gap_days: 20, available_after_target: false }, 20), false);
 });
 
-test('exceedsHardGapCap always keeps tier-1 vacant units', () => {
-  // An already-vacant unit is the one the operator most wants to offer.
-  assert.equal(exceedsHardGapCap({ tier: 1, gap_days: 61, available_after_target: false }, 20), false);
+test('exceedsHardGapCap leaves vacant units to the vacant cutoff', () => {
+  assert.equal(exceedsHardGapCap({ tier: 1, gap_days: 21, available_after_target: false }, 20), false);
+});
+
+test('exceedsVacantMoveInCutoff applies only to vacant units', () => {
+  assert.equal(exceedsVacantMoveInCutoff({ tier: 1, gap_days: 31, available_after_target: false }, 30), true);
+  assert.equal(exceedsVacantMoveInCutoff({ tier: 1, gap_days: 30, available_after_target: false }, 30), false);
+  assert.equal(exceedsVacantMoveInCutoff({ tier: 2, gap_days: 31, available_after_target: false }, 30), false);
 });
 
 test('exceedsHardGapCap withholds tier-3 positive gaps beyond the cap', () => {
@@ -343,7 +356,7 @@ test('exceedsHardGapCap fails open when the hard cap setting is missing or inval
   assert.equal(exceedsHardGapCap({ tier: 2, gap_days: 30, available_after_target: false }, Number.NaN), false);
 });
 
-test('hard cap applies to the operator move-in scenario while preserving warnings', () => {
+test('hard cap and vacant cutoff apply as independent ceilings', () => {
   // Operator scenario: requested 2026-10-12, today 2026-08-12. Gap-9 is a clean
   // offer, gap-30 is hidden, and the already-vacant tier-1 row is still offered
   // and warned because it is the unit most urgent to fill.
@@ -357,14 +370,18 @@ test('hard cap applies to the operator move-in scenario while preserving warning
   ].map(vacancyToPublicShape)
     .map(row => ({ ...row, ...vacancyFit(row, targetDate, options) }));
 
-  const returned = rows.filter(row => !exceedsHardGapCap(row, 20));
+  const returned = rows.filter(row => (
+    !exceedsHardGapCap(row, 20)
+    && !exceedsVacantMoveInCutoff(row, 30)
+  ));
 
   assert.equal(rows.find(row => row.unit_id === 'u-gap-9').gap_days, 9);
   assert.equal(rows.find(row => row.unit_id === 'u-gap-9').gap_warning, false);
   assert.equal(exceedsHardGapCap(rows.find(row => row.unit_id === 'u-gap-30'), 20), true);
   assert.equal(rows.find(row => row.unit_id === 'u-vacant').gap_days, 61);
   assert.equal(rows.find(row => row.unit_id === 'u-vacant').gap_warning, true);
-  assert.deepEqual(returned.map(row => row.unit_id).sort(), ['u-gap-9', 'u-vacant']);
+  assert.equal(exceedsVacantMoveInCutoff(rows.find(row => row.unit_id === 'u-vacant'), 30), true);
+  assert.deepEqual(returned.map(row => row.unit_id).sort(), ['u-gap-9']);
 });
 
 test('vacancyNoMatchReason distinguishes capped results from no vacancies', () => {
@@ -505,7 +522,56 @@ test('bookingGapLimitForLease uses flat 10 when length is unknown and bands when
   assert.equal(bookingGapLimitForLease('2026-11-15', '2027-02-15'), 10);
   assert.equal(bookingGapLimitForLease('2026-11-15', '2027-03-20'), 10);
   assert.equal(bookingGapLimitForLease('2026-11-15', '2026-12-15', { band_1m_days: 1 }), 1);
-  assert.equal(bookingGapLimitForLease('2026-11-15', null, { band_3m_plus_days: 4 }), 10);
+  assert.equal(bookingGapLimitForLease('2026-11-15', null, { band_3m_plus_days: 4 }), 4);
+});
+
+test('inquiryGapBandFit treats the band boundary as a clean offer', () => {
+  const row = {
+    ...publicRow({ availability: { status: 'from_date', available_from: '2026-10-05', certain: true } }),
+    gap_days: 10,
+    available_after_target: false,
+  };
+
+  assert.deepEqual(inquiryGapBandFit(row, '2026-10-15', { today: '2026-08-18' }), {
+    request_date: '2026-10-15',
+    lease_duration_days: null,
+    gap_band_days: 10,
+    gap_band_assumed: true,
+    gap_within_band: true,
+    suggested_move_in_date: null,
+    gap_warning: false,
+  });
+});
+
+test('inquiryGapBandFit asks for band plus one with the suggested date', () => {
+  const row = {
+    ...publicRow({ availability: { status: 'from_date', available_from: '2026-10-04', certain: true } }),
+    gap_days: 11,
+    available_after_target: false,
+  };
+
+  assert.deepEqual(inquiryGapBandFit(row, '2026-10-15', { today: '2026-08-18' }), {
+    request_date: '2026-10-15',
+    lease_duration_days: null,
+    gap_band_days: 10,
+    gap_band_assumed: true,
+    gap_within_band: false,
+    suggested_move_in_date: '2026-10-14',
+    gap_warning: true,
+  });
+});
+
+test('inquiryGapBandFit clamps suggested move-in date to today', () => {
+  const row = {
+    ...publicRow({ availability: { status: 'from_date', available_from: '2026-08-01', certain: true } }),
+    gap_days: 17,
+    available_after_target: false,
+  };
+
+  assert.equal(
+    inquiryGapBandFit(row, '2026-08-18', { today: '2026-08-18' }).suggested_move_in_date,
+    '2026-08-18'
+  );
 });
 
 test('GET /vacancies without target_date keeps order and reports no cap filtering', async () => {
@@ -553,6 +619,8 @@ test('GET /vacancies without target_date keeps order and reports no cap filterin
         phrasing: {
           certain: '{units} available from {date}',
           uncertain: "We may also have {units} available, however the tenant may renew, they're not sure",
+          earlier: '{units} is free from {date} — would you be able to start a little earlier? We try not to leave a flat empty too long.',
+          gap_ask: "We're unable to accept a booking that would leave {units} empty for {gap_days} days. Would you be able to move in by {suggested_move_in_date}?",
         },
       },
     };
@@ -606,6 +674,153 @@ test('GET /vacancies with target_date ranks and warns without filtering on max_g
     assert.equal(result.body.data.no_match_reason, null);
     assert.deepEqual(result.body.data.partner_forward, { applies: false, message: 'Forward message' });
     assert.equal(typeof result.body.data.phrasing.earlier, 'string');
+  } finally {
+    advertising.computeVacancies = originalComputeVacancies;
+    advertising.loadSettings = originalLoadSettings;
+  }
+});
+
+test('GET /vacancies target_date offers out-of-band rows and hides only past occupied ceiling', async () => {
+  const advertising = require('../src/routes/advertising');
+  const originalComputeVacancies = advertising.computeVacancies;
+  const originalLoadSettings = advertising.loadSettings;
+  const requestDate = addOrgDays(20);
+  const gap11End = addOrgDays(9);
+  const gap15End = addOrgDays(5);
+  const gap16End = addOrgDays(4);
+  advertising.loadSettings = async () => ({
+    max_gap_days: 0,
+    hard_max_gap_days: 15,
+    vacant_max_move_in_days: 30,
+    partner_forward_message: null,
+    inquiry_booking_horizon_days: 60,
+    inquiry_gap_band_1m_days: 3,
+    inquiry_gap_band_2m_days: 6,
+    inquiry_gap_band_3m_plus_days: 10,
+  });
+  advertising.computeVacancies = async () => ({
+    vacancies: [
+      vacancySourceRow({ unit_id: 'u-gap-11', unit_name: '11', end_date: gap11End }),
+      vacancySourceRow({ unit_id: 'u-gap-15', unit_name: '15', end_date: gap15End }),
+      vacancySourceRow({ unit_id: 'u-gap-16', unit_name: '16', end_date: gap16End }),
+    ],
+  });
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const result = await callVacanciesHandler(handler, { target_date: requestDate });
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data.vacancies.map(row => row.unit_id), ['u-gap-11', 'u-gap-15']);
+    assert.equal(result.body.data.hidden_by_gap_cap, 1);
+    const gap11 = result.body.data.vacancies.find(row => row.unit_id === 'u-gap-11');
+    assert.equal(gap11.gap_days, 11);
+    assert.equal(gap11.gap_band_days, 10);
+    assert.equal(gap11.gap_band_assumed, true);
+    assert.equal(gap11.gap_within_band, false);
+    assert.equal(gap11.gap_warning, true);
+    assert.equal(gap11.suggested_move_in_date, addOrgDays(19));
+    const gap15 = result.body.data.vacancies.find(row => row.unit_id === 'u-gap-15');
+    assert.equal(gap15.gap_days, 15);
+    assert.equal(gap15.gap_within_band, false);
+    assert.equal(gap15.suggested_move_in_date, addOrgDays(15));
+    assert.equal(result.body.data.booking_gap_days, 10);
+    assert.equal(result.body.data.lease_duration_days, null);
+  } finally {
+    advertising.computeVacancies = originalComputeVacancies;
+    advertising.loadSettings = originalLoadSettings;
+  }
+});
+
+test('GET /vacancies free_on includes band fields and keeps the inclusive band boundary clean', async () => {
+  const advertising = require('../src/routes/advertising');
+  const originalComputeVacancies = advertising.computeVacancies;
+  const originalLoadSettings = advertising.loadSettings;
+  advertising.loadSettings = async () => ({
+    max_gap_days: 0,
+    hard_max_gap_days: 15,
+    vacant_max_move_in_days: 30,
+    partner_forward_message: null,
+    inquiry_booking_horizon_days: 60,
+    inquiry_gap_band_1m_days: 3,
+    inquiry_gap_band_2m_days: 6,
+    inquiry_gap_band_3m_plus_days: 10,
+  });
+  advertising.computeVacancies = async () => ({
+    vacancies: [
+      vacancySourceRow({ unit_id: 'u-band', unit_name: 'Band', tier: 2, end_date: orgToday() }),
+      vacancySourceRow({ unit_id: 'u-band-plus', unit_name: 'BandPlus', tier: 2, end_date: orgToday() }),
+    ],
+  });
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const bandResult = await callVacanciesHandler(handler, { free_on: NEAR_GAP_BAND_DATE });
+    const plusResult = await callVacanciesHandler(handler, { free_on: NEAR_GAP_BAND_PLUS_ONE_DATE });
+
+    assert.equal(bandResult.statusCode, 200);
+    assert.equal(bandResult.body.data.vacancies[0].gap_days, 10);
+    assert.equal(bandResult.body.data.vacancies[0].gap_within_band, true);
+    assert.equal(bandResult.body.data.vacancies[0].gap_warning, false);
+    assert.equal(bandResult.body.data.vacancies[0].suggested_move_in_date, null);
+    assert.equal(bandResult.body.data.booking_gap_days, 10);
+    assert.equal(typeof bandResult.body.data.phrasing.earlier, 'string');
+    assert.equal(typeof bandResult.body.data.phrasing.gap_ask, 'string');
+
+    assert.equal(plusResult.statusCode, 200);
+    assert.equal(plusResult.body.data.vacancies[0].gap_days, 11);
+    assert.equal(plusResult.body.data.vacancies[0].gap_within_band, false);
+    assert.equal(plusResult.body.data.vacancies[0].gap_warning, true);
+    assert.equal(plusResult.body.data.vacancies[0].suggested_move_in_date, NEAR_GAP_BAND_DATE);
+  } finally {
+    advertising.computeVacancies = originalComputeVacancies;
+    advertising.loadSettings = originalLoadSettings;
+  }
+});
+
+test('GET /vacancies applies occupied 15-day ceiling and vacant 30-day cutoff boundaries', async () => {
+  const advertising = require('../src/routes/advertising');
+  const originalComputeVacancies = advertising.computeVacancies;
+  const originalLoadSettings = advertising.loadSettings;
+  advertising.loadSettings = async () => ({
+    max_gap_days: 0,
+    hard_max_gap_days: 15,
+    vacant_max_move_in_days: 30,
+    partner_forward_message: null,
+    inquiry_booking_horizon_days: 60,
+  });
+  advertising.computeVacancies = async () => ({
+    vacancies: [
+      vacancySourceRow({ unit_id: 'u-occupied', unit_name: 'Occupied', tier: 2, end_date: orgToday() }),
+      vacancySourceRow({ unit_id: 'u-vacant', unit_name: 'Vacant', tier: 1, end_date: null, next_move_in_date: null }),
+    ],
+  });
+
+  try {
+    delete require.cache[require.resolve('../src/routes/public')];
+    const publicRouter = require('../src/routes/public');
+    const handler = publicRouter.stack
+      .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
+      .route.stack.at(-1).handle;
+    const occupiedBoundary = await callVacanciesHandler(handler, { free_on: NEAR_OCCUPIED_CAP_DATE });
+    const occupiedOver = await callVacanciesHandler(handler, { free_on: NEAR_OCCUPIED_OVER_CAP_DATE });
+    const vacantBoundary = await callVacanciesHandler(handler, { free_on: NEAR_VACANT_CUTOFF_DATE });
+    const vacantOver = await callVacanciesHandler(handler, { free_on: NEAR_VACANT_OVER_CUTOFF_DATE });
+
+    assert.ok(occupiedBoundary.body.data.vacancies.some(row => row.unit_id === 'u-occupied'));
+    assert.equal(occupiedBoundary.body.data.vacancies.find(row => row.unit_id === 'u-vacant').gap_within_band, false);
+    assert.ok(!occupiedOver.body.data.vacancies.some(row => row.unit_id === 'u-occupied'));
+    assert.ok(occupiedOver.body.data.vacancies.some(row => row.unit_id === 'u-vacant'));
+    assert.ok(vacantBoundary.body.data.vacancies.some(row => row.unit_id === 'u-vacant'));
+    assert.ok(!vacantOver.body.data.vacancies.some(row => row.unit_id === 'u-vacant'));
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
     advertising.loadSettings = originalLoadSettings;
@@ -788,11 +1003,11 @@ test('GET /vacancies beyond horizon returns matching NR from the on-demand looku
   let computeCalled = false;
   let lookupOptions = null;
   advertising.loadSettings = async () => ({
-    max_gap_days: 10,
-    hard_max_gap_days: 20,
-    partner_forward_message: 'Forward message',
-    inquiry_booking_horizon_days: 60,
-    inquiry_too_far_out_phrase: 'Check back {check_back_on}',
+      max_gap_days: 10,
+      hard_max_gap_days: 20,
+      partner_forward_message: 'Forward message',
+      inquiry_booking_horizon_days: 60,
+      inquiry_too_far_out_phrase: 'Check back {check_back_on}',
   });
   advertising.computeVacancies = async () => {
     computeCalled = true;
@@ -802,6 +1017,7 @@ test('GET /vacancies beyond horizon returns matching NR from the on-demand looku
     lookupOptions = options;
     return [
       vacancySourceRow({ unit_id: 'u-nr', unit_name: 'NR', tier: 2, end_date: BEYOND_HORIZON_GAP_3, days_left: 87 }),
+      vacancySourceRow({ unit_id: 'u-gap-5', unit_name: 'Gap5', tier: 2, end_date: BEYOND_HORIZON_GAP_5, days_left: 85 }),
       vacancySourceRow({ unit_id: 'u-too-early', unit_name: 'Early', tier: 2, end_date: BEYOND_HORIZON_GAP_45, days_left: 45 }),
       vacancySourceRow({ unit_id: 'u-mr', unit_name: 'MR', tier: 3, intent: 'MR', end_date: BEYOND_HORIZON_GAP_5, days_left: 85 }),
     ];
@@ -819,16 +1035,24 @@ test('GET /vacancies beyond horizon returns matching NR from the on-demand looku
     assert.equal(computeCalled, false);
     assert.deepEqual(lookupOptions, {
       requestDate: BEYOND_HORIZON_FREE_ON,
-      maxGapDays: 3,
+      maxGapDays: 20,
       propertyId: null,
       limit: 50,
     });
-    assert.deepEqual(result.body.data.vacancies.map(row => row.unit_id), ['u-nr']);
+    assert.deepEqual(result.body.data.vacancies.map(row => row.unit_id), ['u-nr', 'u-gap-5']);
     assert.equal(result.body.data.vacancies[0].availability.available_from, BEYOND_HORIZON_GAP_3);
+    assert.equal(result.body.data.vacancies[0].gap_within_band, true);
+    assert.equal(result.body.data.vacancies[0].suggested_move_in_date, null);
+    assert.equal(result.body.data.vacancies[1].gap_days, 5);
+    assert.equal(result.body.data.vacancies[1].gap_band_days, 3);
+    assert.equal(result.body.data.vacancies[1].gap_within_band, false);
+    assert.equal(result.body.data.vacancies[1].suggested_move_in_date, addOrgDays(88));
     assert.equal(result.body.data.no_match_reason, null);
     assert.equal(Object.hasOwn(result.body.data, 'check_back_in_days'), false);
     assert.equal(Object.hasOwn(result.body.data, 'next_available'), false);
     assert.deepEqual(result.body.data.partner_forward, { applies: false, message: null });
+    assert.equal(result.body.data.booking_gap_days, 3);
+    assert.equal(result.body.data.phrasing.gap_ask, "We're unable to accept a booking that would leave {units} empty for {gap_days} days. Would you be able to move in by {suggested_move_in_date}?");
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
     advertising.loadSettings = originalLoadSettings;
@@ -1070,6 +1294,25 @@ test('PUT /advertising/settings rejects invalid inquiry_booking_horizon_days', a
   assert.match(result.body.message, /inquiry_booking_horizon_days must be an integer between 0 and 365/);
 });
 
+test('PUT /advertising/settings rejects invalid vacant_max_move_in_days and gap ask type', async () => {
+  const advertising = require('../src/routes/advertising');
+  const handler = advertising.stack
+    .find(layer => layer.route?.path === '/settings' && layer.route.methods.put)
+    .route.stack.at(-1).handle;
+
+  const badDays = await callSettingsPutHandler(handler, { vacant_max_move_in_days: 366 }, { execute: async () => {
+    throw new Error('pool should not be used for invalid vacant cutoff input');
+  } });
+  assert.equal(badDays.statusCode, 400);
+  assert.match(badDays.body.message, /vacant_max_move_in_days must be an integer between 0 and 365/);
+
+  const badText = await callSettingsPutHandler(handler, { inquiry_gap_ask_phrase: 123 }, { execute: async () => {
+    throw new Error('pool should not be used for invalid gap ask input');
+  } });
+  assert.equal(badText.statusCode, 400);
+  assert.match(badText.body.message, /inquiry_gap_ask_phrase must be text/);
+});
+
 test('GET /vacancies beyond horizon uses operator gap bands from settings', async () => {
   const advertising = require('../src/routes/advertising');
   const originalComputeVacancies = advertising.computeVacancies;
@@ -1103,7 +1346,7 @@ test('GET /vacancies beyond horizon uses operator gap bands from settings', asyn
     const result = await callVacanciesHandler(handler, { free_on: BEYOND_HORIZON_FREE_ON, move_out: BEYOND_HORIZON_MOVE_OUT });
 
     assert.equal(result.statusCode, 200);
-    assert.equal(lookupOptions.maxGapDays, 1);
+    assert.equal(lookupOptions.maxGapDays, 20);
     assert.equal(result.body.data.booking_gap_days, 1);
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
@@ -1145,17 +1388,23 @@ test('PUT /advertising/settings accepts inquiry booking fields', async () => {
   const result = await callSettingsPutHandler(handler, {
     inquiry_booking_horizon_days: 90,
     inquiry_too_far_out_phrase: 'Check back {check_back_on}',
+    vacant_max_move_in_days: 30,
+    inquiry_gap_ask_phrase: 'Can you move in by {suggested_move_in_date}?',
   }, pool);
 
   assert.equal(result.statusCode, 200);
   const upsert = executed.find(item => /INSERT INTO advertising_setting/.test(item.sql));
   assert.match(upsert.sql, /inquiry_booking_horizon_days/);
   assert.match(upsert.sql, /inquiry_too_far_out_phrase/);
+  assert.match(upsert.sql, /vacant_max_move_in_days/);
+  assert.match(upsert.sql, /inquiry_gap_ask_phrase/);
   assert.ok(upsert.params.includes(90));
   assert.ok(upsert.params.includes('Check back {check_back_on}'));
+  assert.ok(upsert.params.includes(30));
+  assert.ok(upsert.params.includes('Can you move in by {suggested_move_in_date}?'));
 });
 
-test('GET /units/search passes SEARCH gap bands, not inquiry', async () => {
+test('GET /units/search passes unified inquiry gap bands and filters nothing by band', async () => {
   const advertising = require('../src/routes/advertising');
   const unitSearch = require('../src/services/unitSearch');
   const originalLoadSettings = advertising.loadSettings;
@@ -1183,10 +1432,10 @@ test('GET /units/search passes SEARCH gap bands, not inquiry', async () => {
     const result = await callVacanciesHandler(handler, { move_in_date: '2026-11-15', move_out_date: '2026-12-15' });
 
     assert.equal(result.statusCode, 200);
-    assert.equal(capturedBands.band_1m_days, 7);
-    assert.equal(capturedBands.band_2m_days, 8);
-    assert.equal(capturedBands.band_3m_plus_days, 9);
-    assert.equal(capturedBands.source.band_1m_days, 'search');
+    assert.equal(capturedBands.band_1m_days, 1);
+    assert.equal(capturedBands.band_2m_days, 2);
+    assert.equal(capturedBands.band_3m_plus_days, 4);
+    assert.equal(capturedBands.source.band_1m_days, 'inquiry');
   } finally {
     advertising.loadSettings = originalLoadSettings;
     unitSearch.searchUnits = originalSearchUnits;
@@ -1194,7 +1443,7 @@ test('GET /units/search passes SEARCH gap bands, not inquiry', async () => {
   }
 });
 
-test('search_available_units tool passes SEARCH gap bands, not inquiry', async () => {
+test('search_available_units tool passes unified inquiry gap bands', async () => {
   const advertising = require('../src/routes/advertising');
   const unitSearch = require('../src/services/unitSearch');
   const originalLoadSettings = advertising.loadSettings;
@@ -1221,15 +1470,73 @@ test('search_available_units tool passes SEARCH gap bands, not inquiry', async (
       { pool: {}, orgId: 'org1' },
       { move_in_date: '2026-11-15', move_out_date: '2026-12-15', city: 'causeway bay', budget: 15000 },
     );
-    assert.equal(capturedBands.band_1m_days, 7);
-    assert.equal(capturedBands.band_2m_days, 8);
-    assert.equal(capturedBands.band_3m_plus_days, 9);
-    assert.equal(capturedBands.source.band_1m_days, 'search');
+    assert.equal(capturedBands.band_1m_days, 1);
+    assert.equal(capturedBands.band_2m_days, 2);
+    assert.equal(capturedBands.band_3m_plus_days, 4);
+    assert.equal(capturedBands.source.band_1m_days, 'inquiry');
   } finally {
     advertising.loadSettings = originalLoadSettings;
     unitSearch.searchUnits = originalSearchUnits;
     delete require.cache[require.resolve('../src/services/chatTools')];
   }
+});
+
+test('/units/search engine keeps out-of-band results advisory-only', async () => {
+  const { searchUnits } = require('../src/services/unitSearch');
+  const executed = [];
+  const moveIn = addOrgDays(20);
+  const moveOut = addOrgDays(50);
+  const pool = {
+    execute: async (sql, params) => {
+      executed.push({ sql, params });
+      if (/SELECT u\.id AS unit_id/.test(sql)) {
+        return [[{
+          unit_id: 'u-out-band',
+          unit_name: 'Out',
+          beds: 1,
+          baths: 1,
+          size: 300,
+          size_unit: 'sqft',
+          deposit_price: 1000,
+          rent_price_min: 1000,
+          rent_price_max: 1000,
+          amenity_detail: null,
+          listing_url: null,
+          unit_photo_id: null,
+          property_id: 'p1',
+          property_name: 'Search House',
+          street_address: '1 Test St',
+          city: 'HK',
+          state: null,
+          district: 'Central',
+          country: 'HK',
+          zip_code: null,
+          currency: 'HKD',
+          last_lease_price: 1000,
+          last_lease_end_date: orgToday(),
+          next_lease_start_date: null,
+        }]];
+      }
+      if (/FROM unit_amenity/.test(sql)) return [[]];
+      throw new Error(`unexpected search query: ${sql}`);
+    },
+  };
+
+  const { results, total } = await searchUnits(pool, {
+    orgId: 'org1',
+    moveIn,
+    moveOut,
+    gapBands: { band_1m_days: 3, band_2m_days: 6, band_3m_plus_days: 10 },
+    limit: 10,
+  });
+
+  assert.equal(total, 1);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].unit_id, 'u-out-band');
+  assert.equal(results[0].gap_band_days, 3);
+  assert.equal(results[0].gap_within_tolerance, false);
+  assert.ok(results[0].forward_gap_days > 3);
+  assert.ok(executed.length >= 2);
 });
 
 test('PUT /advertising/settings accepts valid inquiry gap bands', async () => {
@@ -1498,7 +1805,7 @@ test('PUT /advertising/settings still saves when search gap columns are missing'
   assert.match(upserts.at(-1).sql, /inquiry_booking_horizon_days/);
 });
 
-test('PUT /advertising/settings validates max_gap_days against merged hard_max_gap_days', async () => {
+test('PUT /advertising/settings no longer validates max_gap_days against hard_max_gap_days', async () => {
   const advertising = require('../src/routes/advertising');
   const handler = advertising.stack
     .find(layer => layer.route?.path === '/settings' && layer.route.methods.put)
@@ -1519,15 +1826,14 @@ test('PUT /advertising/settings validates max_gap_days against merged hard_max_g
           lead_days_other: 45,
         }]];
       }
-      throw new Error('upsert should not run after cross-field validation fails');
+      return [{ affectedRows: 1 }];
     },
   };
 
   const result = await callSettingsPutHandler(handler, { max_gap_days: 21 }, pool);
 
-  assert.equal(result.statusCode, 400);
-  assert.match(result.body.message, /warning threshold above the hide threshold/);
-  assert.equal(executed.length, 1);
+  assert.equal(result.statusCode, 200);
+  assert.ok(executed.some(item => /INSERT INTO advertising_setting/.test(item.sql)));
 });
 
 function vacancySourceRow(overrides = {}) {
