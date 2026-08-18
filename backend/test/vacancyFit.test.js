@@ -20,6 +20,48 @@ const EMPTY_FIT = {
   available_after_target: null,
 };
 
+// ---------------------------------------------------------------------------
+// Fixed date literal, or derived from today? The rule, established by sweeping this
+// file on 2026-08-18 (five planted regressions, replayed with the clock frozen in
+// 2026/2027/2028 to check each test still caught them):
+//
+//   FIXED literals — correct, and clearer, for the pure helpers (vacancyFit,
+//   matchesFreeOn, classifyFreeOn, bookingGapLimitForLease, bookingHorizonDecision).
+//   They compare dates the caller supplies against each other and never read the
+//   clock — bookingHorizonDecision even takes an explicit `today`. Two thirds of the
+//   dates in this file are these. Leave them alone.
+//
+//   DERIVED from today — required for the beyond-horizon ROUTE tests below, which
+//   drive the real HTTP handler. It reads today from orgToday() with no injection
+//   point, so a hardcoded future free_on rots two ways: check_back_in_days shrinks
+//   by one every night, and once the clock passes the date the request is no longer
+//   beyond the horizon at all, so the premise collapses and the test stops guarding
+//   the rule it was written for. Both happened — the suite went red on 2026-08-18,
+//   and at a 2028 clock all six were red whether or not the horizon gate worked,
+//   which is worse than useless: a permanently red test carries no signal.
+//
+// So: does the assertion depend on how far the date is from TODAY? Derive it.
+// Does it only depend on how two dates relate to EACH OTHER? Keep the literal.
+// ---------------------------------------------------------------------------
+const { orgToday } = require('../src/utils/orgTime');
+
+function addOrgDays(days) {
+  const [y, m, d] = orgToday().split('-').map(Number);
+  const shifted = new Date(Date.UTC(y, m - 1, d + days));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-${String(shifted.getUTCDate()).padStart(2, '0')}`;
+}
+
+// 90 days out against a 60-day horizon → check back in 30 days.
+const BEYOND_HORIZON_FREE_ON = addOrgDays(90);
+const BEYOND_HORIZON_CHECK_BACK_ON = addOrgDays(30);
+// A one-month stay from the requested date, so the 1-month gap band (3 days) applies.
+const BEYOND_HORIZON_MOVE_OUT = addOrgDays(120);
+// Lease ends measured back from the requested date: 3 days before it fits a 3-day
+// band, 45 days before it does not.
+const BEYOND_HORIZON_GAP_3 = addOrgDays(87);
+const BEYOND_HORIZON_GAP_5 = addOrgDays(85);
+const BEYOND_HORIZON_GAP_45 = addOrgDays(45);
+
 function publicRow(overrides = {}) {
   return {
     unit_id: 'u1',
@@ -759,9 +801,9 @@ test('GET /vacancies beyond horizon returns matching NR from the on-demand looku
   advertising.findBeyondHorizonNrVacancies = async (_pool, _orgId, options) => {
     lookupOptions = options;
     return [
-      vacancySourceRow({ unit_id: 'u-nr', unit_name: 'NR', tier: 2, end_date: '2026-11-12', days_left: 87 }),
-      vacancySourceRow({ unit_id: 'u-too-early', unit_name: 'Early', tier: 2, end_date: '2026-10-01', days_left: 45 }),
-      vacancySourceRow({ unit_id: 'u-mr', unit_name: 'MR', tier: 3, intent: 'MR', end_date: '2026-11-10', days_left: 85 }),
+      vacancySourceRow({ unit_id: 'u-nr', unit_name: 'NR', tier: 2, end_date: BEYOND_HORIZON_GAP_3, days_left: 87 }),
+      vacancySourceRow({ unit_id: 'u-too-early', unit_name: 'Early', tier: 2, end_date: BEYOND_HORIZON_GAP_45, days_left: 45 }),
+      vacancySourceRow({ unit_id: 'u-mr', unit_name: 'MR', tier: 3, intent: 'MR', end_date: BEYOND_HORIZON_GAP_5, days_left: 85 }),
     ];
   };
 
@@ -771,18 +813,18 @@ test('GET /vacancies beyond horizon returns matching NR from the on-demand looku
     const handler = publicRouter.stack
       .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
       .route.stack.at(-1).handle;
-    const result = await callVacanciesHandler(handler, { free_on: '2026-11-15', move_out: '2026-12-15' });
+    const result = await callVacanciesHandler(handler, { free_on: BEYOND_HORIZON_FREE_ON, move_out: BEYOND_HORIZON_MOVE_OUT });
 
     assert.equal(result.statusCode, 200);
     assert.equal(computeCalled, false);
     assert.deepEqual(lookupOptions, {
-      requestDate: '2026-11-15',
+      requestDate: BEYOND_HORIZON_FREE_ON,
       maxGapDays: 3,
       propertyId: null,
       limit: 50,
     });
     assert.deepEqual(result.body.data.vacancies.map(row => row.unit_id), ['u-nr']);
-    assert.equal(result.body.data.vacancies[0].availability.available_from, '2026-11-12');
+    assert.equal(result.body.data.vacancies[0].availability.available_from, BEYOND_HORIZON_GAP_3);
     assert.equal(result.body.data.no_match_reason, null);
     assert.equal(Object.hasOwn(result.body.data, 'check_back_in_days'), false);
     assert.equal(Object.hasOwn(result.body.data, 'next_available'), false);
@@ -809,7 +851,7 @@ test('GET /vacancies beyond horizon withholds tier 1 and tier 3 and returns too_
   advertising.computeVacancies = async () => ({
     vacancies: [
       vacancySourceRow({ unit_id: 'u-vacant', tier: 1, end_date: null }),
-      vacancySourceRow({ unit_id: 'u-mr', tier: 3, intent: 'MR', end_date: '2026-11-15' }),
+      vacancySourceRow({ unit_id: 'u-mr', tier: 3, intent: 'MR', end_date: BEYOND_HORIZON_FREE_ON }),
     ],
   });
   advertising.findBeyondHorizonNrVacancies = async () => [];
@@ -820,13 +862,13 @@ test('GET /vacancies beyond horizon withholds tier 1 and tier 3 and returns too_
     const handler = publicRouter.stack
       .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
       .route.stack.at(-1).handle;
-    const result = await callVacanciesHandler(handler, { free_on: '2026-11-15' });
+    const result = await callVacanciesHandler(handler, { free_on: BEYOND_HORIZON_FREE_ON });
 
     assert.equal(result.statusCode, 200);
     assert.deepEqual(result.body.data.vacancies, []);
     assert.equal(result.body.data.no_match_reason, 'too_far_out');
     assert.equal(result.body.data.check_back_in_days, 30);
-    assert.equal(result.body.data.check_back_on, '2026-09-16');
+    assert.equal(result.body.data.check_back_on, BEYOND_HORIZON_CHECK_BACK_ON);
     assert.equal(result.body.data.booking_horizon_days, 60);
     assert.equal(result.body.data.booking_gap_days, 10);
     assert.equal(Object.hasOwn(result.body.data, 'next_available'), false);
@@ -866,9 +908,9 @@ test('beyond horizon, only NR survives the gate even when tier 1 and 3 fit the d
   // Deliberately returns what the SQL should never return, so the JS gate is
   // load-bearing rather than decorative.
   advertising.findBeyondHorizonNrVacancies = async () => [
-    vacancySourceRow({ unit_id: 'u-vacant', unit_name: 'V', tier: 1, intent: 'Vacant', end_date: '2026-11-15' }),
-    vacancySourceRow({ unit_id: 'u-mr', unit_name: 'M', tier: 3, intent: 'MR', end_date: '2026-11-15' }),
-    vacancySourceRow({ unit_id: 'u-nr', unit_name: 'N', tier: 2, intent: 'NR', end_date: '2026-11-15' }),
+    vacancySourceRow({ unit_id: 'u-vacant', unit_name: 'V', tier: 1, intent: 'Vacant', end_date: BEYOND_HORIZON_FREE_ON }),
+    vacancySourceRow({ unit_id: 'u-mr', unit_name: 'M', tier: 3, intent: 'MR', end_date: BEYOND_HORIZON_FREE_ON }),
+    vacancySourceRow({ unit_id: 'u-nr', unit_name: 'N', tier: 2, intent: 'NR', end_date: BEYOND_HORIZON_FREE_ON }),
   ];
 
   try {
@@ -877,7 +919,7 @@ test('beyond horizon, only NR survives the gate even when tier 1 and 3 fit the d
     const handler = publicRouter.stack
       .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
       .route.stack.at(-1).handle;
-    const result = await callVacanciesHandler(handler, { free_on: '2026-11-15' });
+    const result = await callVacanciesHandler(handler, { free_on: BEYOND_HORIZON_FREE_ON });
 
     assert.equal(result.statusCode, 200);
     assert.deepEqual(
@@ -918,7 +960,7 @@ test('beyond horizon, a manual vacancy override is not offered', async () => {
   advertising.computeVacancies = async () => ({
     vacancies: [vacancySourceRow({
       unit_id: 'u-manual', unit_name: 'MAN', tier: 3, intent: 'Manual',
-      source: 'manual', end_date: '2026-11-15',
+      source: 'manual', end_date: BEYOND_HORIZON_FREE_ON,
     })],
   });
   advertising.findBeyondHorizonNrVacancies = async () => [];
@@ -929,7 +971,7 @@ test('beyond horizon, a manual vacancy override is not offered', async () => {
     const handler = publicRouter.stack
       .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
       .route.stack.at(-1).handle;
-    const result = await callVacanciesHandler(handler, { free_on: '2026-11-15' });
+    const result = await callVacanciesHandler(handler, { free_on: BEYOND_HORIZON_FREE_ON });
 
     assert.equal(result.statusCode, 200);
     assert.deepEqual(result.body.data.vacancies, [], 'a manual override must stay withheld beyond the horizon');
@@ -964,12 +1006,12 @@ test('GET /vacancies target_date cannot bypass the horizon', async () => {
     const handler = publicRouter.stack
       .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
       .route.stack.at(-1).handle;
-    const result = await callVacanciesHandler(handler, { target_date: '2026-11-15' });
+    const result = await callVacanciesHandler(handler, { target_date: BEYOND_HORIZON_FREE_ON });
 
     assert.equal(result.statusCode, 200);
     assert.equal(computeCalled, false);
     assert.equal(result.body.data.no_match_reason, 'too_far_out');
-    assert.equal(result.body.data.target_date, '2026-11-15');
+    assert.equal(result.body.data.target_date, BEYOND_HORIZON_FREE_ON);
     assert.equal(Object.hasOwn(result.body.data, 'next_available'), false);
   } finally {
     advertising.computeVacancies = originalComputeVacancies;
@@ -1058,7 +1100,7 @@ test('GET /vacancies beyond horizon uses operator gap bands from settings', asyn
     const handler = publicRouter.stack
       .find(layer => layer.route?.path === '/vacancies' && layer.route.methods.get)
       .route.stack.at(-1).handle;
-    const result = await callVacanciesHandler(handler, { free_on: '2026-11-15', move_out: '2026-12-15' });
+    const result = await callVacanciesHandler(handler, { free_on: BEYOND_HORIZON_FREE_ON, move_out: BEYOND_HORIZON_MOVE_OUT });
 
     assert.equal(result.statusCode, 200);
     assert.equal(lookupOptions.maxGapDays, 1);
