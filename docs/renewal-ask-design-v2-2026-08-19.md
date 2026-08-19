@@ -6,13 +6,22 @@ Date: 2026-08-19. Operator: Tane Residence (`8300127259922432`).
 
 ## The finding that changed the design
 
-We already contact tenants about renewals, and have done 1,086 times.
+We already contact tenants about renewals — though far less often than the raw row count suggests.
 
 | | |
 |---|---:|
 | Current/future leases with `tenant_renewal = 1` | **126 of 149** |
 | Leases with `tenant_renewal_days` set | 149 |
-| `Renewal-Tenant` emails sent to date | **1,086** |
+| `Renewal-Tenant` rows in `email_log` | 1,086 |
+| …of those, **actually sent** | **127** (last 15 Aug 2026) |
+| …**blocked by the send whitelist** | 954 (last 4 May 2026) |
+| …failed | 5 (last 16 Jul 2026) |
+
+**Correction, 2026-08-19:** an earlier version of this document read the 1,086 row count as 1,086
+emails sent. Only 127 were. The premise survives — 126 leases are opted in and the job runs daily —
+but the outreach is an order of magnitude smaller than stated, and the 954 whitelist-blocked rows mean
+most opted-in tenants have never actually received one. Worth knowing before calling this a
+replacement for something already working at scale.
 
 `sendRenewalEmailsForOrg` (scheduler Job 7) emails the tenant `tenant_renewal_days`
 before the lease ends, opted in per lease from the lease create/edit form.
