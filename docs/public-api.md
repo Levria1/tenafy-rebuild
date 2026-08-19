@@ -776,6 +776,69 @@ terminal states are still refused as no longer active.
 
 ---
 
+### Renewal asks — "is the sitting tenant staying?"
+
+A unit whose tenant has not decided can only be offered hedged. Rather than guess a
+decision date, Tenafy asks the tenant: up to three times, spaced by a configurable gap,
+then hands the lease to staff. Off by default per organisation.
+
+**Tenafy is the only sender.** Every ask is dispatched by Tenafy — the scheduled ones and
+the demand-triggered ones alike — over WhatsApp via your `/send` endpoint, or by email if
+the tenant has no phone. The channel is fixed for the whole sequence.
+
+```
+POST /api/public/renewal-ask                   { unit_id }        → trigger an ask (we send it)
+GET  /api/public/renewal-asks/pending                             → observational; see below
+POST /api/public/renewal-ask/:id/reply         { intent } | { text }
+POST /api/public/renewal-ask/:id/sent                             → retained, writes nothing
+```
+
+`POST /renewal-ask` decides whether an ask is due, sends it, and returns the audit row. It
+is idempotent per decision cycle: a second call returns `created: false` with
+`reason: "already_asked_this_cycle"` rather than messaging the tenant twice. Other reasons
+are `disabled`, `tenant_unreachable`, and the eligibility reasons (`already_decided`,
+`already_replied`, `too_early`, `lease_already_ended`). `reason: "send_failed"` with
+`created: true` means the ask exists and has spent its slot but the tenant was not reached —
+we never retry a send, because a timed-out send is indistinguishable from a delivered one.
+
+⚠️ **The rendered message is deliberately not in any response.** There is nothing here for
+a caller to transmit, by design: two senders is how a tenant gets asked the same question
+twice, or — if each side assumes the other sent it — never gets asked at all while the ask
+is counted as spent. `GET /renewal-asks/pending` is therefore purely observational: it
+reads, never claims, and normally returns nothing (rows appear only when a send failed).
+`POST /:id/sent` is retained so an existing caller gets a truthful 200, but it no longer
+records anything.
+
+#### Relaying a reply
+
+```
+POST /api/public/renewal-ask/:id/reply
+{ "intent": "extend" | "leaving" | "unsure" }     ← preferred
+{ "text":   "yeah we're staying thanks" }          ← we classify, conservatively
+```
+
+Anything ambiguous becomes `unsure`, which is recorded and changes nothing customer-facing.
+
+**A vague answer may be corrected; a real one is final.** You cannot tell a tenant's answer
+from an unrelated message, and should not try — so an ask landing mid-conversation may get
+"ok thanks" relayed against it. Post again when the real answer arrives: an `unsure` on
+record is replaced by `extend` or `leaving`, and the response carries
+`superseded: "unsure"`. A definite answer can never be overwritten, in either direction,
+because the dangerous move is the one that puts a home back on the market.
+
+`unsure` also does **not** end the sequence — the remaining asks still go out, and three
+vague answers still escalate to staff.
+
+Only `extend` acts automatically: the unit leaves customer-facing feeds
+(`withdrawn_from_offers: true`). `leaving` and `unsure` are recorded for a human. Evidence
+good enough to stop us selling is not good enough to let us sell.
+
+`applied: false` with a `stale_reason` means the lease changed after we asked, so the reply
+was recorded but not acted on. It is always recorded — a tenant who took the trouble to
+answer is never dropped silently.
+
+---
+
 ## Field Reference (commonly-needed enums)
 
 | Field | Values |
