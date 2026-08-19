@@ -774,6 +774,35 @@ confirmation with a new proposed time. A tenant reply is accepted on an
 `AUTO_CONFIRMED` negotiation so the reversal path can run. Prospect replies on
 terminal states are still refused as no longer active.
 
+#### `confirmed_slot`, and how long a booked viewing stays listed
+
+Once a negotiation reaches `CONFIRMED` or `AUTO_CONFIRMED`, each entry carries the agreed
+slot. It is `null` in every other state — a time still being negotiated is not an
+agreement, and publishing it as one is how a viewing gets asserted that nobody booked.
+
+```json
+{ "negotiation_id": "...", "party": "prospect", "state": "CONFIRMED", "routable": false,
+  "confirmed_slot": { "start": "2026-08-21T11:00:00",
+                      "end":   "2026-08-21T11:30:00",
+                      "timezone": "Asia/Hong_Kong",
+                      "unit_id": "8326307481849856",
+                      "unit_label": "Poplar 2B" } }
+```
+
+Hong Kong wall clock with an explicit `timezone`, consistent with the rest of the payload —
+no offset suffix on one field beside zone-less ones. Viewings are a fixed 30 minutes, which
+is also the length of the calendar event we create.
+
+**A booked viewing stays listed for 12 hours past its start — for the occupant only.** They
+may still withdraw or report that nobody came, and that has to reach us. For the prospect
+the entry disappears the moment the viewing starts, because a prospect cannot reopen a
+booked viewing by messaging and their post-viewing "we'll take it" should reach your normal
+handling rather than sit against a negotiation with nothing left to do.
+
+⚠️ **`routable: false` means "do not relay this to us" — not "do not handle it".** A
+non-routable entry is context, not a claim on the conversation. Standing your own handling
+down on one leaves the customer with nothing, because we will not be acting on it either.
+
 ---
 
 ### Renewal asks — "is the sitting tenant staying?"
@@ -788,18 +817,50 @@ the tenant has no phone. The channel is fixed for the whole sequence.
 
 ```
 POST /api/public/renewal-ask                   { unit_id }        → trigger an ask (we send it)
-GET  /api/public/renewal-asks/pending                             → observational; see below
+GET  /api/public/renewal-asks/open                                → sent, awaiting an answer
 POST /api/public/renewal-ask/:id/reply         { intent } | { text }
+GET  /api/public/renewal-asks/pending                             → observational; see below
 POST /api/public/renewal-ask/:id/sent                             → retained, writes nothing
 ```
 
+**`GET /renewal-asks/open` is how you attribute a reply.** One row per outstanding question —
+id, unit, tenant name and phone, which ask in the sequence, and when it went out — so an
+inbound message can be matched to what it answers. No message text, no claim, no state
+change: reading it can neither cause nor prevent a message.
+
+One row per *cycle*, not per message: it is always the latest ask, because that is the only
+one a reply can be about. A cycle leaves the list on a **definite** answer only. An ask with
+a vague answer already on record stays, flagged `vague_reply_on_record: true` — otherwise the
+id would disappear the moment "ok thanks" was filed and the real answer would have nothing
+to attach to.
+
+We also tag the outbound message itself, once your `/send` accepts it:
+
+```json
+{ "phone": "85212345678", "message": "...",
+  "origin": { "type": "renewal_ask", "id": "..." } }
+```
+
+That is off until you confirm, because an unrecognised key at a live gateway would put
+working traffic at risk. `/renewal-asks/open` needs nothing from you and works today.
+
+⚠️ **One open ask per conversation.** A tenant renting two units is never asked about both at
+once — the second lease waits until the first is answered or its sequence ends. Their reply
+arrives on one thread referring to neither message, so an ambiguous "yes" could otherwise be
+written to the wrong lease. `POST /renewal-ask` returns `reason: "conversation_busy"` with
+`blocked_by` when this defers an ask.
+
 `POST /renewal-ask` decides whether an ask is due, sends it, and returns the audit row. It
 is idempotent per decision cycle: a second call returns `created: false` with
-`reason: "already_asked_this_cycle"` rather than messaging the tenant twice. Other reasons
-are `disabled`, `tenant_unreachable`, and the eligibility reasons (`already_decided`,
-`already_replied`, `too_early`, `lease_already_ended`). `reason: "send_failed"` with
-`created: true` means the ask exists and has spent its slot but the tenant was not reached —
-we never retry a send, because a timed-out send is indistinguishable from a delivered one.
+`reason: "already_asked_this_cycle"` rather than messaging the tenant twice. Other reasons are
+`disabled`, `tenant_unreachable`, `no_wording` (the operator has not written that ask yet),
+`conversation_busy`, and the eligibility reasons (`already_decided`, `already_replied`,
+`too_early`, `lease_already_ended`). Every one of those is refused **before** a row exists, so
+none of them spends one of the three asks.
+
+`reason: "send_failed"` with `created: true` is the exception: the ask exists and has spent
+its slot but the tenant was not reached. We never retry a send, because a timed-out send is
+indistinguishable from a delivered one.
 
 ⚠️ **The rendered message is deliberately not in any response.** There is nothing here for
 a caller to transmit, by design: two senders is how a tenant gets asked the same question
