@@ -627,6 +627,38 @@ chose plain text, so there is no template approval for you to chase.
 
 ---
 
+# One pattern worth naming
+
+You flagged that the Mong Kok miss was not our data — our API returned the unit and your side filtered
+it out. Thank you for checking that rather than reporting it as a gap; it saved us looking.
+
+It is worth putting three things side by side, because separately they look like three unrelated bugs
+and together they look like one:
+
+| | What we sent | What reached the customer |
+|---|---|---|
+| Mong Kok | the unit, correctly | filtered out on your side |
+| Gilman's Bazaar 2A, 18 Aug | `certain: false` plus `phrasing.uncertain` | presented as firmly available |
+| Viewing read-back | a draft naming unit, property and time | possibly replaced by generated text |
+
+In each case our payload was right and something downstream dropped or replaced it. We are not raising
+this as a complaint — the first one you found yourselves, and the second your own pre-send check
+caught. But if there is a single place in your pipeline where our structured fields give way to
+model-generated prose, fixing that one place is worth more than any field we could add, including the
+three you have asked for.
+
+The third row is the one to check first, because it is the same shape as the incident you reported: a
+system-authored sentence replaced by a model-authored one.
+
+## On the fourth ask
+
+You mentioned holding back a tenancy-stage and checklist request so these three are not crowded out.
+That is the right call and we would rather you did. Send it as its own conversation whenever you are
+ready — it is a bigger piece of work on our side and it deserves its own thread rather than being
+item four on a list.
+
+---
+
 # What to change on your side
 
 Ordered by what it recovers, not by the order the items were raised.
