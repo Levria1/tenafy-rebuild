@@ -29,6 +29,7 @@ const config = require('../config');
 const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings, findBeyondHorizonNrVacancies } = require('./advertising');
 const renewalAsk = require('../utils/renewalAsk');
 const { recordRenewalReply } = require('../services/renewalReply');
+const { deliver: deliverRenewalAsk } = require('../services/renewalAskDispatch');
 const {
   vacancyToPublicShape,
   classifyFreeOn,
@@ -2114,7 +2115,8 @@ async function currentLeaseForUnit(pool, orgId, unitId) {
     `SELECT l.id, l.unit_id, l.tenant_id, l.contract_type, l.notice_period_days,
             l.renewal_reply, DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
             u.name AS unit_name, p.display_name AS property_name,
-            ${tenantNameSqlPublic('t')} AS tenant_name, t.phone AS tenant_phone
+            ${tenantNameSqlPublic('t')} AS tenant_name,
+            t.phone AS tenant_phone, t.email AS tenant_email
        FROM leasing l
        JOIN unit u ON u.id = l.unit_id
        JOIN property p ON p.id = u.property_id
@@ -2140,7 +2142,14 @@ function renewalAskRow(row, settings) {
     lease_end: row.lease_end_at_ask,
     decision_due_on: row.decision_due_on,
     state: row.state,
-    message: row.message,
+    // Tenafy is the only sender of a renewal ask, so the rendered text is deliberately
+    // NOT in this payload. Returning it invited a second sender, and two senders is how
+    // a tenant gets the same question twice — or, if each assumes the other sent it,
+    // never gets asked at all while the ask is counted as spent. Operator decision,
+    // 2026-08-19. The wording lives on Chatbot -> Settings and in the audit row.
+    dispatch: 'tenafy',
+    channel: row.channel || null,
+    sent: !!row.sent_at,
   };
 }
 
@@ -2174,6 +2183,14 @@ router.post('/renewal-ask', async (req, res) => {
       today, defaultNoticeDays: settings.renewal_default_notice_days,
     });
 
+    // Resolved BEFORE the row is written. An ask we cannot deliver would otherwise occupy
+    // one of the three slots and then be marked FAILED by the scheduler, spending an ask
+    // on a tenant who was never reachable in the first place.
+    const channel = renewalAsk.renewalAskChannel(lease);
+    if (!channel) {
+      return ok(res, { created: false, reason: 'tenant_unreachable', renewal_ask: null });
+    }
+
     // Cooldown. The unique key is (lease_id, lease_end_at_ask, decision_due_on), so an
     // extended lease or a corrected notice period opens a NEW cycle rather than being
     // silenced by the old one.
@@ -2201,12 +2218,12 @@ router.post('/renewal-ask', async (req, res) => {
       await req.pool.execute(
       `INSERT INTO renewal_ask
          (id, org_id, lease_id, unit_id, tenant_id, lease_end_at_ask, decision_due_on,
-          state, message, triggered_by, contract_type_at_ask)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+          state, message, triggered_by, contract_type_at_ask, ask_number, channel, attempts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, 1, ?, 1)`,
       [id, orgId, lease.id, lease.unit_id, lease.tenant_id || null,
        cycle.lease_end_at_ask, cycle.decision_due_on, message,
        req.body && req.body.triggered_by === 'staff' ? 'staff' : 'inquiry',
-       lease.contract_type]
+       lease.contract_type, channel]
       );
     } catch (e) {
       // Two prospects asked about the same unit at the same moment. The unique key on
@@ -2225,14 +2242,39 @@ router.post('/renewal-ask', async (req, res) => {
       throw e;
     }
 
+    // WE send it, here, before answering. The caller triggers an ask; it never dispatches
+    // one. Anything else needs both sides to agree at run time about who transmits, and
+    // the failure mode of disagreeing is a tenant asked twice or not at all.
+    //
+    // Delivered inline rather than left for the nightly job because the row would sit
+    // PENDING until then and be resolved as FAILED — spending the slot without a message
+    // ever reaching the tenant. And no retry on failure, for the reason set out in
+    // renewalAskDispatch: a timed-out send is indistinguishable from a delivered one.
+    const sendResult = await deliverRenewalAsk(req.pool, orgId, { channel, lease, message });
+    const delivered = !!(sendResult && sendResult.ok !== false);
+    const sentAt = orgWallClock(new Date());
+    if (delivered) {
+      await req.pool.execute(
+        `UPDATE renewal_ask SET state = 'SENT', sent_at = ? WHERE id = ? AND state = 'PENDING'`,
+        [sentAt, id]
+      );
+    } else {
+      await req.pool.execute(
+        `UPDATE renewal_ask SET send_error = ? WHERE id = ?`,
+        [String((sendResult && sendResult.error) || 'send failed').slice(0, 255), id]
+      );
+    }
+
     return ok(res, {
       created: true,
-      reason: null,
+      // The ask exists and has spent its slot either way; `sent` says whether the tenant
+      // actually heard from us, which is the part the caller cannot infer.
+      reason: delivered ? null : 'send_failed',
       renewal_ask: renewalAskRow({
         id, unit_id: lease.unit_id, unit_name: lease.unit_name, property_name: lease.property_name,
         tenant_name: lease.tenant_name, tenant_phone: lease.tenant_phone,
         lease_end_at_ask: cycle.lease_end_at_ask, decision_due_on: cycle.decision_due_on,
-        state: 'PENDING', message,
+        state: delivered ? 'SENT' : 'PENDING', channel, sent_at: delivered ? sentAt : null,
       }, settings),
     });
   } catch (err) {
@@ -2241,17 +2283,18 @@ router.post('/renewal-ask', async (req, res) => {
   }
 });
 
-// GET /api/public/renewal-asks/pending — created but not yet sent.
+// GET /api/public/renewal-asks/pending — OBSERVATIONAL. Reads; never claims.
 //
-// Hands each ask out EXACTLY once, and never again.
+// This was a work queue: it handed each ask out exactly once, stamping claimed_at so no
+// two pollers could message the same tenant. That only made sense while the partner did
+// the sending — and they never did. Tenafy sends every ask (the nightly job and the
+// demand trigger both dispatch inline), so the queue had become a trap: a partner merely
+// LOOKING at this list consumed the ask, and because nobody then sent it, the tenant was
+// never asked at all while the slot was counted as spent. The list is now a read.
 //
-// An earlier version re-offered a claim after ten minutes so a crashed poller could not
-// strand an ask. That was the wrong trade: if the partner sent the message and only the
-// /sent acknowledgement was lost, re-offering puts the same message in front of a real
-// tenant a second time. A claimed row that never reports back is instead left PENDING and
-// resolved as FAILED by the scheduler, which spends the slot and advances the sequence —
-// so the tenant is neither messaged twice nor stranded. Same policy as the scheduled
-// dispatcher: we never re-send anything we cannot prove was undelivered.
+// It follows that rows here are only ever asks whose send failed or died mid-flight —
+// normally none. The rendered message is deliberately absent from the payload (see
+// renewalAskRow) so there is nothing here to send even by accident.
 
 router.get('/renewal-asks/pending', async (req, res) => {
   try {
@@ -2264,18 +2307,8 @@ router.get('/renewal-asks/pending', async (req, res) => {
       return ok(res, { count: 0, renewal_asks: [], reason: 'disabled' });
     }
 
-    const claimToken = newId();
-    await req.pool.execute(
-      `UPDATE renewal_ask
-          SET claimed_at = ?, claim_token = ?
-        WHERE org_id = ? AND state = 'PENDING' AND claimed_at IS NULL
-        ORDER BY decision_due_on ASC
-        LIMIT 50`,
-      [orgWallClock(new Date()), claimToken, orgId]
-    );
-
     const [rows] = await req.pool.execute(
-      `SELECT r.id, r.state, r.message, r.unit_id,
+      `SELECT r.id, r.state, r.unit_id, r.channel, r.sent_at,
               DATE_FORMAT(r.lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask,
               DATE_FORMAT(r.decision_due_on, '%Y-%m-%d')  AS decision_due_on,
               u.name AS unit_name, p.display_name AS property_name,
@@ -2288,41 +2321,40 @@ router.get('/renewal-asks/pending', async (req, res) => {
          -- message still greets the original person, and sending it to their
          -- replacement would be both wrong and confusing.
          LEFT JOIN tenant t ON t.id = r.tenant_id
-        WHERE r.org_id = ? AND r.state = 'PENDING' AND r.claim_token = ?
-        ORDER BY r.decision_due_on ASC`,
-      [orgId, claimToken]
+        WHERE r.org_id = ? AND r.state = 'PENDING'
+        ORDER BY r.decision_due_on ASC
+        LIMIT 50`,
+      [orgId]
     );
-    ok(res, { count: rows.length, renewal_asks: rows.map(r => renewalAskRow(r, settings)) });
+    ok(res, { count: rows.length, dispatch: 'tenafy', renewal_asks: rows.map(r => renewalAskRow(r, settings)) });
   } catch (err) {
     console.error('Public renewal-asks/pending error:', err);
     fail(res, 'Failed to load pending renewal asks');
   }
 });
 
-// POST /api/public/renewal-ask/:id/sent — records dispatch. Idempotent.
+// POST /api/public/renewal-ask/:id/sent — retained, but no longer changes anything.
+//
+// Kept so an existing caller gets a truthful 200 rather than a 404. It used to flip
+// PENDING -> SENT, which was the partner telling us a message went out. Now that Tenafy
+// is the only sender, that report can only ever be wrong: it would mark an ask delivered
+// on the word of a system that did not deliver it, and the tenant would be recorded as
+// asked without ever having been. So this reports the state and writes nothing.
 router.post('/renewal-ask/:id/sent', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
     const [[row]] = await req.pool.execute(
-      `SELECT id, state FROM renewal_ask WHERE id = ? AND org_id = ? LIMIT 1`,
+      `SELECT id, state, sent_at FROM renewal_ask WHERE id = ? AND org_id = ? LIMIT 1`,
       [req.params.id, orgId]
     );
     if (!row) return fail(res, 'Renewal ask not found', 404);
-    if (row.state !== 'PENDING') {
-      return ok(res, { recorded: true, already_sent: true, state: row.state });
-    }
-    const [upd] = await req.pool.execute(
-      `UPDATE renewal_ask SET state = 'SENT', sent_at = ? WHERE id = ? AND state = 'PENDING'`,
-      [orgWallClock(new Date()), row.id]
-    );
-    // Another caller won the race between the SELECT above and this UPDATE.
-    if (!upd || upd.affectedRows === 0) {
-      return ok(res, { recorded: true, already_sent: true, state: 'SENT' });
-    }
-    ok(res, { recorded: true, already_sent: false, state: 'SENT' });
+    ok(res, {
+      recorded: false, dispatch: 'tenafy', state: row.state, sent: !!row.sent_at,
+      note: 'Tenafy dispatches renewal asks; this endpoint no longer records a send.',
+    });
   } catch (err) {
     console.error('Public renewal-ask/sent error:', err);
-    fail(res, 'Failed to record renewal ask dispatch');
+    fail(res, 'Failed to read renewal ask state');
   }
 });
 

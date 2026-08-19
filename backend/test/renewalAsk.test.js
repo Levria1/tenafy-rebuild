@@ -260,3 +260,92 @@ test('a reply whose lease has been deleted is recorded rather than rejected', as
   assert.ok(writes.some(w => w[0] === 'ask'));
   assert.ok(!writes.some(w => w[0] === 'lease'));
 });
+
+// ── A vague answer may be corrected; a real one is final ──────────────────────
+//
+// The relay cannot distinguish a tenant's answer from an unrelated message, and refuses to
+// guess. So an ask that lands mid-conversation gets whatever the tenant says next filed
+// against it — "ok thanks" becomes `unsure`. Before this rule the real answer that followed
+// was discarded with a 200, and nobody could tell.
+
+function repliedAsk(intent, text) {
+  return {
+    id: '1', lease_id: '7', unit_id: '5', state: 'REPLIED', applied: 1,
+    contract_type_at_ask: 1, lease_end_at_ask: '2026-09-25',
+    reply_intent: intent, reply_text: text, replied_at: '2026-08-19 09:00:00',
+  };
+}
+
+function upgradePool(ask, writes) {
+  return fakePool([
+    [/FROM renewal_ask WHERE id/, () => [[ask]]],
+    [/FROM leasing WHERE id/, () => [[{ id: '7', contract_type: 1, end_date: '2026-09-25' }]]],
+    [/FROM leasing WHERE unit_id/, () => [[{ id: '7', contract_type: 1, end_date: '2026-09-25' }]]],
+    [/UPDATE renewal_ask/, (p) => { writes.push(['ask', p]); return [{ affectedRows: 1 }]; }],
+    [/UPDATE leasing SET renewal_reply/, (p) => { writes.push(['lease', p]); return [{ affectedRows: 1 }]; }],
+  ]);
+}
+
+test('a real answer supersedes a vague one, and the vague one is kept', async () => {
+  const writes = [];
+  const result = await callReply(replyHandler(), {
+    pool: upgradePool(repliedAsk(3, 'ok thanks'), writes),
+    body: { intent: 'extend' },
+  });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.data.already_replied, false, 'the real answer must not be discarded');
+  assert.equal(result.body.data.intent, 'extend');
+  assert.equal(result.body.data.applied, true);
+  assert.equal(result.body.data.withdrawn_from_offers, true, 'the unit must leave the feeds');
+  assert.equal(result.body.data.superseded, 'unsure');
+
+  const askWrite = writes.find(w => w[0] === 'ask');
+  assert.ok(askWrite, 'the upgraded reply must be written');
+  // Params: now, intent, text, applied, stale_reason, recordedBy, prior_intent, prior_text, prior_at, id
+  assert.equal(askWrite[1][6], 3, 'the superseded intent must be preserved');
+  assert.equal(askWrite[1][7], 'ok thanks', 'the superseded text must be preserved');
+  assert.ok(writes.some(w => w[0] === 'lease'), 'and the lease is stamped');
+});
+
+test('a definite answer is final — a later message cannot overwrite it', async () => {
+  // The dangerous direction. A tenant who said "we are staying" has had their home taken
+  // off the market; a stray later message must never put it back.
+  for (const laterIntent of ['leaving', 'unsure', 'extend']) {
+    const writes = [];
+    const result = await callReply(replyHandler(), {
+      pool: upgradePool(repliedAsk(1, "yes we're staying"), writes),
+      body: { intent: laterIntent },
+    });
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.already_replied, true, `"${laterIntent}" must not overwrite a definite answer`);
+    assert.equal(result.body.data.intent, 'extend', 'the original answer is what is reported back');
+    assert.equal(writes.length, 0, 'nothing may be written');
+  }
+});
+
+test('a second vague message changes nothing and does not overwrite the first', async () => {
+  const writes = [];
+  const result = await callReply(replyHandler(), {
+    pool: upgradePool(repliedAsk(3, 'ok thanks'), writes),
+    body: { text: 'sure' },
+  });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.data.already_replied, true);
+  assert.equal(result.body.data.superseded, false);
+  assert.equal(writes.length, 0, 'a vague answer repeated is not new information');
+});
+
+test('an unsure lease is still eligible for the next ask', () => {
+  const { renewalAskEligibility } = require('../src/utils/renewalAsk');
+  const base = { end_date: '2026-09-25', contract_type: 1, notice_period_days: 45 };
+  const opts = { today: '2026-08-19' };
+  assert.equal(renewalAskEligibility({ ...base, renewal_reply: null }, opts).eligible, true);
+  assert.equal(renewalAskEligibility({ ...base, renewal_reply: 3 }, opts).eligible, true,
+    'unsure is not an answer — the remaining asks still have work to do');
+  assert.equal(renewalAskEligibility({ ...base, renewal_reply: '3' }, opts).eligible, true,
+    'mysql2 may hand back a string');
+  for (const answered of [1, 2, '1', '2']) {
+    assert.equal(renewalAskEligibility({ ...base, renewal_reply: answered }, opts).eligible, false,
+      `a tenant who answered ${answered} must not be asked again`);
+  }
+});

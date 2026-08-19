@@ -9,6 +9,7 @@ const { slotLabel, findRepeatViolations, suggestReplacements, forumWeeklyLoad,
   manualVacancyToRow, overrideAppliesTo, leaseChangedForOverride, pickVacancyRow,
   resolvePageExpiringWindow, PAGE_WINDOW_MAX_DAYS } = require('../utils/advertisingPlan');
 const { hkDate } = require('../utils/inquiryFacts');
+const renewalAsk = require('../utils/renewalAsk');
 
 // Snowflake id (same pattern used across the app).
 function newId() {
@@ -729,7 +730,12 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
         // The action staff should take, spelled out rather than inferred. A reply that
         // could not be applied (the lease moved on since we asked) must NOT read as
         // "paperwork due" — that would have someone extend a lease off a stale answer.
-        status: replyIntent != null
+        //
+        // "Unsure" is not an answer and does not close the status either: the sequence is
+        // still running, so this row still reads as awaiting a reply (with the vague
+        // answer shown alongside). Reporting it as replied would tell staff the matter was
+        // settled while we were still asking. Same rule as isDefiniteReply.
+        status: renewalAsk.isDefiniteReply(replyIntent)
           ? (String(r.reply_applied) !== '1'
               ? 'replied_but_stale_check_lease'
               : (replyIntent === 1 ? 'extend_pending_paperwork' : 'replied_needs_review'))

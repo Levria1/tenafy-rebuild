@@ -40,14 +40,39 @@ async function recordRenewalReply(pool, orgId, askId, { intent, text, recordedBy
   const code = resolved.intent;
 
   const [[ask]] = await pool.execute(
-    `SELECT id, lease_id, unit_id, state, applied, contract_type_at_ask,
+    `SELECT id, lease_id, unit_id, state, applied, contract_type_at_ask, reply_intent, reply_text,
+            replied_at,
             DATE_FORMAT(lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask
        FROM renewal_ask WHERE id = ? AND org_id = ? LIMIT 1`,
     [askId, orgId]
   );
   if (!ask) return { status: 404, body: { message: 'Renewal ask not found' } };
-  if (ask.state === 'REPLIED') {
-    return { status: 200, body: { recorded: true, already_replied: true, applied: Number(ask.applied) === 1 } };
+
+  // Already answered? A VAGUE answer may still be superseded by a real one; a real one is
+  // final. The relay cannot distinguish a tenant's answer from an unrelated message, so
+  // an ask landing mid-conversation gets "ok thanks" filed against it and classified
+  // `unsure`. Refusing the real answer that follows is the one outcome ruled out — see
+  // migration 069 for why the reverse is impossible.
+  const upgrading = ask.state === 'REPLIED' && !renewalAsk.isDefiniteReply(ask.reply_intent);
+  if (ask.state === 'REPLIED' && !upgrading) {
+    return {
+      status: 200,
+      body: {
+        recorded: true, already_replied: true, applied: Number(ask.applied) === 1,
+        intent: INTENT_NAME[Number(ask.reply_intent)] || null,
+      },
+    };
+  }
+  // A vague reply repeated is not an upgrade — it changes nothing and must not overwrite
+  // the text we already filed.
+  if (upgrading && !renewalAsk.isDefiniteReply(code)) {
+    return {
+      status: 200,
+      body: {
+        recorded: true, already_replied: true, applied: Number(ask.applied) === 1,
+        intent: INTENT_NAME[Number(ask.reply_intent)] || null, superseded: false,
+      },
+    };
   }
 
   const [[askedNow]] = await pool.execute(
@@ -82,10 +107,20 @@ async function recordRenewalReply(pool, orgId, askId, { intent, text, recordedBy
     await conn.execute(
       `UPDATE renewal_ask
           SET state = 'REPLIED', replied_at = ?, reply_intent = ?, reply_text = ?,
-              applied = ?, stale_reason = ?, triggered_by = COALESCE(triggered_by, ?)
+              applied = ?, stale_reason = ?, triggered_by = COALESCE(triggered_by, ?),
+              -- Keep the superseded reply rather than overwrite it: the tenant sent it,
+              -- and staff reading this row need to see what we originally filed. COALESCE
+              -- so a second upgrade could never erase the first record.
+              prior_reply_intent = COALESCE(prior_reply_intent, ?),
+              prior_reply_text   = COALESCE(prior_reply_text, ?),
+              prior_replied_at   = COALESCE(prior_replied_at, ?)
         WHERE id = ?`,
       [now, code, typeof text === 'string' ? text : null, decision.applied ? 1 : 0,
-       decision.stale_reason || null, recordedBy, ask.id]
+       decision.stale_reason || null, recordedBy,
+       upgrading ? ask.reply_intent : null,
+       upgrading ? ask.reply_text : null,
+       upgrading ? ask.replied_at : null,
+       ask.id]
     );
     if (decision.applied) {
       await conn.execute(
@@ -104,6 +139,8 @@ async function recordRenewalReply(pool, orgId, askId, { intent, text, recordedBy
     body: {
       recorded: true,
       already_replied: false,
+      // True when this replaced a vague answer we had already filed.
+      superseded: upgrading ? INTENT_NAME[Number(ask.reply_intent)] || 'unsure' : null,
       intent: INTENT_NAME[code],
       applied: decision.applied,
       stale_reason: decision.stale_reason || null,

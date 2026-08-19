@@ -47,15 +47,52 @@ test('escalation happens once, not on every run', () => {
   assert.equal(shouldEscalate(three, { today: '2026-08-20', gapDays: 3 }), false);
 });
 
-test('a reply ends the sequence and prevents escalation', () => {
+test('a definite reply ends the sequence and prevents escalation', () => {
   const withReply = [
     { ask_number: 1, sent_at: '2026-08-10', reply_intent: 1 },
     { ask_number: 2, sent_at: '2026-08-13' },
     { ask_number: 3, sent_at: '2026-08-16' },
   ];
-  assert.equal(nextAskDue(withReply, { today: '2026-08-25', gapDays: 3, hasReply: true }).reason, 'already_replied');
-  assert.equal(shouldEscalate(withReply, { today: '2026-08-25', gapDays: 3, hasReply: true }), false,
+  assert.equal(nextAskDue(withReply, { today: '2026-08-25', gapDays: 3, hasDefiniteReply: true }).reason, 'already_replied');
+  assert.equal(shouldEscalate(withReply, { today: '2026-08-25', gapDays: 3, hasDefiniteReply: true }), false,
     'a tenant who answered must not then be escalated as unresponsive');
+});
+
+test('an UNSURE reply does not end the sequence — we keep monitoring', () => {
+  // The relay cannot tell a tenant's answer from an unrelated message and deliberately
+  // does not try, so an ask landing mid-conversation gets "ok thanks" filed against it and
+  // classified `unsure`. If that closed the sequence, the tenant would be recorded as
+  // answered, never asked again, and never escalated — silent on all three counts.
+  const vague = [{ ask_number: 1, sent_at: '2026-08-10', reply_intent: 3 }];
+  const due = nextAskDue(vague, { today: '2026-08-19', gapDays: 3, hasDefiniteReply: false });
+  assert.equal(due.due, true, 'ask 2 must still go out after a vague answer');
+  assert.equal(due.ask_number, 2);
+
+  // …and three vague answers still reach a human rather than stopping quietly.
+  const threeVague = [
+    { ask_number: 1, sent_at: '2026-08-10', reply_intent: 3 },
+    { ask_number: 2, sent_at: '2026-08-13', reply_intent: 3 },
+    { ask_number: 3, sent_at: '2026-08-16', reply_intent: 3 },
+  ];
+  assert.equal(shouldEscalate(threeVague, { today: '2026-08-20', gapDays: 3, hasDefiniteReply: false }), true);
+});
+
+test('the dispatcher classifies its own history, and unsure leases stay in the pool', () => {
+  const { isDefiniteReply } = require('../src/utils/renewalAsk');
+  assert.equal(isDefiniteReply(null), false);
+  assert.equal(isDefiniteReply(3), false);
+  assert.equal(isDefiniteReply('3'), false, 'mysql2 may hand back a string');
+  assert.equal(isDefiniteReply(1), true);
+  assert.equal(isDefiniteReply(2), true);
+  assert.equal(isDefiniteReply(9), true, 'an unknown code must stop us messaging, not start us');
+
+  // The SQL gate has to agree with the code gate, or the lease is filtered out before
+  // eligibility is ever consulted and the remaining asks silently never happen.
+  const src = require('node:fs').readFileSync(require.resolve('../src/services/renewalAskDispatch'), 'utf8');
+  const stripped = src.replace(/--.*$/gm, '');
+  assert.ok(/renewal_reply IS NULL OR l\.renewal_reply = 3/.test(stripped),
+    'the candidate query must keep unsure leases in the pool');
+  assert.ok(!/hasReply\b/.test(src), 'the ambiguous flag name should be gone');
 });
 
 test('escalation waits for the last ask to have had its window', () => {
@@ -199,15 +236,33 @@ test('the default notice period matches the operator policy of 45 days', () => {
   assert.equal(renewalDecisionDueOn('2026-09-25', null), '2026-08-11');
 });
 
-test('the partner polling path hands an ask out once and never re-offers it', () => {
-  // The first version re-offered a claim after ten minutes so a crashed poller could not
-  // strand an ask. That trade was wrong: if the partner sent the message and only the
-  // acknowledgement was lost, re-offering messages the tenant twice. Unconfirmed claims
-  // are resolved by the scheduler instead.
+test('the partner cannot consume an ask, and has nothing to send', () => {
+  // Tenafy is the only sender (operator decision, 2026-08-19). Two behaviours follow, and
+  // both are load-bearing:
+  //
+  //   1. Reading /pending must not claim. It used to, which meant a partner merely LOOKING
+  //      at the list spent the ask — and since they were not the sender, the tenant was
+  //      never asked while the slot was counted as used.
+  //   2. The rendered message must not leave the building. If it is in the payload, a
+  //      future engineer on either side can wire up a second sender by accident, and the
+  //      failure mode is a tenant asked the same question twice.
   const pub = require('node:fs').readFileSync(require.resolve('../src/routes/public'), 'utf8');
-  const claim = pub.slice(pub.indexOf("SET claimed_at = ?, claim_token = ?"));
-  const stmt = claim.slice(0, claim.indexOf('`'));
-  assert.ok(/claimed_at IS NULL/.test(stmt), 'only unclaimed asks may be handed out');
-  assert.ok(!/DATE_SUB/.test(stmt), 'a claim must not expire back into the queue');
-  assert.ok(!/RENEWAL_CLAIM_MINUTES/.test(pub.replace(/\/\/.*$/gm, '')), 'the expiry window should be gone');
+  const code = pub.replace(/\/\/.*$/gm, '');
+
+  assert.ok(!/SET claimed_at\s*=/.test(code), 'reading the pending list must not claim anything');
+  assert.ok(!/claim_token\s*=\s*\?/.test(code), 'the claim token must no longer be written');
+
+  // The /pending SELECT names its columns explicitly; `message` must not be among them.
+  const sel = code.slice(code.indexOf('SELECT r.id, r.state'));
+  assert.ok(sel.startsWith('SELECT r.id, r.state'), 'pending select not found — update this test');
+  const stmt = sel.slice(0, sel.indexOf('`'));
+  assert.ok(!/r\.message/.test(stmt), 'the rendered ask must not be handed to the partner');
+
+  // …nor smuggled out through the shared row shaper.
+  const shaper = code.slice(code.indexOf('function renewalAskRow'));
+  assert.ok(!/message:/.test(shaper.slice(0, shaper.indexOf('\n}'))),
+    'renewalAskRow must not expose the message');
+
+  // And the demand trigger sends, rather than handing the text back to be sent.
+  assert.ok(/deliverRenewalAsk\(/.test(code), 'the demand-triggered ask must dispatch here');
 });

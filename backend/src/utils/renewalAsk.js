@@ -88,8 +88,9 @@ function renewalAskEligibility(lease, { today, defaultNoticeDays = DEFAULT_NOTIC
   if (!UNDECIDED_CONTRACT_TYPES.includes(Number(lease.contract_type))) {
     return { eligible: false, reason: 'already_decided' };
   }
-  // Already answered — asking again would be nagging a tenant who replied.
-  if (lease.renewal_reply != null) return { eligible: false, reason: 'already_replied' };
+  // Already answered — asking again would be nagging a tenant who replied. "Unsure" is
+  // not an answer (see isDefiniteReply), so those leases stay eligible.
+  if (isDefiniteReply(lease.renewal_reply)) return { eligible: false, reason: 'already_replied' };
 
   const dueOn = renewalDecisionDueOn(lease.end_date, lease.notice_period_days, defaultNoticeDays);
   if (dueOn == null) return { eligible: false, reason: 'no_decision_date' };
@@ -144,6 +145,24 @@ function classifyRenewalReply(text) {
  * `askedLease` is the lease as it was when we asked; `currentLease` is what it looks
  * like now. If they differ the reply is stale: record it, act on nothing.
  */
+/**
+ * Is this reply an ANSWER, or just noise we have filed?
+ *
+ * "extend" and "leaving" are answers: the tenant told us something. "unsure" is not —
+ * and crucially it is also what an unrelated message becomes, because the classifier
+ * is deliberately conservative and anything ambiguous lands there. Treating "unsure"
+ * as an answer therefore let a tenant who typed "ok thanks" mid-conversation end their
+ * own ask sequence, with no further asks and no hand-off to staff. Operator decision,
+ * 2026-08-19: a vague reply is recorded and we keep monitoring.
+ *
+ * Any other non-null value counts as definite. Unknown codes stop us messaging rather
+ * than start us messaging, which is the safe direction for a tenant's phone.
+ */
+function isDefiniteReply(intent) {
+  if (intent == null) return false;
+  return Number(intent) !== REPLY_UNSURE;
+}
+
 function applyRenewalReply(intent, { askedLease, currentLease } = {}) {
   const code = Number(intent);
   if (![REPLY_EXTEND, REPLY_LEAVING, REPLY_UNSURE].includes(code)) {
@@ -187,6 +206,7 @@ module.exports = {
   renewalAskCycleKey,
   classifyRenewalReply,
   applyRenewalReply,
+  isDefiniteReply,
   renderRenewalAsk,
 };
 
@@ -197,11 +217,13 @@ module.exports = {
  * YYYY-MM-DD business date, not a timestamp — the caller derives it from the org's
  * clock, so nothing here reads the process clock.
  */
-function nextAskDue(asks, { today, gapDays = 3, hasReply = false } = {}) {
+function nextAskDue(asks, { today, gapDays = 3, hasDefiniteReply = false } = {}) {
   const todayMs = parseYmd(today);
   if (todayMs == null) return { due: false, reason: 'bad_today' };
-  // Any reply at all ends the sequence — we asked a question and got an answer.
-  if (hasReply) return { due: false, reason: 'already_replied' };
+  // A DEFINITE reply ends the sequence — we asked a question and got an answer. "Unsure"
+  // does not: the tenant has not decided (or never meant to reply at all), so the
+  // remaining asks still have work to do.
+  if (hasDefiniteReply) return { due: false, reason: 'already_replied' };
 
   // `attempted_on` counts a delivered ask OR one we gave up on after retries. Counting
   // only delivered asks would strand a tenant whose first message failed: the row still
@@ -229,8 +251,10 @@ function nextAskDue(asks, { today, gapDays = 3, hasReply = false } = {}) {
  * All three asks sent, the gap has elapsed, and still nothing back. At that point a
  * person should call them — we have said all we usefully can by message.
  */
-function shouldEscalate(asks, { today, gapDays = 3, hasReply = false } = {}) {
-  if (hasReply) return false;
+function shouldEscalate(asks, { today, gapDays = 3, hasDefiniteReply = false } = {}) {
+  // Three asks and still nothing definite — including three "not sure yet"s — is exactly
+  // when a person should pick up the phone.
+  if (hasDefiniteReply) return false;
   const todayMs = parseYmd(today);
   if (todayMs == null) return false;
   const list = Array.isArray(asks) ? asks : [];

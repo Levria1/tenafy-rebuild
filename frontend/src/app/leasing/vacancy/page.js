@@ -23,7 +23,17 @@ const INTENT_META = {
 // One place decides how a renewal sequence reads, so the row and the off-page card can
 // never describe the same state differently.
 const ASK_STATUS_META = {
-  awaiting_reply:              { color: 'blue',   label: (a) => `Asked ${a.asks_delivered}/3`, help: (a) => `Asked ${a.asks_delivered} of 3 by ${a.channel || 'message'}${a.last_delivered_on ? `, last on ${a.last_delivered_on}` : ''}. Waiting for a reply.` },
+  // "Unsure" lands here rather than under replied_*: the tenant has not decided, so the
+  // sequence is still running and the row must not read as settled. The vague answer is
+  // still shown, because staff seeing "they said they're not sure" is the point.
+  awaiting_reply: {
+    color: 'blue',
+    label: (a) => (a.reply === 'unsure' ? `Not sure yet · asked ${a.asks_delivered}/3` : `Asked ${a.asks_delivered}/3`),
+    help: (a) => `Asked ${a.asks_delivered} of 3 by ${a.channel || 'message'}${a.last_delivered_on ? `, last on ${a.last_delivered_on}` : ''}. `
+      + (a.reply === 'unsure'
+          ? 'The tenant answered but has not decided, so we keep asking. Record Extend or Leaving here if they tell you.'
+          : 'Waiting for a reply.'),
+  },
   could_not_reach_them:        { color: 'orange', label: () => 'Could not reach them',        help: () => 'We tried, but nothing was delivered. Check the phone number or email on the tenant.' },
   no_answer_call_them:         { color: 'red',    label: () => 'No answer · call them',        help: () => 'Three asks, no reply. Someone should phone the tenant.' },
   extend_pending_paperwork:    { color: 'gold',   label: () => 'Extend · paperwork due',      help: () => 'The tenant chose Extend. Not offered to customers. Extend the lease to clear this.' },
@@ -35,7 +45,9 @@ const ASK_STATUS_META = {
 // without a way to record that they would keep being asked and then be escalated as
 // unresponsive — the worst outcome of the whole sequence.
 function RenewalReplyControls({ ask, onRecord, busy }) {
-  if (!ask?.latest_ask_id || ask.reply) return null;
+  // Hidden once a DEFINITE answer exists. A vague one leaves the controls up: staff who
+  // hear "actually we're staying" must be able to record it, exactly as the relay can.
+  if (!ask?.latest_ask_id || (ask.reply && ask.reply !== 'unsure')) return null;
   return (
     <Space size={4} wrap>
       <Text type="secondary" style={{ fontSize: 12 }}>They told us:</Text>

@@ -60,7 +60,9 @@ async function findRenewalCandidates(pool, orgId, { today, defaultNoticeDays }) 
         AND l.end_date IS NOT NULL
         AND l.end_date >= ?
         AND l.contract_type IN (1, 4)
-        AND l.renewal_reply IS NULL
+        -- 3 = unsure. Not an answer, so the lease stays in the pool and the remaining
+        -- asks still go out; renewalAskEligibility applies the same rule in code.
+        AND (l.renewal_reply IS NULL OR l.renewal_reply = 3)
         AND NOT EXISTS (
           SELECT 1 FROM leasing l2
            WHERE l2.unit_id = l.unit_id AND l2.deleted_at IS NULL AND l2.id <> l.id
@@ -131,9 +133,9 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
       const cycle = renewalAsk.renewalAskCycleKey(lease, { today, defaultNoticeDays });
       if (!cycle) continue;
       const history = await askHistory(pool, lease, cycle);
-      const hasReply = history.some(h => h.reply_intent != null);
+      const hasDefiniteReply = history.some(h => renewalAsk.isDefiniteReply(h.reply_intent));
 
-      if (renewalAsk.shouldEscalate(history, { today, gapDays, hasReply })) {
+      if (renewalAsk.shouldEscalate(history, { today, gapDays, hasDefiniteReply })) {
         const [escUpd] = await pool.execute(
           `UPDATE renewal_ask SET escalated_at = ?
             WHERE lease_id = ? AND lease_end_at_ask = ? AND decision_due_on = ? AND escalated_at IS NULL`,
@@ -170,7 +172,7 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
         continue;   // next run picks up the following ask number
       }
 
-      const due = renewalAsk.nextAskDue(history, { today, gapDays, hasReply });
+      const due = renewalAsk.nextAskDue(history, { today, gapDays, hasDefiniteReply });
       if (!due.due) continue;
 
       // The channel is fixed for the whole cycle. Recomputing it per ask would move a
@@ -250,4 +252,7 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
   return summary;
 }
 
-module.exports = { runRenewalAsksForOrg, findRenewalCandidates, askHistory };
+// Exported so the demand-triggered route in routes/public.js sends through this exact
+// function. Tenafy is the only sender of a renewal ask (operator decision, 2026-08-19);
+// two senders is how a tenant gets messaged twice, or not at all.
+module.exports = { runRenewalAsksForOrg, findRenewalCandidates, askHistory, deliver };
