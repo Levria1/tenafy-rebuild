@@ -37,6 +37,7 @@ const {
   reversalClassification,
   sendModeFor, idempotencyKeyFor, withinQuietHours,
   draftQueryOptions, chooseTenantNoticeTemplate, composeStep, toOrgWallClock,
+  VIEWING_ROUTABLE_GRACE_HOURS, VIEWING_SLOT_MINUTES, addMinutesToWallClock,
 } = require('./viewingNegotiationLogic');
 const { findActiveLeaseForUnit } = require('./viewingBooking');
 const { resolveUnit, optionsText } = require('./unitResolver');
@@ -1830,6 +1831,7 @@ module.exports = {
   sendModeFor, idempotencyKeyFor, withinQuietHours, draftQueryOptions,
   eventTypeForOutbound, outboundSendDecision, chooseTenantNoticeTemplate, composeStep,
   boardNextDeadline, isNudgeCandidate, isStaleCandidate, isSchemaMissingError, dateToWallClock,
+  VIEWING_ROUTABLE_GRACE_HOURS, VIEWING_SLOT_MINUTES, addMinutesToWallClock,
   renderMessage, viewingNegotiationVars, formatWhen,
   // orchestration
   getSetting, startNegotiation, startNegotiationFromText, handleReply, loadNegotiation,

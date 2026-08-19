@@ -328,7 +328,7 @@ test('activeNegotiationPayload: NEEDS_STAFF is visible but not routable or activ
   assert.equal(escalatedOnly.active, false);
   assert.deepEqual(escalatedOnly.negotiations, [
     { negotiation_id: '1', party: 'prospect', state: 'NEEDS_STAFF',
-      needs_staff_reason: null, awaiting: 'staff', routable: false },
+      needs_staff_reason: null, awaiting: 'staff', routable: false, confirmed_slot: null },
   ]);
 
   const mixed = activeNegotiationPayload([
@@ -769,4 +769,90 @@ test('activeNegotiationPayload: a committed viewing stays routable for the tenan
   const cancelled = [{ id: '2', state: 'CANCELLED', awaiting: null, prospect_digits: '33333333', tenant_digits: '44444444' }];
   assert.equal(activeNegotiationPayload(cancelled, '44444444').active, true); // not excluded by this pure fn
   // …which is exactly why the route's WHERE clause must keep excluding CANCELLED.
+});
+
+// ── the agreed slot, and who can still reach us once it has passed ───────────
+//
+// The window used to come from comparing a Hong Kong wall-clock column against a UTC
+// NOW(), which left a confirmed viewing reachable for about eight hours afterwards. That
+// grace is worth having for the OCCUPANT — "nobody came" has to land somewhere — but for
+// the prospect it meant their best message ("we'll take it") arrived while the negotiation
+// still looked relay-owned. Twelve hours, explicitly, and prospect-side ends at the slot.
+
+test('addMinutesToWallClock: naive arithmetic that crosses midnight and month ends', () => {
+  const { addMinutesToWallClock } = require('../src/services/viewingNegotiation');
+  assert.equal(addMinutesToWallClock('2026-08-21T11:00:00', 30), '2026-08-21T11:30:00');
+  assert.equal(addMinutesToWallClock('2026-08-21T23:50', 30), '2026-08-22T00:20:00');
+  assert.equal(addMinutesToWallClock('2026-09-01T00:10', -12 * 60), '2026-08-31T12:10:00');
+  assert.equal(addMinutesToWallClock(null, 30), null);
+  assert.equal(addMinutesToWallClock('not a date', 30), null);
+  // Values that only LOOK like a datetime must be refused, not quietly rolled over. Date.UTC
+  // turns minute 75 into the next hour and 30 February into 2 March, and this feeds a time we
+  // publish to the partner as agreed — a confident wrong answer is the worst outcome here.
+  assert.equal(addMinutesToWallClock('2026-08-21T11:75', 30), null, 'minute 75 is not a time');
+  assert.equal(addMinutesToWallClock('2026-02-30T10:00', 30), null, '30 February is not a date');
+  assert.equal(addMinutesToWallClock('2026-13-01T10:00', 30), null, 'month 13 is not a month');
+  assert.equal(addMinutesToWallClock('2026-08-21T11:00 and then some', 30), null, 'trailing junk');
+});
+
+test('confirmed_slot is published for a committed viewing, and only for one', () => {
+  const { activeNegotiationPayload, VIEWING_SLOT_MINUTES } = require('../src/services/viewingNegotiation');
+  const row = {
+    id: '9', state: 'CONFIRMED', awaiting: null, prospect_digits: '61234567', tenant_digits: '99887766',
+    proposed_wall: '2026-08-21T11:00:00', unit_id: '5', unit_label: 'Poplar 2B',
+  };
+  const out = activeNegotiationPayload([row], '99887766', { nowWallClock: '2026-08-20T09:00:00' });
+  assert.equal(out.negotiations.length, 1);
+  assert.deepEqual(out.negotiations[0].confirmed_slot, {
+    start: '2026-08-21T11:00:00', end: '2026-08-21T11:30:00',
+    timezone: 'Asia/Hong_Kong', unit_id: '5', unit_label: 'Poplar 2B',
+  });
+  assert.equal(VIEWING_SLOT_MINUTES, 30);
+
+  // Not committed → nothing to publish. A time we are still negotiating is not an agreement,
+  // and handing it over as one is the fabricated-viewing bug in a different coat.
+  const pending = activeNegotiationPayload(
+    [{ ...row, state: 'CONFIRM_TIME' }], '99887766', { nowWallClock: '2026-08-20T09:00:00' });
+  assert.equal(pending.negotiations[0].confirmed_slot, null);
+});
+
+test('after the slot, a committed viewing stays reachable for the tenant and drops for the prospect', () => {
+  const { activeNegotiationPayload } = require('../src/services/viewingNegotiation');
+  const row = {
+    id: '9', state: 'CONFIRMED', awaiting: null, prospect_digits: '61234567', tenant_digits: '99887766',
+    proposed_wall: '2026-08-21T11:00:00', unit_id: '5', unit_label: 'Poplar 2B',
+  };
+
+  // Before the slot: both parties see it. The prospect cannot reopen a booked viewing, so
+  // theirs is listed-but-not-routable — unchanged behaviour.
+  const before = activeNegotiationPayload([row], '61234567', { nowWallClock: '2026-08-21T10:00:00' });
+  assert.equal(before.negotiations.length, 1);
+  assert.equal(before.negotiations[0].routable, false);
+
+  // An hour after: the prospect's "we loved it, we'll take it" must not find a negotiation
+  // sitting over the conversation, or it goes unanswered by everyone.
+  const afterProspect = activeNegotiationPayload([row], '61234567', { nowWallClock: '2026-08-21T12:00:00' });
+  assert.deepEqual(afterProspect, { active: false, negotiations: [] });
+
+  // The occupant keeps it — the reversal path is the whole reason the grace exists.
+  const afterTenant = activeNegotiationPayload([row], '99887766', { nowWallClock: '2026-08-21T12:00:00' });
+  assert.equal(afterTenant.negotiations.length, 1);
+  assert.equal(afterTenant.negotiations[0].routable, true);
+
+  // Exactly at the slot counts as passed: the viewing is under way.
+  const atSlot = activeNegotiationPayload([row], '61234567', { nowWallClock: '2026-08-21T11:00:00' });
+  assert.deepEqual(atSlot.negotiations, []);
+});
+
+test('the grace window is an explicit twelve hours, not a timezone accident', () => {
+  const { VIEWING_ROUTABLE_GRACE_HOURS } = require('../src/services/viewingNegotiation');
+  assert.equal(VIEWING_ROUTABLE_GRACE_HOURS, 12);
+
+  // Both queries must bind the operator clock. `NOW()` resolves against MySQL's zone (UTC),
+  // which is what produced the accidental window in the first place.
+  const pub = require('node:fs').readFileSync(require.resolve('../src/routes/public'), 'utf8');
+  const code = pub.replace(/\/\/.*$/gm, '');
+  assert.ok(!/current_proposed_datetime > NOW\(\)/.test(code),
+    'the viewing-time bound must never be compared against the server clock');
+  assert.ok(/VIEWING_ROUTABLE_GRACE_HOURS/.test(code), 'the grace must come from the named constant');
 });

@@ -14,6 +14,9 @@
  */
 
 const crypto = require('crypto');
+// The half-hour a viewing occupies. Shared with the `confirmed_slot` we publish to the
+// partner, so the calendar event and the advertised end time cannot drift apart.
+const { VIEWING_SLOT_MINUTES } = require('./viewingNegotiationLogic');
 const config = require('../config');
 const { getMasterPool } = require('../config/poolRegistry');
 const { getFreeBusy } = require('./googleCalendar');
@@ -151,12 +154,12 @@ async function createCandidateBooking(pool, orgId, opts) {
 
   // Conflict check against host bookings + Google busy.
   const rangeStart = whenList[0];
-  const rangeEnd = new Date(whenList[whenList.length - 1].getTime() + 30 * 60000);
+  const rangeEnd = new Date(whenList[whenList.length - 1].getTime() + VIEWING_SLOT_MINUTES * 60000);
   const { conflicts, bufferMin, googleBusy } = await findBlocking(pool, { employeeId, unitId, rangeStart, rangeEnd });
 
   const free = [], clashes = [];
   for (const w of whenList) {
-    const end = new Date(w.getTime() + 30 * 60000);
+    const end = new Date(w.getTime() + VIEWING_SLOT_MINUTES * 60000);
     const hit = conflicts.find(b => overlapsWithBuffer(w, end, b, bufferMin)) || intersectsBusy(w, end, googleBusy);
     if (hit) clashes.push(formatWhen(w)); else free.push(w);
   }

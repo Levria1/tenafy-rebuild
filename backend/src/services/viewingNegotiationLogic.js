@@ -548,7 +548,48 @@ function reminderTarget(row, { reminderHours = 4, staleHours = 24 } = {}) {
   return row.awaiting;
 }
 
-function activeNegotiationPayload(rows, targetDigits) {
+/**
+ * How long after a viewing's start time the negotiation stays reachable FOR THE TENANT.
+ *
+ * The occupant is the one with something left to say once the slot arrives — "nobody came",
+ * "they were early, it's done". That has to reach us, so the row cannot vanish at the
+ * stroke of the appointment.
+ *
+ * This window used to exist by accident: the SQL compared a Hong Kong wall-clock column
+ * against a UTC `NOW()`, which left every confirmed viewing reachable for about eight
+ * hours past its slot. Eight hours of grace was defensible; arriving at it through a
+ * timezone bug was not, and it moved if the server's zone ever changed. Operator decision,
+ * 2026-08-19: make it explicit, and make it twelve.
+ */
+const VIEWING_ROUTABLE_GRACE_HOURS = 12;
+
+/** A viewing occupies a fixed half-hour; the calendar event in viewingBooking uses it too. */
+const VIEWING_SLOT_MINUTES = 30;
+
+function addMinutesToWallClock(wall, minutes) {
+  const m = String(wall || '').match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  // Reject values that only LOOK like a datetime. Date.UTC rolls 2026-02-30 into 2026-03-02
+  // and hour 25 into the next day, so an impossible input would come back as a confident,
+  // wrong answer — and this feeds a time we publish to the partner as agreed.
+  const [Y, M, D, h, mi] = [+m[1], +m[2], +m[3], +m[4], +m[5]];
+  if (M < 1 || M > 12 || D < 1 || D > 31 || h > 23 || mi > 59) return null;
+  const probe = new Date(Date.UTC(Y, M - 1, D, h, mi));
+  if (probe.getUTCFullYear() !== Y || probe.getUTCMonth() !== M - 1 || probe.getUTCDate() !== D) return null;
+  // Anchored in UTC purely as arithmetic: both sides are naive wall clock, and UTC has no
+  // DST to shift the result. Hong Kong has none either, but the anchor keeps it true if the
+  // operator zone ever changes.
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) + minutes * 60000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`
+    + `T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:00`;
+}
+
+/**
+ * @param {object} opts.nowWallClock operator wall clock, injectable for tests.
+ * @param {string} opts.timeZone     stamped on confirmed_slot so no one has to infer it.
+ */
+function activeNegotiationPayload(rows, targetDigits, { nowWallClock = orgWallClock(), timeZone = ORG_TIME_ZONE } = {}) {
   const matches = [];
   for (const r of rows || []) {
     // A booked-but-not-yet-happened viewing is routable for the TENANT only. They can
@@ -557,15 +598,35 @@ function activeNegotiationPayload(rows, targetDigits) {
     // state, so marking it routable would have TaneChat relay a message that is then
     // dropped, and the viewer would get silence instead of "we'll follow up".
     const committed = r.state === 'CONFIRMED' || r.state === STATE_AUTO_CONFIRMED;
+    // Both sides are 'YYYY-MM-DDTHH:MM:SS' in the operator's zone, so a string compare is
+    // the comparison — no parsing, no zone to get wrong.
+    const slotPassed = !!(r.proposed_wall && nowWallClock && String(r.proposed_wall) <= String(nowWallClock));
+    const confirmedSlot = committed && r.proposed_wall
+      ? {
+          start: String(r.proposed_wall),
+          end: addMinutesToWallClock(r.proposed_wall, VIEWING_SLOT_MINUTES),
+          timezone: timeZone,
+          unit_id: r.unit_id != null ? String(r.unit_id) : null,
+          unit_label: r.unit_label || null,
+        }
+      : null;
     if (r.prospect_digits === targetDigits) {
-      const routable = r.state !== 'NEEDS_STAFF' && !committed;
-      matches.push({ negotiation_id: String(r.id), party: 'prospect', state: r.state,
-        needs_staff_reason: r.needs_staff_reason || null, awaiting: r.awaiting, routable });
+      // Once the viewing has started, a committed negotiation is dropped for the prospect
+      // rather than listed as unroutable. "We loved it, we'll take it" an hour later is the
+      // most valuable message in the funnel, and a listed-but-unroutable row had TaneChat
+      // stand its own handling down while we had nothing left to do with the message.
+      if (!(committed && slotPassed)) {
+        const routable = r.state !== 'NEEDS_STAFF' && !committed;
+        matches.push({ negotiation_id: String(r.id), party: 'prospect', state: r.state,
+          needs_staff_reason: r.needs_staff_reason || null, awaiting: r.awaiting, routable,
+          confirmed_slot: confirmedSlot });
+      }
     }
     if (r.tenant_digits && r.tenant_digits === targetDigits) {
       const routable = r.state !== 'NEEDS_STAFF';
       matches.push({ negotiation_id: String(r.id), party: 'tenant', state: r.state,
-        needs_staff_reason: r.needs_staff_reason || null, awaiting: r.awaiting, routable });
+        needs_staff_reason: r.needs_staff_reason || null, awaiting: r.awaiting, routable,
+        confirmed_slot: confirmedSlot });
     }
   }
   matches.sort((a, b) => {
@@ -583,6 +644,7 @@ module.exports = {
   resolvePolicy, optOutDeadline, noticeIsActionable, autoConfirmDecision, nudgeDecision,
   reversalClassification,
   sendModeFor, idempotencyKeyFor, reminderTarget, activeNegotiationPayload, draftQueryOptions,
+  VIEWING_ROUTABLE_GRACE_HOURS, VIEWING_SLOT_MINUTES, addMinutesToWallClock,
   orgWallClock, toOrgWallClock, ORG_TIME_ZONE,
   chooseTenantNoticeTemplate, composeStep,
 };
