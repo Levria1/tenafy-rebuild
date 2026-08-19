@@ -834,6 +834,12 @@ a vague answer already on record stays, flagged `vague_reply_on_record: true` �
 id would disappear the moment "ok thanks" was filed and the real answer would have nothing
 to attach to.
 
+⚠️ **Do not key this list on phone number alone.** An ask handed to staff after three
+unanswered attempts carries `escalated: true` and stays listed, because a late reply must
+still be attributable — but it no longer holds the conversation, so the tenant's other lease
+becomes askable. Two rows can therefore share a phone. The guarantee is narrower and exact:
+**at most one row per conversation has `escalated: false`.**
+
 We also tag the outbound message itself, once your `/send` accepts it:
 
 ```json
@@ -845,7 +851,8 @@ That is off until you confirm, because an unrecognised key at a live gateway wou
 working traffic at risk. `/renewal-asks/open` needs nothing from you and works today.
 
 ⚠️ **One open ask per conversation.** A tenant renting two units is never asked about both at
-once — the second lease waits until the first is answered or its sequence ends. Their reply
+once — the second lease waits until the first is answered or its sequence ends (either a
+definite reply, or escalation to staff after three unanswered asks). Their reply
 arrives on one thread referring to neither message, so an ambiguous "yes" could otherwise be
 written to the wrong lease. `POST /renewal-ask` returns `reason: "conversation_busy"` with
 `blocked_by` when this defers an ask.

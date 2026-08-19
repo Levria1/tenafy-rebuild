@@ -2175,6 +2175,12 @@ function renewalAskRow(row) {
     dispatch: 'tenafy',
     channel: row.channel || null,
     sent: !!row.sent_at,
+    // Handed to a person: three asks went unanswered. It stays on the open list because a late
+    // reply must still be attributable, but it no longer holds the conversation — so a second
+    // lease for the same tenant CAN be asked, and two rows here may share a phone. At most one
+    // row per conversation has `escalated: false`. A partner keying on phone alone needs this,
+    // or a legitimate state looks like a broken guarantee.
+    escalated: !!row.escalated_at,
   };
 }
 

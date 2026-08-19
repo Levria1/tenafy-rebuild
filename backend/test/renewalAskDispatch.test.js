@@ -523,3 +523,22 @@ test('the conflict check and the lock cannot disagree about identity', () => {
   assert.ok(!/tenant_email/.test(body) && !/tenant_phone/.test(body),
     'contact fields belong in conversationLockKey, not here');
 });
+
+test('an escalated ask stays listed and says so', () => {
+  // It must stay: a tenant who answers late deserves to have it recorded, and the id lives only
+  // here. But it no longer holds the conversation — the other lease becomes askable — so two
+  // rows CAN share a phone. A partner keying on phone alone would read a legitimate state as a
+  // broken guarantee, so the flag has to be on the payload rather than implied.
+  const pub = require('node:fs').readFileSync(require.resolve('../src/routes/public'), 'utf8');
+  const shaper = pub.slice(pub.indexOf('function renewalAskRow'));
+  assert.ok(/escalated: !!row\.escalated_at/.test(shaper.slice(0, shaper.indexOf('\n}'))),
+    'the open list must distinguish an escalated ask');
+
+  // And the query it is shaped from must actually select the column.
+  const disp = require('node:fs').readFileSync(require.resolve('../src/services/renewalAskDispatch'), 'utf8');
+  const q = disp.slice(disp.indexOf('async function openAsks'));
+  assert.ok(/r\.escalated_at/.test(q.slice(0, q.indexOf('`,'))), 'openAsks must select escalated_at');
+  // …and must NOT filter them out, or a late reply has nothing to attach to.
+  assert.ok(!/r\.escalated_at IS NULL/.test(q.slice(0, q.indexOf('`,'))),
+    'escalated asks stay listed for late attribution');
+});
