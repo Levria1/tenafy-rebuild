@@ -80,6 +80,6 @@ UPDATE advertising_setting
    SET renewal_ask_phrase_2 = 'Hi {tenant_name}, following up on {unit} — your lease runs to {end_date}. Someone has asked about the unit, so we would like to know whether you are planning to stay on before we reply to them. Could you let us know either way?'
  WHERE renewal_ask_phrase_2 IS NULL;
 
-UPDATE advertising_setting
-   SET renewal_ask_phrase_3 = 'Hi {tenant_name}, we have not managed to reach you about {unit}, where your lease runs to {end_date}. Could you let us know whether you plan to stay on? If we do not hear back, a member of our team will call you.'
- WHERE renewal_ask_phrase_3 IS NULL;
+-- renewal_ask_phrase_3 is deliberately left NULL: the operator writes the final ask
+-- themselves. Until it is written the sequence ends after two asks and escalates, rather
+-- than putting words in their mouth — see the blank-phrase branch in renewalAskDispatch.

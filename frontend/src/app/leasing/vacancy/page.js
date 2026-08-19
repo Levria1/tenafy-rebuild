@@ -31,6 +31,30 @@ const ASK_STATUS_META = {
   replied_but_stale_check_lease: { color: 'volcano', label: () => 'Replied · lease changed',  help: (a) => `The tenant replied, but the lease changed after we asked (${a.reply_stale_reason || 'changed'}), so we did not act on it. Check the lease.` },
 };
 
+// Staff-side answer entry. The tenant may reply to a person rather than to the bot, and
+// without a way to record that they would keep being asked and then be escalated as
+// unresponsive — the worst outcome of the whole sequence.
+function RenewalReplyControls({ ask, onRecord, busy }) {
+  if (!ask?.latest_ask_id || ask.reply) return null;
+  return (
+    <Space size={4} wrap>
+      <Text type="secondary" style={{ fontSize: 12 }}>They told us:</Text>
+      {[['extend', 'Extending'], ['leaving', 'Leaving'], ['unsure', 'Not sure']].map(([value, label]) => (
+        <Popconfirm
+          key={value}
+          title={value === 'extend'
+            ? 'Record that the tenant is extending? The unit stops being offered to customers straight away.'
+            : `Record that the tenant said "${label.toLowerCase()}"? Nothing changes for customers until you set the renewal intent.`}
+          okText="Record"
+          onConfirm={() => onRecord(ask.latest_ask_id, value)}
+        >
+          <a style={{ fontSize: 12, pointerEvents: busy ? 'none' : undefined, opacity: busy ? 0.5 : 1 }}>{label}</a>
+        </Popconfirm>
+      ))}
+    </Space>
+  );
+}
+
 function RenewalAskTag({ ask }) {
   const meta = ASK_STATUS_META[ask.status];
   if (!meta) return null;
@@ -68,6 +92,7 @@ export default function VacancyPage() {
   const [pageSize, setPageSize] = useState(50);
   const [overrideRows, setOverrideRows] = useState([]);
   const [renewalAsks, setRenewalAsks] = useState([]);
+  const [recordingReply, setRecordingReply] = useState(false);
   const [overrideModal, setOverrideModal] = useState(null);       // { row }
   const [savingOverride, setSavingOverride] = useState(false);
   const [overrideForm] = Form.useForm();
@@ -160,6 +185,26 @@ export default function VacancyPage() {
       if (!e?.errorFields) message.error(e.response?.data?.message || 'Failed to save vacancy override');
     } finally {
       setSavingOverride(false);
+    }
+  };
+
+  const recordRenewalReply = async (askId, intent) => {
+    setRecordingReply(true);
+    try {
+      const res = await advertisingApi.recordRenewalReply(askId, { intent });
+      const d = res.data?.data;
+      if (d?.applied === false && d?.stale_reason) {
+        message.warning('Recorded, but the lease changed since we asked — check it before acting.');
+      } else if (d?.withdrawn_from_offers) {
+        message.success('Recorded. The unit is no longer offered to customers — extend the lease to finish.');
+      } else {
+        message.success('Recorded. Nothing has changed for customers.');
+      }
+      await load(openingRange);
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Failed to record the reply');
+    } finally {
+      setRecordingReply(false);
     }
   };
 
@@ -265,7 +310,13 @@ export default function VacancyPage() {
           );
         }
         if (askTag) {
-          return <Space direction="vertical" size={4}><div>{expiring}</div>{askTag}</Space>;
+          return (
+            <Space direction="vertical" size={4}>
+              <div>{expiring}</div>
+              {askTag}
+              <RenewalReplyControls ask={ask} onRecord={recordRenewalReply} busy={recordingReply} />
+            </Space>
+          );
         }
         return expiring;
       },
@@ -466,6 +517,9 @@ export default function VacancyPage() {
                 <div key={a.lease_id}>
                   <b>{a.label}</b>{a.tenant_name ? ` · ${a.tenant_name}` : ''} — lease ends {a.lease_end}{' '}
                   <RenewalAskTag ask={a} />
+                  <div style={{ marginTop: 2 }}>
+                    <RenewalReplyControls ask={a} onRecord={recordRenewalReply} busy={recordingReply} />
+                  </div>
                 </div>
               ))}
             </Space>

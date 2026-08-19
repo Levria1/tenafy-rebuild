@@ -124,7 +124,7 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
   const gapDays = settings.renewal_ask_gap_days;
 
   const candidates = await findRenewalCandidates(pool, orgId, { today, defaultNoticeDays });
-  const summary = { asked: 0, escalated: 0, unreachable: 0, failed: 0, considered: candidates.length };
+  const summary = { asked: 0, escalated: 0, unreachable: 0, failed: 0, no_wording: 0, considered: candidates.length };
 
   for (const lease of candidates) {
     try {
@@ -157,6 +157,8 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
       // It is left PENDING only when the process died mid-send or the gateway never
       // answered — in both cases the message may already have arrived, so it is closed
       // out rather than repeated.
+      // Covers both origins: a scheduled send that died mid-flight, and an ask the partner
+      // claimed but never confirmed with /sent. Neither is re-sent — the slot is closed.
       const stuck = history.find(h => h.state === 'PENDING' && !h.sent_at);
       if (stuck) {
         if (stuck.attempted_on === today) continue;   // still in flight from this run
@@ -180,13 +182,35 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
       if (channel === 'whatsapp' && !lease.tenant_phone) { summary.unreachable += 1; continue; }
       if (channel === 'email' && !lease.tenant_email) { summary.unreachable += 1; continue; }
 
-      const template = settings[PHRASE_COLUMN[due.ask_number]] || settings.renewal_ask_phrase;
+      // No fallback to another ask's wording. If the operator has not written this one,
+      // we do not put words in their mouth — the sequence ends here and a person takes
+      // over, which is a truthful outcome rather than a silent stall.
+      const template = settings[PHRASE_COLUMN[due.ask_number]];
       const message = renewalAsk.renderRenewalAsk(template, {
         tenant_name: lease.tenant_name || 'there',
         unit: [lease.property_name, lease.unit_name].filter(Boolean).join(' '),
         end_date: lease.end_date,
       });
-      if (!message) { summary.failed += 1; continue; }
+      if (!message) {
+        summary.no_wording += 1;
+        // Only escalate a sequence that has actually started; an unwritten FIRST ask is
+        // a configuration gap, not an unresponsive tenant.
+        if (history.length) {
+          const [esc] = await pool.execute(
+            `UPDATE renewal_ask SET escalated_at = ?
+              WHERE lease_id = ? AND lease_end_at_ask = ? AND decision_due_on = ? AND escalated_at IS NULL`,
+            [orgWallClock(new Date()), lease.lease_id, cycle.lease_end_at_ask, cycle.decision_due_on]);
+          if (esc && esc.affectedRows > 0 && typeof createNotification === 'function') {
+            await createNotification(pool, {
+              orgId, type: 'warning',
+              title: `Ask ${due.ask_number} wording is not written — ${[lease.property_name, lease.unit_name].filter(Boolean).join(' ')} handed to staff`,
+              link: '/chatbot/settings',
+            });
+            summary.escalated += 1;
+          }
+        }
+        continue;
+      }
 
       // Recorded BEFORE sending. The unique key on (lease, cycle, ask_number) is what
       // actually prevents a second message, so it has to exist before the send.

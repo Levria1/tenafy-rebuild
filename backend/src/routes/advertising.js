@@ -637,6 +637,28 @@ router.delete('/vacancy-override/:id', authenticate, async (req, res) => {
   }
 });
 
+// Record a renewal answer that staff saw themselves — in TaneChat's inbox, or because the
+// tenant phoned. Without this the ONLY way an answer can reach us is the partner relaying
+// it, which means a tenant who replies to a human keeps being asked and is then escalated
+// as unresponsive. Same service as the public route, so the rules cannot differ.
+router.post('/renewal-asks/:id/reply', authenticate, async (req, res) => {
+  try {
+    const { recordRenewalReply } = require('../services/renewalReply');
+    const body = req.body || {};
+    const result = await recordRenewalReply(req.pool, req.user.orgId, req.params.id, {
+      intent: body.intent, text: body.text, recordedBy: 'staff',
+    });
+    return res.status(result.status).json(
+      result.status === 200
+        ? { code: 200, data: result.body }
+        : { code: result.status, message: result.body.message }
+    );
+  } catch (err) {
+    console.error('[advertising/renewal-asks reply] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to record renewal reply' });
+  }
+});
+
 // Renewal asks in flight — the visibility surface for a sequence that messages tenants.
 //
 // Deliberately NOT folded into the Vacancy page alone: a lease whose notice period exceeds
@@ -646,7 +668,7 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [rows] = await req.pool.execute(
-      `SELECT r.lease_id, r.unit_id,
+      `SELECT MAX(r.id) AS latest_ask_id, r.lease_id, r.unit_id,
               DATE_FORMAT(r.lease_end_at_ask, '%Y-%m-%d') AS lease_end,
               DATE_FORMAT(r.decision_due_on, '%Y-%m-%d')  AS decision_due_on,
               -- DELIVERED asks only. Counting every row would tell staff a tenant had
@@ -686,6 +708,7 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
       // GROUP_CONCAT returns strings; an empty group yields null.
       const replyIntent = r.reply_intent != null && r.reply_intent !== '' ? Number(r.reply_intent) : null;
       return ({
+        latest_ask_id: r.latest_ask_id != null ? String(r.latest_ask_id) : null,
         lease_id: String(r.lease_id),
         unit_id: String(r.unit_id),
         label: [r.property_name, r.unit_name].filter(Boolean).join(' '),
@@ -1512,7 +1535,7 @@ async function loadSettings(pool, orgId) {
     // Off by default: this feature messages real tenants, so deploying it must not
     // switch it on for anyone.
     renewal_ask_enabled: 0,
-    renewal_default_notice_days: 30,
+    renewal_default_notice_days: 45,
     renewal_ask_phrase: RENEWAL_ASK_PHRASE,
     renewal_ask_gap_days: 3,
     renewal_ask_phrase_2: null,
@@ -1552,7 +1575,7 @@ async function loadSettings(pool, orgId) {
       inquiry_too_far_out_phrase: row?.inquiry_too_far_out_phrase ?? null,
       vacant_max_move_in_days: numberOrDefault(row?.vacant_max_move_in_days, 30),
       renewal_ask_enabled: Number(row?.renewal_ask_enabled) === 1 ? 1 : 0,
-      renewal_default_notice_days: numberOrDefault(row?.renewal_default_notice_days, 30),
+      renewal_default_notice_days: numberOrDefault(row?.renewal_default_notice_days, 45),
       renewal_ask_phrase: row?.renewal_ask_phrase || RENEWAL_ASK_PHRASE,
       renewal_ask_gap_days: numberOrDefault(row?.renewal_ask_gap_days, 3),
       renewal_ask_phrase_2: row?.renewal_ask_phrase_2 || null,
@@ -1888,7 +1911,7 @@ router.put('/settings', authenticate, async (req, res) => {
       }
       if (includeRenewalNoticeDays) {
         insertColumns.push('renewal_default_notice_days');
-        params.push(renewal_default_notice_days ?? 30);
+        params.push(renewal_default_notice_days ?? 45);
       }
       if (includeRenewalAskPhrase) {
         insertColumns.push('renewal_ask_phrase');

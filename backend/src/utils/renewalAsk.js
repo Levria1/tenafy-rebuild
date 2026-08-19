@@ -17,7 +17,7 @@ const REPLY_UNSURE = 3;
 // leasing.contract_type values that mean "we do not know yet".
 const UNDECIDED_CONTRACT_TYPES = [1, 4];   // 1 = MR (may renew), 4 = UC (unconfirmed)
 
-const DEFAULT_NOTICE_DAYS = 30;
+const DEFAULT_NOTICE_DAYS = 45;   // the operator's standard notice period
 
 // Three asks per decision cycle, then a human takes over. Silence is not an answer and
 // is emphatically not "leaving", so the sequence ends in escalation rather than a guess.

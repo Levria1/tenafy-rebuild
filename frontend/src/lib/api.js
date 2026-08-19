@@ -676,6 +676,9 @@ export const advertisingApi = {
   // Renewal asks in flight — sequences that message tenants, including ones whose lease
   // is too far out to appear on the Vacancy page.
   getRenewalAsks: () => api.get('/api/advertising/renewal-asks'),
+  // Record an answer staff saw themselves, so a tenant who replied to a human is not
+  // asked again and then escalated as unresponsive.
+  recordRenewalReply: (id, data) => api.post(`/api/advertising/renewal-asks/${id}/reply`, data),
   // Advertising → Vacancy: manual, expiring vacancy overrides for early move-out conversations.
   listVacancyOverrides: (params) => api.get('/api/advertising/vacancy-override', { params }),
   saveVacancyOverride: (data) => api.post('/api/advertising/vacancy-override', data),

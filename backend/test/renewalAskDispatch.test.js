@@ -158,3 +158,56 @@ test('both the scheduled and the on-demand path require a live lease', () => {
     assert.ok(body.includes(guard), `on-demand path must require ${guard}`);
   }
 });
+
+test('staff and partner reply paths share one implementation', () => {
+  // Two entry points recording the same fact must apply the same staleness checks and the
+  // same suppression. A rule enforced on one path only is not a rule, so both routes
+  // delegate rather than each carrying its own copy of the logic.
+  const pub = require('node:fs').readFileSync(require.resolve('../src/routes/public'), 'utf8');
+  const adv = require('node:fs').readFileSync(require.resolve('../src/routes/advertising'), 'utf8');
+  assert.ok(/recordRenewalReply\(/.test(pub), 'the partner route must delegate');
+  assert.ok(/recordRenewalReply\(/.test(adv), 'the staff route must delegate');
+  // Neither may re-implement the decision itself.
+  assert.ok(!/applyRenewalReply\(/.test(pub), 'the partner route must not re-apply the decision');
+  assert.ok(!/applyRenewalReply\(/.test(adv), 'the staff route must not re-apply the decision');
+
+  const svc = require('../src/services/renewalReply');
+  assert.equal(typeof svc.recordRenewalReply, 'function');
+  // 'staying' stays accepted so an in-flight partner caller is not broken by the rename.
+  assert.equal(svc.INTENTS.extend, 1);
+  assert.equal(svc.INTENTS.staying, 1);
+  assert.equal(svc.INTENTS.leaving, 2);
+  assert.equal(svc.INTENTS.unsure, 3);
+});
+
+test('an ask with no operator wording is never invented and never stalls silently', () => {
+  // The operator writes ask 3 themselves. Falling back to ask 1's words would send a
+  // message they never approved; doing nothing would leave the sequence stuck. It
+  // escalates instead.
+  const raw = require('node:fs').readFileSync(require.resolve('../src/services/renewalAskDispatch'), 'utf8');
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  assert.ok(!/settings\.renewal_ask_phrase\s*;/.test(src.replace(/PHRASE_COLUMN\[[^\]]+\]/g, 'X')),
+    'no silent fallback to another ask\'s wording');
+  assert.ok(/no_wording/.test(src), 'a missing phrase is counted and surfaced');
+  assert.ok(/wording is not written/.test(raw), 'and staff are told which ask needs writing');
+});
+
+test('the default notice period matches the operator policy of 45 days', () => {
+  const { renewalDecisionDueOn, DEFAULT_NOTICE_DAYS } = require('../src/utils/renewalAsk');
+  assert.equal(DEFAULT_NOTICE_DAYS, 45);
+  // A lease with nothing recorded is treated as 45 days, not 30.
+  assert.equal(renewalDecisionDueOn('2026-09-25', null), '2026-08-11');
+});
+
+test('the partner polling path hands an ask out once and never re-offers it', () => {
+  // The first version re-offered a claim after ten minutes so a crashed poller could not
+  // strand an ask. That trade was wrong: if the partner sent the message and only the
+  // acknowledgement was lost, re-offering messages the tenant twice. Unconfirmed claims
+  // are resolved by the scheduler instead.
+  const pub = require('node:fs').readFileSync(require.resolve('../src/routes/public'), 'utf8');
+  const claim = pub.slice(pub.indexOf("SET claimed_at = ?, claim_token = ?"));
+  const stmt = claim.slice(0, claim.indexOf('`'));
+  assert.ok(/claimed_at IS NULL/.test(stmt), 'only unclaimed asks may be handed out');
+  assert.ok(!/DATE_SUB/.test(stmt), 'a claim must not expire back into the queue');
+  assert.ok(!/RENEWAL_CLAIM_MINUTES/.test(pub.replace(/\/\/.*$/gm, '')), 'the expiry window should be gone');
+});

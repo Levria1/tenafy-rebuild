@@ -72,7 +72,11 @@ PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
 
 SET @c := (SELECT COUNT(*) FROM information_schema.COLUMNS
    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'advertising_setting' AND COLUMN_NAME = 'renewal_default_notice_days');
-SET @s := IF(@c = 0, 'ALTER TABLE advertising_setting ADD COLUMN renewal_default_notice_days SMALLINT NOT NULL DEFAULT 30', 'SELECT 1');
+-- 45 is the operator's standard notice period. Verified on 2026-08-19 that this column
+-- does not yet exist on any org, so every row is created with 45; the guard therefore
+-- cannot leave an older 30 in place. If that ever changes, an org's stored value wins on
+-- purpose — it may have been set deliberately.
+SET @s := IF(@c = 0, 'ALTER TABLE advertising_setting ADD COLUMN renewal_default_notice_days SMALLINT NOT NULL DEFAULT 45', 'SELECT 1');
 PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
 
 SET @c := (SELECT COUNT(*) FROM information_schema.COLUMNS

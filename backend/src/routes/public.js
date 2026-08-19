@@ -28,6 +28,7 @@ const { createNotification } = require('../services/scheduler');
 const config = require('../config');
 const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings, findBeyondHorizonNrVacancies } = require('./advertising');
 const renewalAsk = require('../utils/renewalAsk');
+const { recordRenewalReply } = require('../services/renewalReply');
 const {
   vacancyToPublicShape,
   classifyFreeOn,
@@ -2242,10 +2243,15 @@ router.post('/renewal-ask', async (req, res) => {
 
 // GET /api/public/renewal-asks/pending — created but not yet sent.
 //
-// Hands each ask out ONCE. Two pollers, or one retry before /sent lands, would
-// otherwise both dispatch the same message to a real tenant. A claim older than the
-// window is re-offered so a crashed poller does not strand an ask forever.
-const RENEWAL_CLAIM_MINUTES = 10;
+// Hands each ask out EXACTLY once, and never again.
+//
+// An earlier version re-offered a claim after ten minutes so a crashed poller could not
+// strand an ask. That was the wrong trade: if the partner sent the message and only the
+// /sent acknowledgement was lost, re-offering puts the same message in front of a real
+// tenant a second time. A claimed row that never reports back is instead left PENDING and
+// resolved as FAILED by the scheduler, which spends the slot and advances the sequence —
+// so the tenant is neither messaged twice nor stranded. Same policy as the scheduled
+// dispatcher: we never re-send anything we cannot prove was undelivered.
 
 router.get('/renewal-asks/pending', async (req, res) => {
   try {
@@ -2262,11 +2268,10 @@ router.get('/renewal-asks/pending', async (req, res) => {
     await req.pool.execute(
       `UPDATE renewal_ask
           SET claimed_at = ?, claim_token = ?
-        WHERE org_id = ? AND state = 'PENDING'
-          AND (claimed_at IS NULL OR claimed_at < DATE_SUB(?, INTERVAL ? MINUTE))
+        WHERE org_id = ? AND state = 'PENDING' AND claimed_at IS NULL
         ORDER BY decision_due_on ASC
         LIMIT 50`,
-      [orgWallClock(new Date()), claimToken, orgId, orgWallClock(new Date()), RENEWAL_CLAIM_MINUTES]
+      [orgWallClock(new Date()), claimToken, orgId]
     );
 
     const [rows] = await req.pool.execute(
@@ -2321,90 +2326,18 @@ router.post('/renewal-ask/:id/sent', async (req, res) => {
   }
 });
 
-// POST /api/public/renewal-ask/:id/reply  { text } or { intent: staying|leaving|unsure }
+// POST /api/public/renewal-ask/:id/reply  { text } or { intent: extend|leaving|unsure }
+//
+// Thin wrapper: every rule lives in services/renewalReply so this and the staff route
+// cannot drift apart. A staleness check enforced on one path only is not a check.
 router.post('/renewal-ask/:id/reply', async (req, res) => {
   try {
-    const orgId = req.apiKey.orgId;
     const body = req.body || {};
-    const INTENTS = { extend: 1, staying: 1, leaving: 2, unsure: 3 };   // 'staying' kept as an alias so an in-flight caller is not broken
-    let intent = body.intent !== undefined ? INTENTS[String(body.intent).toLowerCase()] : undefined;
-    if (body.intent !== undefined && intent === undefined) {
-      return fail(res, 'intent must be one of: extend, leaving, unsure', 400);
-    }
-    const text = typeof body.text === 'string' ? body.text : null;
-    if (intent === undefined) intent = renewalAsk.classifyRenewalReply(text);
-    if (intent == null) return fail(res, 'Send either intent or a non-empty text', 400);
-
-    const [[ask]] = await req.pool.execute(
-      `SELECT id, lease_id, unit_id, state, applied, contract_type_at_ask,
-              DATE_FORMAT(lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask
-         FROM renewal_ask WHERE id = ? AND org_id = ? LIMIT 1`, [req.params.id, orgId]);
-    if (!ask) return fail(res, 'Renewal ask not found', 404);
-    if (ask.state === 'REPLIED') {
-      return ok(res, { recorded: true, already_replied: true, applied: Number(ask.applied) === 1 });
-    }
-
-    const [[askedNow]] = await req.pool.execute(
-      `SELECT id, contract_type, DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date
-         FROM leasing WHERE id = ? AND deleted_at IS NULL LIMIT 1`, [ask.lease_id]);
-    // The unit's latest live lease — which may no longer be the one we asked about.
-    const [[latestForUnit]] = await req.pool.execute(
-      `SELECT id, contract_type, DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date
-         FROM leasing WHERE unit_id = ? AND deleted_at IS NULL AND end_date IS NOT NULL
-        ORDER BY end_date DESC, id DESC LIMIT 1`, [ask.unit_id]);
-
-    // Compare the lease AS WE ASKED — snapshotted at creation — against the lease as
-    // it is now. Re-deriving contract_type from the current row would compare it with
-    // itself, so a lease re-typed after the ask would never register as stale.
-    const askedLease = {
-      id: ask.lease_id,
-      end_date: ask.lease_end_at_ask,
-      contract_type: ask.contract_type_at_ask,
-    };
-    const currentLease = askedNow || latestForUnit || null;
-
-    // A reply is always RECORDED, even when it cannot be acted on: a tenant took the
-    // trouble to answer, and silently dropping it is the one outcome the design rules
-    // out. So a vanished lease is stale, not a 400.
-    const decision = currentLease
-      ? renewalAsk.applyRenewalReply(intent, { askedLease, currentLease })
-      : { valid: true, applied: false, stale_reason: 'lease_gone', suppress: false, needs_staff: true, intent };
-    if (!decision.valid) return fail(res, 'Could not apply reply: ' + decision.reason, 400);
-
-    const conn = await req.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      await conn.execute(
-        `UPDATE renewal_ask
-            SET state = 'REPLIED', replied_at = ?, reply_intent = ?, reply_text = ?,
-                applied = ?, stale_reason = ?
-          WHERE id = ?`,
-        [orgWallClock(new Date()), intent, text, decision.applied ? 1 : 0,
-         decision.stale_reason || null, ask.id]
-      );
-      if (decision.applied) {
-        await conn.execute(
-          `UPDATE leasing SET renewal_reply = ?, renewal_reply_at = ? WHERE id = ?`,
-          [intent, orgWallClock(new Date()), ask.lease_id]
-        );
-      }
-      await conn.commit();
-    } catch (e) {
-      try { await conn.rollback(); } catch {}
-      throw e;
-    } finally { conn.release(); }
-
-    ok(res, {
-      recorded: true,
-      already_replied: false,
-      intent: Object.keys(INTENTS).find(k => INTENTS[k] === intent),
-      applied: decision.applied,
-      stale_reason: decision.stale_reason || null,
-      // True only for "extend": the unit comes off customer-facing feeds at once.
-      // It stays on the staff page, where the lease extension is now outstanding work.
-      withdrawn_from_offers: !!decision.suppress,
-      needs_staff: !!decision.needs_staff,
+    const result = await recordRenewalReply(req.pool, req.apiKey.orgId, req.params.id, {
+      intent: body.intent, text: body.text, recordedBy: 'partner',
     });
+    if (result.status !== 200) return fail(res, result.body.message, result.status);
+    return ok(res, result.body);
   } catch (err) {
     console.error('Public renewal-ask/reply error:', err);
     fail(res, 'Failed to record renewal reply');

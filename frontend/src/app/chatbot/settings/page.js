@@ -75,7 +75,7 @@ function LeasingAvailabilitySettings() {
         setTooFarOutPhrase(d.inquiry_too_far_out_phrase ?? '');
         setGapAskPhrase(d.inquiry_gap_ask_phrase ?? '');
         setRenewalAskEnabled(Number(d.renewal_ask_enabled) === 1);
-        setRenewalNoticeDays(d.renewal_default_notice_days ?? 30);
+        setRenewalNoticeDays(d.renewal_default_notice_days ?? 45);
         setRenewalAskPhrase(d.renewal_ask_phrase ?? '');
         setRenewalAskPhrase2(d.renewal_ask_phrase_2 ?? '');
         setRenewalAskPhrase3(d.renewal_ask_phrase_3 ?? '');
@@ -138,7 +138,7 @@ function LeasingAvailabilitySettings() {
         setTooFarOutPhrase(d.inquiry_too_far_out_phrase ?? '');
         setGapAskPhrase(d.inquiry_gap_ask_phrase ?? '');
         setRenewalAskEnabled(Number(d.renewal_ask_enabled) === 1);
-        setRenewalNoticeDays(d.renewal_default_notice_days ?? 30);
+        setRenewalNoticeDays(d.renewal_default_notice_days ?? 45);
         setRenewalAskPhrase(d.renewal_ask_phrase ?? '');
         setRenewalAskPhrase2(d.renewal_ask_phrase_2 ?? '');
         setRenewalAskPhrase3(d.renewal_ask_phrase_3 ?? '');
@@ -332,9 +332,9 @@ function LeasingAvailabilitySettings() {
             </div>
           </Col>
           <Col xs={24} md={12} style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 4, fontWeight: 500 }}>If the lease has no notice period, assume</div>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>If the lease has no notice period recorded, assume</div>
             <InputNumber
-              min={0} max={365} value={renewalNoticeDays} onChange={handleRequiredDays(setRenewalNoticeDays, 30)}
+              min={0} max={365} value={renewalNoticeDays} onChange={handleRequiredDays(setRenewalNoticeDays, 45)}
               addonAfter="days notice" style={{ width: '100%', maxWidth: 240 }}
             />
             <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
