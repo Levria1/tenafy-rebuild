@@ -79,8 +79,22 @@ whose tenant has just told us they are staying is the worst outcome of the three
 
 Separately, and on a human timescale, staff extend the lease properly. So:
 
-- **Immediately, automatic:** unit suppressed from prospect-facing availability.
+- **Immediately, automatic:** unit suppressed from **prospect-facing** availability.
 - **Then, human:** paperwork, which is what genuinely resolves the lease.
+
+**"Suppressed" means customers only — the unit must stay on the staff Vacancy page.** There is now
+outstanding work on it: the tenant has said they are staying and nobody has extended the lease. If it
+disappeared from the internal page at the same moment it disappeared from the feed, the job would go
+with it, and the flat would resurface weeks later with the lease expiring and nothing signed. It should
+gain a visible state there — "Tenant says staying — extension pending" — so the page doubles as the
+work queue.
+
+⚠️ **Implementation trap.** The staff page and the public feed are the same function:
+`computeVacancies(pool, orgId, { page: true })` from `GET /api/advertising/vacancies`, versus
+`{ page: false, audience: 'inquiry' }` from the public route. Putting the suppression inside the shared
+computation removes the unit from **both**. It must be applied on the public path only. This failure is
+invisible when it happens — nobody notices a unit missing from an internal list — and only surfaces when
+a lease everyone assumed was handled quietly expires.
 
 A chat reply is soft evidence, so it is allowed to *withdraw* a unit — the conservative direction —
 but never to flip one to firmly-available, which would risk promising a flat the tenant never signs
