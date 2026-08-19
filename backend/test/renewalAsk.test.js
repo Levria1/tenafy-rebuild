@@ -145,11 +145,33 @@ test('the ask template fills known placeholders and leaves unknown ones alone', 
 // re-derived contract_type from the current lease, so the comparison was against
 // itself and a re-typed lease was silently acted on.
 // ---------------------------------------------------------------------------
+// A faked pool will happily hand back columns the query never asked for, so a route
+// can read `row.foo` while the SELECT omits `foo` and the test still passes — which is
+// exactly how a missing `unit_id`/`contract_type_at_ask` survived review here. Rows are
+// therefore filtered to the columns the SQL actually names, so the fake enforces the
+// same contract the database would.
+function projectToSelectedColumns(sql, rows) {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map(row => {
+    if (!row || typeof row !== 'object') return row;
+    const kept = {};
+    for (const key of Object.keys(row)) {
+      if (new RegExp(`\\b${key}\\b`).test(sql)) kept[key] = row[key];
+    }
+    return kept;
+  });
+}
+
 function fakePool(handlers) {
   return {
     execute: async (sql, params) => {
       for (const [pattern, fn] of handlers) {
-        if (pattern.test(sql)) return fn(params, sql);
+        if (pattern.test(sql)) {
+          const out = fn(params, sql);
+          return Array.isArray(out) && Array.isArray(out[0])
+            ? [projectToSelectedColumns(sql, out[0]), out[1]]
+            : out;
+        }
       }
       throw new Error('unexpected SQL: ' + sql.slice(0, 90));
     },

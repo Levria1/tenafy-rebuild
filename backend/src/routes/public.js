@@ -2333,7 +2333,7 @@ router.post('/renewal-ask/:id/reply', async (req, res) => {
     if (intent == null) return fail(res, 'Send either intent or a non-empty text', 400);
 
     const [[ask]] = await req.pool.execute(
-      `SELECT id, lease_id, state, applied,
+      `SELECT id, lease_id, unit_id, state, applied, contract_type_at_ask,
               DATE_FORMAT(lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask
          FROM renewal_ask WHERE id = ? AND org_id = ? LIMIT 1`, [req.params.id, orgId]);
     if (!ask) return fail(res, 'Renewal ask not found', 404);
