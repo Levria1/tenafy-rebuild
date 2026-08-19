@@ -194,7 +194,27 @@ async function writeLog(pool, { orgId, phone, message, type, templateId, leaseId
 // ---------------------------------------------------------------------------
 // Low-level send: phone + plain-text message → org-specific TaneChat instance
 // ---------------------------------------------------------------------------
-async function sendWhatsApp(pool, orgId, phone, message) {
+/**
+ * Should we tag an outbound message with what it came from?
+ *
+ * The relay needs this to attribute a REPLY: a tenant answering "yes" on WhatsApp says
+ * nothing about which of our messages they meant, so the partner stores the tag against the
+ * chat and reads it back when the reply lands.
+ *
+ * OFF until the partner confirms their /send accepts it. Pushing an unrecognised key at a
+ * live gateway risks breaking messages that currently work, and viewing-relay traffic goes
+ * through this same call — so the switch is one env var rather than a code change, and the
+ * default is the behaviour we know works.
+ */
+function sendOriginEnabled() {
+  return String(process.env.WHATSAPP_SEND_ORIGIN || '').trim() === '1';
+}
+
+/**
+ * @param {object} [opts.origin] { type, id } — what this message came from. Only transmitted
+ *        when WHATSAPP_SEND_ORIGIN=1; ignored otherwise, so callers may always pass it.
+ */
+async function sendWhatsApp(pool, orgId, phone, message, opts = {}) {
   const cfg = await getOrgWhatsAppConfig(pool, orgId);
   if (!cfg.url || !cfg.key) {
     return { ok: false, error: 'WhatsApp not configured for this organization' };
@@ -203,10 +223,16 @@ async function sendWhatsApp(pool, orgId, phone, message) {
   if (!phoneDigits) return { ok: false, error: 'Invalid phone' };
   if (!message || !String(message).trim()) return { ok: false, error: 'Empty message' };
 
+  const body = { phone: phoneDigits, message: String(message).trim() };
+  const origin = opts && opts.origin;
+  if (sendOriginEnabled() && origin && origin.type && origin.id != null) {
+    body.origin = { type: String(origin.type), id: String(origin.id) };
+  }
+
   try {
     const res = await axios.post(
       `${cfg.url.replace(/\/$/, '')}/send`,
-      { phone: phoneDigits, message: String(message).trim() },
+      body,
       {
         headers: { 'X-API-Key': cfg.key, 'Content-Type': 'application/json' },
         timeout: HTTP_TIMEOUT_MS,
@@ -335,6 +361,7 @@ async function previewWhatsAppTemplate(pool, orgId, { templateId, templateType, 
 
 module.exports = {
   sendWhatsApp,
+  sendOriginEnabled,
   sendTemplateWhatsApp,
   previewWhatsAppTemplate,
   loadWhatsAppTemplate,

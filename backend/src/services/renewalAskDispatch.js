@@ -75,6 +75,117 @@ async function findRenewalCandidates(pool, orgId, { today, defaultNoticeDays }) 
   ).eligible);
 }
 
+/**
+ * Cycles still awaiting a real answer, one row per cycle — the latest ask in it.
+ *
+ * "Open" is a property of the CYCLE, not of a row. Ask 1 stays `SENT` forever once ask 2 goes
+ * out, so filtering on `state IN ('PENDING','SENT')` reported one conversation three times
+ * and, worse, kept reporting ask 1 as awaiting an answer after the tenant had answered ask 2.
+ * A reply can only ever be about the most recent thing we said, so that is what is listed.
+ *
+ * A cycle closes on a DEFINITE reply, never on `unsure` — otherwise the ask disappears from
+ * here the moment a stray "ok thanks" is filed, and the real answer that follows has no id to
+ * be attributed to, which is the whole point of the list.
+ *
+ * Small by construction: at most one row per lease inside a notice window.
+ */
+/**
+ * Serialise ask creation for one conversation, across connections and processes.
+ *
+ * An earlier attempt inserted first and broke ties on the Snowflake id, on the theory that the
+ * older ask wins and both racers reach the same verdict. That is wrong, and the counterexample
+ * is simple: the racer with the LOWER id may commit SECOND. The higher-id racer then re-reads,
+ * sees nothing older, and sends; the lower-id racer re-reads, sees only something newer than
+ * itself, and sends too. Id order is not commit order, so no amount of reading after the fact
+ * can establish who was first.
+ *
+ * So we take a real lock, named for the conversation, and do the check and the insert inside
+ * it. `GET_LOCK` is connection-scoped and cross-process, needs no schema and no privileges, and
+ * MySQL releases it if the connection dies — the failure mode is a lock that frees itself
+ * rather than a claim row that strands.
+ *
+ * Failing to acquire it defers the ask. That is the safe direction: not messaging a tenant this
+ * hour costs a few hours; messaging them twice about their own home cannot be undone.
+ *
+ * The callback must use the CONNECTION it is handed, not the pool — a lock taken on one
+ * connection does nothing for work done on another. Delivery deliberately happens after the
+ * lock is released: nothing holds it across a network call to the gateway.
+ */
+async function withConversationLock(pool, orgId, conversationKey, fn, { timeoutSeconds = 5 } = {}) {
+  if (!conversationKey) return { locked: false, reason: 'no_conversation_key' };
+  // MySQL caps lock names at 64 characters; this is well inside it.
+  const name = `renewal_ask:${orgId}:${conversationKey}`;
+  const conn = await pool.getConnection();
+  try {
+    const [[got]] = await conn.execute('SELECT GET_LOCK(?, ?) AS got', [name, timeoutSeconds]);
+    if (!got || Number(got.got) !== 1) return { locked: false, reason: 'lock_timeout' };
+    try {
+      return { locked: true, value: await fn(conn) };
+    } finally {
+      await conn.execute('SELECT RELEASE_LOCK(?) AS released', [name]);
+    }
+  } finally {
+    conn.release();
+  }
+}
+
+// Company tenants store their name in company_name; individuals in first/last.
+const tenantNameSql = `CASE WHEN t.type = 1 THEN t.company_name
+       ELSE TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) END`;
+
+/**
+ * @param {boolean} [opts.deliveredOnly] Restrict to asks the tenant actually received.
+ *   The two consumers want slightly different sets, and the difference matters:
+ *   - the serialisation rule wants PENDING rows too, because an ask mid-send still owns the
+ *     conversation and a second lease must not jump in front of it;
+ *   - the partner's correlation list must NOT include them. A reply cannot be about a message
+ *     that never arrived, and offering one invites a stray "ok thanks" being filed against an
+ *     ask the tenant never saw.
+ */
+async function openAsks(pool, orgId, { deliveredOnly = false } = {}) {
+  // A constant fragment, interpolated into BOTH the outer filter and the "is this the newest"
+  // subquery. If only the outer one narrowed, a failed ask 2 would hide a delivered ask 1 by
+  // being newer than it, and the cycle would vanish from the list entirely.
+  const delivered = deliveredOnly ? 'sent_at IS NOT NULL' : "(sent_at IS NOT NULL OR state = 'PENDING')";
+  const [rows] = await pool.execute(
+    `SELECT r.id, r.lease_id, r.tenant_id, r.state, r.unit_id, r.escalated_at, r.ask_number,
+            r.channel, r.reply_intent,
+            DATE_FORMAT(r.sent_at, '%Y-%m-%d %H:%i:%s') AS sent_at,
+            DATE_FORMAT(r.lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask,
+            DATE_FORMAT(r.decision_due_on, '%Y-%m-%d')  AS decision_due_on,
+            u.name AS unit_name, p.display_name AS property_name,
+            ${tenantNameSql} AS tenant_name,
+            t.phone AS tenant_phone, t.email AS tenant_email
+       FROM renewal_ask r
+       JOIN unit u ON u.id = r.unit_id
+       JOIN property p ON p.id = u.property_id
+       -- The tenant we ASKED, never the lease's current one: if the tenant changed after the
+       -- ask went out, the reply still belongs to the person who received it.
+       LEFT JOIN tenant t ON t.id = r.tenant_id
+      WHERE r.org_id = ?
+        AND r.state IN ('PENDING','SENT','REPLIED')
+        -- A FAILED or CANCELLED ask is not outstanding.
+        AND r.${delivered}
+        -- The cycle has had no real answer yet.
+        AND NOT EXISTS (
+          SELECT 1 FROM renewal_ask d
+           WHERE d.lease_id = r.lease_id AND d.lease_end_at_ask = r.lease_end_at_ask
+             AND d.decision_due_on = r.decision_due_on
+             AND d.reply_intent IS NOT NULL AND d.reply_intent <> 3)
+        -- …and this is the newest ask in it, so one cycle is one row.
+        AND NOT EXISTS (
+          SELECT 1 FROM renewal_ask n
+           WHERE n.lease_id = r.lease_id AND n.lease_end_at_ask = r.lease_end_at_ask
+             AND n.decision_due_on = r.decision_due_on
+             AND n.${delivered}
+             AND (n.ask_number > r.ask_number
+                  OR (n.ask_number = r.ask_number AND n.id > r.id)))
+      ORDER BY r.sent_at ASC, r.id ASC`,
+    [orgId]
+  );
+  return rows;
+}
+
 async function askHistory(pool, lease, cycle) {
   const [rows] = await pool.execute(
     `SELECT id, ask_number, state, attempts, channel, escalated_at, reply_intent,
@@ -88,9 +199,12 @@ async function askHistory(pool, lease, cycle) {
   return rows;
 }
 
-async function deliver(pool, orgId, { channel, lease, message }) {
+async function deliver(pool, orgId, { channel, lease, message, askId }) {
   if (channel === 'whatsapp') {
-    return whatsappService.sendWhatsApp(pool, orgId, lease.tenant_phone, message);
+    // The ask id travels with the message so the partner can attribute the REPLY. Dropped
+    // silently until WHATSAPP_SEND_ORIGIN=1, so passing it is always safe.
+    return whatsappService.sendWhatsApp(pool, orgId, lease.tenant_phone, message,
+      askId ? { origin: { type: 'renewal_ask', id: askId } } : {});
   }
   // Deliberately the low-level mailer, NOT sendTemplateEmail: that helper also fires a
   // best-effort WhatsApp for the matching template type, which would double-contact the
@@ -126,7 +240,8 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
   const gapDays = settings.renewal_ask_gap_days;
 
   const candidates = await findRenewalCandidates(pool, orgId, { today, defaultNoticeDays });
-  const summary = { asked: 0, escalated: 0, unreachable: 0, failed: 0, no_wording: 0, considered: candidates.length };
+  const summary = { asked: 0, escalated: 0, unreachable: 0, failed: 0, no_wording: 0,
+                    deferred_conversation_busy: 0, considered: candidates.length };
 
   for (const lease of candidates) {
     try {
@@ -175,6 +290,7 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
       const due = renewalAsk.nextAskDue(history, { today, gapDays, hasDefiniteReply });
       if (!due.due) continue;
 
+
       // The channel is fixed for the whole cycle. Recomputing it per ask would move a
       // tenant from WhatsApp to email mid-sequence just because staff edited a phone
       // number, which the operator explicitly ruled out.
@@ -216,23 +332,40 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
 
       // Recorded BEFORE sending. The unique key on (lease, cycle, ask_number) is what
       // actually prevents a second message, so it has to exist before the send.
+      //
+      // Check and insert together, under the conversation lock: one open question per
+      // conversation, so a tenant renting two units is never asked about both at once. The
+      // check has to be inside the lock — done outside it, two runners both see a clear
+      // conversation and both insert.
       const id = newId();
-      try {
-        await pool.execute(
-          `INSERT INTO renewal_ask
-             (id, org_id, lease_id, unit_id, tenant_id, lease_end_at_ask, decision_due_on,
-              state, message, triggered_by, contract_type_at_ask, ask_number, channel, attempts)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, 'schedule', ?, ?, ?, 1)`,
-          [id, orgId, lease.lease_id, lease.unit_id, lease.tenant_id || null,
-           cycle.lease_end_at_ask, cycle.decision_due_on, message,
-           lease.contract_type, due.ask_number, channel]
-        );
-      } catch (e) {
-        if (e && e.code === 'ER_DUP_ENTRY') continue;   // another runner took this slot
-        throw e;
+      const claim = await withConversationLock(
+        pool, orgId, renewalAsk.conversationLockKey(lease),
+        async (conn) => {
+          const conflict = renewalAsk.conflictingOpenAsk(await openAsks(conn, orgId), lease);
+          if (conflict) return { deferred: true };
+          try {
+            await conn.execute(
+              `INSERT INTO renewal_ask
+                 (id, org_id, lease_id, unit_id, tenant_id, lease_end_at_ask, decision_due_on,
+                  state, message, triggered_by, contract_type_at_ask, ask_number, channel, attempts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, 'schedule', ?, ?, ?, 1)`,
+              [id, orgId, lease.lease_id, lease.unit_id, lease.tenant_id || null,
+               cycle.lease_end_at_ask, cycle.decision_due_on, message,
+               lease.contract_type, due.ask_number, channel]
+            );
+          } catch (e) {
+            if (e && e.code === 'ER_DUP_ENTRY') return { duplicate: true };
+            throw e;
+          }
+          return { inserted: true };
+        });
+      if (!claim.locked || claim.value?.deferred) {
+        summary.deferred_conversation_busy += 1;
+        continue;
       }
+      if (claim.value?.duplicate) continue;   // another runner took this slot
 
-      const sendResult = await deliver(pool, orgId, { channel, lease, message });
+      const sendResult = await deliver(pool, orgId, { channel, lease, message, askId: id });
       if (sendResult && sendResult.ok !== false) {
         await pool.execute(
           `UPDATE renewal_ask SET state = 'SENT', sent_at = ? WHERE id = ?`,
@@ -255,4 +388,7 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
 // Exported so the demand-triggered route in routes/public.js sends through this exact
 // function. Tenafy is the only sender of a renewal ask (operator decision, 2026-08-19);
 // two senders is how a tenant gets messaged twice, or not at all.
-module.exports = { runRenewalAsksForOrg, findRenewalCandidates, askHistory, deliver };
+module.exports = {
+  runRenewalAsksForOrg, findRenewalCandidates, askHistory, openAsks, deliver,
+  withConversationLock,
+};

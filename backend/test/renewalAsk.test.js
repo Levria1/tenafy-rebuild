@@ -163,6 +163,13 @@ function projectToSelectedColumns(sql, rows) {
 }
 
 function fakePool(handlers) {
+  // Advisory locks are answered by the fake as MySQL would: granted, and released. The code
+  // under test does its check and insert on the CONNECTION, so these live on both surfaces.
+  const lockHandlers = [
+    [/GET_LOCK/, () => [[{ got: 1 }]]],
+    [/RELEASE_LOCK/, () => [[{ released: 1 }]]],
+  ];
+  handlers = [...lockHandlers, ...handlers];
   return {
     execute: async (sql, params) => {
       for (const [pattern, fn] of handlers) {
@@ -348,4 +355,146 @@ test('an unsure lease is still eligible for the next ask', () => {
     assert.equal(renewalAskEligibility({ ...base, renewal_reply: answered }, opts).eligible, false,
       `a tenant who answered ${answered} must not be asked again`);
   }
+});
+
+// ── Creating an ask: the guards that run BEFORE a tenant is messaged ──────────
+
+function routeHandler(path) {
+  delete require.cache[require.resolve('../src/routes/public')];
+  const router = require('../src/routes/public');
+  return router.stack
+    .find(l => l.route?.path === path && l.route.methods.post)
+    .route.stack.at(-1).handle;
+}
+
+function callCreate(handler, { pool, body = { unit_id: '5' } }) {
+  return new Promise((resolve, reject) => {
+    const req = { params: {}, body, pool, apiKey: { orgId: '9' }, headers: {}, query: {} };
+    const res = {
+      statusCode: 200,
+      status(c) { this.statusCode = c; return this; },
+      json(b) { resolve({ statusCode: this.statusCode, body: b }); },
+    };
+    Promise.resolve(handler(req, res)).catch(reject);
+  });
+}
+
+const ASKABLE_LEASE = {
+  id: '11', unit_id: '5', tenant_id: '77', contract_type: 1, notice_period_days: 45,
+  renewal_reply: null, end_date: '2026-09-25', unit_name: '2A', property_name: 'Hillier',
+  tenant_name: 'Sam', tenant_phone: '91234567', tenant_email: null,
+};
+
+function createPool({ settings = {}, lease = ASKABLE_LEASE, open = [], writes = [] }) {
+  return fakePool([
+    [/FROM advertising_setting/, () => [[{
+      renewal_ask_enabled: 1, renewal_default_notice_days: 45, renewal_ask_gap_days: 3,
+      renewal_ask_phrase: 'Hi {tenant_name}, your lease at {unit} runs to {end_date}. Staying on?',
+      ...settings,
+    }]]],
+    [/FROM leasing l/, () => [[lease]]],
+    [/FROM renewal_ask r/, () => [[...open]]],
+    [/FROM renewal_ask\s+WHERE lease_id/, () => [[undefined]]],
+    [/INSERT INTO renewal_ask/, (p) => { writes.push(['insert', p]); return [{ affectedRows: 1 }]; }],
+    [/UPDATE renewal_ask/, (p) => { writes.push(['update', p]); return [{ affectedRows: 1 }]; }],
+    [/FROM organization/, () => [[{ whatsapp_api_url: '', whatsapp_api_key: '' }]]],
+  ]);
+}
+
+test('a tenant already mid-conversation is not asked about a second lease', async () => {
+  const writes = [];
+  const pool = createPool({
+    writes,
+    // An ask outstanding on the SAME phone, for a DIFFERENT lease.
+    open: [{ id: '100', lease_id: '10', tenant_id: '77', tenant_phone: '+852 9123 4567',
+             unit_name: '1B', property_name: 'Hollywood', escalated_at: null }],
+  });
+  const result = await callCreate(routeHandler('/renewal-ask'), { pool });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.data.created, false);
+  assert.equal(result.body.data.reason, 'conversation_busy');
+  assert.equal(result.body.data.blocked_by.renewal_ask_id, '100');
+  assert.equal(result.body.data.blocked_by.unit_label, 'Hollywood 1B');
+  assert.equal(writes.length, 0, 'no row may be created, so no slot is spent');
+});
+
+test('an unwritten ask spends no slot', async () => {
+  // The nightly job refuses to invent wording the operator has not written. This path must
+  // refuse too — inserting first would spend one of the three asks on a message that can
+  // never be sent, and the tenant would be recorded as asked without hearing anything.
+  const writes = [];
+  const pool = createPool({ writes, settings: { renewal_ask_phrase: '   ' } });
+  const result = await callCreate(routeHandler('/renewal-ask'), { pool });
+  assert.equal(result.body.data.created, false);
+  assert.equal(result.body.data.reason, 'no_wording');
+  assert.equal(writes.length, 0);
+});
+
+test('a tenant with no phone and no email is not asked at all', async () => {
+  const writes = [];
+  const pool = createPool({ writes, lease: { ...ASKABLE_LEASE, tenant_phone: null, tenant_email: null } });
+  const result = await callCreate(routeHandler('/renewal-ask'), { pool });
+  assert.equal(result.body.data.created, false);
+  assert.equal(result.body.data.reason, 'tenant_unreachable');
+  assert.equal(writes.length, 0);
+});
+
+test('a definite answer survives a simultaneous second reply', async () => {
+  // The row is read before the transaction opens, so two replies can both see `SENT`. The
+  // guard on the UPDATE is what actually decides: the loser writes nothing and is told what
+  // stands, rather than overwriting a tenant's "we're staying".
+  const writes = [];
+  const pool = fakePool([
+    // More specific first: the re-read after losing shares the `FROM renewal_ask WHERE id`
+    // shape, and the fake matches on the first pattern that fits.
+    [/SELECT reply_intent, applied FROM renewal_ask/, () => [[{ reply_intent: 1, applied: 1 }]]],
+    [/FROM renewal_ask WHERE id/, () => [[{ id: '1', lease_id: '7', unit_id: '5', state: 'SENT',
+      applied: 0, contract_type_at_ask: 1, lease_end_at_ask: '2026-09-25',
+      reply_intent: null, reply_text: null, replied_at: null }]]],
+    [/FROM leasing WHERE id/, () => [[{ id: '7', contract_type: 1, end_date: '2026-09-25' }]]],
+    [/FROM leasing WHERE unit_id/, () => [[{ id: '7', contract_type: 1, end_date: '2026-09-25' }]]],
+    // The fake models what MySQL would do. Somebody else got there first and the row is now
+    // REPLIED/extend, but our SELECT read it as SENT a moment earlier. Whether this write
+    // lands is decided by the guard in the statement itself — so the fake reads the SQL
+    // rather than being told the answer, and removing the guard turns this test red.
+    [/UPDATE renewal_ask/, (p, sql) => {
+      writes.push(['ask', p]);
+      const guarded = /state <> 'REPLIED'/.test(sql) && /reply_intent = \?/.test(sql);
+      return [{ affectedRows: guarded ? 0 : 1 }];
+    }],
+    [/UPDATE leasing SET renewal_reply/, (p) => { writes.push(['lease', p]); return [{ affectedRows: 1 }]; }],
+  ]);
+  const result = await callReply(replyHandler(), { pool, body: { intent: 'leaving' } });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.data.already_replied, true,
+    'an unguarded write would have overwritten a definite answer here');
+  assert.equal(result.body.data.intent, 'extend', 'the answer that stands is reported, not the one we tried');
+  assert.ok(!writes.some(w => w[0] === 'lease'), 'the lease must not be stamped by the loser');
+});
+
+test('a reply the lease refuses is not reported as applied', () => {
+  // The lease guard exists so a definite decision already recorded there — by another cycle,
+  // or by staff — is never overwritten. When it rejects the write, the ask row must not go on
+  // claiming `applied`: that would leave the audit trail saying we acted on this answer while
+  // the lease records the opposite, and would tell the partner their relay had taken effect.
+  const writes = [];
+  const pool = fakePool([
+    [/SELECT reply_intent, applied FROM renewal_ask/, () => [[{ reply_intent: 1, applied: 1 }]]],
+    [/FROM renewal_ask WHERE id/, () => [[{ id: '1', lease_id: '7', unit_id: '5', state: 'SENT',
+      applied: 0, contract_type_at_ask: 1, lease_end_at_ask: '2026-09-25',
+      reply_intent: null, reply_text: null, replied_at: null }]]],
+    [/FROM leasing WHERE id/, () => [[{ id: '7', contract_type: 1, end_date: '2026-09-25' }]]],
+    [/FROM leasing WHERE unit_id/, () => [[{ id: '7', contract_type: 1, end_date: '2026-09-25' }]]],
+    [/UPDATE renewal_ask/, (p, sql) => { writes.push([sql.includes('lease_decided_elsewhere') ? 'unapply' : 'ask', p]); return [{ affectedRows: 1 }]; }],
+    // The lease already holds a different definite decision, so the guard matches nothing.
+    [/UPDATE leasing SET renewal_reply/, (p) => { writes.push(['lease', p]); return [{ affectedRows: 0 }]; }],
+  ]);
+  return callReply(replyHandler(), { pool, body: { intent: 'extend' } }).then(result => {
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.applied, false, 'nothing was applied, so nothing may be claimed');
+    assert.equal(result.body.data.stale_reason, 'lease_decided_elsewhere');
+    assert.equal(result.body.data.withdrawn_from_offers, false, 'no unit left the feeds');
+    assert.equal(result.body.data.needs_staff, true, 'a person has to reconcile the two answers');
+    assert.ok(writes.some(w => w[0] === 'unapply'), 'the ask row must be corrected, not left claiming applied');
+  });
 });

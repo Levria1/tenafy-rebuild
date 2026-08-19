@@ -101,10 +101,18 @@ async function recordRenewalReply(pool, orgId, askId, { intent, text, recordedBy
   }
 
   const now = orgWallClock(new Date());
+  // Set false if the lease refuses the write; the response must not overstate what happened.
+  let appliedToLease = decision.applied;
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    await conn.execute(
+    // COMPARE-AND-SET, not a blind write. The row above was read outside this transaction,
+    // so two replies arriving together would both have seen the same state and the second
+    // would silently overwrite the first. The guard makes the decision the DATABASE's: a
+    // row that is already REPLIED may only be touched while its answer is still `unsure`.
+    // Losing the race therefore reports already_replied rather than overwriting a tenant's
+    // "we're staying" — which is the write that would put a home back on the market.
+    const [upd] = await conn.execute(
       `UPDATE renewal_ask
           SET state = 'REPLIED', replied_at = ?, reply_intent = ?, reply_text = ?,
               applied = ?, stale_reason = ?, triggered_by = COALESCE(triggered_by, ?),
@@ -114,19 +122,48 @@ async function recordRenewalReply(pool, orgId, askId, { intent, text, recordedBy
               prior_reply_intent = COALESCE(prior_reply_intent, ?),
               prior_reply_text   = COALESCE(prior_reply_text, ?),
               prior_replied_at   = COALESCE(prior_replied_at, ?)
-        WHERE id = ?`,
+        WHERE id = ? AND (state <> 'REPLIED' OR reply_intent = ?)`,
       [now, code, typeof text === 'string' ? text : null, decision.applied ? 1 : 0,
        decision.stale_reason || null, recordedBy,
        upgrading ? ask.reply_intent : null,
        upgrading ? ask.reply_text : null,
        upgrading ? ask.replied_at : null,
-       ask.id]
+       ask.id, renewalAsk.REPLY_UNSURE]
     );
+    if (!upd || upd.affectedRows === 0) {
+      // Another reply won. Report what actually stands rather than what we tried to write.
+      await conn.rollback();
+      const [[current]] = await pool.execute(
+        `SELECT reply_intent, applied FROM renewal_ask WHERE id = ? LIMIT 1`, [ask.id]);
+      return {
+        status: 200,
+        body: {
+          recorded: true, already_replied: true, superseded: false,
+          intent: current ? INTENT_NAME[Number(current.reply_intent)] || null : null,
+          applied: current ? Number(current.applied) === 1 : false,
+        },
+      };
+    }
     if (decision.applied) {
-      await conn.execute(
-        `UPDATE leasing SET renewal_reply = ?, renewal_reply_at = ? WHERE id = ?`,
-        [code, now, ask.lease_id]
+      // Same asymmetry on the lease: a definite decision already recorded there is never
+      // overwritten. NULL or unsure (3) may be.
+      const [leaseUpd] = await conn.execute(
+        `UPDATE leasing SET renewal_reply = ?, renewal_reply_at = ?
+          WHERE id = ? AND (renewal_reply IS NULL OR renewal_reply = ? OR ? = renewal_reply)`,
+        [code, now, ask.lease_id, renewalAsk.REPLY_UNSURE, code]
       );
+      // The guard rejected it: a DIFFERENT definite decision is already on the lease, put
+      // there by another cycle or by staff. The ask row must not then claim `applied` — that
+      // would leave the audit trail saying we acted on this answer while the lease records
+      // the opposite, and the API would tell the partner their relay had taken effect. Record
+      // it as unapplied with a reason instead, which is what a human needs to see.
+      if (!leaseUpd || leaseUpd.affectedRows === 0) {
+        appliedToLease = false;
+        await conn.execute(
+          `UPDATE renewal_ask SET applied = 0, stale_reason = 'lease_decided_elsewhere' WHERE id = ?`,
+          [ask.id]
+        );
+      }
     }
     await conn.commit();
   } catch (e) {
@@ -142,12 +179,13 @@ async function recordRenewalReply(pool, orgId, askId, { intent, text, recordedBy
       // True when this replaced a vague answer we had already filed.
       superseded: upgrading ? INTENT_NAME[Number(ask.reply_intent)] || 'unsure' : null,
       intent: INTENT_NAME[code],
-      applied: decision.applied,
-      stale_reason: decision.stale_reason || null,
+      applied: appliedToLease,
+      stale_reason: decision.stale_reason || (appliedToLease ? null : 'lease_decided_elsewhere'),
       // True only for "extend": the unit leaves customer-facing feeds at once. It stays
-      // on the staff Vacancy page, where the lease extension is now outstanding work.
-      withdrawn_from_offers: !!decision.suppress,
-      needs_staff: !!decision.needs_staff,
+      // on the staff Vacancy page, where the lease extension is now outstanding work. Not
+      // claimed when the lease refused the write — nothing was withdrawn in that case.
+      withdrawn_from_offers: !!decision.suppress && appliedToLease,
+      needs_staff: !!decision.needs_staff || !appliedToLease,
       recorded_by: recordedBy,
       as_of: orgToday(),
     },

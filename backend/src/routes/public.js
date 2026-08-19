@@ -29,7 +29,9 @@ const config = require('../config');
 const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings, findBeyondHorizonNrVacancies } = require('./advertising');
 const renewalAsk = require('../utils/renewalAsk');
 const { recordRenewalReply } = require('../services/renewalReply');
-const { deliver: deliverRenewalAsk } = require('../services/renewalAskDispatch');
+const {
+  deliver: deliverRenewalAsk, openAsks: openRenewalAsks, withConversationLock,
+} = require('../services/renewalAskDispatch');
 const {
   vacancyToPublicShape,
   classifyFreeOn,
@@ -1770,9 +1772,15 @@ router.get('/viewing-negotiation/drafts', async (req, res) => {
       // Thursday is worse than sending nothing. Suppress any draft whose viewing has
       // already happened. NULL is kept deliberately: a negotiation still resolving a
       // unit or waiting on a day has no proposed time yet and its drafts are valid.
-      '(n.current_proposed_datetime IS NULL OR n.current_proposed_datetime > NOW())',
+      //
+      // Bound in the OPERATOR's clock, not the server's. current_proposed_datetime holds
+      // Hong Kong wall clock while MySQL runs UTC, so `> NOW()` kept releasing drafts for
+      // about eight hours after the viewing — long enough to send "your viewing is
+      // confirmed for 3pm" at ten at night. No grace here on purpose: once the viewing has
+      // started there is nothing left to confirm.
+      '(n.current_proposed_datetime IS NULL OR n.current_proposed_datetime > ?)',
     ];
-    const params = [orgId];
+    const params = [orgId, orgWallClock(new Date())];
     if (party) {
       where.push('e.party = ?');
       params.push(party);
@@ -2049,41 +2057,58 @@ router.get('/viewing-negotiation/active', async (req, res) => {
     // TaneChat discovers negotiations through THIS endpoint, so it would never send
     // one. Bounded by current_proposed_datetime > NOW() so a viewing that already
     // happened stops matching the tenant's number forever.
+    // The reachability floor, in the OPERATOR's clock. A confirmed viewing stays listed for
+    // VIEWING_ROUTABLE_GRACE_HOURS past its slot so the occupant can still say "nobody
+    // came". Previously this was `> NOW()` — a Hong Kong wall-clock column compared against
+    // a UTC server clock, which produced an eight-hour window nobody chose.
+    const nowWall = orgWallClock(new Date());
+    const graceFloor = viewingNegotiation.addMinutesToWallClock(
+      nowWall, -60 * viewingNegotiation.VIEWING_ROUTABLE_GRACE_HOURS);
     let rows;
     try {
       [rows] = await req.pool.execute(
         `SELECT n.id, n.state, n.awaiting, n.needs_staff_reason, n.prospect_phone, n.current_proposed_datetime,
+                n.unit_id, u.name AS unit_name, p.display_name AS property_name,
                 t.phone AS tenant_phone
            FROM viewing_negotiation n
+           LEFT JOIN unit u ON u.id = n.unit_id
+           LEFT JOIN property p ON p.id = n.property_id
            LEFT JOIN tenant t ON t.id = n.tenant_id
           WHERE n.state NOT IN ('CONFIRMED','AUTO_CONFIRMED','CANCELLED')
              OR (n.state IN ('CONFIRMED','AUTO_CONFIRMED')
                  AND n.current_proposed_datetime IS NOT NULL
-                 AND n.current_proposed_datetime > NOW())
+                 AND n.current_proposed_datetime > ?)
           ORDER BY n.updated_at DESC LIMIT 200`,
-        []
+        [graceFloor]
       );
     } catch (e) {
       if (!viewingNegotiation.isSchemaMissingError(e)) throw e;
       [rows] = await req.pool.execute(
         `SELECT n.id, n.state, n.awaiting, NULL AS needs_staff_reason, n.prospect_phone,
-                n.current_proposed_datetime, t.phone AS tenant_phone
+                n.current_proposed_datetime, n.unit_id, u.name AS unit_name,
+                p.display_name AS property_name, t.phone AS tenant_phone
            FROM viewing_negotiation n
+           LEFT JOIN unit u ON u.id = n.unit_id
+           LEFT JOIN property p ON p.id = n.property_id
            LEFT JOIN tenant t ON t.id = n.tenant_id
           WHERE n.state NOT IN ('CONFIRMED','AUTO_CONFIRMED','CANCELLED')
              OR (n.state IN ('CONFIRMED','AUTO_CONFIRMED')
                  AND n.current_proposed_datetime IS NOT NULL
-                 AND n.current_proposed_datetime > NOW())
+                 AND n.current_proposed_datetime > ?)
           ORDER BY n.updated_at DESC LIMIT 200`,
-        []
+        [graceFloor]
       );
     }
     const shapedRows = rows.map(r => ({
       ...r,
       prospect_digits: normPhoneDigits(r.prospect_phone),
       tenant_digits: normPhoneDigits(r.tenant_phone),
+      // mysql2 parses the DATETIME against the process zone (UTC), which reads the stored
+      // Hong Kong wall clock back with the same digits. That is what we want here.
+      proposed_wall: viewingNegotiation.dateToWallClock(r.current_proposed_datetime),
+      unit_label: [r.property_name, r.unit_name].filter(Boolean).join(' ') || null,
     }));
-    return ok(res, viewingNegotiation.activeNegotiationPayload(shapedRows, target));
+    return ok(res, viewingNegotiation.activeNegotiationPayload(shapedRows, target, { nowWallClock: nowWall }));
   } catch (err) {
     console.error('Public viewing-negotiation/active error:', err);
     fail(res, 'Failed to look up negotiation');
@@ -2132,7 +2157,7 @@ async function currentLeaseForUnit(pool, orgId, unitId) {
   return row || null;
 }
 
-function renewalAskRow(row, settings) {
+function renewalAskRow(row) {
   return {
     renewal_ask_id: String(row.id),
     unit_id: String(row.unit_id),
@@ -2191,6 +2216,7 @@ router.post('/renewal-ask', async (req, res) => {
       return ok(res, { created: false, reason: 'tenant_unreachable', renewal_ask: null });
     }
 
+
     // Cooldown. The unique key is (lease_id, lease_end_at_ask, decision_due_on), so an
     // extended lease or a corrected notice period opens a NEW cycle rather than being
     // silenced by the old one.
@@ -2204,7 +2230,7 @@ router.post('/renewal-ask', async (req, res) => {
       [lease.id, cycle.lease_end_at_ask, cycle.decision_due_on]
     );
     if (existing) {
-      return ok(res, { created: false, reason: 'already_asked_this_cycle', renewal_ask: renewalAskRow(existing, settings) });
+      return ok(res, { created: false, reason: 'already_asked_this_cycle', renewal_ask: renewalAskRow(existing) });
     }
 
     const message = renewalAsk.renderRenewalAsk(settings.renewal_ask_phrase, {
@@ -2212,34 +2238,79 @@ router.post('/renewal-ask', async (req, res) => {
       unit: [lease.property_name, lease.unit_name].filter(Boolean).join(' '),
       end_date: lease.end_date,
     });
+    // Checked BEFORE the row exists. Inserting first would spend one of the three slots on a
+    // message that could never be sent, and the scheduler would then resolve it as FAILED —
+    // a tenant never asked, with an ask counted against them. Same rule as the nightly job,
+    // which refuses to invent wording the operator has not written.
+    if (!message) {
+      return ok(res, { created: false, reason: 'no_wording', renewal_ask: null });
+    }
 
+    // One open question per conversation, decided INSIDE a lock together with the insert.
+    // A tenant renting two units must never be asked about both at once: their reply arrives
+    // on one thread referring to neither message, and writing an ambiguous "yes" to the wrong
+    // lease invents a renewal decision. Checking outside the lock does not work — two callers
+    // both see a clear conversation and both insert.
     const id = newId();
-    try {
-      await req.pool.execute(
-      `INSERT INTO renewal_ask
-         (id, org_id, lease_id, unit_id, tenant_id, lease_end_at_ask, decision_due_on,
-          state, message, triggered_by, contract_type_at_ask, ask_number, channel, attempts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, 1, ?, 1)`,
-      [id, orgId, lease.id, lease.unit_id, lease.tenant_id || null,
-       cycle.lease_end_at_ask, cycle.decision_due_on, message,
-       req.body && req.body.triggered_by === 'staff' ? 'staff' : 'inquiry',
-       lease.contract_type, channel]
-      );
-    } catch (e) {
-      // Two prospects asked about the same unit at the same moment. The unique key on
-      // the cycle is what actually prevents a second message to the tenant; this just
-      // turns the loser into the same answer the first caller got.
-      if (e && e.code === 'ER_DUP_ENTRY') {
-        const [[live]] = await req.pool.execute(
-          `SELECT id, state, message,
-                  DATE_FORMAT(lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask,
-                  DATE_FORMAT(decision_due_on, '%Y-%m-%d')  AS decision_due_on
-             FROM renewal_ask
-            WHERE lease_id = ? AND lease_end_at_ask = ? AND decision_due_on = ? LIMIT 1`,
-          [lease.id, cycle.lease_end_at_ask, cycle.decision_due_on]);
-        return ok(res, { created: false, reason: 'already_asked_this_cycle', renewal_ask: live ? renewalAskRow(live, settings) : null });
-      }
-      throw e;
+    const claim = await withConversationLock(
+      req.pool, orgId, renewalAsk.conversationLockKey({ ...lease, lease_id: lease.id }),
+      async (conn) => {
+        const conflict = renewalAsk.conflictingOpenAsk(
+          await openRenewalAsks(conn, orgId), { ...lease, lease_id: lease.id });
+        if (conflict) return { conflict };
+        try {
+          await conn.execute(
+            `INSERT INTO renewal_ask
+               (id, org_id, lease_id, unit_id, tenant_id, lease_end_at_ask, decision_due_on,
+                state, message, triggered_by, contract_type_at_ask, ask_number, channel, attempts)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, 1, ?, 1)`,
+            [id, orgId, lease.id, lease.unit_id, lease.tenant_id || null,
+             cycle.lease_end_at_ask, cycle.decision_due_on, message,
+             req.body && req.body.triggered_by === 'staff' ? 'staff' : 'inquiry',
+             lease.contract_type, channel]
+          );
+        } catch (e) {
+          // Two prospects asked about the same unit at the same moment. The unique key on
+          // the cycle is what actually prevents a second message to the tenant; this just
+          // turns the loser into the same answer the first caller got.
+          if (e && e.code === 'ER_DUP_ENTRY') {
+            const [[live]] = await conn.execute(
+              `SELECT id, state, channel, sent_at,
+                      DATE_FORMAT(lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask,
+                      DATE_FORMAT(decision_due_on, '%Y-%m-%d')  AS decision_due_on
+                 FROM renewal_ask
+                WHERE lease_id = ? AND lease_end_at_ask = ? AND decision_due_on = ? LIMIT 1`,
+              [lease.id, cycle.lease_end_at_ask, cycle.decision_due_on]);
+            return { duplicate: true, live };
+          }
+          throw e;
+        }
+        return { inserted: true };
+      });
+
+    // Could not get the lock in time. Defer rather than guess — an ask we skip this hour
+    // costs a few hours; a tenant asked twice about their own home cannot be undone.
+    if (!claim.locked) {
+      return ok(res, { created: false, reason: 'conversation_busy', renewal_ask: null, blocked_by: null });
+    }
+    if (claim.value.conflict) {
+      const c = claim.value.conflict;
+      return ok(res, {
+        created: false, reason: 'conversation_busy', renewal_ask: null,
+        blocked_by: {
+          renewal_ask_id: String(c.id),
+          unit_label: [c.property_name, c.unit_name].filter(Boolean).join(' ') || null,
+        },
+      });
+    }
+    if (claim.value.duplicate) {
+      const live = claim.value.live;
+      return ok(res, {
+        created: false, reason: 'already_asked_this_cycle',
+        renewal_ask: live ? renewalAskRow({ ...live, unit_id: lease.unit_id,
+          unit_name: lease.unit_name, property_name: lease.property_name,
+          tenant_name: lease.tenant_name, tenant_phone: lease.tenant_phone }) : null,
+      });
     }
 
     // WE send it, here, before answering. The caller triggers an ask; it never dispatches
@@ -2250,7 +2321,7 @@ router.post('/renewal-ask', async (req, res) => {
     // PENDING until then and be resolved as FAILED — spending the slot without a message
     // ever reaching the tenant. And no retry on failure, for the reason set out in
     // renewalAskDispatch: a timed-out send is indistinguishable from a delivered one.
-    const sendResult = await deliverRenewalAsk(req.pool, orgId, { channel, lease, message });
+    const sendResult = await deliverRenewalAsk(req.pool, orgId, { channel, lease, message, askId: id });
     const delivered = !!(sendResult && sendResult.ok !== false);
     const sentAt = orgWallClock(new Date());
     if (delivered) {
@@ -2275,7 +2346,7 @@ router.post('/renewal-ask', async (req, res) => {
         tenant_name: lease.tenant_name, tenant_phone: lease.tenant_phone,
         lease_end_at_ask: cycle.lease_end_at_ask, decision_due_on: cycle.decision_due_on,
         state: delivered ? 'SENT' : 'PENDING', channel, sent_at: delivered ? sentAt : null,
-      }, settings),
+      }),
     });
   } catch (err) {
     console.error('Public renewal-ask create error:', err);
@@ -2326,10 +2397,45 @@ router.get('/renewal-asks/pending', async (req, res) => {
         LIMIT 50`,
       [orgId]
     );
-    ok(res, { count: rows.length, dispatch: 'tenafy', renewal_asks: rows.map(r => renewalAskRow(r, settings)) });
+    ok(res, { count: rows.length, dispatch: 'tenafy', renewal_asks: rows.map(r => renewalAskRow(r)) });
   } catch (err) {
     console.error('Public renewal-asks/pending error:', err);
     fail(res, 'Failed to load pending renewal asks');
+  }
+});
+
+// GET /api/public/renewal-asks/open — sent, not yet answered.
+//
+// The correlation list. A partner relaying a tenant's reply has to say WHICH ask it answers,
+// and after we stopped publishing the rendered message there was nothing left to learn an id
+// from: /pending lists only asks we have not sent, which — now that we send inline — is
+// almost always empty. So a relay could run, find nothing, and report nothing, silently.
+//
+// Deliberately NOT a work queue. No message text, no claim, no state change: reading this
+// cannot cause or prevent a message. It answers "what is outstanding, and who with", which
+// is all a reply needs to be attributed.
+router.get('/renewal-asks/open', async (req, res) => {
+  try {
+    // The SAME query the serialisation rule uses. Two definitions of "outstanding" would
+    // drift, and the partner would be told an ask was answerable that we had stopped
+    // counting — or the reverse.
+    // deliveredOnly: a reply cannot be about a message that never arrived.
+    const rows = await openRenewalAsks(req.pool, req.apiKey.orgId, { deliveredOnly: true });
+    ok(res, {
+      count: rows.length,
+      renewal_asks: rows.map(r => ({
+        ...renewalAskRow(r),
+        ask_number: Number(r.ask_number) || 1,
+        sent_at: r.sent_at || null,
+        // Present when a vague answer is already on record. Post the real answer against
+        // this same id and it supersedes; a definite answer would have closed the cycle and
+        // removed the row entirely.
+        vague_reply_on_record: Number(r.reply_intent) === 3,
+      })),
+    });
+  } catch (err) {
+    console.error('Public renewal-asks/open error:', err);
+    fail(res, 'Failed to load open renewal asks');
   }
 });
 

@@ -190,6 +190,90 @@ function applyRenewalReply(intent, { askedLease, currentLease } = {}) {
   return { valid: true, applied: true, stale_reason: null, suppress: false, needs_staff: true, intent: code };
 }
 
+/**
+ * The digits a WhatsApp conversation is keyed by. Deliberately the LAST 8: Hong Kong numbers
+ * are eight digits, and the same person is stored variously as `9123 4567`, `+852 91234567`
+ * and `85291234567`. Comparing the full string would treat those as three different people,
+ * which for this check means failing open — the outcome that messages a tenant twice.
+ */
+function conversationKey(phone) {
+  const digits = String(phone == null ? '' : phone).replace(/\D/g, '');
+  return digits.length >= 8 ? digits.slice(-8) : (digits || null);
+}
+
+/**
+ * The name two racers must agree on to be serialised against each other.
+ *
+ * It has to be derived the SAME way from either lease, or the two sides take different locks
+ * and both proceed — the failure this lock exists to prevent. Phone first, since that is the
+ * WhatsApp thread; then email, because an email-only tenant has an inbox that is equally one
+ * conversation; then the lease itself, which serialises nothing but is a stable name for a
+ * tenant we cannot contact at all.
+ *
+ * Email is hashed down to a short stable key: MySQL lock names are capped at 64 characters and
+ * an address can be longer than what is left after the org id.
+ */
+function conversationLockKey(lease) {
+  const phone = conversationKey(lease && lease.tenant_phone);
+  if (phone) return `p${phone}`;
+  const email = typeof lease?.tenant_email === 'string' ? lease.tenant_email.trim().toLowerCase() : '';
+  if (email) {
+    let h = 0;
+    for (let i = 0; i < email.length; i += 1) h = (h * 31 + email.charCodeAt(i)) >>> 0;
+    return `e${h.toString(36)}`;
+  }
+  const leaseId = lease && (lease.lease_id ?? lease.id);
+  return leaseId != null ? `l${String(leaseId)}` : null;
+}
+
+/**
+ * The ask already outstanding on this tenant's conversation, if any.
+ *
+ * A tenant renting two units can hit both notice periods in the same week. Ask them both
+ * questions at once and their "yes, we'd like to stay" says nothing about WHICH lease — and
+ * neither we nor the relay can tell, because the reply arrives on one WhatsApp thread with
+ * no reference to either message. Guessing writes a renewal decision onto the wrong lease.
+ *
+ * So we serialise rather than agree a tie-break: one open question per conversation, the
+ * other lease waits. Asks only start inside a notice period and a full sequence runs about a
+ * week, so the wait is short and the ambiguity is gone rather than managed.
+ *
+ * ONE identity, the same one the lock is named for. They must not be able to disagree: if the
+ * conflict check thought two leases shared a conversation while the lock named them
+ * differently, both sides would take their own lock, both would see a clear conversation, and
+ * both would send. An earlier version matched on tenant id OR phone OR email while the lock
+ * used only the first of those — so two tenant records sharing an email but holding different
+ * phone numbers raced.
+ *
+ * Deriving both from `conversationLockKey` also makes the semantics the right ones: a
+ * conversation is a messaging thread, not a person. Two different phone numbers are two
+ * different threads, and a reply on either is unambiguous even if the same human owns both.
+ *
+ * @param {Array} openAsks rows with { id, lease_id, tenant_phone, tenant_email, escalated_at }
+ * @param {object} lease   the lease we are about to ask about
+ * @returns {object|null}  the blocking ask, or null when the conversation is clear
+ */
+function conflictingOpenAsk(openAsks, lease) {
+  if (!lease) return null;
+  const leaseId = String(lease.lease_id ?? lease.id ?? '');
+  const key = conversationLockKey(lease);
+  if (!key) return null;
+
+  for (const ask of Array.isArray(openAsks) ? openAsks : []) {
+    if (!ask) continue;
+    // The same lease's later asks are the SAME question repeated — never a conflict.
+    if (String(ask.lease_id) === leaseId) continue;
+    // An escalated cycle has finished: three asks went unanswered and a person took over.
+    // Its rows stay SENT-and-unanswered forever, so counting them here would block the
+    // tenant's OTHER lease permanently — one silent tenant costing us a second question we
+    // never ask. The partner's correlation list still shows them, because a late reply must
+    // still be attributable.
+    if (ask.escalated_at) continue;
+    if (conversationLockKey(ask) === key) return ask;
+  }
+  return null;
+}
+
 /** Fill the operator-authored template. Unknown placeholders are left alone. */
 function renderRenewalAsk(template, vars = {}) {
   if (typeof template !== 'string' || !template.trim()) return null;
@@ -207,6 +291,9 @@ module.exports = {
   classifyRenewalReply,
   applyRenewalReply,
   isDefiniteReply,
+  conversationKey,
+  conversationLockKey,
+  conflictingOpenAsk,
   renderRenewalAsk,
 };
 
