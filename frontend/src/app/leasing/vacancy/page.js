@@ -20,6 +20,29 @@ const INTENT_META = {
   Unset: { color: 'default', label: 'Unset' },
 };
 
+// One place decides how a renewal sequence reads, so the row and the off-page card can
+// never describe the same state differently.
+const ASK_STATUS_META = {
+  awaiting_reply:              { color: 'blue',   label: (a) => `Asked ${a.asks_delivered}/3`, help: (a) => `Asked ${a.asks_delivered} of 3 by ${a.channel || 'message'}${a.last_delivered_on ? `, last on ${a.last_delivered_on}` : ''}. Waiting for a reply.` },
+  could_not_reach_them:        { color: 'orange', label: () => 'Could not reach them',        help: () => 'We tried, but nothing was delivered. Check the phone number or email on the tenant.' },
+  no_answer_call_them:         { color: 'red',    label: () => 'No answer · call them',        help: () => 'Three asks, no reply. Someone should phone the tenant.' },
+  extend_pending_paperwork:    { color: 'gold',   label: () => 'Extend · paperwork due',      help: () => 'The tenant chose Extend. Not offered to customers. Extend the lease to clear this.' },
+  replied_needs_review:        { color: 'purple', label: (a) => `Replied: ${a.reply}`,        help: () => 'The tenant replied. Nothing has changed for customers — confirm the renewal intent yourself.' },
+  replied_but_stale_check_lease: { color: 'volcano', label: () => 'Replied · lease changed',  help: (a) => `The tenant replied, but the lease changed after we asked (${a.reply_stale_reason || 'changed'}), so we did not act on it. Check the lease.` },
+};
+
+function RenewalAskTag({ ask }) {
+  const meta = ASK_STATUS_META[ask.status];
+  if (!meta) return null;
+  return (
+    <Tooltip title={meta.help(ask)}>
+      <Tag color={meta.color} style={{ fontWeight: ask.status === 'extend_pending_paperwork' ? 600 : 400 }}>
+        {meta.label(ask)}
+      </Tag>
+    </Tooltip>
+  );
+}
+
 // Days-left urgency colour (positive = days until vacant).
 function daysColor(d) {
   if (d == null) return 'default';
@@ -44,6 +67,7 @@ export default function VacancyPage() {
   const [openingMode, setOpeningMode] = useState('opens');
   const [pageSize, setPageSize] = useState(50);
   const [overrideRows, setOverrideRows] = useState([]);
+  const [renewalAsks, setRenewalAsks] = useState([]);
   const [overrideModal, setOverrideModal] = useState(null);       // { row }
   const [savingOverride, setSavingOverride] = useState(false);
   const [overrideForm] = Form.useForm();
@@ -55,10 +79,12 @@ export default function VacancyPage() {
       const rangeEnd = range?.[1] ? dayjs(range[1]).format('YYYY-MM-DD') : null;
       const normalThrough = dayjs(asOf).add(defaultLeadDays, 'day').format('YYYY-MM-DD');
       if (rangeEnd && rangeEnd > normalThrough) params.through = rangeEnd;
-      const [res, overridesRes] = await Promise.all([
+      const [res, overridesRes, asksRes] = await Promise.all([
         advertisingApi.getVacancies(Object.keys(params).length ? params : undefined),
         advertisingApi.listVacancyOverrides(),
+        advertisingApi.getRenewalAsks().catch(() => ({ data: { code: 200, data: [] } })),
       ]);
+      if (asksRes?.data?.code === 200) setRenewalAsks(asksRes.data.data || []);
       if (res.data.code === 200) {
         const d = res.data.data;
         setRows(d.vacancies || []);
@@ -83,6 +109,12 @@ export default function VacancyPage() {
   useEffect(() => { load(); }, []);
 
   const overrideById = new Map(overrideRows.map(o => [String(o.id), o]));
+  // Keyed by lease: a renewal sequence belongs to the lease we asked about, and the same
+  // unit may have had an earlier one.
+  const askByLease = new Map(renewalAsks.map(a => [String(a.lease_id), a]));
+  // Sequences whose lease never reaches this page — too far out, or the unit is re-let.
+  // Without surfacing them here they would run entirely unobserved.
+  const offPageAsks = renewalAsks.filter(a => !rows.some(r => String(r.lease_id) === String(a.lease_id)));
   const todayForOpenDates = asOf || dayjs().format('YYYY-MM-DD');
 
   const opensOn = (r) => {
@@ -217,6 +249,8 @@ export default function VacancyPage() {
           return <Tag color="red" style={{ fontWeight: 600 }}>Vacant {r.days_vacant}d</Tag>;
         }
         const expiring = <Tag color={daysColor(r.days_left)} style={{ fontWeight: 600 }}>Expiring · {r.days_left}d</Tag>;
+        const ask = r.lease_id ? askByLease.get(String(r.lease_id)) : null;
+        const askTag = ask ? <RenewalAskTag ask={ask} /> : null;
         // The tenant told us they are staying, so this is off the market for customers
         // already — but the lease still has to be extended, and this page is where that
         // job lives. Deliberately louder than the row it replaces.
@@ -224,11 +258,14 @@ export default function VacancyPage() {
           return (
             <Space direction="vertical" size={4}>
               <div>{expiring}</div>
-              <Tooltip title="The tenant has said they are staying. Not offered to customers. Extend the lease to clear this.">
-                <Tag color="gold" style={{ fontWeight: 600 }}>Staying · extend lease</Tag>
+              <Tooltip title="The tenant chose Extend. Not offered to customers. Extend the lease to clear this.">
+                <Tag color="gold" style={{ fontWeight: 600 }}>Extend · paperwork due</Tag>
               </Tooltip>
             </Space>
           );
+        }
+        if (askTag) {
+          return <Space direction="vertical" size={4}><div>{expiring}</div>{askTag}</Space>;
         }
         return expiring;
       },
@@ -413,6 +450,27 @@ export default function VacancyPage() {
             </div>
           )}
         </div>
+
+        {offPageAsks.length > 0 && (
+          <Card
+            size="small"
+            style={{ marginBottom: 16, borderColor: '#ffe58f', background: '#fffbe6' }}
+            title={`${offPageAsks.length} renewal ${offPageAsks.length === 1 ? 'ask' : 'asks'} in flight on leases not listed below`}
+          >
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+              These leases end further out than this page shows, or the unit has already been re-let —
+              so they would otherwise be invisible while we are messaging the tenant.
+            </Text>
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              {offPageAsks.map(a => (
+                <div key={a.lease_id}>
+                  <b>{a.label}</b>{a.tenant_name ? ` · ${a.tenant_name}` : ''} — lease ends {a.lease_end}{' '}
+                  <RenewalAskTag ask={a} />
+                </div>
+              ))}
+            </Space>
+          </Card>
+        )}
 
         <Card styles={{ body: { padding: 16 } }} style={{ borderColor: '#e8e8e8' }}>
           <Space style={{ marginBottom: 16 }} wrap>

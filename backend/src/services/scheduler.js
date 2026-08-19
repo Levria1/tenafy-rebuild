@@ -644,6 +644,20 @@ async function sendCheckoutEmailsForOrg(pool, orgId) {
 // ---------------------------------------------------------------------------
 
 async function sendRenewalEmailsForOrg(pool, orgId) {
+  // Superseded by the renewal-ask flow when that is switched on. Both would contact the
+  // same tenant about the same question, so exactly one of them runs — and the existing
+  // flag is the switch, which makes the changeover reversible in one click.
+  try {
+    const { loadSettings } = require('../routes/advertising');
+    const settings = await loadSettings(pool, orgId);
+    if (Number(settings.renewal_ask_enabled)) return;
+  } catch (e) {
+    // Settings unreadable. SKIP rather than fall through: if the flag was actually on,
+    // sending here and again from the ask flow at 10:00 double-contacts the tenant. A
+    // missed reminder is recoverable tomorrow; a duplicate message is not.
+    console.error('[Scheduler] renewal-ask gate unreadable, skipping legacy renewal emails:', e.message);
+    return;
+  }
   // Find leases with tenant_renewal enabled, with an end date and renewal days set
   const [leases] = await pool.execute(
     `SELECT l.id, l.end_date, l.tenant_renewal_days, l.tenant_id,
@@ -1131,6 +1145,20 @@ function startScheduler() {
   cron.schedule('45 7 * * *', () => {
     console.log('[Scheduler] Sending renewal emails...');
     runForAllOrgs('renewalEmails', sendRenewalEmailsForOrg);
+  }, { timezone: ORG_TIME_ZONE });
+
+  // Daily at 10:00 - renewal asks. Deliberately mid-morning rather than 07:45: this one
+  // messages tenants on WhatsApp, and a 7am message about their home reads badly.
+  cron.schedule('0 10 * * *', () => {
+    console.log('[Scheduler] Sending renewal asks...');
+    runForAllOrgs('renewalAsks', async (pool, orgId) => {
+      const { runRenewalAsksForOrg } = require('./renewalAskDispatch');
+      const { loadSettings } = require('../routes/advertising');
+      const summary = await runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotification });
+      if (summary && (summary.asked || summary.escalated)) {
+        console.log(`[Scheduler] renewal asks org ${orgId}:`, JSON.stringify(summary));
+      }
+    });
   }, { timezone: ORG_TIME_ZONE });
 
   // Daily at 06:00 - auto-promote pending service tasks to in-progress

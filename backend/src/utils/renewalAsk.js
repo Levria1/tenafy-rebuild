@@ -10,7 +10,7 @@
  * so nothing in this file can drift with the process timezone.
  */
 
-const REPLY_STAYING = 1;
+const REPLY_EXTEND = 1;   // the operator's button wording: "Extend"
 const REPLY_LEAVING = 2;
 const REPLY_UNSURE = 3;
 
@@ -18,6 +18,13 @@ const REPLY_UNSURE = 3;
 const UNDECIDED_CONTRACT_TYPES = [1, 4];   // 1 = MR (may renew), 4 = UC (unconfirmed)
 
 const DEFAULT_NOTICE_DAYS = 30;
+
+// Three asks per decision cycle, then a human takes over. Silence is not an answer and
+// is emphatically not "leaving", so the sequence ends in escalation rather than a guess.
+const MAX_ASKS = 3;
+// Hard floor, independent of the configured gap: a tenant must never be messaged twice
+// in one day, whatever the setting says.
+const MIN_HOURS_BETWEEN_ASKS = 24;
 
 function parseYmd(value) {
   if (typeof value !== 'string') return null;
@@ -120,7 +127,7 @@ function classifyRenewalReply(text) {
   const hasYes = YES.test(withoutNegations);
   const hasNo = negated || NO.test(withoutNegations);
   if (hasYes && hasNo) return REPLY_UNSURE;   // "yes but I might leave" — a human should read it
-  if (hasYes) return REPLY_STAYING;
+  if (hasYes) return REPLY_EXTEND;
   if (hasNo) return REPLY_LEAVING;
   return REPLY_UNSURE;
 }
@@ -139,7 +146,7 @@ function classifyRenewalReply(text) {
  */
 function applyRenewalReply(intent, { askedLease, currentLease } = {}) {
   const code = Number(intent);
-  if (![REPLY_STAYING, REPLY_LEAVING, REPLY_UNSURE].includes(code)) {
+  if (![REPLY_EXTEND, REPLY_LEAVING, REPLY_UNSURE].includes(code)) {
     return { valid: false, reason: 'bad_intent' };
   }
   if (!askedLease || !currentLease) return { valid: false, reason: 'missing_lease' };
@@ -156,7 +163,7 @@ function applyRenewalReply(intent, { askedLease, currentLease } = {}) {
     return { valid: true, applied: false, stale_reason: 'intent_changed_elsewhere', suppress: false, needs_staff: true, intent: code };
   }
 
-  if (code === REPLY_STAYING) {
+  if (code === REPLY_EXTEND) {
     return { valid: true, applied: true, stale_reason: null, suppress: true, needs_staff: true, intent: code };
   }
   // Leaving or unsure: recorded, surfaced to staff, but never auto-promoted to
@@ -173,7 +180,7 @@ function renderRenewalAsk(template, vars = {}) {
 }
 
 module.exports = {
-  REPLY_STAYING, REPLY_LEAVING, REPLY_UNSURE,
+  REPLY_EXTEND, REPLY_LEAVING, REPLY_UNSURE,
   UNDECIDED_CONTRACT_TYPES, DEFAULT_NOTICE_DAYS,
   renewalDecisionDueOn,
   renewalAskEligibility,
@@ -182,3 +189,82 @@ module.exports = {
   applyRenewalReply,
   renderRenewalAsk,
 };
+
+/**
+ * Which ask (if any) is due for this lease right now.
+ *
+ * `asks` is the cycle's history: [{ ask_number, sent_at, escalated_at }]. `sent_at` is a
+ * YYYY-MM-DD business date, not a timestamp — the caller derives it from the org's
+ * clock, so nothing here reads the process clock.
+ */
+function nextAskDue(asks, { today, gapDays = 3, hasReply = false } = {}) {
+  const todayMs = parseYmd(today);
+  if (todayMs == null) return { due: false, reason: 'bad_today' };
+  // Any reply at all ends the sequence — we asked a question and got an answer.
+  if (hasReply) return { due: false, reason: 'already_replied' };
+
+  // `attempted_on` counts a delivered ask OR one we gave up on after retries. Counting
+  // only delivered asks would strand a tenant whose first message failed: the row still
+  // occupies its slot, so nothing new could ever be inserted for it.
+  const sent = (Array.isArray(asks) ? asks : [])
+    .map(a => ({ n: Number(a?.ask_number) || 1, ms: parseYmd(a?.attempted_on || a?.sent_at) }))
+    .filter(a => a.ms != null)
+    .sort((a, b) => b.ms - a.ms || b.n - a.n);
+
+  if (sent.length >= MAX_ASKS) return { due: false, reason: 'max_asks_reached' };
+  if (!sent.length) return { due: true, ask_number: 1 };
+
+  const gap = definedNumber(gapDays);
+  const effectiveGapDays = Math.max(
+    gap != null && gap >= 0 ? Math.trunc(gap) : 3,
+    MIN_HOURS_BETWEEN_ASKS / 24,
+  );
+  const daysSinceLast = Math.round((todayMs - sent[0].ms) / 86400000);
+  if (daysSinceLast < effectiveGapDays) return { due: false, reason: 'too_soon', days_since_last: daysSinceLast };
+
+  return { due: true, ask_number: sent[0].n + 1 };
+}
+
+/**
+ * All three asks sent, the gap has elapsed, and still nothing back. At that point a
+ * person should call them — we have said all we usefully can by message.
+ */
+function shouldEscalate(asks, { today, gapDays = 3, hasReply = false } = {}) {
+  if (hasReply) return false;
+  const todayMs = parseYmd(today);
+  if (todayMs == null) return false;
+  const list = Array.isArray(asks) ? asks : [];
+  const sent = list.filter(a => a && (a.attempted_on || a.sent_at));
+  if (sent.length < MAX_ASKS) return false;
+  if (list.some(a => a && a.escalated_at)) return false;   // already handed over
+
+  // The third ask must have had the same window to be answered as the others. Escalating
+  // the day it goes out would hand a "no answer" to staff before the tenant has had a
+  // chance to give one.
+  const lastMs = sent
+    .map(a => parseYmd(a.attempted_on || a.sent_at))
+    .filter(ms => ms != null)
+    .sort((a, b) => b - a)[0];
+  if (lastMs == null) return false;
+  const gap = definedNumber(gapDays);
+  const effectiveGapDays = Math.max(
+    gap != null && gap >= 0 ? Math.trunc(gap) : 3,
+    MIN_HOURS_BETWEEN_ASKS / 24,
+  );
+  return Math.round((todayMs - lastMs) / 86400000) >= effectiveGapDays;
+}
+
+/** WhatsApp when we have a phone, otherwise email. null = unreachable by either. */
+function renewalAskChannel({ tenant_phone, tenant_email } = {}) {
+  const phone = typeof tenant_phone === 'string' ? tenant_phone.trim() : '';
+  const email = typeof tenant_email === 'string' ? tenant_email.trim() : '';
+  if (phone) return 'whatsapp';
+  if (email) return 'email';
+  return null;
+}
+
+module.exports.MAX_ASKS = MAX_ASKS;
+module.exports.MIN_HOURS_BETWEEN_ASKS = MIN_HOURS_BETWEEN_ASKS;
+module.exports.nextAskDue = nextAskDue;
+module.exports.shouldEscalate = shouldEscalate;
+module.exports.renewalAskChannel = renewalAskChannel;

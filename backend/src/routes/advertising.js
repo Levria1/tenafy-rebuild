@@ -23,7 +23,7 @@ const GAP_ASK_PHRASE = "We're unable to accept a booking that would leave {units
 // routine admin question into pressure, and the tenant relationship is worth more
 // than the marginal urgency. Mirrors migration 067's seed.
 const RENEWAL_ASK_PHRASE = "Hi {tenant_name}, your lease at {unit} runs to {end_date}. Are you planning to stay on? Just let us know either way and we'll take care of the paperwork.";
-const RENEWAL_REPLY_STAYING = 1;
+const RENEWAL_REPLY_EXTEND = 1;
 
 const SETTINGS_LIMITS = {
   photo_root: 255,
@@ -460,7 +460,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
     // manual early-exit override, and filtering only the lease-derived rows would let
     // it back in through that door.
     const stayingUnitIds = new Set(
-      realRows.filter(r => Number(r.renewal_reply) === RENEWAL_REPLY_STAYING).map(r => String(r.unit_id))
+      realRows.filter(r => Number(r.renewal_reply) === RENEWAL_REPLY_EXTEND).map(r => String(r.unit_id))
     );
     const notStaying = row => !stayingUnitIds.has(String(row.unit_id));
     const vacancies = page
@@ -634,6 +634,95 @@ router.delete('/vacancy-override/:id', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[advertising/vacancy-override clear] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to clear vacancy override' });
+  }
+});
+
+// Renewal asks in flight — the visibility surface for a sequence that messages tenants.
+//
+// Deliberately NOT folded into the Vacancy page alone: a lease whose notice period exceeds
+// the page's 60-day window, or whose unit has already been re-let, is asked but never
+// appears there. Without this, those sequences would run unobserved.
+router.get('/renewal-asks', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [rows] = await req.pool.execute(
+      `SELECT r.lease_id, r.unit_id,
+              DATE_FORMAT(r.lease_end_at_ask, '%Y-%m-%d') AS lease_end,
+              DATE_FORMAT(r.decision_due_on, '%Y-%m-%d')  AS decision_due_on,
+              -- DELIVERED asks only. Counting every row would tell staff a tenant had
+              -- been asked when the message never actually left.
+              SUM(r.state = 'SENT')                        AS asks_delivered,
+              COUNT(*)                                     AS slots_used,
+              MAX(r.ask_number)                            AS last_ask_number,
+              DATE_FORMAT(MAX(r.sent_at), '%Y-%m-%d')      AS last_delivered_on,
+              MAX(r.escalated_at IS NOT NULL)              AS escalated,
+              -- The LATEST reply, not the numerically largest: MAX() would rank
+              -- 'unsure' above 'leaving' above 'extend' regardless of when they arrived.
+              SUBSTRING_INDEX(GROUP_CONCAT(r.reply_intent ORDER BY r.replied_at DESC), ',', 1) AS reply_intent,
+              SUBSTRING_INDEX(GROUP_CONCAT(r.applied ORDER BY r.replied_at DESC), ',', 1)      AS reply_applied,
+              SUBSTRING_INDEX(GROUP_CONCAT(COALESCE(r.stale_reason,'') ORDER BY r.replied_at DESC), ',', 1) AS reply_stale_reason,
+              MAX(r.channel)                               AS channel,
+              SUM(r.state = 'FAILED')                      AS undelivered_slots,
+              u.name AS unit_name, p.display_name AS property_name,
+              l.contract_type, l.renewal_reply,
+              CASE WHEN t.type = 1 THEN t.company_name
+                   ELSE TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) END AS tenant_name
+         FROM renewal_ask r
+         JOIN unit u ON u.id = r.unit_id
+         JOIN property p ON p.id = u.property_id
+         LEFT JOIN leasing l ON l.id = r.lease_id
+         LEFT JOIN tenant t ON t.id = r.tenant_id
+        WHERE r.org_id = ?
+        GROUP BY r.lease_id, r.unit_id, r.lease_end_at_ask, r.decision_due_on,
+                 u.name, p.display_name, l.contract_type, l.renewal_reply, tenant_name
+        ORDER BY MAX(r.escalated_at IS NOT NULL) DESC, r.decision_due_on ASC
+        LIMIT 200`,
+      [orgId]
+    );
+    const REPLY = { 1: 'extend', 2: 'leaving', 3: 'unsure' };
+    res.json({
+      code: 200,
+      data: rows.map(r => {
+      // GROUP_CONCAT returns strings; an empty group yields null.
+      const replyIntent = r.reply_intent != null && r.reply_intent !== '' ? Number(r.reply_intent) : null;
+      return ({
+        lease_id: String(r.lease_id),
+        unit_id: String(r.unit_id),
+        label: [r.property_name, r.unit_name].filter(Boolean).join(' '),
+        tenant_name: r.tenant_name || null,
+        lease_end: r.lease_end,
+        decision_due_on: r.decision_due_on,
+        asks_delivered: Number(r.asks_delivered) || 0,
+        slots_used: Number(r.slots_used) || 0,
+        undelivered_slots: Number(r.undelivered_slots) || 0,
+        last_ask_number: Number(r.last_ask_number) || 0,
+        last_delivered_on: r.last_delivered_on || null,
+        channel: r.channel || null,
+        escalated: Number(r.escalated) === 1,
+        reply: replyIntent != null ? REPLY[replyIntent] || null : null,
+        reply_applied: replyIntent != null ? String(r.reply_applied) === '1' : null,
+        reply_stale_reason: r.reply_stale_reason || null,
+        intent: INTENT[r.contract_type] || 'Unset',
+        // The action staff should take, spelled out rather than inferred. A reply that
+        // could not be applied (the lease moved on since we asked) must NOT read as
+        // "paperwork due" — that would have someone extend a lease off a stale answer.
+        status: replyIntent != null
+          ? (String(r.reply_applied) !== '1'
+              ? 'replied_but_stale_check_lease'
+              : (replyIntent === 1 ? 'extend_pending_paperwork' : 'replied_needs_review'))
+          : (Number(r.escalated) === 1
+              ? 'no_answer_call_them'
+              : (Number(r.asks_delivered) === 0 && Number(r.slots_used) > 0
+                  ? 'could_not_reach_them'
+                  : 'awaiting_reply')),
+      });
+      }),
+    });
+  } catch (err) {
+    // Table absent on an org not yet migrated — an empty queue, not an error page.
+    if (err && err.code === 'ER_NO_SUCH_TABLE') return res.json({ code: 200, data: [] });
+    console.error('[advertising/renewal-asks] error:', err);
+    res.status(500).json({ code: 500, message: 'Failed to load renewal asks' });
   }
 });
 
@@ -1425,6 +1514,9 @@ async function loadSettings(pool, orgId) {
     renewal_ask_enabled: 0,
     renewal_default_notice_days: 30,
     renewal_ask_phrase: RENEWAL_ASK_PHRASE,
+    renewal_ask_gap_days: 3,
+    renewal_ask_phrase_2: null,
+    renewal_ask_phrase_3: null,
     inquiry_gap_band_1m_days: 3,
     inquiry_gap_band_2m_days: 6,
     inquiry_gap_band_3m_plus_days: 10,
@@ -1440,6 +1532,7 @@ async function loadSettings(pool, orgId) {
               inquiry_booking_horizon_days, inquiry_too_far_out_phrase,
               vacant_max_move_in_days, inquiry_gap_ask_phrase,
               renewal_ask_enabled, renewal_default_notice_days, renewal_ask_phrase,
+              renewal_ask_gap_days, renewal_ask_phrase_2, renewal_ask_phrase_3,
               inquiry_gap_band_1m_days, inquiry_gap_band_2m_days, inquiry_gap_band_3m_plus_days
          FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
     return {
@@ -1461,6 +1554,9 @@ async function loadSettings(pool, orgId) {
       renewal_ask_enabled: Number(row?.renewal_ask_enabled) === 1 ? 1 : 0,
       renewal_default_notice_days: numberOrDefault(row?.renewal_default_notice_days, 30),
       renewal_ask_phrase: row?.renewal_ask_phrase || RENEWAL_ASK_PHRASE,
+      renewal_ask_gap_days: numberOrDefault(row?.renewal_ask_gap_days, 3),
+      renewal_ask_phrase_2: row?.renewal_ask_phrase_2 || null,
+      renewal_ask_phrase_3: row?.renewal_ask_phrase_3 || null,
       inquiry_gap_ask_phrase: row?.inquiry_gap_ask_phrase ?? GAP_ASK_PHRASE,
       inquiry_gap_band_1m_days: numberOrDefault(row?.inquiry_gap_band_1m_days, 3),
       inquiry_gap_band_2m_days: numberOrDefault(row?.inquiry_gap_band_2m_days, 6),
@@ -1636,6 +1732,9 @@ router.put('/settings', authenticate, async (req, res) => {
       renewal_ask_enabled,
       renewal_default_notice_days,
       renewal_ask_phrase,
+      renewal_ask_phrase_2,
+      renewal_ask_phrase_3,
+      renewal_ask_gap_days,
       inquiry_gap_band_1m_days,
       inquiry_gap_band_2m_days,
       inquiry_gap_band_3m_plus_days,
@@ -1643,7 +1742,7 @@ router.put('/settings', authenticate, async (req, res) => {
       search_gap_band_2m_days,
       search_gap_band_3m_plus_days,
     } = req.body || {};
-    const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message', 'inquiry_too_far_out_phrase', 'inquiry_gap_ask_phrase', 'renewal_ask_phrase']);
+    const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message', 'inquiry_too_far_out_phrase', 'inquiry_gap_ask_phrase', 'renewal_ask_phrase', 'renewal_ask_phrase_2', 'renewal_ask_phrase_3']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     const normalizedPartnerForwardMessage = partner_forward_message !== undefined
       ? normalizePartnerForwardMessage(partner_forward_message)
@@ -1668,7 +1767,7 @@ router.put('/settings', authenticate, async (req, res) => {
         return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
       }
     }
-    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days', 'vacant_max_move_in_days', 'renewal_default_notice_days', 'inquiry_gap_band_1m_days', 'inquiry_gap_band_2m_days', 'inquiry_gap_band_3m_plus_days', 'search_gap_band_1m_days', 'search_gap_band_2m_days', 'search_gap_band_3m_plus_days']) {
+    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days', 'vacant_max_move_in_days', 'renewal_default_notice_days', 'renewal_ask_gap_days', 'inquiry_gap_band_1m_days', 'inquiry_gap_band_2m_days', 'inquiry_gap_band_3m_plus_days', 'search_gap_band_1m_days', 'search_gap_band_2m_days', 'search_gap_band_3m_plus_days']) {
       if (req.body?.[field] !== undefined) {
         if (req.body[field] === null) {
           return res.status(400).json({
@@ -1702,6 +1801,9 @@ router.put('/settings', authenticate, async (req, res) => {
     if (renewal_ask_enabled !== undefined) setClauses.push('renewal_ask_enabled = VALUES(renewal_ask_enabled)');
     if (renewal_default_notice_days !== undefined) setClauses.push('renewal_default_notice_days = VALUES(renewal_default_notice_days)');
     if (renewal_ask_phrase !== undefined) setClauses.push('renewal_ask_phrase = VALUES(renewal_ask_phrase)');
+    if (renewal_ask_phrase_2 !== undefined) setClauses.push('renewal_ask_phrase_2 = VALUES(renewal_ask_phrase_2)');
+    if (renewal_ask_phrase_3 !== undefined) setClauses.push('renewal_ask_phrase_3 = VALUES(renewal_ask_phrase_3)');
+    if (renewal_ask_gap_days !== undefined) setClauses.push('renewal_ask_gap_days = VALUES(renewal_ask_gap_days)');
     if (inquiry_gap_ask_phrase !== undefined) setClauses.push('inquiry_gap_ask_phrase = VALUES(inquiry_gap_ask_phrase)');
     if (inquiry_gap_band_1m_days !== undefined) setClauses.push('inquiry_gap_band_1m_days = VALUES(inquiry_gap_band_1m_days)');
     if (inquiry_gap_band_2m_days !== undefined) setClauses.push('inquiry_gap_band_2m_days = VALUES(inquiry_gap_band_2m_days)');
@@ -1723,6 +1825,9 @@ router.put('/settings', authenticate, async (req, res) => {
       includeRenewalAskEnabled,
       includeRenewalNoticeDays,
       includeRenewalAskPhrase,
+      includeRenewalAskPhrase2,
+      includeRenewalAskPhrase3,
+      includeRenewalGapDays,
       includeInquiryGapAskPhrase,
       includeInquiryGapBand1m,
       includeInquiryGapBand2m,
@@ -1789,6 +1894,18 @@ router.put('/settings', authenticate, async (req, res) => {
         insertColumns.push('renewal_ask_phrase');
         params.push(renewal_ask_phrase ?? null);
       }
+      if (includeRenewalAskPhrase2) {
+        insertColumns.push('renewal_ask_phrase_2');
+        params.push(renewal_ask_phrase_2 ?? null);
+      }
+      if (includeRenewalAskPhrase3) {
+        insertColumns.push('renewal_ask_phrase_3');
+        params.push(renewal_ask_phrase_3 ?? null);
+      }
+      if (includeRenewalGapDays) {
+        insertColumns.push('renewal_ask_gap_days');
+        params.push(renewal_ask_gap_days ?? 3);
+      }
       if (includeInquiryGapAskPhrase) {
         insertColumns.push('inquiry_gap_ask_phrase');
         params.push(normalizedGapAskPhrase ?? GAP_ASK_PHRASE);
@@ -1831,7 +1948,10 @@ router.put('/settings', authenticate, async (req, res) => {
         if (!includeVacantMaxMoveIn && clause.startsWith('vacant_max_move_in_days')) return false;
         if (!includeRenewalAskEnabled && clause.startsWith('renewal_ask_enabled')) return false;
         if (!includeRenewalNoticeDays && clause.startsWith('renewal_default_notice_days')) return false;
-        if (!includeRenewalAskPhrase && clause.startsWith('renewal_ask_phrase')) return false;
+        if (!includeRenewalAskPhrase2 && clause.startsWith('renewal_ask_phrase_2')) return false;
+        if (!includeRenewalAskPhrase3 && clause.startsWith('renewal_ask_phrase_3')) return false;
+        if (!includeRenewalGapDays && clause.startsWith('renewal_ask_gap_days')) return false;
+        if (!includeRenewalAskPhrase && /^renewal_ask_phrase\s/.test(clause)) return false;
         if (!includeInquiryGapAskPhrase && clause.startsWith('inquiry_gap_ask_phrase')) return false;
         if (!includeInquiryGapBand1m && clause.startsWith('inquiry_gap_band_1m_days')) return false;
         if (!includeInquiryGapBand2m && clause.startsWith('inquiry_gap_band_2m_days')) return false;
@@ -1861,6 +1981,18 @@ router.put('/settings', authenticate, async (req, res) => {
       includeRenewalAskPhrase: {
         column: 'renewal_ask_phrase',
         wasSent: renewal_ask_phrase !== undefined,
+      },
+      includeRenewalAskPhrase2: {
+        column: 'renewal_ask_phrase_2',
+        wasSent: renewal_ask_phrase_2 !== undefined,
+      },
+      includeRenewalAskPhrase3: {
+        column: 'renewal_ask_phrase_3',
+        wasSent: renewal_ask_phrase_3 !== undefined,
+      },
+      includeRenewalGapDays: {
+        column: 'renewal_ask_gap_days',
+        wasSent: renewal_ask_gap_days !== undefined,
       },
       includePartnerForward: {
         column: 'partner_forward_message',
@@ -1940,6 +2072,9 @@ router.put('/settings', authenticate, async (req, res) => {
       includeRenewalAskEnabled: true,
       includeRenewalNoticeDays: true,
       includeRenewalAskPhrase: true,
+      includeRenewalAskPhrase2: true,
+      includeRenewalAskPhrase3: true,
+      includeRenewalGapDays: true,
       includeInquiryGapAskPhrase: true,
       includeInquiryGapBand1m: true,
       includeInquiryGapBand2m: true,

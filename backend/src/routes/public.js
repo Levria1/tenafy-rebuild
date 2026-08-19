@@ -2099,7 +2099,7 @@ const tenantNameSqlPublic = (a) => `CASE WHEN ${a}.type = 1 THEN ${a}.company_na
 // Rather than publish a guessed decision date, we ask the tenant — but only for
 // units a prospect actually wants, and only once per decision cycle.
 //
-// The asymmetry below is the whole design. A reply of "staying" WITHDRAWS the unit
+// The asymmetry below is the whole design. A reply of "extend" WITHDRAWS the unit
 // from customer-facing feeds automatically, because the cost of being wrong is a
 // listing we can restore. A reply of "leaving" does NOT mark it firmly available,
 // because the cost of being wrong there is promising a customer a home the tenant
@@ -2120,8 +2120,11 @@ async function currentLeaseForUnit(pool, orgId, unitId) {
        LEFT JOIN tenant t ON t.id = l.tenant_id
       WHERE p.org_id = ? AND l.unit_id = ? AND l.deleted_at IS NULL
         AND l.end_date IS NOT NULL
+        -- Same liveness guards as the scheduled path. Without them a future or inactive
+        -- lease could be queued here and its tenant messaged.
+        AND l.status = 1 AND l.lease_state = 'active' AND l.start_date <= ?
       ORDER BY l.end_date DESC, l.id DESC LIMIT 1`,
-    [orgId, unitId]
+    [orgId, unitId, orgToday()]
   );
   return row || null;
 }
@@ -2323,10 +2326,10 @@ router.post('/renewal-ask/:id/reply', async (req, res) => {
   try {
     const orgId = req.apiKey.orgId;
     const body = req.body || {};
-    const INTENTS = { staying: 1, leaving: 2, unsure: 3 };
+    const INTENTS = { extend: 1, staying: 1, leaving: 2, unsure: 3 };   // 'staying' kept as an alias so an in-flight caller is not broken
     let intent = body.intent !== undefined ? INTENTS[String(body.intent).toLowerCase()] : undefined;
     if (body.intent !== undefined && intent === undefined) {
-      return fail(res, 'intent must be one of: staying, leaving, unsure', 400);
+      return fail(res, 'intent must be one of: extend, leaving, unsure', 400);
     }
     const text = typeof body.text === 'string' ? body.text : null;
     if (intent === undefined) intent = renewalAsk.classifyRenewalReply(text);
@@ -2397,7 +2400,7 @@ router.post('/renewal-ask/:id/reply', async (req, res) => {
       intent: Object.keys(INTENTS).find(k => INTENTS[k] === intent),
       applied: decision.applied,
       stale_reason: decision.stale_reason || null,
-      // True only for "staying": the unit comes off customer-facing feeds at once.
+      // True only for "extend": the unit comes off customer-facing feeds at once.
       // It stays on the staff page, where the lease extension is now outstanding work.
       withdrawn_from_offers: !!decision.suppress,
       needs_staff: !!decision.needs_staff,

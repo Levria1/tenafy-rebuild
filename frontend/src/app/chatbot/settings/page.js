@@ -44,6 +44,9 @@ function LeasingAvailabilitySettings() {
   const [renewalAskEnabled, setRenewalAskEnabled] = useState(false);
   const [renewalNoticeDays, setRenewalNoticeDays] = useState(null);
   const [renewalAskPhrase, setRenewalAskPhrase] = useState('');
+  const [renewalAskPhrase2, setRenewalAskPhrase2] = useState('');
+  const [renewalAskPhrase3, setRenewalAskPhrase3] = useState('');
+  const [renewalGapDays, setRenewalGapDays] = useState(null);
   const [effectiveAdvertising, setEffectiveAdvertising] = useState(null);
   const [partnerMsg, setPartnerMsg] = useState('');
   const [loading, setLoading] = useState(true);
@@ -74,6 +77,9 @@ function LeasingAvailabilitySettings() {
         setRenewalAskEnabled(Number(d.renewal_ask_enabled) === 1);
         setRenewalNoticeDays(d.renewal_default_notice_days ?? 30);
         setRenewalAskPhrase(d.renewal_ask_phrase ?? '');
+        setRenewalAskPhrase2(d.renewal_ask_phrase_2 ?? '');
+        setRenewalAskPhrase3(d.renewal_ask_phrase_3 ?? '');
+        setRenewalGapDays(d.renewal_ask_gap_days ?? 3);
         setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       })
@@ -113,6 +119,9 @@ function LeasingAvailabilitySettings() {
         renewal_ask_enabled: renewalAskEnabled ? 1 : 0,
         renewal_default_notice_days: renewalNoticeDays,
         renewal_ask_phrase: renewalAskPhrase,
+        renewal_ask_phrase_2: renewalAskPhrase2,
+        renewal_ask_phrase_3: renewalAskPhrase3,
+        renewal_ask_gap_days: renewalGapDays,
         partner_forward_message: partnerMsg,
       });
       const d = r.data?.data;
@@ -131,6 +140,9 @@ function LeasingAvailabilitySettings() {
         setRenewalAskEnabled(Number(d.renewal_ask_enabled) === 1);
         setRenewalNoticeDays(d.renewal_default_notice_days ?? 30);
         setRenewalAskPhrase(d.renewal_ask_phrase ?? '');
+        setRenewalAskPhrase2(d.renewal_ask_phrase_2 ?? '');
+        setRenewalAskPhrase3(d.renewal_ask_phrase_3 ?? '');
+        setRenewalGapDays(d.renewal_ask_gap_days ?? 3);
         setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       }
@@ -293,10 +305,10 @@ function LeasingAvailabilitySettings() {
       </div>
 
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
-        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Ask the tenant if they are staying</Title>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Ask the tenant whether they will extend</Title>
         <Paragraph type="secondary" style={{ marginBottom: 16 }}>
           When someone asks about a unit whose tenant has not decided, and that decision is due, we can
-          ask the tenant directly. A reply of <b>staying</b> takes the unit off what customers see
+          ask the tenant directly. A reply of <b>extend</b> takes the unit off what customers see
           straight away — it stays on your Vacancy page, because the lease still needs extending. A
           reply of <b>leaving</b> is never enough on its own to advertise the unit as definitely free.
         </Paragraph>
@@ -306,6 +318,17 @@ function LeasingAvailabilitySettings() {
             <Switch checked={renewalAskEnabled} onChange={setRenewalAskEnabled} />
             <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
               Off by default. Nothing reaches any tenant while this is off.
+            </div>
+          </Col>
+          <Col xs={24} md={12} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>Days between asks</div>
+            <InputNumber
+              min={1} max={90} value={renewalGapDays} onChange={handleRequiredDays(setRenewalGapDays, 3)}
+              addonAfter="days" style={{ width: '100%', maxWidth: 240 }}
+            />
+            <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+              Up to three asks, then we stop and flag it for someone to call. Never two in one day,
+              whatever this is set to.
             </div>
           </Col>
           <Col xs={24} md={12} style={{ marginBottom: 16 }}>
@@ -319,9 +342,19 @@ function LeasingAvailabilitySettings() {
             </div>
           </Col>
         </Row>
-        <div style={{ marginBottom: 4, fontWeight: 500 }}>Message to the tenant</div>
+        <div style={{ marginBottom: 4, fontWeight: 500 }}>First ask</div>
         <Input.TextArea
-          rows={4} value={renewalAskPhrase} onChange={e => setRenewalAskPhrase(e.target.value)}
+          rows={3} value={renewalAskPhrase} onChange={e => setRenewalAskPhrase(e.target.value)}
+          maxLength={2000} showCount
+        />
+        <div style={{ marginBottom: 4, marginTop: 12, fontWeight: 500 }}>Second ask</div>
+        <Input.TextArea
+          rows={3} value={renewalAskPhrase2} onChange={e => setRenewalAskPhrase2(e.target.value)}
+          maxLength={2000} showCount
+        />
+        <div style={{ marginBottom: 4, marginTop: 12, fontWeight: 500 }}>Third ask</div>
+        <Input.TextArea
+          rows={3} value={renewalAskPhrase3} onChange={e => setRenewalAskPhrase3(e.target.value)}
           maxLength={2000} showCount
         />
         <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>

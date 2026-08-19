@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  REPLY_STAYING, REPLY_LEAVING, REPLY_UNSURE,
+  REPLY_EXTEND, REPLY_LEAVING, REPLY_UNSURE,
   renewalDecisionDueOn,
   renewalAskEligibility,
   renewalAskCycleKey,
@@ -71,8 +71,8 @@ test('the cycle key changes when the lease is extended, so a new ask is not supp
 });
 
 test('reply classification is conservative — ambiguity is never a decision', () => {
-  assert.equal(classifyRenewalReply('Yes, staying thanks'), REPLY_STAYING);
-  assert.equal(classifyRenewalReply('I want to renew'), REPLY_STAYING);
+  assert.equal(classifyRenewalReply('Yes, staying thanks'), REPLY_EXTEND);
+  assert.equal(classifyRenewalReply('I want to renew'), REPLY_EXTEND);
   assert.equal(classifyRenewalReply('No, moving out'), REPLY_LEAVING);
   assert.equal(classifyRenewalReply('not renewing'), REPLY_LEAVING);
   assert.equal(classifyRenewalReply('I will not be staying'), REPLY_LEAVING);
@@ -85,10 +85,10 @@ test('reply classification is conservative — ambiguity is never a decision', (
 
 const asked = { id: '7', end_date: '2026-09-25', contract_type: 1 };
 
-test('"staying" withdraws the unit; "leaving" never makes it firmly available', () => {
-  const staying = applyRenewalReply(REPLY_STAYING, { askedLease: asked, currentLease: { ...asked } });
-  assert.equal(staying.applied, true);
-  assert.equal(staying.suppress, true, 'a tenant saying they stay must take the unit off offer');
+test('"extend" withdraws the unit; "leaving" never makes it firmly available', () => {
+  const extend = applyRenewalReply(REPLY_EXTEND, { askedLease: asked, currentLease: { ...asked } });
+  assert.equal(extend.applied, true);
+  assert.equal(extend.suppress, true, 'a tenant choosing Extend must take the unit off offer');
 
   // The asymmetry: this is the direction that would promise a customer a home the
   // tenant may never vacate, so it goes to a human instead of flipping the unit.
@@ -103,7 +103,7 @@ test('"staying" withdraws the unit; "leaving" never makes it firmly available', 
 });
 
 test('a reply that arrives after the lease moved on is recorded but not acted on', () => {
-  const extended = applyRenewalReply(REPLY_STAYING, {
+  const extended = applyRenewalReply(REPLY_EXTEND, {
     askedLease: asked, currentLease: { ...asked, end_date: '2027-09-25' },
   });
   assert.equal(extended.applied, false);
@@ -111,20 +111,20 @@ test('a reply that arrives after the lease moved on is recorded but not acted on
   assert.equal(extended.stale_reason, 'lease_end_changed');
   assert.equal(extended.needs_staff, true);
 
-  const replaced = applyRenewalReply(REPLY_STAYING, {
+  const replaced = applyRenewalReply(REPLY_EXTEND, {
     askedLease: asked, currentLease: { ...asked, id: '9' },
   });
   assert.equal(replaced.stale_reason, 'lease_replaced');
   assert.equal(replaced.applied, false);
 
-  const retyped = applyRenewalReply(REPLY_STAYING, {
+  const retyped = applyRenewalReply(REPLY_EXTEND, {
     askedLease: asked, currentLease: { ...asked, contract_type: 3 },
   });
   assert.equal(retyped.stale_reason, 'intent_changed_elsewhere');
   assert.equal(retyped.applied, false);
 
   // A vanished lease must not throw or silently apply.
-  assert.equal(applyRenewalReply(REPLY_STAYING, { askedLease: asked, currentLease: null }).valid, false);
+  assert.equal(applyRenewalReply(REPLY_EXTEND, { askedLease: asked, currentLease: null }).valid, false);
   assert.equal(applyRenewalReply(99, { askedLease: asked, currentLease: { ...asked } }).valid, false);
 });
 
@@ -208,7 +208,7 @@ function callReply(handler, { pool, id = '1', body }) {
   });
 }
 
-test('a "staying" reply is applied when the lease is unchanged', async () => {
+test('an "extend" reply is applied when the lease is unchanged', async () => {
   const writes = [];
   const pool = fakePool([
     [/FROM renewal_ask WHERE id/, () => [[{ id: '1', lease_id: '7', unit_id: '5', state: 'SENT', applied: 0, contract_type_at_ask: 1, lease_end_at_ask: '2026-09-25' }]]],
@@ -217,14 +217,14 @@ test('a "staying" reply is applied when the lease is unchanged', async () => {
     [/UPDATE renewal_ask/, (p) => { writes.push(['ask', p]); return [{ affectedRows: 1 }]; }],
     [/UPDATE leasing SET renewal_reply/, (p) => { writes.push(['lease', p]); return [{ affectedRows: 1 }]; }],
   ]);
-  const result = await callReply(replyHandler(), { pool, body: { intent: 'staying' } });
+  const result = await callReply(replyHandler(), { pool, body: { intent: 'extend' } });
   assert.equal(result.statusCode, 200);
   assert.equal(result.body.data.applied, true);
   assert.equal(result.body.data.withdrawn_from_offers, true);
   assert.ok(writes.some(w => w[0] === 'lease'), 'the lease must be stamped so the feed suppresses it');
 });
 
-test('a "staying" reply on a lease re-typed since the ask is recorded but not acted on', async () => {
+test('an "extend" reply on a lease re-typed since the ask is recorded but not acted on', async () => {
   const writes = [];
   const pool = fakePool([
     // Asked while the lease was MR (1)…
@@ -235,7 +235,7 @@ test('a "staying" reply on a lease re-typed since the ask is recorded but not ac
     [/UPDATE renewal_ask/, (p) => { writes.push(['ask', p]); return [{ affectedRows: 1 }]; }],
     [/UPDATE leasing SET renewal_reply/, (p) => { writes.push(['lease', p]); return [{ affectedRows: 1 }]; }],
   ]);
-  const result = await callReply(replyHandler(), { pool, body: { intent: 'staying' } });
+  const result = await callReply(replyHandler(), { pool, body: { intent: 'extend' } });
   assert.equal(result.statusCode, 200);
   assert.equal(result.body.data.applied, false, 'a reply about a lease that has moved on must not be applied');
   assert.equal(result.body.data.stale_reason, 'intent_changed_elsewhere');
@@ -253,7 +253,7 @@ test('a reply whose lease has been deleted is recorded rather than rejected', as
     [/UPDATE renewal_ask/, (p) => { writes.push(['ask', p]); return [{ affectedRows: 1 }]; }],
     [/UPDATE leasing SET renewal_reply/, (p) => { writes.push(['lease', p]); return [{ affectedRows: 1 }]; }],
   ]);
-  const result = await callReply(replyHandler(), { pool, body: { intent: 'staying' } });
+  const result = await callReply(replyHandler(), { pool, body: { intent: 'extend' } });
   assert.equal(result.statusCode, 200, 'a tenant who answered must never get an error swallowing their reply');
   assert.equal(result.body.data.applied, false);
   assert.equal(result.body.data.stale_reason, 'lease_gone');
