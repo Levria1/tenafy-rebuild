@@ -27,6 +27,7 @@ const { validateChannel } = require('../utils/chatChannel');
 const { createNotification } = require('../services/scheduler');
 const config = require('../config');
 const { buildPostingPlan, markPostingPlan, computeVacancies, loadSettings, findBeyondHorizonNrVacancies } = require('./advertising');
+const renewalAsk = require('../utils/renewalAsk');
 const {
   vacancyToPublicShape,
   classifyFreeOn,
@@ -2084,6 +2085,326 @@ router.get('/viewing-negotiation/active', async (req, res) => {
   } catch (err) {
     console.error('Public viewing-negotiation/active error:', err);
     fail(res, 'Failed to look up negotiation');
+  }
+});
+
+// Company tenants store their name in company_name; individuals in first/last.
+const tenantNameSqlPublic = (a) => `CASE WHEN ${a}.type = 1 THEN ${a}.company_name
+       ELSE TRIM(CONCAT(COALESCE(${a}.first_name,''), ' ', COALESCE(${a}.last_name,''))) END`;
+
+// ────────────────────────────────────────────────────────────────
+// RENEWAL ASK — "is the tenant staying?"
+//
+// A unit whose tenant has not decided is unsellable: we can only offer it hedged.
+// Rather than publish a guessed decision date, we ask the tenant — but only for
+// units a prospect actually wants, and only once per decision cycle.
+//
+// The asymmetry below is the whole design. A reply of "staying" WITHDRAWS the unit
+// from customer-facing feeds automatically, because the cost of being wrong is a
+// listing we can restore. A reply of "leaving" does NOT mark it firmly available,
+// because the cost of being wrong there is promising a customer a home the tenant
+// never vacates. Evidence good enough to stop us selling is not good enough to let
+// us sell.
+// ────────────────────────────────────────────────────────────────
+
+// The lease we would be asking about: the unit's latest lease, still running.
+async function currentLeaseForUnit(pool, orgId, unitId) {
+  const [[row]] = await pool.execute(
+    `SELECT l.id, l.unit_id, l.tenant_id, l.contract_type, l.notice_period_days,
+            l.renewal_reply, DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
+            u.name AS unit_name, p.display_name AS property_name,
+            ${tenantNameSqlPublic('t')} AS tenant_name, t.phone AS tenant_phone
+       FROM leasing l
+       JOIN unit u ON u.id = l.unit_id
+       JOIN property p ON p.id = u.property_id
+       LEFT JOIN tenant t ON t.id = l.tenant_id
+      WHERE p.org_id = ? AND l.unit_id = ? AND l.deleted_at IS NULL
+        AND l.end_date IS NOT NULL
+      ORDER BY l.end_date DESC, l.id DESC LIMIT 1`,
+    [orgId, unitId]
+  );
+  return row || null;
+}
+
+function renewalAskRow(row, settings) {
+  return {
+    renewal_ask_id: String(row.id),
+    unit_id: String(row.unit_id),
+    unit_label: [row.property_name, row.unit_name].filter(Boolean).join(' '),
+    tenant_name: row.tenant_name || null,
+    tenant_phone: row.tenant_phone || null,
+    lease_end: row.lease_end_at_ask,
+    decision_due_on: row.decision_due_on,
+    state: row.state,
+    message: row.message,
+  };
+}
+
+// POST /api/public/renewal-ask   { unit_id }
+// Demand-triggered: call this when a prospect asks about a unit. We decide whether
+// an ask is due. Idempotent — an existing live ask for the same cycle is returned
+// rather than a second one created, so a retry cannot message a tenant twice.
+router.post('/renewal-ask', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const unitId = req.body && req.body.unit_id != null ? String(req.body.unit_id) : null;
+    if (!unitId || !/^\d+$/.test(unitId)) return fail(res, 'unit_id is required', 400);
+
+    const settings = await loadSettings(req.pool, orgId);
+    if (!Number(settings.renewal_ask_enabled)) {
+      return ok(res, { created: false, reason: 'disabled', renewal_ask: null });
+    }
+
+    const lease = await currentLeaseForUnit(req.pool, orgId, unitId);
+    if (!lease) return fail(res, 'Unit not found', 404);
+
+    const today = orgToday();
+    const eligibility = renewalAsk.renewalAskEligibility(lease, {
+      today, defaultNoticeDays: settings.renewal_default_notice_days,
+    });
+    if (!eligibility.eligible) {
+      return ok(res, { created: false, reason: eligibility.reason, renewal_ask: null });
+    }
+
+    const cycle = renewalAsk.renewalAskCycleKey({ ...lease, lease_id: lease.id }, {
+      today, defaultNoticeDays: settings.renewal_default_notice_days,
+    });
+
+    // Cooldown. The unique key is (lease_id, lease_end_at_ask, decision_due_on), so an
+    // extended lease or a corrected notice period opens a NEW cycle rather than being
+    // silenced by the old one.
+    const [[existing]] = await req.pool.execute(
+      `SELECT id, state, message,
+              DATE_FORMAT(lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask,
+              DATE_FORMAT(decision_due_on, '%Y-%m-%d')  AS decision_due_on
+         FROM renewal_ask
+        WHERE lease_id = ? AND lease_end_at_ask = ? AND decision_due_on = ?
+          AND state <> 'CANCELLED' LIMIT 1`,
+      [lease.id, cycle.lease_end_at_ask, cycle.decision_due_on]
+    );
+    if (existing) {
+      return ok(res, { created: false, reason: 'already_asked_this_cycle', renewal_ask: renewalAskRow(existing, settings) });
+    }
+
+    const message = renewalAsk.renderRenewalAsk(settings.renewal_ask_phrase, {
+      tenant_name: lease.tenant_name || 'there',
+      unit: [lease.property_name, lease.unit_name].filter(Boolean).join(' '),
+      end_date: lease.end_date,
+    });
+
+    const id = newId();
+    try {
+      await req.pool.execute(
+      `INSERT INTO renewal_ask
+         (id, org_id, lease_id, unit_id, tenant_id, lease_end_at_ask, decision_due_on,
+          state, message, triggered_by, contract_type_at_ask)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+      [id, orgId, lease.id, lease.unit_id, lease.tenant_id || null,
+       cycle.lease_end_at_ask, cycle.decision_due_on, message,
+       req.body && req.body.triggered_by === 'staff' ? 'staff' : 'inquiry',
+       lease.contract_type]
+      );
+    } catch (e) {
+      // Two prospects asked about the same unit at the same moment. The unique key on
+      // the cycle is what actually prevents a second message to the tenant; this just
+      // turns the loser into the same answer the first caller got.
+      if (e && e.code === 'ER_DUP_ENTRY') {
+        const [[live]] = await req.pool.execute(
+          `SELECT id, state, message,
+                  DATE_FORMAT(lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask,
+                  DATE_FORMAT(decision_due_on, '%Y-%m-%d')  AS decision_due_on
+             FROM renewal_ask
+            WHERE lease_id = ? AND lease_end_at_ask = ? AND decision_due_on = ? LIMIT 1`,
+          [lease.id, cycle.lease_end_at_ask, cycle.decision_due_on]);
+        return ok(res, { created: false, reason: 'already_asked_this_cycle', renewal_ask: live ? renewalAskRow(live, settings) : null });
+      }
+      throw e;
+    }
+
+    return ok(res, {
+      created: true,
+      reason: null,
+      renewal_ask: renewalAskRow({
+        id, unit_id: lease.unit_id, unit_name: lease.unit_name, property_name: lease.property_name,
+        tenant_name: lease.tenant_name, tenant_phone: lease.tenant_phone,
+        lease_end_at_ask: cycle.lease_end_at_ask, decision_due_on: cycle.decision_due_on,
+        state: 'PENDING', message,
+      }, settings),
+    });
+  } catch (err) {
+    console.error('Public renewal-ask create error:', err);
+    fail(res, 'Failed to create renewal ask');
+  }
+});
+
+// GET /api/public/renewal-asks/pending — created but not yet sent.
+//
+// Hands each ask out ONCE. Two pollers, or one retry before /sent lands, would
+// otherwise both dispatch the same message to a real tenant. A claim older than the
+// window is re-offered so a crashed poller does not strand an ask forever.
+const RENEWAL_CLAIM_MINUTES = 10;
+
+router.get('/renewal-asks/pending', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const settings = await loadSettings(req.pool, orgId);
+    // Switching the feature off must stop messages that were queued while it was on.
+    // Checking the flag only at creation would let staff disable it and still have
+    // TaneChat deliver whatever was already pending.
+    if (!Number(settings.renewal_ask_enabled)) {
+      return ok(res, { count: 0, renewal_asks: [], reason: 'disabled' });
+    }
+
+    const claimToken = newId();
+    await req.pool.execute(
+      `UPDATE renewal_ask
+          SET claimed_at = ?, claim_token = ?
+        WHERE org_id = ? AND state = 'PENDING'
+          AND (claimed_at IS NULL OR claimed_at < DATE_SUB(?, INTERVAL ? MINUTE))
+        ORDER BY decision_due_on ASC
+        LIMIT 50`,
+      [orgWallClock(new Date()), claimToken, orgId, orgWallClock(new Date()), RENEWAL_CLAIM_MINUTES]
+    );
+
+    const [rows] = await req.pool.execute(
+      `SELECT r.id, r.state, r.message, r.unit_id,
+              DATE_FORMAT(r.lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask,
+              DATE_FORMAT(r.decision_due_on, '%Y-%m-%d')  AS decision_due_on,
+              u.name AS unit_name, p.display_name AS property_name,
+              ${tenantNameSqlPublic('t')} AS tenant_name, t.phone AS tenant_phone
+         FROM renewal_ask r
+         JOIN unit u ON u.id = r.unit_id
+         JOIN property p ON p.id = u.property_id
+         -- Joined on the tenant we ASKED (r.tenant_id), never the lease's current
+         -- tenant: if the tenant changed after the ask was queued, the rendered
+         -- message still greets the original person, and sending it to their
+         -- replacement would be both wrong and confusing.
+         LEFT JOIN tenant t ON t.id = r.tenant_id
+        WHERE r.org_id = ? AND r.state = 'PENDING' AND r.claim_token = ?
+        ORDER BY r.decision_due_on ASC`,
+      [orgId, claimToken]
+    );
+    ok(res, { count: rows.length, renewal_asks: rows.map(r => renewalAskRow(r, settings)) });
+  } catch (err) {
+    console.error('Public renewal-asks/pending error:', err);
+    fail(res, 'Failed to load pending renewal asks');
+  }
+});
+
+// POST /api/public/renewal-ask/:id/sent — records dispatch. Idempotent.
+router.post('/renewal-ask/:id/sent', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const [[row]] = await req.pool.execute(
+      `SELECT id, state FROM renewal_ask WHERE id = ? AND org_id = ? LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!row) return fail(res, 'Renewal ask not found', 404);
+    if (row.state !== 'PENDING') {
+      return ok(res, { recorded: true, already_sent: true, state: row.state });
+    }
+    const [upd] = await req.pool.execute(
+      `UPDATE renewal_ask SET state = 'SENT', sent_at = ? WHERE id = ? AND state = 'PENDING'`,
+      [orgWallClock(new Date()), row.id]
+    );
+    // Another caller won the race between the SELECT above and this UPDATE.
+    if (!upd || upd.affectedRows === 0) {
+      return ok(res, { recorded: true, already_sent: true, state: 'SENT' });
+    }
+    ok(res, { recorded: true, already_sent: false, state: 'SENT' });
+  } catch (err) {
+    console.error('Public renewal-ask/sent error:', err);
+    fail(res, 'Failed to record renewal ask dispatch');
+  }
+});
+
+// POST /api/public/renewal-ask/:id/reply  { text } or { intent: staying|leaving|unsure }
+router.post('/renewal-ask/:id/reply', async (req, res) => {
+  try {
+    const orgId = req.apiKey.orgId;
+    const body = req.body || {};
+    const INTENTS = { staying: 1, leaving: 2, unsure: 3 };
+    let intent = body.intent !== undefined ? INTENTS[String(body.intent).toLowerCase()] : undefined;
+    if (body.intent !== undefined && intent === undefined) {
+      return fail(res, 'intent must be one of: staying, leaving, unsure', 400);
+    }
+    const text = typeof body.text === 'string' ? body.text : null;
+    if (intent === undefined) intent = renewalAsk.classifyRenewalReply(text);
+    if (intent == null) return fail(res, 'Send either intent or a non-empty text', 400);
+
+    const [[ask]] = await req.pool.execute(
+      `SELECT id, lease_id, state, applied,
+              DATE_FORMAT(lease_end_at_ask, '%Y-%m-%d') AS lease_end_at_ask
+         FROM renewal_ask WHERE id = ? AND org_id = ? LIMIT 1`, [req.params.id, orgId]);
+    if (!ask) return fail(res, 'Renewal ask not found', 404);
+    if (ask.state === 'REPLIED') {
+      return ok(res, { recorded: true, already_replied: true, applied: Number(ask.applied) === 1 });
+    }
+
+    const [[askedNow]] = await req.pool.execute(
+      `SELECT id, contract_type, DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date
+         FROM leasing WHERE id = ? AND deleted_at IS NULL LIMIT 1`, [ask.lease_id]);
+    // The unit's latest live lease — which may no longer be the one we asked about.
+    const [[latestForUnit]] = await req.pool.execute(
+      `SELECT id, contract_type, DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date
+         FROM leasing WHERE unit_id = ? AND deleted_at IS NULL AND end_date IS NOT NULL
+        ORDER BY end_date DESC, id DESC LIMIT 1`, [ask.unit_id]);
+
+    // Compare the lease AS WE ASKED — snapshotted at creation — against the lease as
+    // it is now. Re-deriving contract_type from the current row would compare it with
+    // itself, so a lease re-typed after the ask would never register as stale.
+    const askedLease = {
+      id: ask.lease_id,
+      end_date: ask.lease_end_at_ask,
+      contract_type: ask.contract_type_at_ask,
+    };
+    const currentLease = askedNow || latestForUnit || null;
+
+    // A reply is always RECORDED, even when it cannot be acted on: a tenant took the
+    // trouble to answer, and silently dropping it is the one outcome the design rules
+    // out. So a vanished lease is stale, not a 400.
+    const decision = currentLease
+      ? renewalAsk.applyRenewalReply(intent, { askedLease, currentLease })
+      : { valid: true, applied: false, stale_reason: 'lease_gone', suppress: false, needs_staff: true, intent };
+    if (!decision.valid) return fail(res, 'Could not apply reply: ' + decision.reason, 400);
+
+    const conn = await req.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.execute(
+        `UPDATE renewal_ask
+            SET state = 'REPLIED', replied_at = ?, reply_intent = ?, reply_text = ?,
+                applied = ?, stale_reason = ?
+          WHERE id = ?`,
+        [orgWallClock(new Date()), intent, text, decision.applied ? 1 : 0,
+         decision.stale_reason || null, ask.id]
+      );
+      if (decision.applied) {
+        await conn.execute(
+          `UPDATE leasing SET renewal_reply = ?, renewal_reply_at = ? WHERE id = ?`,
+          [intent, orgWallClock(new Date()), ask.lease_id]
+        );
+      }
+      await conn.commit();
+    } catch (e) {
+      try { await conn.rollback(); } catch {}
+      throw e;
+    } finally { conn.release(); }
+
+    ok(res, {
+      recorded: true,
+      already_replied: false,
+      intent: Object.keys(INTENTS).find(k => INTENTS[k] === intent),
+      applied: decision.applied,
+      stale_reason: decision.stale_reason || null,
+      // True only for "staying": the unit comes off customer-facing feeds at once.
+      // It stays on the staff page, where the lease extension is now outstanding work.
+      withdrawn_from_offers: !!decision.suppress,
+      needs_staff: !!decision.needs_staff,
+    });
+  } catch (err) {
+    console.error('Public renewal-ask/reply error:', err);
+    fail(res, 'Failed to record renewal reply');
   }
 });
 

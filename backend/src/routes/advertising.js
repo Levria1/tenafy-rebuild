@@ -19,8 +19,15 @@ function newId() {
 // field is too long, so we can 400 instead of letting MySQL 500 on truncation.
 const FIELD_LIMITS = { name: 160, title: 255, webpage_link: 500, label: 255, forum_rule: 500 };
 const GAP_ASK_PHRASE = "We're unable to accept a booking that would leave {units} empty for {gap_days} days. Would you be able to move in by {suggested_move_in_date}?";
+// Deliberately does NOT mention that another customer is interested: that turns a
+// routine admin question into pressure, and the tenant relationship is worth more
+// than the marginal urgency. Mirrors migration 067's seed.
+const RENEWAL_ASK_PHRASE = "Hi {tenant_name}, your lease at {unit} runs to {end_date}. Are you planning to stay on? Just let us know either way and we'll take care of the paperwork.";
+const RENEWAL_REPLY_STAYING = 1;
+
 const SETTINGS_LIMITS = {
   photo_root: 255,
+  renewal_ask_phrase: 2000,
   partner_forward_message: 2000,
   inquiry_too_far_out_phrase: 2000,
   inquiry_gap_ask_phrase: 2000,
@@ -153,7 +160,20 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
     //    genuinely goes vacant at that future end — the NOT EXISTS below already
     //    isolates the last lease, so dropping the start_date filter surfaces it.
     //    A unit re-let with a LONG future lease stays hidden (its end is >window).
-    const [expiring] = await pool.execute(
+    const runWithRenewalFallback = async (sql, params) => {
+      try {
+        return await pool.execute(sql, params);
+      } catch (e) {
+        // Org not yet on migration 067. The vacancy feed matters more than the flag,
+        // so drop the column and carry on rather than failing the whole request.
+        if (e && e.code === 'ER_BAD_FIELD_ERROR' && /renewal_reply/.test(e.message || '')) {
+          return pool.execute(sql.replace(/,\s*l\.renewal_reply/g, '').replace(/,\s*ll\.renewal_reply/g, ''), params);
+        }
+        throw e;
+      }
+    };
+
+    const [expiring] = await runWithRenewalFallback(
       `SELECT
           l.id AS lease_id, l.contract_type,
           -- Price is what the invoice generator bills; an advertised rent that
@@ -161,7 +181,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           -- when price is missing or 0 (legacy rows).
           COALESCE(NULLIF(l.price, 0), l.amount) AS rent, l.deposit, l.notice_period_days,
           -- Public feed needs the schedule to know whether this figure is monthly.
-          l.invoicing,
+          l.invoicing, l.renewal_reply,
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
           DATEDIFF(l.end_date, ${orgTodaySql()}) AS days_left,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
@@ -202,7 +222,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
     // 2. VACANT NOW — active unit with no current lease. Pull the
     // most-recent ended lease (for "vacant since" + last tenant/rent reference);
     // NULL for a never-leased unit.
-    const [vacant] = await pool.execute(
+    const [vacant] = await runWithRenewalFallback(
       `SELECT
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
           u.rent_price_min, u.rent_price_max, u.listing_url AS listing_url,
@@ -215,7 +235,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           -- disagrees is a promise we do not keep. Fall back to amount only
           -- when price is missing or 0 (legacy rows).
           COALESCE(NULLIF(ll.price, 0), ll.amount) AS rent, ll.deposit, ll.contract_type,
-          ll.invoicing,
+          ll.invoicing, ll.renewal_reply,
           t.id AS tenant_id, ${TENANT_NAME_SQL} AS tenant_name,${nextMoveInCols()}
        FROM unit u
        JOIN property p ON u.property_id = p.id
@@ -314,6 +334,9 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       lease_id: String(r.lease_id),
       contract_type: r.contract_type,
       notice_period_days: r.notice_period_days != null ? Number(r.notice_period_days) : null,
+      // 1 = tenant told us they are staying. Withholds the unit from customers
+      // (below) while deliberately staying visible on the staff page.
+      renewal_reply: r.renewal_reply != null ? Number(r.renewal_reply) : null,
       intent: INTENT[r.contract_type] || 'Unset',
       days_left: r.days_left != null ? Number(r.days_left) : null,   // days until vacant (positive)
       end_date: r.end_date,
@@ -427,7 +450,22 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       if (ka !== kb) return ka - kb;
       return (a.property_name || '').localeCompare(b.property_name || '');
     });
-    const vacancies = page ? urgencySorted : sortByPriority([...realRows, ...manualRows]);
+    // A tenant who has told us they are staying takes the unit off every OUTWARD
+    // path — chatbot answers and Facebook posting alike — the moment they say so.
+    // It stays on the staff page (`page: true`), because the lease extension is now
+    // outstanding work: if it vanished from there too the job would vanish with it
+    // and the lease would quietly expire with nothing signed. Applied here rather
+    // than inside the shared queries for exactly that reason.
+    // Suppress by UNIT, not by row: a unit can also reach the customer through a
+    // manual early-exit override, and filtering only the lease-derived rows would let
+    // it back in through that door.
+    const stayingUnitIds = new Set(
+      realRows.filter(r => Number(r.renewal_reply) === RENEWAL_REPLY_STAYING).map(r => String(r.unit_id))
+    );
+    const notStaying = row => !stayingUnitIds.has(String(row.unit_id));
+    const vacancies = page
+      ? urgencySorted
+      : sortByPriority([...realRows.filter(notStaying), ...manualRows.filter(notStaying)]);
 
     return { vacancies, vacant_count: selectedVacantRows.length, expiring_count: selectedExpiringRows.length, manual_count: manualRows.length, expiring_window: expiringWindow };
 }
@@ -1382,6 +1420,11 @@ async function loadSettings(pool, orgId) {
     inquiry_too_far_out_phrase: null,
     vacant_max_move_in_days: 30,
     inquiry_gap_ask_phrase: GAP_ASK_PHRASE,
+    // Off by default: this feature messages real tenants, so deploying it must not
+    // switch it on for anyone.
+    renewal_ask_enabled: 0,
+    renewal_default_notice_days: 30,
+    renewal_ask_phrase: RENEWAL_ASK_PHRASE,
     inquiry_gap_band_1m_days: 3,
     inquiry_gap_band_2m_days: 6,
     inquiry_gap_band_3m_plus_days: 10,
@@ -1396,6 +1439,7 @@ async function loadSettings(pool, orgId) {
               inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other,
               inquiry_booking_horizon_days, inquiry_too_far_out_phrase,
               vacant_max_move_in_days, inquiry_gap_ask_phrase,
+              renewal_ask_enabled, renewal_default_notice_days, renewal_ask_phrase,
               inquiry_gap_band_1m_days, inquiry_gap_band_2m_days, inquiry_gap_band_3m_plus_days
          FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
     return {
@@ -1414,6 +1458,9 @@ async function loadSettings(pool, orgId) {
       inquiry_booking_horizon_days: numberOrDefault(row?.inquiry_booking_horizon_days, 60),
       inquiry_too_far_out_phrase: row?.inquiry_too_far_out_phrase ?? null,
       vacant_max_move_in_days: numberOrDefault(row?.vacant_max_move_in_days, 30),
+      renewal_ask_enabled: Number(row?.renewal_ask_enabled) === 1 ? 1 : 0,
+      renewal_default_notice_days: numberOrDefault(row?.renewal_default_notice_days, 30),
+      renewal_ask_phrase: row?.renewal_ask_phrase || RENEWAL_ASK_PHRASE,
       inquiry_gap_ask_phrase: row?.inquiry_gap_ask_phrase ?? GAP_ASK_PHRASE,
       inquiry_gap_band_1m_days: numberOrDefault(row?.inquiry_gap_band_1m_days, 3),
       inquiry_gap_band_2m_days: numberOrDefault(row?.inquiry_gap_band_2m_days, 6),
@@ -1586,6 +1633,9 @@ router.put('/settings', authenticate, async (req, res) => {
       inquiry_too_far_out_phrase,
       vacant_max_move_in_days,
       inquiry_gap_ask_phrase,
+      renewal_ask_enabled,
+      renewal_default_notice_days,
+      renewal_ask_phrase,
       inquiry_gap_band_1m_days,
       inquiry_gap_band_2m_days,
       inquiry_gap_band_3m_plus_days,
@@ -1593,7 +1643,7 @@ router.put('/settings', authenticate, async (req, res) => {
       search_gap_band_2m_days,
       search_gap_band_3m_plus_days,
     } = req.body || {};
-    const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message', 'inquiry_too_far_out_phrase', 'inquiry_gap_ask_phrase']);
+    const bt = nonStringField(req.body || {}, ['footer', 'photo_root', 'partner_forward_message', 'inquiry_too_far_out_phrase', 'inquiry_gap_ask_phrase', 'renewal_ask_phrase']);
     if (bt) return res.status(400).json({ code: 400, message: `${bt} must be text` });
     const normalizedPartnerForwardMessage = partner_forward_message !== undefined
       ? normalizePartnerForwardMessage(partner_forward_message)
@@ -1609,6 +1659,7 @@ router.put('/settings', authenticate, async (req, res) => {
       partner_forward_message: normalizedPartnerForwardMessage,
       inquiry_too_far_out_phrase: normalizedTooFarOutPhrase,
       inquiry_gap_ask_phrase: normalizedGapAskPhrase,
+      renewal_ask_phrase,
     }, SETTINGS_LIMITS);
     if (lenErr) return res.status(400).json({ code: 400, message: lenErr });
     for (const field of ['min_gap_days', 'max_gap_days', 'hard_max_gap_days', 'lead_days_nr', 'lead_days_other']) {
@@ -1617,7 +1668,7 @@ router.put('/settings', authenticate, async (req, res) => {
         return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
       }
     }
-    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days', 'vacant_max_move_in_days', 'inquiry_gap_band_1m_days', 'inquiry_gap_band_2m_days', 'inquiry_gap_band_3m_plus_days', 'search_gap_band_1m_days', 'search_gap_band_2m_days', 'search_gap_band_3m_plus_days']) {
+    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days', 'vacant_max_move_in_days', 'renewal_default_notice_days', 'inquiry_gap_band_1m_days', 'inquiry_gap_band_2m_days', 'inquiry_gap_band_3m_plus_days', 'search_gap_band_1m_days', 'search_gap_band_2m_days', 'search_gap_band_3m_plus_days']) {
       if (req.body?.[field] !== undefined) {
         if (req.body[field] === null) {
           return res.status(400).json({
@@ -1648,6 +1699,9 @@ router.put('/settings', authenticate, async (req, res) => {
     if (inquiry_booking_horizon_days !== undefined) setClauses.push('inquiry_booking_horizon_days = VALUES(inquiry_booking_horizon_days)');
     if (inquiry_too_far_out_phrase !== undefined) setClauses.push('inquiry_too_far_out_phrase = VALUES(inquiry_too_far_out_phrase)');
     if (vacant_max_move_in_days !== undefined) setClauses.push('vacant_max_move_in_days = VALUES(vacant_max_move_in_days)');
+    if (renewal_ask_enabled !== undefined) setClauses.push('renewal_ask_enabled = VALUES(renewal_ask_enabled)');
+    if (renewal_default_notice_days !== undefined) setClauses.push('renewal_default_notice_days = VALUES(renewal_default_notice_days)');
+    if (renewal_ask_phrase !== undefined) setClauses.push('renewal_ask_phrase = VALUES(renewal_ask_phrase)');
     if (inquiry_gap_ask_phrase !== undefined) setClauses.push('inquiry_gap_ask_phrase = VALUES(inquiry_gap_ask_phrase)');
     if (inquiry_gap_band_1m_days !== undefined) setClauses.push('inquiry_gap_band_1m_days = VALUES(inquiry_gap_band_1m_days)');
     if (inquiry_gap_band_2m_days !== undefined) setClauses.push('inquiry_gap_band_2m_days = VALUES(inquiry_gap_band_2m_days)');
@@ -1666,6 +1720,9 @@ router.put('/settings', authenticate, async (req, res) => {
       includeInquiryBookingHorizon,
       includeInquiryTooFarOutPhrase,
       includeVacantMaxMoveIn,
+      includeRenewalAskEnabled,
+      includeRenewalNoticeDays,
+      includeRenewalAskPhrase,
       includeInquiryGapAskPhrase,
       includeInquiryGapBand1m,
       includeInquiryGapBand2m,
@@ -1720,6 +1777,18 @@ router.put('/settings', authenticate, async (req, res) => {
         insertColumns.push('vacant_max_move_in_days');
         params.push(vacant_max_move_in_days ?? 30);
       }
+      if (includeRenewalAskEnabled) {
+        insertColumns.push('renewal_ask_enabled');
+        params.push(renewal_ask_enabled ? 1 : 0);
+      }
+      if (includeRenewalNoticeDays) {
+        insertColumns.push('renewal_default_notice_days');
+        params.push(renewal_default_notice_days ?? 30);
+      }
+      if (includeRenewalAskPhrase) {
+        insertColumns.push('renewal_ask_phrase');
+        params.push(renewal_ask_phrase ?? null);
+      }
       if (includeInquiryGapAskPhrase) {
         insertColumns.push('inquiry_gap_ask_phrase');
         params.push(normalizedGapAskPhrase ?? GAP_ASK_PHRASE);
@@ -1760,6 +1829,9 @@ router.put('/settings', authenticate, async (req, res) => {
         if (!includeInquiryBookingHorizon && clause.startsWith('inquiry_booking_horizon_days')) return false;
         if (!includeInquiryTooFarOutPhrase && clause.startsWith('inquiry_too_far_out_phrase')) return false;
         if (!includeVacantMaxMoveIn && clause.startsWith('vacant_max_move_in_days')) return false;
+        if (!includeRenewalAskEnabled && clause.startsWith('renewal_ask_enabled')) return false;
+        if (!includeRenewalNoticeDays && clause.startsWith('renewal_default_notice_days')) return false;
+        if (!includeRenewalAskPhrase && clause.startsWith('renewal_ask_phrase')) return false;
         if (!includeInquiryGapAskPhrase && clause.startsWith('inquiry_gap_ask_phrase')) return false;
         if (!includeInquiryGapBand1m && clause.startsWith('inquiry_gap_band_1m_days')) return false;
         if (!includeInquiryGapBand2m && clause.startsWith('inquiry_gap_band_2m_days')) return false;
@@ -1778,6 +1850,18 @@ router.put('/settings', authenticate, async (req, res) => {
       );
     };
     const optionalColumns = {
+      includeRenewalAskEnabled: {
+        column: 'renewal_ask_enabled',
+        wasSent: renewal_ask_enabled !== undefined,
+      },
+      includeRenewalNoticeDays: {
+        column: 'renewal_default_notice_days',
+        wasSent: renewal_default_notice_days !== undefined,
+      },
+      includeRenewalAskPhrase: {
+        column: 'renewal_ask_phrase',
+        wasSent: renewal_ask_phrase !== undefined,
+      },
       includePartnerForward: {
         column: 'partner_forward_message',
         wasSent: partner_forward_message !== undefined,
@@ -1853,6 +1937,9 @@ router.put('/settings', authenticate, async (req, res) => {
       includeInquiryBookingHorizon: true,
       includeInquiryTooFarOutPhrase: true,
       includeVacantMaxMoveIn: true,
+      includeRenewalAskEnabled: true,
+      includeRenewalNoticeDays: true,
+      includeRenewalAskPhrase: true,
       includeInquiryGapAskPhrase: true,
       includeInquiryGapBand1m: true,
       includeInquiryGapBand2m: true,

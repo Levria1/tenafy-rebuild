@@ -41,6 +41,9 @@ function LeasingAvailabilitySettings() {
   const [gapBand3mPlus, setGapBand3mPlus] = useState(null);
   const [tooFarOutPhrase, setTooFarOutPhrase] = useState('');
   const [gapAskPhrase, setGapAskPhrase] = useState('');
+  const [renewalAskEnabled, setRenewalAskEnabled] = useState(false);
+  const [renewalNoticeDays, setRenewalNoticeDays] = useState(null);
+  const [renewalAskPhrase, setRenewalAskPhrase] = useState('');
   const [effectiveAdvertising, setEffectiveAdvertising] = useState(null);
   const [partnerMsg, setPartnerMsg] = useState('');
   const [loading, setLoading] = useState(true);
@@ -68,6 +71,9 @@ function LeasingAvailabilitySettings() {
         setGapBand3mPlus(d.inquiry_gap_band_3m_plus_days ?? 10);
         setTooFarOutPhrase(d.inquiry_too_far_out_phrase ?? '');
         setGapAskPhrase(d.inquiry_gap_ask_phrase ?? '');
+        setRenewalAskEnabled(Number(d.renewal_ask_enabled) === 1);
+        setRenewalNoticeDays(d.renewal_default_notice_days ?? 30);
+        setRenewalAskPhrase(d.renewal_ask_phrase ?? '');
         setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       })
@@ -104,6 +110,9 @@ function LeasingAvailabilitySettings() {
         inquiry_gap_band_3m_plus_days: gapBand3mPlus,
         inquiry_too_far_out_phrase: tooFarOutPhrase,
         inquiry_gap_ask_phrase: gapAskPhrase,
+        renewal_ask_enabled: renewalAskEnabled ? 1 : 0,
+        renewal_default_notice_days: renewalNoticeDays,
+        renewal_ask_phrase: renewalAskPhrase,
         partner_forward_message: partnerMsg,
       });
       const d = r.data?.data;
@@ -119,6 +128,9 @@ function LeasingAvailabilitySettings() {
         setGapBand3mPlus(d.inquiry_gap_band_3m_plus_days ?? 10);
         setTooFarOutPhrase(d.inquiry_too_far_out_phrase ?? '');
         setGapAskPhrase(d.inquiry_gap_ask_phrase ?? '');
+        setRenewalAskEnabled(Number(d.renewal_ask_enabled) === 1);
+        setRenewalNoticeDays(d.renewal_default_notice_days ?? 30);
+        setRenewalAskPhrase(d.renewal_ask_phrase ?? '');
         setEffectiveAdvertising(d.effective?.advertising ?? null);
         setPartnerMsg(d.partner_forward_message ?? '');
       }
@@ -278,6 +290,45 @@ function LeasingAvailabilitySettings() {
             />
           </Col>
         </Row>
+      </div>
+
+      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
+        <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Ask the tenant if they are staying</Title>
+        <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+          When someone asks about a unit whose tenant has not decided, and that decision is due, we can
+          ask the tenant directly. A reply of <b>staying</b> takes the unit off what customers see
+          straight away — it stays on your Vacancy page, because the lease still needs extending. A
+          reply of <b>leaving</b> is never enough on its own to advertise the unit as definitely free.
+        </Paragraph>
+        <Row gutter={24}>
+          <Col xs={24} md={12} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>Send these messages</div>
+            <Switch checked={renewalAskEnabled} onChange={setRenewalAskEnabled} />
+            <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+              Off by default. Nothing reaches any tenant while this is off.
+            </div>
+          </Col>
+          <Col xs={24} md={12} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>If the lease has no notice period, assume</div>
+            <InputNumber
+              min={0} max={365} value={renewalNoticeDays} onChange={handleRequiredDays(setRenewalNoticeDays, 30)}
+              addonAfter="days notice" style={{ width: '100%', maxWidth: 240 }}
+            />
+            <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+              Used only to work out when to ask. It is never shown to a customer as a date.
+            </div>
+          </Col>
+        </Row>
+        <div style={{ marginBottom: 4, fontWeight: 500 }}>Message to the tenant</div>
+        <Input.TextArea
+          rows={4} value={renewalAskPhrase} onChange={e => setRenewalAskPhrase(e.target.value)}
+          maxLength={2000} showCount
+        />
+        <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+          Placeholders: <code>{'{tenant_name}'}</code> <code>{'{unit}'}</code> <code>{'{end_date}'}</code>.
+          It deliberately does not mention that someone else is interested — that turns a routine
+          question into pressure.
+        </div>
       </div>
 
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>

@@ -216,7 +216,21 @@ export default function VacancyPage() {
           }
           return <Tag color="red" style={{ fontWeight: 600 }}>Vacant {r.days_vacant}d</Tag>;
         }
-        return <Tag color={daysColor(r.days_left)} style={{ fontWeight: 600 }}>Expiring · {r.days_left}d</Tag>;
+        const expiring = <Tag color={daysColor(r.days_left)} style={{ fontWeight: 600 }}>Expiring · {r.days_left}d</Tag>;
+        // The tenant told us they are staying, so this is off the market for customers
+        // already — but the lease still has to be extended, and this page is where that
+        // job lives. Deliberately louder than the row it replaces.
+        if (Number(r.renewal_reply) === 1) {
+          return (
+            <Space direction="vertical" size={4}>
+              <div>{expiring}</div>
+              <Tooltip title="The tenant has said they are staying. Not offered to customers. Extend the lease to clear this.">
+                <Tag color="gold" style={{ fontWeight: 600 }}>Staying · extend lease</Tag>
+              </Tooltip>
+            </Space>
+          );
+        }
+        return expiring;
       },
     },
     {
