@@ -143,13 +143,63 @@ guess that reads like a fact.
 
 ---
 
+## 4. NEW, and the one thing we need you to build: relaying renewal answers
+
+This is the "we will get the actual answer instead" from §2, now built and deployed. It is switched
+**off**, so nothing is queued and nothing has been sent to any tenant.
+
+When it is enabled, we will ask a tenant — through your number — whether they intend to extend, up to
+three times, and then hand the lease to a human if there is no reply. We need the answer back.
+
+### What we need from you
+
+```
+POST /api/public/renewal-ask/:id/reply
+{ "intent": "extend" }          // or "leaving" or "unsure"
+```
+
+or, if you would rather we classify free text:
+
+```
+{ "text": "yeah we're staying thanks" }
+```
+
+Either is fine. `intent` is the safer of the two — we parse text conservatively and anything ambiguous
+becomes `unsure`, which changes nothing.
+
+### The send loop
+
+```
+GET  /api/public/renewal-asks/pending          → asks queued for dispatch, with the message to send
+POST /api/public/renewal-ask/:id/sent          → confirm it went
+```
+
+⚠️ **An ask is handed out once and is never re-offered.** We deliberately removed the ten-minute
+re-queue: if you sent the message and only the confirmation was lost, re-offering it would put the
+same message in front of the tenant twice. An unconfirmed ask is treated as spent rather than repeated
+— so please do call `/sent` on success, or that tenant simply moves to the next ask in the sequence.
+
+### Why the reply matters more than it looks
+
+Without it, a tenant who answers you gets asked again, and again, and is then flagged to our staff as
+unresponsive. That is worse than never asking. We have built a manual fallback so our team can record
+an answer they see in your inbox, but that only works if someone is watching it.
+
+### What you do NOT need to build
+
+Sending. We already post to your `/send` endpoint ourselves. And no interactive buttons — the operator
+chose plain text, so there is no template approval for you to chase.
+
+---
+
 ## Summary
 
 | Ask | Answer |
 |---|---|
 | 1 — confirmed slot | **Yes**, as Hong Kong wall clock with no offset. Please confirm your new server is not converting. |
-| 2 — renewal deadline | **Yes where it is real** (43 of 101 leases), absent where it would be a guess. Asking the tenant for the rest. |
+| 2 — renewal deadline | **Yes where it is real** (43 of 101 leases), absent where it would be a guess. Asking the tenant for the rest — see §4. |
 | 3 — read-back | **Already built, on, and it names the unit.** Worth finding out why it is not reaching you. |
+| 4 — renewal replies | **Needs code from you.** Relay the tenant's answer to `/renewal-ask/:id/reply`. |
 
 Happy to take a call, particularly on the timezone question — worth five minutes now rather than a bug
 later.
