@@ -14,11 +14,12 @@ We cannot honestly give them that date. Measured on live data, 2026-08-19:
 | | count |
 |---|---:|
 | Undecided units (contract_type MR or UC) with a future lease end | **101** |
-| …of those, with a real `notice_period_days` recorded | **0** |
-| …past their decision window (using an assumed 30 days) | **4** |
+| …of those, with a real `notice_period_days` recorded | **43** (42 at 45 days, 1 at 30) |
+| …with none, so any date would be a house default | **58** |
+| …past their decision window today | **4** |
 
-Every date we could publish would be a 30-day default presented as fact. The 64 leases that *do* carry
-a notice period are all on other contract types, so the data is missing precisely where it is needed.
+So the partner can have a true date for 43 and nothing for 58. Publishing a default for the other 58
+would be inventing a number, so we send the field only where it is real.
 
 ## The idea
 
@@ -169,8 +170,8 @@ marginal urgency.
 - **Silence is not "no".** No reply must leave the unit undecided, not mark it as leaving.
 - **Asking too early.** The window gate exists for this: outside it a tenant legitimately has not
   decided, and an early "not sure" would be recorded as an answer.
-- **Timing on a guessed window.** With no notice periods recorded, the gate itself runs on the 30-day
-  default. That is acceptable while it stays an internal "ask now" heuristic; it stops being acceptable
+- **Timing on a guessed window.** For the 58 leases with no notice period the gate itself runs on the
+  30-day default. That is acceptable while it stays an internal "ask now" heuristic; it stops being acceptable
   the moment the guessed date is shown to a tenant or sent to the partner as certainty. Capturing
   `notice_period_days` at lease creation is what makes the trigger real as well as the date.
 

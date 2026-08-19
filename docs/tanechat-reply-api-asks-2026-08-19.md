@@ -101,21 +101,25 @@ Your instinct about the 45 days was reasonable, and the date *is* arithmetically
 minus notice period. We checked the live data before answering, and it does not support the field:
 
 - **101** units are currently undecided (may-renew or unconfirmed) with a future lease end.
-- **Zero of them have a notice period recorded.** The 64 leases that do carry one are all on other
-  contract types.
+- **43 of them have a real notice period recorded** — 42 at 45 days, one at 30. The other **58 have
+  none**, so any date for those would be a house default rather than anything from the lease.
 
-So every date we could publish for exactly the units you are asking about would be a 30-day assumption.
+So the answer splits, and we would rather split it than pick one blanket policy:
 
-The obvious answer is to send it with a flag — `basis: "default_30_days"` — and let you hedge the
-wording. We thought about that and would rather not, for one specific reason: a draft we saw on
-18 August presented a may-renew unit as firmly available even though `availability.certain` was `false`
-in the same response, and your own pre-send check flagged it. That is not a criticism — it is evidence
-that a qualifier field one hop away from the text is easy for a drafting model to drop. A date carries
-more weight with a prospect than a certainty flag does, so we would rather not hand over a number we
-know is invented and rely on a hedge surviving.
+**Where the lease records a notice period, we will send you the date.** It is real — lease end minus
+notice — and you can use it as you intended: *"we should know by 5 September."*
 
-**What we are doing instead.** Rather than publishing a guessed deadline, we are going to get the
-actual answer. When a prospect asks about a unit whose tenant has not decided, and we are inside the
+**Where it does not, we will send nothing rather than a default.** The tempting alternative is to send
+a guessed date with a flag such as `basis: "default_30_days"` and let you hedge the wording. We would
+rather not, for one specific reason: a draft on 18 August presented a may-renew unit as firmly available
+even though `availability.certain` was `false` in the same response, and your own pre-send check caught
+it. That is not a criticism — it is evidence that a qualifier sitting one hop from the text is easy for
+a drafting model to drop, and a date carries far more weight with a prospect than a flag does. An absent
+field cannot be misread; a flagged guess can.
+
+So `renewal_decision_by` will be present and true, or absent. Never present and invented.
+
+**And for the units with no date, we are going after the actual answer instead.** When a prospect asks about a unit whose tenant has not decided, and we are inside the
 decision window, we will ask that tenant directly whether they intend to renew — through you, so it
 still comes from the one number. Their answer updates the renewal intent you already read, which means
 you stop getting "the tenant may renew" on that unit and start getting a real
@@ -144,7 +148,7 @@ guess that reads like a fact.
 | Ask | Answer |
 |---|---|
 | 1 — confirmed slot | **Yes**, as Hong Kong wall clock with no offset. Please confirm your new server is not converting. |
-| 2 — renewal deadline | **No date** — for these units it would be invented. We are getting the real answer instead. |
+| 2 — renewal deadline | **Yes where it is real** (43 of 101 leases), absent where it would be a guess. Asking the tenant for the rest. |
 | 3 — read-back | **Already built, on, and it names the unit.** Worth finding out why it is not reaching you. |
 
 Happy to take a call, particularly on the timezone question — worth five minutes now rather than a bug
