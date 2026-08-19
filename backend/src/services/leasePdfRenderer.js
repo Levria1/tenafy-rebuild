@@ -51,7 +51,7 @@ function loadPuppeteer() {
   return _puppeteerPromise;
 }
 const {
-  substitute, sampleContext, applyTermOverride, applyPageBreakMarkers,
+  substitute, sampleContext, applyTermOverride, applyPageBreakMarkers, findEmptyPlaceholders,
 } = require('./leaseTemplateVariables');
 
 let _browserPromise = null;
@@ -192,6 +192,12 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = tr
   const header = substitute(tpl.header_html || '', ctx);
   const footer = substitute(tpl.footer_html || '', ctx);
 
+  // Which fields printed as blanks. Reported alongside the PDF so the caller can warn
+  // BEFORE a contract goes out with an empty identification line, rather than someone
+  // spotting it in the signed copy.
+  const emptyPlaceholders = findEmptyPlaceholders(
+    [tpl.body_html, tpl.header_html, tpl.footer_html], ctx);
+
   const pdfBuffer = await renderHtmlToPdf({ body, header, footer, pageSize: tpl.page_size });
 
   // Stamp which template + version was used onto the lease for audit. Skipped
@@ -204,7 +210,7 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = tr
     );
   }
 
-  return { pdfBuffer, templateId: tpl.id, version: tpl.version };
+  return { pdfBuffer, templateId: tpl.id, version: tpl.version, emptyPlaceholders };
 }
 
 // ───────────────────────────────────────────────────────────────────────────

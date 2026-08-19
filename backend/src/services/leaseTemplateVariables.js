@@ -416,6 +416,35 @@ function substitute(html, ctx) {
 }
 
 /**
+ * Which placeholders in a template resolve to nothing for this lease.
+ *
+ * A blank resolves to an empty string, so the document renders the LABEL with no value
+ * after it — "I.D.No:" followed by white space. That reads as a broken template when it is
+ * really missing data, and on a signed tenancy agreement an empty identification field is
+ * a defect worth catching before it is sent rather than after.
+ *
+ * Returns [{ key, label }], deduplicated, in template order.
+ */
+function findEmptyPlaceholders(htmlParts, ctx) {
+  const seen = new Set();
+  const empty = [];
+  for (const html of (Array.isArray(htmlParts) ? htmlParts : [htmlParts])) {
+    if (!html) continue;
+    for (const m of String(html).matchAll(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g)) {
+      const key = m[1];
+      if (seen.has(key)) continue;
+      const v = BY_KEY[key];
+      if (!v || key === 'PAGE_BREAK') continue;   // layout markers are not data
+      seen.add(key);
+      let val;
+      try { val = v.resolve(ctx); } catch { continue; }
+      if (val == null || String(val).trim() === '') empty.push({ key, label: v.label });
+    }
+  }
+  return empty;
+}
+
+/**
  * Build a fake context for previewing a template without a real lease.
  * Used by GET /api/lease-template/:id/preview.
  */
@@ -499,6 +528,7 @@ module.exports = {
   publicList,
   SIGNATURE_MARKERS,
   applyTermOverride,
+  findEmptyPlaceholders,
   applyPageBreakMarkers,
   PAGE_BREAK_TOKEN,
   // exported for tests

@@ -287,6 +287,16 @@ function TenantCreatePage() {
               <div style={{ border: '1px solid #e8e8e8', borderRadius: 4, padding: 20, marginBottom: 20 }}>
                 <div style={sectionTitleStyle}>ADDITIONAL INFORMATION</div>
 
+                {/* HKID / passport — printed on the tenancy agreement as the tenant's
+                    identification. Without it the {{TENANT_ID_CARD}} placeholder renders
+                    blank and the signed document goes out with an empty ID field. */}
+                <div style={{ marginBottom: 16 }}>
+                  <Label>HKID / PASSPORT NUMBER</Label>
+                  <Form.Item name="id_card" noStyle>
+                    <Input placeholder="e.g. A123456(7)" />
+                  </Form.Item>
+                </div>
+
                 {/* Row: Profession + Budget */}
                 <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginBottom: 16 }}>
                   <div style={{ flex: 1 }}>

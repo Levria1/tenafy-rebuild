@@ -23,7 +23,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Card, Button, Select, Input, Space, message, Spin, Empty,
-  Form, Row, Col, Tag, Tooltip, InputNumber, DatePicker, Checkbox,
+  Form, Row, Col, Tag, Tooltip, InputNumber, DatePicker, Checkbox, Alert,
 } from 'antd';
 import {
   ArrowLeftOutlined, SendOutlined, EyeOutlined, PlusOutlined, DeleteOutlined,
@@ -53,6 +53,9 @@ export default function ReviewAndSendPage() {
   // needs a document for the new period only, so this is not always the whole
   // lease. Prefilled from the server's uncovered stretch.
   const [termFrom, setTermFrom] = useState(null);
+  const [paperworkReason, setPaperworkReason] = useState(null);
+  const [periodIsGuess, setPeriodIsGuess] = useState(false);
+  const [emptyFields, setEmptyFields] = useState([]);
   const [termTo, setTermTo] = useState(null);
   const [stampLonger, setStampLonger] = useState(false);
   const [termStampEnd, setTermStampEnd] = useState(null);
@@ -95,10 +98,18 @@ export default function ReviewAndSendPage() {
           role: 'tenant',
         }]);
 
-        // Prefill the period from the server's uncovered stretch, so an
-        // extension defaults to the new period rather than the whole tenancy.
-        // Falls back to the lease's own dates for a first contract.
+        // Prefill the period from the server's uncovered stretch, so an extension
+        // defaults to the new period rather than the whole tenancy.
+        //
+        // When the server cannot work out what is already covered we still have to put
+        // something in the fields, and the lease's own dates are the only candidate — but
+        // that is a GUESS, and for an extension it is the wrong one. Printing the whole
+        // tenancy on a document that covers one extra month is a wrong date on a legal
+        // agreement, so the guess is flagged rather than left to look authoritative.
         const gap = l.paperwork?.uncovered;
+        const reason = l.paperwork?.reason || null;
+        setPaperworkReason(reason);
+        setPeriodIsGuess(!gap?.from);
         setTermFrom(gap?.from ? dayjs(gap.from) : (l.start_date ? dayjs(l.start_date) : null));
         setTermTo(gap?.to ? dayjs(gap.to) : (l.end_date ? dayjs(l.end_date) : null));
       } catch (e) {
@@ -129,6 +140,13 @@ export default function ReviewAndSendPage() {
         to: termTo ? termTo.format('YYYY-MM-DD') : null,
         stampEnd: stampLonger && termStampEnd ? termStampEnd.format('YYYY-MM-DD') : null,
       });
+      // Fields that printed as blanks. The document renders the LABEL with nothing after
+      // it, which looks like a broken template but is really missing data — and on a signed
+      // tenancy agreement an empty identification line is worth catching before it goes out.
+      const blanks = (r.headers?.['x-empty-placeholders'] || '')
+        .split(',').map(x => x.trim()).filter(Boolean);
+      setEmptyFields(blanks);
+
       const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
       previewUrlRef.current = url;
@@ -238,10 +256,40 @@ export default function ReviewAndSendPage() {
               )}
             </Card>
 
+            {emptyFields.length > 0 && (
+              <Alert
+                type="warning" showIcon style={{ marginBottom: 12 }}
+                message={`${emptyFields.length} field${emptyFields.length === 1 ? '' : 's'} will print blank on this contract`}
+                description={
+                  <>
+                    <div style={{ marginBottom: 6 }}>
+                      The template asks for {emptyFields.length === 1 ? 'this' : 'these'}, but the record is empty,
+                      so the contract shows the label with nothing after it:
+                    </div>
+                    <div style={{ fontFamily: 'monospace', fontSize: 12, marginBottom: 6 }}>
+                      {emptyFields.join(', ')}
+                    </div>
+                    <div>Fill it in on the tenant or lease record, then refresh the preview.</div>
+                  </>
+                }
+              />
+            )}
+
             {/* The period this document covers. The contract prints these as its
                 term, and the preview re-renders when they change so what you
                 approve is what the signer receives. */}
             <Card title="Period this document covers" size="small" style={{ marginBottom: 12 }}>
+              {periodIsGuess && (
+                <Alert
+                  type="warning" showIcon style={{ marginBottom: 12 }}
+                  message="Check these dates — we could not work out what is already covered"
+                  description={
+                    paperworkReason === 'period_not_recorded'
+                      ? 'This lease has an earlier signed document, but no period was recorded against it, so we cannot tell what it covered. The dates below are the WHOLE tenancy. If this document only covers an extension, set the start to the day after the last signed period ended.'
+                      : 'No signed document is on file for this lease, so the dates below are the whole tenancy. If this document only covers an extension or a renewal, set the period yourself — otherwise the contract will print the full term.'
+                  }
+                />
+              )}
               <Space wrap>
                 <DatePicker value={termFrom} onChange={setTermFrom} placeholder="From" />
                 <DatePicker value={termTo} onChange={setTermTo} placeholder="To" />
