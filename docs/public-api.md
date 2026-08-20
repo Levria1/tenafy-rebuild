@@ -9,11 +9,16 @@ Read-only HTTP API for external integrations (e.g. your own AI assistant).
 | Production droplet | `http://YOUR_DROPLET_IP:3001` (or your reverse-proxy URL) |
 | Local dev | `http://localhost:3001` |
 
-All endpoints are prefixed with `/api/public/`.
+All endpoints in this reference are prefixed with `/api/public/`.
+
+⚠️ **One route deliberately sits outside it and takes no key at all:**
+`GET /api/website/:org_slug/faqs`, the marketing-site FAQ feed — see
+[The website FAQ feed](#the-website-faq-feed) at the end of this document. It is separate
+precisely because a key that opened it would also open everything below.
 
 ## Authentication
 
-Every request requires an `X-API-Key` header:
+Every request to `/api/public/` requires an `X-API-Key` header:
 
 ```
 X-API-Key: pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -82,6 +87,8 @@ All endpoints return JSON in this shape:
 | GET | `/units/available` | `?date=YYYY-MM-DD&property_id=` | Deprecated; use `/vacancies` |
 
 ### Tenants & Contacts
+
+`GET /tenants/lookup` phone matching requires at least **8 digits** and compares exactly the last eight digits after removing formatting. Seven-digit queries now return `400`; partners must send an eight-digit-or-longer number (or use email lookup).
 
 | Method | Path | Query | Description |
 |---|---|---|---|
@@ -1008,3 +1015,45 @@ For an LLM-based assistant (ChatGPT, Claude, etc.), provide as the system prompt
 4. Instructions like: "Use the Tenafy Public API to answer questions about the property portfolio. Fetch data via GET requests with the X-API-Key header. Never attempt POST/PUT/DELETE."
 
 If using function-calling / tools, declare one tool per endpoint (or a single generic `tenafy_get(path, query)` tool that the AI can invoke with the path and query params.)
+
+---
+
+## The website FAQ feed
+
+```
+GET /api/website/:org_slug/faqs[?property_id=<id>]
+```
+
+**No API key.** This route is mounted outside the `/api/public/` router and cannot reach anything
+else. That isolation is the design, not an oversight: keys here are either read-only or
+read-write across the whole surface, with no per-endpoint scoping, so a key stored on a public
+website in order to fetch FAQs would also read tenants, leases, invoices and payments. The content
+this route serves is published to the open internet by definition, so there is nothing for a
+credential to protect — and a great deal for one to endanger.
+
+It returns only entries that are **all four of**: `kind = 'faq'`, active, flagged
+**Publish on website**, and either global or linked to the property asked for. Team rules can
+never appear, whatever else is set.
+
+```json
+{ "code": 200,
+  "data": {
+    "version": "<etag>",
+    "property_context": null,
+    "faqs": [ { "id": "...", "category": "payments", "title": "Where do I pay rent?",
+                "body": "...", "updated_at": "..." } ],
+    "available_properties": [ { "id": "...", "display_name": "Nam Pak Hong" } ] } }
+```
+
+`available_properties` lists buildings that have at least one published building-specific FAQ, so
+the site can offer a selector. **Their answers are not in the response until one is chosen** —
+absent, not filtered out client-side.
+
+- Unknown slug → `404`. An organisation without a slug is unreachable, which is the default.
+- Unknown, malformed or deleted `property_id` → `400 INVALID_PROPERTY`. It never falls back to the
+  global set.
+- `ETag` per variant, `If-None-Match` gives `304`. `Cache-Control: public, max-age=60,
+  stale-while-revalidate=300` — so an edit is normally visible within a minute, and a caller that
+  chooses to serve stale content may show the previous copy for up to five more.
+- Rate limited per IP and slug. Browser access requires the origin to be configured server-side;
+  server-to-server callers send no `Origin` and are unaffected.
