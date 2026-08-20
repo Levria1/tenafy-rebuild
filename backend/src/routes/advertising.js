@@ -1542,6 +1542,7 @@ async function loadSettings(pool, orgId) {
     // switch it on for anyone.
     renewal_ask_enabled: 0,
     renewal_default_notice_days: 45,
+    renewal_min_tenancy_days: 7,
     renewal_ask_phrase: RENEWAL_ASK_PHRASE,
     renewal_ask_gap_days: 3,
     renewal_ask_phrase_2: null,
@@ -1560,7 +1561,7 @@ async function loadSettings(pool, orgId) {
               inquiry_min_gap_days, inquiry_lead_days_nr, inquiry_lead_days_other,
               inquiry_booking_horizon_days, inquiry_too_far_out_phrase,
               vacant_max_move_in_days, inquiry_gap_ask_phrase,
-              renewal_ask_enabled, renewal_default_notice_days, renewal_ask_phrase,
+              renewal_ask_enabled, renewal_default_notice_days, renewal_min_tenancy_days, renewal_ask_phrase,
               renewal_ask_gap_days, renewal_ask_phrase_2, renewal_ask_phrase_3,
               inquiry_gap_band_1m_days, inquiry_gap_band_2m_days, inquiry_gap_band_3m_plus_days
          FROM advertising_setting WHERE org_id = ? LIMIT 1`, [orgId]);
@@ -1582,6 +1583,7 @@ async function loadSettings(pool, orgId) {
       vacant_max_move_in_days: numberOrDefault(row?.vacant_max_move_in_days, 30),
       renewal_ask_enabled: Number(row?.renewal_ask_enabled) === 1 ? 1 : 0,
       renewal_default_notice_days: numberOrDefault(row?.renewal_default_notice_days, 45),
+      renewal_min_tenancy_days: numberOrDefault(row?.renewal_min_tenancy_days, 7),
       renewal_ask_phrase: row?.renewal_ask_phrase || RENEWAL_ASK_PHRASE,
       renewal_ask_gap_days: numberOrDefault(row?.renewal_ask_gap_days, 3),
       renewal_ask_phrase_2: row?.renewal_ask_phrase_2 || null,
@@ -1760,6 +1762,7 @@ router.put('/settings', authenticate, async (req, res) => {
       inquiry_gap_ask_phrase,
       renewal_ask_enabled,
       renewal_default_notice_days,
+      renewal_min_tenancy_days,
       renewal_ask_phrase,
       renewal_ask_phrase_2,
       renewal_ask_phrase_3,
@@ -1796,7 +1799,7 @@ router.put('/settings', authenticate, async (req, res) => {
         return res.status(400).json({ code: 400, message: `${field} must be an integer between 0 and 365` });
       }
     }
-    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days', 'vacant_max_move_in_days', 'renewal_default_notice_days', 'renewal_ask_gap_days', 'inquiry_gap_band_1m_days', 'inquiry_gap_band_2m_days', 'inquiry_gap_band_3m_plus_days', 'search_gap_band_1m_days', 'search_gap_band_2m_days', 'search_gap_band_3m_plus_days']) {
+    for (const field of ['inquiry_min_gap_days', 'inquiry_lead_days_nr', 'inquiry_lead_days_other', 'inquiry_booking_horizon_days', 'vacant_max_move_in_days', 'renewal_default_notice_days', 'renewal_min_tenancy_days', 'renewal_ask_gap_days', 'inquiry_gap_band_1m_days', 'inquiry_gap_band_2m_days', 'inquiry_gap_band_3m_plus_days', 'search_gap_band_1m_days', 'search_gap_band_2m_days', 'search_gap_band_3m_plus_days']) {
       if (req.body?.[field] !== undefined) {
         if (req.body[field] === null) {
           return res.status(400).json({
@@ -1829,6 +1832,7 @@ router.put('/settings', authenticate, async (req, res) => {
     if (vacant_max_move_in_days !== undefined) setClauses.push('vacant_max_move_in_days = VALUES(vacant_max_move_in_days)');
     if (renewal_ask_enabled !== undefined) setClauses.push('renewal_ask_enabled = VALUES(renewal_ask_enabled)');
     if (renewal_default_notice_days !== undefined) setClauses.push('renewal_default_notice_days = VALUES(renewal_default_notice_days)');
+    if (renewal_min_tenancy_days !== undefined) setClauses.push('renewal_min_tenancy_days = VALUES(renewal_min_tenancy_days)');
     if (renewal_ask_phrase !== undefined) setClauses.push('renewal_ask_phrase = VALUES(renewal_ask_phrase)');
     if (renewal_ask_phrase_2 !== undefined) setClauses.push('renewal_ask_phrase_2 = VALUES(renewal_ask_phrase_2)');
     if (renewal_ask_phrase_3 !== undefined) setClauses.push('renewal_ask_phrase_3 = VALUES(renewal_ask_phrase_3)');
@@ -1853,6 +1857,7 @@ router.put('/settings', authenticate, async (req, res) => {
       includeVacantMaxMoveIn,
       includeRenewalAskEnabled,
       includeRenewalNoticeDays,
+      includeRenewalMinTenancyDays,
       includeRenewalAskPhrase,
       includeRenewalAskPhrase2,
       includeRenewalAskPhrase3,
@@ -1919,6 +1924,10 @@ router.put('/settings', authenticate, async (req, res) => {
         insertColumns.push('renewal_default_notice_days');
         params.push(renewal_default_notice_days ?? 45);
       }
+      if (includeRenewalMinTenancyDays) {
+        insertColumns.push('renewal_min_tenancy_days');
+        params.push(renewal_min_tenancy_days ?? 7);
+      }
       if (includeRenewalAskPhrase) {
         insertColumns.push('renewal_ask_phrase');
         params.push(renewal_ask_phrase ?? null);
@@ -1977,6 +1986,7 @@ router.put('/settings', authenticate, async (req, res) => {
         if (!includeVacantMaxMoveIn && clause.startsWith('vacant_max_move_in_days')) return false;
         if (!includeRenewalAskEnabled && clause.startsWith('renewal_ask_enabled')) return false;
         if (!includeRenewalNoticeDays && clause.startsWith('renewal_default_notice_days')) return false;
+        if (!includeRenewalMinTenancyDays && clause.startsWith('renewal_min_tenancy_days')) return false;
         if (!includeRenewalAskPhrase2 && clause.startsWith('renewal_ask_phrase_2')) return false;
         if (!includeRenewalAskPhrase3 && clause.startsWith('renewal_ask_phrase_3')) return false;
         if (!includeRenewalGapDays && clause.startsWith('renewal_ask_gap_days')) return false;
@@ -2006,6 +2016,10 @@ router.put('/settings', authenticate, async (req, res) => {
       includeRenewalNoticeDays: {
         column: 'renewal_default_notice_days',
         wasSent: renewal_default_notice_days !== undefined,
+      },
+      includeRenewalMinTenancyDays: {
+        column: 'renewal_min_tenancy_days',
+        wasSent: renewal_min_tenancy_days !== undefined,
       },
       includeRenewalAskPhrase: {
         column: 'renewal_ask_phrase',
@@ -2100,6 +2114,7 @@ router.put('/settings', authenticate, async (req, res) => {
       includeVacantMaxMoveIn: true,
       includeRenewalAskEnabled: true,
       includeRenewalNoticeDays: true,
+      includeRenewalMinTenancyDays: true,
       includeRenewalAskPhrase: true,
       includeRenewalAskPhrase2: true,
       includeRenewalAskPhrase3: true,

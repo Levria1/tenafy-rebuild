@@ -43,6 +43,7 @@ function LeasingAvailabilitySettings() {
   const [gapAskPhrase, setGapAskPhrase] = useState('');
   const [renewalAskEnabled, setRenewalAskEnabled] = useState(false);
   const [renewalNoticeDays, setRenewalNoticeDays] = useState(null);
+  const [renewalMinTenancyDays, setRenewalMinTenancyDays] = useState(null);
   const [renewalAskPhrase, setRenewalAskPhrase] = useState('');
   const [renewalAskPhrase2, setRenewalAskPhrase2] = useState('');
   const [renewalAskPhrase3, setRenewalAskPhrase3] = useState('');
@@ -76,6 +77,7 @@ function LeasingAvailabilitySettings() {
         setGapAskPhrase(d.inquiry_gap_ask_phrase ?? '');
         setRenewalAskEnabled(Number(d.renewal_ask_enabled) === 1);
         setRenewalNoticeDays(d.renewal_default_notice_days ?? 45);
+        setRenewalMinTenancyDays(d.renewal_min_tenancy_days ?? 7);
         setRenewalAskPhrase(d.renewal_ask_phrase ?? '');
         setRenewalAskPhrase2(d.renewal_ask_phrase_2 ?? '');
         setRenewalAskPhrase3(d.renewal_ask_phrase_3 ?? '');
@@ -118,6 +120,7 @@ function LeasingAvailabilitySettings() {
         inquiry_gap_ask_phrase: gapAskPhrase,
         renewal_ask_enabled: renewalAskEnabled ? 1 : 0,
         renewal_default_notice_days: renewalNoticeDays,
+        renewal_min_tenancy_days: renewalMinTenancyDays,
         renewal_ask_phrase: renewalAskPhrase,
         renewal_ask_phrase_2: renewalAskPhrase2,
         renewal_ask_phrase_3: renewalAskPhrase3,
@@ -139,6 +142,7 @@ function LeasingAvailabilitySettings() {
         setGapAskPhrase(d.inquiry_gap_ask_phrase ?? '');
         setRenewalAskEnabled(Number(d.renewal_ask_enabled) === 1);
         setRenewalNoticeDays(d.renewal_default_notice_days ?? 45);
+        setRenewalMinTenancyDays(d.renewal_min_tenancy_days ?? 7);
         setRenewalAskPhrase(d.renewal_ask_phrase ?? '');
         setRenewalAskPhrase2(d.renewal_ask_phrase_2 ?? '');
         setRenewalAskPhrase3(d.renewal_ask_phrase_3 ?? '');
@@ -339,6 +343,17 @@ function LeasingAvailabilitySettings() {
             />
             <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
               Used only to work out when to ask. It is never shown to a customer as a date.
+            </div>
+          </Col>
+          <Col xs={24} md={12} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>Minimum tenancy length before first ask</div>
+            <InputNumber
+              min={0} max={365} value={renewalMinTenancyDays}
+              onChange={handleRequiredDays(setRenewalMinTenancyDays, 7)}
+              addonAfter="days" style={{ width: '100%', maxWidth: 240 }}
+            />
+            <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>
+              A tenant is never asked about renewing within this many days of moving in.
             </div>
           </Col>
         </Row>
