@@ -75,9 +75,14 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
     }
 
     // The one statement that returns text, and every clause in it is load-bearing:
-    //   kind='faq'          rules are internal team instructions and can never be published
+    //   kind='faq'          rules are team instructions and can never be published
     //   status=1            archived entries stay archived
-    //   publish_website=1   default 0, so nothing reaches the web until it is chosen
+    //   publish_website=1   the operator's explicit choice, and the ONLY thing that puts an entry
+    //                       here. Deliberately independent of `visibility`: the operator asked for
+    //                       three separate audiences — their own assistant, TaneChat, the website —
+    //                       rather than a ladder where each implies the last. The consequence,
+    //                       which the UI states plainly: turning OFF sharing with TaneChat does
+    //                       not take a page off the website. Two switches, managed separately.
     //   NOT EXISTS(...)     an entry with no property links is global
     //   OR EXISTS(...)      an entry WITH links appears only for the property asked for, and
     //                       only while that property still exists

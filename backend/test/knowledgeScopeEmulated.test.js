@@ -340,3 +340,27 @@ test('website: CORS is granted to a configured origin and to nobody else', async
     delete require.cache[require.resolve('../src/routes/websitePublic')];
   }
 });
+
+test('the website and TaneChat audiences are independent, in both directions', async () => {
+  // Operator decision, 2026-08-20: three separate audiences, not a ladder. An entry can be on
+  // the website without being handed to TaneChat, and the reverse — so neither switch may be
+  // quietly inferred from the other. Coupling them was the previous design, and something that
+  // silently re-derived one from the other would make the UI a liar.
+  const onlyWebsite = {
+    knowledge: [{ id: '9', kind: 'faq', category: 'other', title: 'Web only', body: 'WEB ONLY BODY',
+      status: 1, visibility: 'internal', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) }],
+    links: [],
+  };
+  const web = await callWebsite(null, onlyWebsite);
+  assert.ok(web.wire.includes('WEB ONLY BODY'), 'website publication must not require TaneChat sharing');
+
+  const onlyChat = {
+    knowledge: [{ id: '9', kind: 'faq', category: 'other', title: 'Chat only', body: 'CHAT ONLY BODY',
+      status: 1, visibility: 'public', publish_website: 0, tags: null, sort_order: 0, updated_at: new Date(0) }],
+    links: [],
+  };
+  const off = await callWebsite(null, onlyChat);
+  assert.ok(!off.wire.includes('CHAT ONLY BODY'), 'sharing with TaneChat must not publish to the website');
+  const chat = await callKnowledge(null, onlyChat);
+  assert.ok(chat.wire.includes('CHAT ONLY BODY'), 'and TaneChat must still receive it');
+});

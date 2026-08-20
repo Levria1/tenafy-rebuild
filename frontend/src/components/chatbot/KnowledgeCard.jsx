@@ -19,8 +19,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Card, Typography, Switch, Input, Button, Space, Form, message,
-  Table, Modal, Segmented, Popconfirm, Tooltip, Empty, Select, InputNumber, Tag,
+  Card, Typography, Input, Button, Space, Form, message,
+  Table, Modal, Segmented, Popconfirm, Tooltip, Empty, Select, InputNumber, Tag, Checkbox,
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, WhatsAppOutlined,
@@ -28,7 +28,7 @@ import {
 } from '@ant-design/icons';
 import { chatApi } from '../../lib/api';
 
-const { Paragraph } = Typography;
+const { Paragraph, Text } = Typography;
 const FAQ_CATEGORIES = [
   ['payments','Payments'],['moving_in','Moving in'],['moving_out','Moving out'],
   ['maintenance','Maintenance'],['building_access','Building access'],
@@ -108,7 +108,8 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
   // Bulk-import (FAQ only) state
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkText, setBulkText] = useState('');
-  const [bulkPublic, setBulkPublic] = useState(false);
+  const [bulkPublic, setBulkPublic] = useState(true);
+  const [bulkWebsite, setBulkWebsite] = useState(true);
   const [bulkSaving, setBulkSaving] = useState(false);
   const bulkParsed = isFaq ? parseFaqText(bulkText) : [];
 
@@ -139,7 +140,8 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
   const openAdd = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ is_public: false, publish_website:false, title: '', body: '', property_ids:[], sort_order:0, category:'other' });
+    // A new FAQ is shared everywhere; a new rule is a team instruction, so TaneChat only.
+    form.setFieldsValue({ is_public: true, publish_website: isFaq, title: '', body: '', property_ids:[], sort_order:0, category:'other' });
     setModalOpen(true);
   };
   const openEdit = (item) => {
@@ -189,17 +191,6 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
     }
   };
 
-  const toggleShare = async (item, checked) => {
-    setItems((prev) => prev.map((x) => x.id === item.id
-      ? { ...x, visibility: checked ? 'public' : 'internal' } : x));
-    try {
-      await chatApi.updateKnowledge(item.id, { visibility: checked ? 'public' : 'internal' });
-    } catch (e) {
-      message.error('Failed to update sharing');
-      load();
-    }
-  };
-
   const onBulkImport = async () => {
     if (!bulkParsed.length) {
       message.warning('Nothing to import — check the format below.');
@@ -212,6 +203,9 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
         title: p.question,
         body: p.answer,
         visibility: bulkPublic ? 'public' : 'internal',
+        // Sent explicitly rather than left to the server default, so what the operator ticked is
+        // what happens — a pasted list is the easiest way to put a lot of text on the internet.
+        publish_website: isFaq && bulkWebsite,
       }));
       const r = await chatApi.bulkKnowledge(entries);
       const data = r.data?.data || {};
@@ -252,24 +246,26 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
       if(!ps.length)return <Tag color="green">Global</Tag>;
       return <Tooltip title={ps.map(p=>`${p.display_name||p.id}${p.deleted?' (Deleted)':''}`).join(', ')}><span><Tag color={deleted.length===ps.length?'red':'blue'}>{ps.length===1?`Property: ${ps[0].display_name||ps[0].id}`:`${ps.length} properties`}</Tag>{deleted.length===ps.length&&<div style={{fontSize:11,color:'#cf1322'}}>Currently invisible</div>}</span></Tooltip>;
     }},
-    ...(isFaq?[{title:'Category',dataIndex:'category',width:120,render:v=><span>{FAQ_CATEGORIES.find(x=>x[0]===v)?.[1]||'Other'}</span>},{title:'Website',dataIndex:'publish_website',width:110,render:v=><Tag color={v?'cyan':'default'}>{v?'Website':'Not on website'}</Tag>}]:[]),
+    ...(isFaq?[{title:'Category',dataIndex:'category',width:120,render:v=><span>{FAQ_CATEGORIES.find(x=>x[0]===v)?.[1]||'Other'}</span>}]:[]),
     {
       title: (
-        <Tooltip title="When on, the entry is also shared with TaneChat (external WhatsApp-facing bot). When off, only the internal Tenafy bot sees it.">
-          <span><WhatsAppOutlined /> Share with TaneChat</span>
+        <Tooltip title="Who this entry reaches. Tenafy's own assistant always sees it; TaneChat answers customers on WhatsApp; Website means taneresidence.com/faq. Edit an entry to change them.">
+          <span><WhatsAppOutlined /> Shared with</span>
         </Tooltip>
       ),
       dataIndex: 'visibility',
-      width: 170,
+      width: 200,
       align: 'center',
+      // Read-only here on purpose: two independent audiences need a form where the consequence is
+      // spelled out, not a toggle in a dense row that publishes to the open internet in one click.
       render: (visibility, item) => (
-        <Switch
-          checked={visibility === 'public'}
-          disabled={locked}
-          checkedChildren="Public"
-          unCheckedChildren="Internal"
-          onChange={(checked) => toggleShare(item, checked)}
-        />
+        <Space size={4} wrap>
+          <Tag>Tenafy</Tag>
+          {visibility === 'public' ? <Tag color="green">TaneChat</Tag> : null}
+          {item.publish_website ? <Tag color="cyan">Website</Tag> : null}
+          {visibility !== 'public' && !item.publish_website
+            ? <Text type="secondary" style={{ fontSize: 12 }}>staff only</Text> : null}
+        </Space>
       ),
     },
     {
@@ -402,14 +398,28 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
             <Select mode="multiple" showSearch optionFilterProp="label" options={properties.map(p=>({value:String(p.id),label:p.display_name}))}/>
           </Form.Item>
           <Form.Item name="sort_order" label="Order" rules={[{required:true,message:'Enter an order'}]}><InputNumber precision={0} style={{width:'100%'}} /></Form.Item>
-          {isFaq && <Form.Item name="publish_website" label="Publish on website" valuePropName="checked"><Switch /></Form.Item>}
-          <Form.Item
-            name="is_public"
-            label="Share with TaneChat (prospect-facing bot)"
-            valuePropName="checked"
-            extra="Off = only the internal Tenafy bot uses this. On = TaneChat too. Keep anything internal-only OFF."
-          >
-            <Switch checkedChildren="Public" unCheckedChildren="Internal" />
+          {/* One question — who sees this? — instead of two switches that could contradict each
+              other. The three audiences are independent: turning one off does not turn another
+              off. Tenafy itself is shown but not editable, because an entry is always available
+              to your own assistant; that is where it lives. */}
+          <Form.Item label="Shared with" extra={isFaq
+            ? 'Each is separate. Turning off TaneChat does not take it off the website.'
+            : 'Rules are team instructions, so they are never published on the website.'}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <Checkbox checked disabled>
+                Tenafy <Text type="secondary" style={{ fontSize: 12 }}>— your own assistant, always</Text>
+              </Checkbox>
+              <Form.Item name="is_public" valuePropName="checked" noStyle>
+                <Checkbox disabled={locked}>
+                  TaneChat <Text type="secondary" style={{ fontSize: 12 }}>— answers customers on WhatsApp</Text>
+                </Checkbox>
+              </Form.Item>
+              <Form.Item name="publish_website" valuePropName="checked" noStyle>
+                <Checkbox disabled={locked || !isFaq}>
+                  Website <Text type="secondary" style={{ fontSize: 12 }}>— taneresidence.com/faq, visible to anyone</Text>
+                </Checkbox>
+              </Form.Item>
+            </div>
           </Form.Item>
         </Form>
       </Modal>
@@ -461,15 +471,14 @@ Pets under 15kg only.`}
             <span style={{ fontSize: 13 }}>
               Detected: <strong>{bulkParsed.length}</strong> Q&amp;A pair{bulkParsed.length === 1 ? '' : 's'}
             </span>
-            <Space>
-              <span style={{ fontSize: 12, color: '#666' }}>Share all with TaneChat:</span>
-              <Switch
-                checked={bulkPublic}
-                onChange={setBulkPublic}
-                checkedChildren="Public"
-                unCheckedChildren="Internal"
-                size="small"
-              />
+            <Space size={12}>
+              <span style={{ fontSize: 12, color: '#666' }}>Share all with:</span>
+              <Checkbox checked={bulkPublic} onChange={(e) => setBulkPublic(e.target.checked)}>
+                <span style={{ fontSize: 12 }}>TaneChat</span>
+              </Checkbox>
+              <Checkbox checked={bulkWebsite} disabled={!isFaq} onChange={(e) => setBulkWebsite(e.target.checked)}>
+                <span style={{ fontSize: 12 }}>Website</span>
+              </Checkbox>
             </Space>
           </div>
           {bulkParsed.length > 0 && (

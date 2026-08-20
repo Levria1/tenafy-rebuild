@@ -907,7 +907,12 @@ router.post('/knowledge', async (req, res) => {
     }
     const propertyIds = normalizePropertyIds(b.property_ids) || [];
     const category = kind === 'faq' && FAQ_CATEGORIES.includes(b.category) ? b.category : 'other';
-    const publishWebsite = b.publish_website === true;
+    // A new FAQ is shared everywhere unless the caller says otherwise: the operator's default is
+    // that an answer written for customers is for all customers, wherever they ask. Rules are
+    // never published — they are team instructions, not customer-facing copy.
+    const publishWebsite = b.publish_website === undefined
+      ? kind === 'faq'
+      : b.publish_website === true;
     if (publishWebsite && kind !== 'faq') return fail(res, 'Only FAQs can be published on the website.', 400);
     const id = newId();
     conn = await req.pool.getConnection(); await conn.beginTransaction();
@@ -949,7 +954,9 @@ router.post('/knowledge/bulk', async (req, res) => {
       const title = e.title != null ? String(e.title).trim() || null : null;
       const propertyIds = normalizePropertyIds(e.property_ids) || [];
       const category = kind === 'faq' && FAQ_CATEGORIES.includes(e.category) ? e.category : 'other';
-      const publishWebsite = e.publish_website === true;
+      // Same default as single creation — a bulk import must not quietly produce a different
+      // result from typing the same entries in one at a time.
+      const publishWebsite = e.publish_website === undefined ? kind === 'faq' : e.publish_website === true;
       let sortOrder=0;
       if(e.sort_order!==undefined){const n=Number(e.sort_order);if(e.sort_order===''||!Number.isInteger(n)){failures.push({index:i,reason:'Sort order must be an integer'});continue;}sortOrder=n;}
       if (publishWebsite && kind !== 'faq') { failures.push({ index:i, reason:'Only FAQs can be published on the website' }); continue; }
@@ -1026,8 +1033,14 @@ router.put('/knowledge/:id', async (req, res) => {
     if (!current) { await conn.rollback(); return fail(res, 'Knowledge entry not found.', 404); }
     const finalKind = b.kind !== undefined && KNOWLEDGE_KINDS.includes(b.kind) ? b.kind : current.kind;
     if (b.publish_website === true && finalKind !== 'faq') { await conn.rollback(); return fail(res, 'Only FAQs can be published on the website.', 400); }
-    if (finalKind !== 'faq') { updates.push('publish_website = 0'); }
-    else if (b.publish_website !== undefined) { updates.push('publish_website = ?'); params.push(b.publish_website ? 1 : 0); }
+    if (finalKind !== 'faq') {
+      updates.push('publish_website = 0');
+    } else if (b.publish_website !== undefined) {
+      updates.push('publish_website = ?'); params.push(b.publish_website ? 1 : 0);
+    }
+    // Nothing else follows from `visibility`. The two audiences are independent by operator
+    // decision: withdrawing an entry from TaneChat does not withdraw it from the website, and
+    // vice versa. Anything that quietly changed the other switch would make the UI a liar.
     if (propertyIds !== null && !(await validateProperties(conn, propertyIds))) { await conn.rollback(); return fail(res, 'One or more properties are invalid or deleted.', 400, 'INVALID_PROPERTY'); }
     if (!updates.length && propertyIds === null) { await conn.rollback(); return ok(res, { id: req.params.id }); }
     if (updates.length) {
