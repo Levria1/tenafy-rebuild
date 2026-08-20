@@ -79,7 +79,7 @@ router.get('/organizations', authenticateMaster, async (req, res) => {
   try {
     const masterPool = getMasterPool();
     const [orgs] = await masterPool.execute(
-      'SELECT id, display_name, admin_username, db_name, status, public_api_enabled, created_at, updated_at FROM organizations ORDER BY created_at DESC'
+      'SELECT id, display_name, public_slug, admin_username, db_name, status, public_api_enabled, created_at, updated_at FROM organizations ORDER BY created_at DESC'
     );
     res.json({ code: 200, data: orgs });
   } catch (error) {
@@ -91,7 +91,7 @@ router.get('/organizations', authenticateMaster, async (req, res) => {
 // POST /api/master/organizations
 router.post('/organizations', authenticateMaster, async (req, res) => {
   try {
-    const { display_name, admin_username, admin_password, admin_email, admin_first_name, admin_last_name } = req.body;
+    const { display_name, public_slug, admin_username, admin_password, admin_email, admin_first_name, admin_last_name } = req.body;
 
     if (!display_name || !admin_username || !admin_password) {
       return res.status(400).json({ code: 400, message: 'Organization name, admin username, and admin password are required' });
@@ -109,6 +109,7 @@ router.post('/organizations', authenticateMaster, async (req, res) => {
 
     const orgId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
+    if (public_slug != null && !/^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){1,61}[a-z0-9]$/.test(public_slug)) return res.status(400).json({code:400,message:'Invalid public slug'});
     await provisionOrg({
       orgId,
       displayName: display_name,
@@ -116,7 +117,7 @@ router.post('/organizations', authenticateMaster, async (req, res) => {
       adminPassword: admin_password,
       adminEmail: admin_email || admin_username,
       adminFirstName: admin_first_name || 'Admin',
-      adminLastName: admin_last_name || ''
+      adminLastName: admin_last_name || '', publicSlug: public_slug || null
     });
 
     res.json({ code: 200, data: { id: orgId, display_name, message: 'Organization created successfully' } });
