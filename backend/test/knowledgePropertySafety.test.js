@@ -70,7 +70,7 @@ test('PUT omission preserves scope, explicit empty array globalises, and zero so
   assert.match(src,/b\.sort_order === '' \|\| !Number\.isInteger\(n\)/);assert.doesNotMatch(src,/params\.push\(parseInt\(b\.sort_order\) \|\| 0\)/);
 });
 test('071 and MASTER migrations are guarded and do not globalise existing data',()=>{
-  for(const file of ['../migrations-org/071_chat_knowledge_property_and_website.sql','../migrations/045_organization_public_slug.sql']){
+  for(const file of ['../migrations-org/071_chat_knowledge_property_and_website.sql','../migrations-master/001_organization_public_slug.sql']){
     const sql=fs.readFileSync(path.join(__dirname,file),'utf8');assert.match(sql,/information_schema/);assert.match(sql,/IF\(/);
   }
   const sql=fs.readFileSync(path.join(__dirname,'../migrations-org/071_chat_knowledge_property_and_website.sql'),'utf8');
