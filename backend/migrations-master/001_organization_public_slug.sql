@@ -1,4 +1,10 @@
--- 045_organization_public_slug.sql (MASTER). Nullable means website access fails closed.
+-- 001_organization_public_slug.sql  (MASTER)
+--
+-- Nullable on purpose: an organisation without a slug is unreachable from the website feed, so
+-- the feature stays off until somebody deliberately publishes one. Fails closed.
+--
+-- Lives in migrations-master/ rather than migrations/, which despite migrate.js's header is the
+-- legacy SINGLE-ORG set and runs against tena_prod_v2 — where `organizations` does not exist.
 SET @c := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='organizations' AND COLUMN_NAME='public_slug');
 SET @s := IF(@c=0, 'ALTER TABLE organizations ADD COLUMN public_slug VARCHAR(63) CHARACTER SET ascii COLLATE ascii_general_ci NULL AFTER display_name', 'SELECT 1');
 PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;

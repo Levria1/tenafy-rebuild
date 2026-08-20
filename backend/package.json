@@ -8,6 +8,7 @@
     "dev": "nodemon src/index.js",
     "migrate": "node migrate.js",
     "migrate:orgs": "node migrate-orgs.js",
+    "migrate:master": "node migrate-master.js",
     "test": "node --test"
   },
   "dependencies": {
