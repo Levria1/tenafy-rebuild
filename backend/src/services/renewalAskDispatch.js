@@ -143,10 +143,18 @@ const tenantNameSql = `CASE WHEN t.type = 1 THEN t.company_name
  *     ask the tenant never saw.
  */
 async function openAsks(pool, orgId, { deliveredOnly = false } = {}) {
-  // A constant fragment, interpolated into BOTH the outer filter and the "is this the newest"
-  // subquery. If only the outer one narrowed, a failed ask 2 would hide a delivered ask 1 by
-  // being newer than it, and the cycle would vanish from the list entirely.
-  const delivered = deliveredOnly ? 'sent_at IS NOT NULL' : "(sent_at IS NOT NULL OR state = 'PENDING')";
+  // Built PER ALIAS, not as a bare fragment with the alias prefixed outside it. `r.${frag}`
+  // reads fine until the fragment is parenthesised, at which point it emits
+  // `r.(sent_at IS NOT NULL OR state = 'PENDING')` — a syntax error MySQL rejects. That shipped
+  // and broke the first live run: every candidate threw, so nine tenants went unasked. The fake
+  // pool the tests use matches on a regex and never parses the SQL, so nothing caught it.
+  //
+  // Applied to BOTH the outer filter and the "is this the newest" subquery. If only the outer
+  // one narrowed, a failed ask 2 would hide a delivered ask 1 by being newer than it, and the
+  // cycle would vanish from the list entirely.
+  const delivered = (a) => (deliveredOnly
+    ? `${a}.sent_at IS NOT NULL`
+    : `(${a}.sent_at IS NOT NULL OR ${a}.state = 'PENDING')`);
   const [rows] = await pool.execute(
     `SELECT r.id, r.lease_id, r.tenant_id, r.state, r.unit_id, r.escalated_at, r.ask_number,
             r.channel, r.reply_intent,
@@ -165,7 +173,7 @@ async function openAsks(pool, orgId, { deliveredOnly = false } = {}) {
       WHERE r.org_id = ?
         AND r.state IN ('PENDING','SENT','REPLIED')
         -- A FAILED or CANCELLED ask is not outstanding.
-        AND r.${delivered}
+        AND ${delivered('r')}
         -- The cycle has had no real answer yet.
         AND NOT EXISTS (
           SELECT 1 FROM renewal_ask d
@@ -177,7 +185,7 @@ async function openAsks(pool, orgId, { deliveredOnly = false } = {}) {
           SELECT 1 FROM renewal_ask n
            WHERE n.lease_id = r.lease_id AND n.lease_end_at_ask = r.lease_end_at_ask
              AND n.decision_due_on = r.decision_due_on
-             AND n.${delivered}
+             AND ${delivered('n')}
              AND (n.ask_number > r.ask_number
                   OR (n.ask_number = r.ask_number AND n.id > r.id)))
       ORDER BY r.sent_at ASC, r.id ASC`,

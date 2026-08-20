@@ -464,22 +464,31 @@ test('the correlation list excludes undelivered asks; the serialisation rule inc
   // A reply cannot be about a message that never arrived, so the partner must not be offered
   // one — a stray "ok thanks" would otherwise be filed against an ask the tenant never saw.
   // The serialisation rule needs the opposite: an ask mid-send still owns the conversation.
-  const disp = require('node:fs').readFileSync(require.resolve('../src/services/renewalAskDispatch'), 'utf8');
-  const fn = disp.slice(disp.indexOf('async function openAsks'));
-  const sql = fn.slice(0, fn.indexOf('`,'));
-  assert.ok(/deliveredOnly \? 'sent_at IS NOT NULL'/.test(fn.slice(0, fn.indexOf('pool.execute'))),
-    'the delivered predicate must be selectable');
-  // Interpolated in BOTH places: a failed ask 2 must not hide a delivered ask 1 by being newer.
-  assert.equal((sql.match(/\$\{delivered\}/g) || []).length, 2,
-    'the predicate must narrow the newest-ask subquery too, or a cycle disappears from the list');
+  // Asserted against the SQL the function actually emits, not against its source text. The
+  // source-text version of this test passed while the emitted statement was a syntax error.
+  const { openAsks } = require('../src/services/renewalAskDispatch');
+  const seen = [];
+  const recorder = { execute: async (q) => { seen.push(q); return [[]]; } };
+  return openAsks(recorder, '9')
+    .then(() => openAsks(recorder, '9', { deliveredOnly: true }))
+    .then(() => {
+      const [any, delivered] = seen;
+      // In-flight sends count for serialisation and not for correlation.
+      assert.ok(/state = 'PENDING'/.test(any), 'the default variant must count in-flight sends');
+      assert.ok(!/state = 'PENDING'/.test(delivered), 'the partner list must not');
+      // Applied in BOTH places: a failed ask 2 must not hide a delivered ask 1 by being newer.
+      assert.equal((delivered.match(/sent_at IS NOT NULL/g) || []).length, 2,
+        'the predicate must narrow the newest-ask subquery too, or a cycle disappears from the list');
+      assert.equal((any.match(/sent_at IS NOT NULL OR/g) || []).length, 2);
 
-  const pub = require('node:fs').readFileSync(require.resolve('../src/routes/public'), 'utf8');
-  const at = pub.indexOf("router.get('/renewal-asks/open'");
-  assert.ok(/deliveredOnly: true/.test(pub.slice(at, at + 1200)), 'the partner list must be delivered-only');
-  // …and the conflict checks must NOT be, or an in-flight ask stops blocking.
-  for (const call of pub.match(/openRenewalAsks\(req\.pool, orgId[^)]*\)/g) || []) {
-    assert.ok(!/deliveredOnly/.test(call), `the serialisation check must include in-flight asks: ${call}`);
-  }
+      const pub = require('node:fs').readFileSync(require.resolve('../src/routes/public'), 'utf8');
+      const at = pub.indexOf("router.get('/renewal-asks/open'");
+      assert.ok(/deliveredOnly: true/.test(pub.slice(at, at + 1200)), 'the partner list must be delivered-only');
+      // …and the conflict checks must NOT be, or an in-flight ask stops blocking.
+      for (const call of pub.match(/openRenewalAsks\(req\.pool, orgId[^)]*\)/g) || []) {
+        assert.ok(!/deliveredOnly/.test(call), `the serialisation check must include in-flight asks: ${call}`);
+      }
+    });
 });
 
 test('both racers derive the same lock name from the same conversation', () => {
@@ -541,4 +550,44 @@ test('an escalated ask stays listed and says so', () => {
   // …and must NOT filter them out, or a late reply has nothing to attach to.
   assert.ok(!/r\.escalated_at IS NULL/.test(q.slice(0, q.indexOf('`,'))),
     'escalated asks stay listed for late attribution');
+});
+
+test('the openAsks SQL is syntactically valid in BOTH variants', async () => {
+  // This is the test that was missing, and its absence cost a live run: `AND r.${delivered}`
+  // with a parenthesised fragment emitted `r.(sent_at IS NOT NULL OR ...)`, which MySQL
+  // rejects. Every candidate threw, and nine tenants went unasked.
+  //
+  // Nothing caught it because the fake pool matches statements with a regex and hands back
+  // rows without ever parsing them — a faked database cannot verify a SQL contract. So this
+  // test captures the real statement and checks the shapes a parser would reject. It is a
+  // lint, not a parser; the authoritative check is EXPLAIN against MySQL, run at deploy.
+  const { openAsks } = require('../src/services/renewalAskDispatch');
+  const captured = [];
+  const recorder = { execute: async (sql) => { captured.push(sql); return [[]]; } };
+  await openAsks(recorder, '9');
+  await openAsks(recorder, '9', { deliveredOnly: true });
+  assert.equal(captured.length, 2);
+
+  for (const [i, sql] of captured.entries()) {
+    const label = i === 0 ? 'default' : 'deliveredOnly';
+    // An alias immediately followed by `(` — the exact break.
+    const aliasCall = sql.match(/\b[A-Za-z_][A-Za-z0-9_]*\.\(/);
+    assert.equal(aliasCall, null, `${label}: emitted ${aliasCall && aliasCall[0]} — an alias cannot prefix a group`);
+    // Unresolved template holes, and balanced parentheses.
+    assert.ok(!/\$\{/.test(sql), `${label}: unresolved interpolation`);
+    let depth = 0;
+    for (const ch of sql) {
+      if (ch === '(') depth += 1;
+      else if (ch === ')') depth -= 1;
+      assert.ok(depth >= 0, `${label}: unbalanced parentheses`);
+    }
+    assert.equal(depth, 0, `${label}: unbalanced parentheses`);
+    // Every column reference carries an alias, since three tables are in play.
+    assert.ok(/\bFROM renewal_ask r\b/.test(sql), `${label}: expected the aliased FROM`);
+  }
+
+  // The two variants must genuinely differ, or deliveredOnly is doing nothing.
+  assert.notEqual(captured[0], captured[1]);
+  assert.ok(/state = 'PENDING'/.test(captured[0]) && !/state = 'PENDING'/.test(captured[1]),
+    'only the default variant counts in-flight sends');
 });
