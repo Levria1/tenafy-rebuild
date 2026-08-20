@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Card, Typography, Switch, Input, Button, Space, Form, message,
-  Table, Modal, Segmented, Popconfirm, Tooltip, Empty,
+  Table, Modal, Segmented, Popconfirm, Tooltip, Empty, Select, InputNumber, Tag,
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, WhatsAppOutlined,
@@ -29,6 +29,11 @@ import {
 import { chatApi } from '../../lib/api';
 
 const { Paragraph } = Typography;
+const FAQ_CATEGORIES = [
+  ['payments','Payments'],['moving_in','Moving in'],['moving_out','Moving out'],
+  ['maintenance','Maintenance'],['building_access','Building access'],
+  ['lease_renewal','Lease renewal'],['other','Other'],
+];
 
 // ---------------------------------------------------------------------------
 // Shared hook — both Rules and FAQs use the same chat_knowledge table; we just
@@ -93,6 +98,8 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  const [properties, setProperties] = useState([]);
+  useEffect(() => { chatApi.listKnowledgeProperties().then(r=>setProperties(r.data.data||[])).catch(()=>{}); }, []);
 
   // Filter state — client-side, since every entry is already loaded.
   const [visFilter, setVisFilter] = useState('all');   // 'all' | 'public' | 'internal'
@@ -132,13 +139,15 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
   const openAdd = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ is_public: false, title: '', body: '' });
+    form.setFieldsValue({ is_public: false, publish_website:false, title: '', body: '', property_ids:[], sort_order:0, category:'other' });
     setModalOpen(true);
   };
   const openEdit = (item) => {
     setEditing(item);
     form.setFieldsValue({
       title: item.title || '', body: item.body, is_public: item.visibility === 'public',
+      publish_website:!!item.publish_website, property_ids:item.property_ids||[],
+      sort_order:item.sort_order, category:item.category||'other',
     });
     setModalOpen(true);
   };
@@ -153,6 +162,10 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
         title: isFaq ? (values.title || null) : null,
         body: values.body,
         visibility: values.is_public ? 'public' : 'internal',
+        publish_website: isFaq ? !!values.publish_website : false,
+        property_ids: values.property_ids || [],
+        sort_order: values.sort_order,
+        category: isFaq ? values.category : 'other',
       };
       if (editing) await chatApi.updateKnowledge(editing.id, payload);
       else await chatApi.createKnowledge(payload);
@@ -219,6 +232,7 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
   };
 
   const columns = [
+    { title:'Order', dataIndex:'sort_order', width:70 },
     {
       title: 'Content',
       dataIndex: 'body',
@@ -233,6 +247,12 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
         </div>
       ),
     },
+    { title:'Scope', width:150, render:(_,item)=> {
+      const ps=item.properties||[]; const deleted=ps.filter(p=>p.deleted);
+      if(!ps.length)return <Tag color="green">Global</Tag>;
+      return <Tooltip title={ps.map(p=>`${p.display_name||p.id}${p.deleted?' (Deleted)':''}`).join(', ')}><span><Tag color={deleted.length===ps.length?'red':'blue'}>{ps.length===1?`Property: ${ps[0].display_name||ps[0].id}`:`${ps.length} properties`}</Tag>{deleted.length===ps.length&&<div style={{fontSize:11,color:'#cf1322'}}>Currently invisible</div>}</span></Tooltip>;
+    }},
+    ...(isFaq?[{title:'Category',dataIndex:'category',width:120,render:v=><span>{FAQ_CATEGORIES.find(x=>x[0]===v)?.[1]||'Other'}</span>},{title:'Website',dataIndex:'publish_website',width:110,render:v=><Tag color={v?'cyan':'default'}>{v?'Website':'Not on website'}</Tag>}]:[]),
     {
       title: (
         <Tooltip title="When on, the entry is also shared with TaneChat (external WhatsApp-facing bot). When off, only the internal Tenafy bot sees it.">
@@ -365,6 +385,7 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
               <Input placeholder="e.g. Do you allow pets?" />
             </Form.Item>
           )}
+          {isFaq && <Form.Item name="category" label="Category"><Select options={FAQ_CATEGORIES.map(([value,label])=>({value,label}))}/></Form.Item>}
           <Form.Item
             name="body"
             label={isFaq ? 'Answer' : 'Rule'}
@@ -377,6 +398,11 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
                 : 'e.g. Parking is included in the rent — mention it when asked.'}
             />
           </Form.Item>
+          <Form.Item name="property_ids" label="Properties" extra="Empty means Global — all properties. Scoped content is withheld until the property is known.">
+            <Select mode="multiple" showSearch optionFilterProp="label" options={properties.map(p=>({value:String(p.id),label:p.display_name}))}/>
+          </Form.Item>
+          <Form.Item name="sort_order" label="Order" rules={[{required:true,message:'Enter an order'}]}><InputNumber precision={0} style={{width:'100%'}} /></Form.Item>
+          {isFaq && <Form.Item name="publish_website" label="Publish on website" valuePropName="checked"><Switch /></Form.Item>}
           <Form.Item
             name="is_public"
             label="Share with TaneChat (prospect-facing bot)"

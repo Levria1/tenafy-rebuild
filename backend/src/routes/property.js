@@ -820,6 +820,13 @@ router.delete('/:id', authenticate, async (req, res) => {
       });
     }
 
+    const [[{ knowledge_count }]] = await req.pool.execute(
+      'SELECT COUNT(*) AS knowledge_count FROM chat_knowledge_property WHERE property_id = ?', [id]
+    );
+    if (Number(knowledge_count) > 0) {
+      return res.status(409).json({ code: 'PROPERTY_HAS_KNOWLEDGE', message: 'Re-scope or delete linked knowledge before deleting this property.' });
+    }
+
     await req.pool.execute(
       'UPDATE property SET status = 0, deleted_at = NOW() WHERE id = ? AND org_id = ?',
       [id, orgId]

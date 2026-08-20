@@ -630,6 +630,7 @@ export const chatApi = {
   bulkKnowledge:   (entries) => api.post('/api/chat/knowledge/bulk', { entries }),
   updateKnowledge: (id, data) => api.put(`/api/chat/knowledge/${id}`, data),
   deleteKnowledge: (id) => api.delete(`/api/chat/knowledge/${id}`),
+  listKnowledgeProperties: () => api.get('/api/chat/knowledge/properties'),
 };
 
 export const viewingApi = {

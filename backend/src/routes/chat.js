@@ -26,8 +26,8 @@ router.use(authenticate);
 // ---------------------------------------------------------------------------
 
 function ok(res, data) { return res.json({ code: 200, data }); }
-function fail(res, message, status = 500) {
-  return res.status(status).json({ code: status, message });
+function fail(res, message, status = 500, errorCode = null) {
+  return res.status(status).json({ code: errorCode || status, message });
 }
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -163,6 +163,7 @@ async function loadKnowledge(pool, { includeInternal }) {
     const [rows] = await pool.execute(
       `SELECT kind, title, body FROM chat_knowledge
        WHERE status = 1 AND visibility IN (${placeholders})
+         AND NOT EXISTS (SELECT 1 FROM chat_knowledge_property s WHERE s.chat_knowledge_id=chat_knowledge.id)
        ORDER BY sort_order ASC, created_at ASC`,
       visibilities
     );
@@ -821,6 +822,26 @@ router.put('/settings', async (req, res) => {
 // ---------------------------------------------------------------------------
 const KNOWLEDGE_KINDS = ['rule', 'faq'];
 const KNOWLEDGE_VISIBILITIES = ['public', 'internal'];
+const FAQ_CATEGORIES = ['payments', 'moving_in', 'moving_out', 'maintenance', 'building_access', 'lease_renewal', 'other'];
+
+function normalizePropertyIds(value) {
+  if (!Array.isArray(value)) return null;
+  return [...new Set(value.map(String).filter(v => /^\d+$/.test(v) && v !== '0'))];
+}
+async function validateProperties(conn, ids) {
+  if (!ids.length) return true;
+  const marks = ids.map(() => '?').join(',');
+  const [rows] = await conn.execute(
+    `SELECT id FROM property WHERE id IN (${marks}) AND deleted_at IS NULL`, ids
+  );
+  return new Set(rows.map(r => String(r.id))).size === ids.length;
+}
+async function replaceKnowledgeProperties(conn, knowledgeId, ids) {
+  await conn.execute('DELETE FROM chat_knowledge_property WHERE chat_knowledge_id = ?', [knowledgeId]);
+  for (const propertyId of ids) {
+    await conn.execute('INSERT INTO chat_knowledge_property (chat_knowledge_id, property_id) VALUES (?, ?)', [knowledgeId, propertyId]);
+  }
+}
 
 // Writes are blocked when the org's settings are locked by the platform operator
 // (unless the caller is master admin) — same rule as PUT /settings.
@@ -834,17 +855,32 @@ async function assertKnowledgeWritable(req) {
 router.get('/knowledge', async (req, res) => {
   try {
     const [rows] = await req.pool.execute(
-      `SELECT id, kind, title, body, tags, visibility, status, sort_order, source, source_ref, updated_at
-       FROM chat_knowledge
-       ORDER BY sort_order ASC, created_at ASC`
+      `SELECT ck.id, ck.kind, ck.category, ck.title, ck.body, ck.tags, ck.visibility,
+              ck.publish_website, ck.status, ck.sort_order, ck.source, ck.source_ref, ck.updated_at,
+              ckp.property_id, p.display_name AS property_name, (p.deleted_at IS NOT NULL) AS property_deleted
+       FROM chat_knowledge ck
+       LEFT JOIN chat_knowledge_property ckp ON ckp.chat_knowledge_id = ck.id
+       LEFT JOIN property p ON p.id = ckp.property_id
+       ORDER BY ck.sort_order ASC, ck.created_at ASC`
     );
-    ok(res, rows.map(r => ({
-      ...r,
-      id: String(r.id),
-      source_ref: r.source_ref != null ? String(r.source_ref) : null,
-      status: Number(r.status),
-      tags: typeof r.tags === 'string' ? safeParseJson(r.tags) : (r.tags || null),
-    })));
+    const grouped = new Map();
+    for (const r of rows) {
+      const id = String(r.id);
+      if (!grouped.has(id)) grouped.set(id, {
+        id, kind: r.kind, category: r.category || 'other', title: r.title, body: r.body,
+        tags: typeof r.tags === 'string' ? safeParseJson(r.tags) : (r.tags || null),
+        visibility: r.visibility, publish_website: bitToBool(r.publish_website), status: Number(r.status),
+        sort_order: Number(r.sort_order), source: r.source,
+        source_ref: r.source_ref != null ? String(r.source_ref) : null, updated_at: r.updated_at,
+        property_ids: [], properties: [],
+      });
+      if (r.property_id != null) {
+        const item = grouped.get(id);
+        item.property_ids.push(String(r.property_id));
+        item.properties.push({ id: String(r.property_id), display_name: r.property_name, deleted: bitToBool(r.property_deleted) });
+      }
+    }
+    ok(res, [...grouped.values()]);
   } catch (err) {
     console.error('[chat] list knowledge error:', err);
     fail(res, 'Failed to load rulebook');
@@ -852,6 +888,7 @@ router.get('/knowledge', async (req, res) => {
 });
 
 router.post('/knowledge', async (req, res) => {
+  let conn;
   try {
     if (!(await assertKnowledgeWritable(req))) {
       return fail(res, 'Settings are locked by the platform operator.', 403);
@@ -863,18 +900,30 @@ router.post('/knowledge', async (req, res) => {
     const visibility = KNOWLEDGE_VISIBILITIES.includes(b.visibility) ? b.visibility : 'internal';
     const title = b.title != null ? String(b.title).trim() || null : null;
     const tags = Array.isArray(b.tags) ? JSON.stringify(b.tags) : null;
-    const sortOrder = Number.isFinite(Number(b.sort_order)) ? parseInt(b.sort_order) : 0;
+    let sortOrder = 0;
+    if (b.sort_order !== undefined) {
+      const n=Number(b.sort_order); if (b.sort_order === '' || !Number.isInteger(n)) return fail(res, 'Sort order must be an integer.', 400);
+      sortOrder=n;
+    }
+    const propertyIds = normalizePropertyIds(b.property_ids) || [];
+    const category = kind === 'faq' && FAQ_CATEGORIES.includes(b.category) ? b.category : 'other';
+    const publishWebsite = b.publish_website === true;
+    if (publishWebsite && kind !== 'faq') return fail(res, 'Only FAQs can be published on the website.', 400);
     const id = newId();
-    await req.pool.execute(
-      `INSERT INTO chat_knowledge (id, kind, title, body, tags, visibility, status, sort_order, source)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'manual')`,
-      [id, kind, title, body, tags, visibility, sortOrder]
+    conn = await req.pool.getConnection(); await conn.beginTransaction();
+    if (!(await validateProperties(conn, propertyIds))) { await conn.rollback(); return fail(res, 'One or more properties are invalid or deleted.', 400, 'INVALID_PROPERTY'); }
+    await conn.execute(
+      `INSERT INTO chat_knowledge (id, kind, category, title, body, tags, visibility, publish_website, status, sort_order, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'manual')`,
+      [id, kind, category, title, body, tags, visibility, publishWebsite ? 1 : 0, sortOrder]
     );
+    await replaceKnowledgeProperties(conn, id, propertyIds); await conn.commit();
     ok(res, { id });
   } catch (err) {
+    if (conn) try { await conn.rollback(); } catch {}
     console.error('[chat] create knowledge error:', err);
     fail(res, 'Failed to add rule');
-  }
+  } finally { if (conn) conn.release(); }
 });
 
 // POST /knowledge/bulk — bulk-insert knowledge entries from a parsed list.
@@ -898,18 +947,32 @@ router.post('/knowledge/bulk', async (req, res) => {
       const kind = KNOWLEDGE_KINDS.includes(e.kind) ? e.kind : 'rule';
       const visibility = KNOWLEDGE_VISIBILITIES.includes(e.visibility) ? e.visibility : 'internal';
       const title = e.title != null ? String(e.title).trim() || null : null;
+      const propertyIds = normalizePropertyIds(e.property_ids) || [];
+      const category = kind === 'faq' && FAQ_CATEGORIES.includes(e.category) ? e.category : 'other';
+      const publishWebsite = e.publish_website === true;
+      let sortOrder=0;
+      if(e.sort_order!==undefined){const n=Number(e.sort_order);if(e.sort_order===''||!Number.isInteger(n)){failures.push({index:i,reason:'Sort order must be an integer'});continue;}sortOrder=n;}
+      if (publishWebsite && kind !== 'faq') { failures.push({ index:i, reason:'Only FAQs can be published on the website' }); continue; }
       // FAQs require a title (the question); guard rather than silently storing
       // a titleless FAQ that would look odd in the table.
       if (kind === 'faq' && !title) { failures.push({ index: i, reason: 'FAQ needs a question (title)' }); continue; }
+      let conn;
       try {
-        await req.pool.execute(
-          `INSERT INTO chat_knowledge (id, kind, title, body, visibility, status, sort_order, source)
-           VALUES (?, ?, ?, ?, ?, 1, 0, 'bulk')`,
-          [newId(), kind, title, body, visibility]
+        conn=await req.pool.getConnection(); await conn.beginTransaction();
+        if (!(await validateProperties(conn, propertyIds))) throw Object.assign(new Error('INVALID_PROPERTY'), { publicReason:'Invalid or deleted property' });
+        const id=newId();
+        await conn.execute(
+          `INSERT INTO chat_knowledge (id, kind, category, title, body, visibility, publish_website, status, sort_order, source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'bulk')`,
+          [id, kind, category, title, body, visibility, publishWebsite?1:0, sortOrder]
         );
+        await replaceKnowledgeProperties(conn,id,propertyIds); await conn.commit();
         inserted++;
       } catch (err) {
-        failures.push({ index: i, reason: err.message });
+        if(conn)try{await conn.rollback();}catch{}
+        failures.push({ index: i, reason: err.publicReason||err.message });
+      } finally {
+        if(conn)conn.release();
       }
     }
     ok(res, { inserted, failures });
@@ -920,6 +983,7 @@ router.post('/knowledge/bulk', async (req, res) => {
 });
 
 router.put('/knowledge/:id', async (req, res) => {
+  let conn;
   try {
     if (!(await assertKnowledgeWritable(req))) {
       return fail(res, 'Settings are locked by the platform operator.', 403);
@@ -948,18 +1012,45 @@ router.put('/knowledge/:id', async (req, res) => {
       updates.push('status = ?'); params.push(b.status ? 1 : 0);
     }
     if (b.sort_order !== undefined) {
-      updates.push('sort_order = ?'); params.push(parseInt(b.sort_order) || 0);
+      const n = Number(b.sort_order); if (b.sort_order === '' || !Number.isInteger(n)) return fail(res, 'Sort order must be an integer.', 400);
+      updates.push('sort_order = ?'); params.push(n);
     }
-    if (!updates.length) return ok(res, { id: req.params.id });
+    const propertyIds = b.property_ids === undefined ? null : normalizePropertyIds(b.property_ids);
+    if (b.property_ids !== undefined && propertyIds === null) return fail(res, 'property_ids must be an array.', 400);
+    if (b.category !== undefined) {
+      if (!FAQ_CATEGORIES.includes(b.category)) return fail(res, 'Invalid FAQ category.', 400);
+      updates.push('category = ?'); params.push(b.category);
+    }
+    conn = await req.pool.getConnection(); await conn.beginTransaction();
+    const [[current]] = await conn.execute('SELECT kind, publish_website FROM chat_knowledge WHERE id = ? FOR UPDATE', [req.params.id]);
+    if (!current) { await conn.rollback(); return fail(res, 'Knowledge entry not found.', 404); }
+    const finalKind = b.kind !== undefined && KNOWLEDGE_KINDS.includes(b.kind) ? b.kind : current.kind;
+    if (b.publish_website === true && finalKind !== 'faq') { await conn.rollback(); return fail(res, 'Only FAQs can be published on the website.', 400); }
+    if (finalKind !== 'faq') { updates.push('publish_website = 0'); }
+    else if (b.publish_website !== undefined) { updates.push('publish_website = ?'); params.push(b.publish_website ? 1 : 0); }
+    if (propertyIds !== null && !(await validateProperties(conn, propertyIds))) { await conn.rollback(); return fail(res, 'One or more properties are invalid or deleted.', 400, 'INVALID_PROPERTY'); }
+    if (!updates.length && propertyIds === null) { await conn.rollback(); return ok(res, { id: req.params.id }); }
+    if (updates.length) {
     params.push(req.params.id);
-    await req.pool.execute(
+    await conn.execute(
       `UPDATE chat_knowledge SET ${updates.join(', ')} WHERE id = ?`, params
     );
+    }
+    if (propertyIds !== null) await replaceKnowledgeProperties(conn, req.params.id, propertyIds);
+    await conn.commit();
     ok(res, { id: req.params.id });
   } catch (err) {
+    if (conn) try { await conn.rollback(); } catch {}
     console.error('[chat] update knowledge error:', err);
     fail(res, 'Failed to update rule');
-  }
+  } finally { if (conn) conn.release(); }
+});
+
+router.get('/knowledge/properties', async (req, res) => {
+  try {
+    const [rows] = await req.pool.execute('SELECT id, display_name FROM property WHERE deleted_at IS NULL ORDER BY display_name ASC, id ASC');
+    ok(res, rows.map(r => ({ id: String(r.id), display_name: r.display_name })));
+  } catch (err) { console.error('[chat] list knowledge properties error:', err); fail(res, 'Failed to load properties'); }
 });
 
 router.delete('/knowledge/:id', async (req, res) => {

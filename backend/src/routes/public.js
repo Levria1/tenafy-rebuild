@@ -2504,18 +2504,38 @@ router.post('/renewal-ask/:id/reply', async (req, res) => {
 //     and you'll get a 304 when nothing changed.
 router.get('/chat/knowledge', async (req, res) => {
   try {
+    const propertyId = req.query.property_id == null ? null : String(req.query.property_id);
+    if (propertyId !== null && (!/^\d+$/.test(propertyId) || propertyId === '0')) return res.status(400).json({ code: 'INVALID_PROPERTY', message: 'Invalid property.' });
+    let propertyContext = null;
+    if (propertyId !== null) {
+      const [ps] = await req.pool.execute('SELECT id, display_name FROM property WHERE id=? AND deleted_at IS NULL', [propertyId]);
+      if (!ps.length) return res.status(400).json({ code: 'INVALID_PROPERTY', message: 'Invalid property.' });
+      propertyContext = { id:String(ps[0].id), display_name:ps[0].display_name };
+    }
     let rows = [];
+    let propertyTopics = [];
     try {
       const [r] = await req.pool.execute(
-        `SELECT id, kind, title, body, tags, updated_at
-         FROM chat_knowledge
-         WHERE status = 1 AND visibility = 'public'
-         ORDER BY sort_order ASC, created_at ASC`
+        `SELECT DISTINCT ck.id, ck.kind, ck.category, ck.title, ck.body, ck.tags, ck.updated_at, ck.sort_order, ck.created_at
+         FROM chat_knowledge ck
+         WHERE ck.status=1 AND ck.visibility='public'
+           AND (NOT EXISTS (SELECT 1 FROM chat_knowledge_property s WHERE s.chat_knowledge_id=ck.id)
+             OR EXISTS (SELECT 1 FROM chat_knowledge_property s JOIN property p ON p.id=s.property_id AND p.deleted_at IS NULL WHERE s.chat_knowledge_id=ck.id AND s.property_id=?))
+         ORDER BY ck.sort_order ASC, ck.created_at ASC`, [propertyId]
       );
       rows = r;
+      if (propertyId === null) {
+        const [topics] = await req.pool.execute(`SELECT ck.id, ck.kind, ck.category, p.id property_id, p.display_name FROM chat_knowledge ck JOIN chat_knowledge_property s ON s.chat_knowledge_id=ck.id JOIN property p ON p.id=s.property_id AND p.deleted_at IS NULL WHERE ck.status=1 AND ck.visibility='public' ORDER BY ck.id,p.display_name,p.id`);
+        const grouped=new Map();
+        for(const t of topics){const id=String(t.id);if(!grouped.has(id))grouped.set(id,{id,kind:t.kind,...(t.kind==='faq'?{category:t.category||'other'}:{}),properties:[]});grouped.get(id).properties.push({id:String(t.property_id),display_name:t.display_name});}
+        propertyTopics=[...grouped.values()];
+      }
     } catch (e) {
       // Table not present on a not-yet-migrated org DB — return an empty rulebook.
-      if (e && e.code === 'ER_NO_SUCH_TABLE') rows = [];
+      if (e && e.code === 'ER_NO_SUCH_TABLE' && /chat_knowledge_property/.test(e.message || '')) {
+        const [legacy] = await req.pool.execute(`SELECT id,kind,title,body,tags,updated_at FROM chat_knowledge WHERE status=1 AND visibility='public' ORDER BY sort_order,created_at`);
+        rows = legacy;
+      } else if (e && e.code === 'ER_NO_SUCH_TABLE') rows = [];
       else throw e;
     }
 
@@ -2550,7 +2570,7 @@ router.get('/chat/knowledge', async (req, res) => {
       const t = r.updated_at instanceof Date ? r.updated_at.getTime() : new Date(r.updated_at).getTime();
       if (Number.isFinite(t) && t > maxTs) maxTs = t;
     }
-    const version = `${rows.length}-${maxTs}`;
+    const version = crypto.createHash('sha256').update(JSON.stringify({ propertyContext, rows, propertyTopics })).digest('hex');
     const updatedAt = maxTs ? new Date(maxTs).toISOString() : null;
 
     // Conditional GET: 304 when the caller already has this version.
@@ -2560,7 +2580,9 @@ router.get('/chat/knowledge', async (req, res) => {
       return res.status(304).end();
     }
 
-    ok(res, { rules, faqs, prompt_block: promptBlock, version, updated_at: updatedAt });
+    const data={ rules, faqs, prompt_block:promptBlock, version, updated_at:updatedAt, property_context:propertyContext };
+    if(propertyId===null)data.property_topics=propertyTopics;
+    ok(res, data);
   } catch (error) {
     console.error('Public chat knowledge error:', error);
     fail(res, 'Failed to fetch chat knowledge');
@@ -3377,23 +3399,22 @@ router.get('/tenants/lookup', async (req, res) => {
             AND ( LOWER(TRIM(email)) = ? OR LOWER(TRIM(secondary_email)) = ? )`,
         [orgId, email, email]
       );
-    } else if (digits.length >= 7) {
-      const lastN = Math.min(8, digits.length);
-      const suffix = digits.slice(-lastN);
+    } else if (digits.length >= 8) {
+      const suffix = renewalAsk.conversationKey(digits);
       [tenants] = await req.pool.execute(
         `SELECT id, first_name, last_name, company_name, type
            FROM tenant
           WHERE org_id = ? AND category = 1
             AND phone IS NOT NULL AND phone <> ''
-            AND RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), ?) = ?`,
-        [orgId, lastN, suffix]
+            AND RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), 8) = ?`,
+        [orgId, suffix]
       );
     } else {
-      return fail(res, 'Provide a "phone" (>= 7 digits) or "email" query param.', 400);
+      return fail(res, 'Provide a "phone" (at least 8 digits) or "email" query param.', 400);
     }
 
     if (tenants.length === 0) {
-      return ok(res, { matched: false, classification: 'unknown', count: 0, tenants: [] });
+      return ok(res, { matched: false, classification: 'unknown', count: 0, tenants: [], active_properties: [], property_resolution: 'none' });
     }
 
     const today = orgToday();
@@ -3409,13 +3430,14 @@ router.get('/tenants/lookup', async (req, res) => {
     const topRank = { existing: 3, future: 2, past: 1, prospect: 0, unknown: -1 };
 
     const out = [];
+    const activeProperties = new Map();
     for (const t of tenants) {
       const [leases] = await req.pool.execute(
         `SELECT l.lease_no, l.start_date, l.end_date,
-                u.name AS unit_name, p.display_name AS property_name
+                u.name AS unit_name, p.id AS property_id, p.display_name AS property_name
            FROM leasing l
            LEFT JOIN unit u ON l.unit_id = u.id
-           LEFT JOIN property p ON u.property_id = p.id
+           LEFT JOIN property p ON u.property_id = p.id AND p.deleted_at IS NULL
           WHERE l.tenant_id = ? AND l.deleted_at IS NULL
           ORDER BY l.start_date DESC`,
         [t.id]
@@ -3423,6 +3445,9 @@ router.get('/tenants/lookup', async (req, res) => {
       let best = null, bestStatus = null;
       for (const l of leases) {
         const st = leaseStatus(l);
+        if (st === 'active' && l.property_id != null) {
+          activeProperties.set(String(l.property_id), { id: String(l.property_id), display_name: l.property_name });
+        }
         if (!best || rank[st] > rank[bestStatus]) { best = l; bestStatus = st; }
       }
       const classification = best ? classOf[bestStatus] : 'prospect';
@@ -3449,7 +3474,9 @@ router.get('/tenants/lookup', async (req, res) => {
       (acc, t) => (topRank[t.classification] > topRank[acc] ? t.classification : acc),
       'unknown'
     );
-    ok(res, { matched: true, classification, count: out.length, tenants: out });
+    const active_properties = [...activeProperties.values()];
+    const property_resolution = active_properties.length === 1 ? 'unique' : active_properties.length > 1 ? 'ambiguous' : 'none';
+    ok(res, { matched: true, classification, count: out.length, tenants: out, active_properties, property_resolution });
   } catch (error) {
     console.error('Public tenant lookup error:', error);
     fail(res, 'Failed to look up tenant');
