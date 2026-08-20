@@ -48,6 +48,7 @@ app.use('/api/tenant-portal', require('./routes/tenantPortal'));
 app.use('/api/pdf', require('./routes/pdf'));
 app.use('/api/storage', require('./routes/storage'));
 app.use('/api/public', require('./routes/public'));
+app.use('/api/website', require('./routes/websitePublic'));
 app.use('/api/integrations/xero', require('./routes/xero'));
 app.use('/api/viewing-public', require('./routes/viewingPublic'));
 app.use('/api/viewing', require('./routes/viewing'));
