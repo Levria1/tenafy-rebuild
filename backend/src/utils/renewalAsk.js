@@ -18,6 +18,7 @@ const REPLY_UNSURE = 3;
 const UNDECIDED_CONTRACT_TYPES = [1, 4];   // 1 = MR (may renew), 4 = UC (unconfirmed)
 
 const DEFAULT_NOTICE_DAYS = 45;   // the operator's standard notice period
+const DEFAULT_MIN_TENANCY_DAYS = 7;
 
 // Three asks per decision cycle, then a human takes over. Silence is not an answer and
 // is emphatically not "leaving", so the sequence ends in escalation rather than a guess.
@@ -45,9 +46,18 @@ function toYmd(utcMs) {
 // Stricter than Number() on purpose: Number(null), Number(undefined ?? '') and
 // Number('  ') are all 0, and 0 is a legitimate notice period. Treating a missing
 // value as "0 days notice" would make every undecided lease look due today.
+//
+// Non-primitives are refused for the same reason, one step further out: Number([]) is 0 and
+// Number(true) is 1, so junk would arrive looking like a deliberate setting — and for the
+// minimum-tenancy floor a deliberate 0 means "no floor", i.e. junk would switch the rule OFF
+// and message a tenant on their second day. Every one of these failures has to land on the
+// side of not messaging someone. Mirrors hasAvailabilityValue() in advertisingPlan.js, which
+// exists for exactly this.
 function definedNumber(value) {
   if (value == null) return null;
-  if (typeof value === 'string' && value.trim() === '') return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'string') return null;   // arrays, objects, booleans
+  if (value.trim() === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -76,7 +86,9 @@ function renewalDecisionDueOn(endDate, noticePeriodDays, defaultNoticeDays = DEF
  * caller can tell the difference between "not yet" and "already handled" instead of
  * getting a bare false.
  */
-function renewalAskEligibility(lease, { today, defaultNoticeDays = DEFAULT_NOTICE_DAYS } = {}) {
+function renewalAskEligibility(lease, {
+  today, defaultNoticeDays = DEFAULT_NOTICE_DAYS, minTenancyDays = DEFAULT_MIN_TENANCY_DAYS,
+} = {}) {
   const todayMs = parseYmd(today);
   if (todayMs == null) return { eligible: false, reason: 'bad_today' };
   if (!lease) return { eligible: false, reason: 'no_lease' };
@@ -95,6 +107,18 @@ function renewalAskEligibility(lease, { today, defaultNoticeDays = DEFAULT_NOTIC
   const dueOn = renewalDecisionDueOn(lease.end_date, lease.notice_period_days, defaultNoticeDays);
   if (dueOn == null) return { eligible: false, reason: 'no_decision_date' };
   if (parseYmd(dueOn) > todayMs) return { eligible: false, reason: 'too_early', decision_due_on: dueOn };
+
+  const configuredMin = definedNumber(minTenancyDays);
+  const floorDays = configuredMin != null && configuredMin >= 0
+    ? Math.trunc(configuredMin) : DEFAULT_MIN_TENANCY_DAYS;
+  const startMs = parseYmd(lease.start_date);
+  // Without a trustworthy move-in date we cannot prove the tenant has lived there long
+  // enough. Failing closed avoids sending an intrusive question prematurely.
+  if (startMs == null) return { eligible: false, reason: 'no_start_date' };
+  const eligibleFrom = toYmd(startMs + floorDays * 86400000);
+  if (todayMs < parseYmd(eligibleFrom)) {
+    return { eligible: false, reason: 'too_soon_after_move_in', eligible_from: eligibleFrom };
+  }
 
   return { eligible: true, reason: null, decision_due_on: dueOn };
 }
@@ -274,6 +298,86 @@ function conflictingOpenAsk(openAsks, lease) {
   return null;
 }
 
+const MONTH_NAMES = ['January','February','March','April','May','June',
+  'July','August','September','October','November','December'];
+
+/** 'YYYY-MM-DD' → '29 September 2026'. Null in, null out. */
+function longDate(ymd) {
+  const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const month = MONTH_NAMES[Number(m[2]) - 1];
+  return month ? `${Number(m[3])} ${month} ${m[1]}` : null;
+}
+
+/**
+ * Everything an ask template can refer to, built in ONE place.
+ *
+ * Both the nightly job and the demand-triggered route render asks. A placeholder that
+ * resolved in one and not the other would send a tenant a message with `{notice_days}`
+ * printed in it, so the variables are built here and neither caller assembles its own.
+ *
+ * On `notice_days`: most leases record nothing — 242 of 313 at the time of writing — and the
+ * scheduler already treats a missing value as the org default. This reports the SAME number
+ * the system acts on, because a message quoting a deadline we do not act on is worse than one
+ * quoting a default. `notice_source` exists so the sentence can stay honest either way:
+ * "45 days, as set out in your lease" versus "45 days, our standard notice period". An
+ * operator who would rather say nothing when it is a guess can build their sentence from
+ * `{decision_sentence}`, which is empty in that case.
+ */
+function renewalAskVars(lease, { defaultNoticeDays = DEFAULT_NOTICE_DAYS, today } = {}) {
+  const recorded = definedNumber(lease && lease.notice_period_days);
+  const noticeDays = recorded == null ? definedNumber(defaultNoticeDays) ?? DEFAULT_NOTICE_DAYS : recorded;
+  const decisionBy = renewalDecisionDueOn(lease && lease.end_date, lease && lease.notice_period_days, defaultNoticeDays);
+  const fromLease = recorded != null;
+  const decisionByLong = longDate(decisionBy);
+
+  // Has the deadline already gone? A long default notice period against a short lease puts the
+  // decision date before the tenant has properly moved in — six of ten tenants waiting today
+  // are in that shape. Telling someone they must confirm by a date five weeks past, and then
+  // warning that the flat may be re-let if they miss it, is the first thing they would reply
+  // to, and rightly.
+  const todayMs = parseYmd(today);
+  const dueMs = parseYmd(decisionBy);
+  const overdue = todayMs != null && dueMs != null && dueMs < todayMs;
+
+  // Two placeholders rather than one, because a bare date swap cannot fix the sentence: both
+  // "let us know by {date}" and "before {date}" break the moment the value stops being a date.
+  // Each of these carries its own preposition, so the wording stays grammatical either way.
+  const decisionDeadline = overdue || !decisionByLong ? 'as soon as possible' : `by ${decisionByLong}`;
+  const confirmBefore = overdue || !decisionByLong ? 'shortly' : `before ${decisionByLong}`;
+  // Kept SEPARATE from the deadline rather than baked into it, so the operator decides whether
+  // to explain where the date comes from. Empty once the date has passed, because "which is 45
+  // days before the end" makes no sense attached to "as soon as possible".
+  const noticeContext = overdue || !decisionByLong
+    ? ''
+    : `, which is ${noticeDays} days before the end (${fromLease ? 'as set out in your lease' : 'our standard notice period'})`;
+
+  return {
+    decision_deadline: decisionDeadline,
+    notice_context: noticeContext,
+    confirm_before: confirmBefore,
+    decision_overdue: overdue,
+    tenant_name: (lease && lease.tenant_name) || 'there',
+    first_name: (lease && lease.tenant_first_name) || (lease && lease.tenant_name) || 'there',
+    unit: [lease && lease.property_name, lease && lease.unit_name].filter(Boolean).join(' '),
+    end_date: (lease && lease.end_date) || '',
+    end_date_long: longDate(lease && lease.end_date) || (lease && lease.end_date) || '',
+    notice_days: String(noticeDays),
+    notice_source: fromLease ? 'as set out in your lease' : 'our standard notice period',
+    // The bare value. Reads 'as soon as possible' once the date has passed, so a template using
+    // it alone still says something true — but prefer decision_deadline, which stays
+    // grammatical because it brings its own "by".
+    decision_by: overdue ? 'as soon as possible' : (decisionByLong || decisionBy || ''),
+    // A whole sentence, or nothing. For an operator who would rather assert no deadline at
+    // all where the lease records none — the safe choice, since it claims nothing.
+    decision_sentence: fromLease && decisionByLong
+      ? (overdue
+          ? `Your lease asks for ${noticeDays} days' notice, so we need to know as soon as possible.`
+          : `Your lease asks for ${noticeDays} days' notice, so we would need to know by ${decisionByLong}.`)
+      : '',
+  };
+}
+
 /** Fill the operator-authored template. Unknown placeholders are left alone. */
 function renderRenewalAsk(template, vars = {}) {
   if (typeof template !== 'string' || !template.trim()) return null;
@@ -294,6 +398,8 @@ module.exports = {
   conversationKey,
   conversationLockKey,
   conflictingOpenAsk,
+  renewalAskVars,
+  longDate,
   renderRenewalAsk,
 };
 

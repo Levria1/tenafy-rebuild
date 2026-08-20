@@ -862,7 +862,9 @@ is idempotent per decision cycle: a second call returns `created: false` with
 `reason: "already_asked_this_cycle"` rather than messaging the tenant twice. Other reasons are
 `disabled`, `tenant_unreachable`, `no_wording` (the operator has not written that ask yet),
 `conversation_busy`, and the eligibility reasons (`already_decided`, `already_replied`,
-`too_early`, `lease_already_ended`). Every one of those is refused **before** a row exists, so
+`too_early`, `lease_already_ended`, `no_start_date`, and `too_soon_after_move_in` — a tenant
+is never asked about renewing within a configured number of days of moving in, which for a
+short lease would otherwise land in their first week; that one also returns `eligible_from`). Every one of those is refused **before** a row exists, so
 none of them spends one of the three asks.
 
 `reason: "send_failed"` with `created: true` is the exception: the ask exists and has spent

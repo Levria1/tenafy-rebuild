@@ -2138,9 +2138,10 @@ const tenantNameSqlPublic = (a) => `CASE WHEN ${a}.type = 1 THEN ${a}.company_na
 async function currentLeaseForUnit(pool, orgId, unitId) {
   const [[row]] = await pool.execute(
     `SELECT l.id, l.unit_id, l.tenant_id, l.contract_type, l.notice_period_days,
-            l.renewal_reply, DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
+            l.renewal_reply, DATE_FORMAT(l.start_date, '%Y-%m-%d') AS start_date,
+            DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
             u.name AS unit_name, p.display_name AS property_name,
-            ${tenantNameSqlPublic('t')} AS tenant_name,
+            ${tenantNameSqlPublic('t')} AS tenant_name, t.first_name AS tenant_first_name,
             t.phone AS tenant_phone, t.email AS tenant_email
        FROM leasing l
        JOIN unit u ON u.id = l.unit_id
@@ -2205,6 +2206,7 @@ router.post('/renewal-ask', async (req, res) => {
     const today = orgToday();
     const eligibility = renewalAsk.renewalAskEligibility(lease, {
       today, defaultNoticeDays: settings.renewal_default_notice_days,
+      minTenancyDays: settings.renewal_min_tenancy_days,
     });
     if (!eligibility.eligible) {
       return ok(res, { created: false, reason: eligibility.reason, renewal_ask: null });
@@ -2239,11 +2241,8 @@ router.post('/renewal-ask', async (req, res) => {
       return ok(res, { created: false, reason: 'already_asked_this_cycle', renewal_ask: renewalAskRow(existing) });
     }
 
-    const message = renewalAsk.renderRenewalAsk(settings.renewal_ask_phrase, {
-      tenant_name: lease.tenant_name || 'there',
-      unit: [lease.property_name, lease.unit_name].filter(Boolean).join(' '),
-      end_date: lease.end_date,
-    });
+    const message = renewalAsk.renderRenewalAsk(settings.renewal_ask_phrase,
+      renewalAsk.renewalAskVars(lease, { defaultNoticeDays: settings.renewal_default_notice_days, today }));
     // Checked BEFORE the row exists. Inserting first would spend one of the three slots on a
     // message that could never be sent, and the scheduler would then resolve it as FAILED —
     // a tenant never asked, with an ask counted against them. Same rule as the nightly job,

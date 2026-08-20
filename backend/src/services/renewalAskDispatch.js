@@ -37,13 +37,15 @@ const PHRASE_COLUMN = { 1: 'renewal_ask_phrase', 2: 'renewal_ask_phrase_2', 3: '
  * contract_type (so it chased tenants who had already decided) and keyed off
  * tenant_renewal_days rather than the notice period.
  */
-async function findRenewalCandidates(pool, orgId, { today, defaultNoticeDays }) {
+async function findRenewalCandidates(pool, orgId, { today, defaultNoticeDays, minTenancyDays }) {
   const [rows] = await pool.execute(
     `SELECT l.id AS lease_id, l.unit_id, l.tenant_id, l.contract_type,
             l.notice_period_days, l.renewal_reply,
+            DATE_FORMAT(l.start_date, '%Y-%m-%d') AS start_date,
             DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
             u.name AS unit_name, p.display_name AS property_name,
             t.phone AS tenant_phone, t.email AS tenant_email,
+            t.first_name AS tenant_first_name,
             CASE WHEN t.type = 1 THEN t.company_name
                  ELSE TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) END AS tenant_name
        FROM leasing l
@@ -71,7 +73,7 @@ async function findRenewalCandidates(pool, orgId, { today, defaultNoticeDays }) 
     [orgId, today, today]
   );
   return rows.filter(r => renewalAsk.renewalAskEligibility(
-    { ...r, end_date: r.end_date }, { today, defaultNoticeDays }
+    { ...r, end_date: r.end_date }, { today, defaultNoticeDays, minTenancyDays }
   ).eligible);
 }
 
@@ -245,9 +247,10 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
 
   const today = orgToday();
   const defaultNoticeDays = settings.renewal_default_notice_days;
+  const minTenancyDays = settings.renewal_min_tenancy_days;
   const gapDays = settings.renewal_ask_gap_days;
 
-  const candidates = await findRenewalCandidates(pool, orgId, { today, defaultNoticeDays });
+  const candidates = await findRenewalCandidates(pool, orgId, { today, defaultNoticeDays, minTenancyDays });
   const summary = { asked: 0, escalated: 0, unreachable: 0, failed: 0, no_wording: 0,
                     deferred_conversation_busy: 0, considered: candidates.length };
 
@@ -312,11 +315,8 @@ async function runRenewalAsksForOrg(pool, orgId, { loadSettings, createNotificat
       // we do not put words in their mouth — the sequence ends here and a person takes
       // over, which is a truthful outcome rather than a silent stall.
       const template = settings[PHRASE_COLUMN[due.ask_number]];
-      const message = renewalAsk.renderRenewalAsk(template, {
-        tenant_name: lease.tenant_name || 'there',
-        unit: [lease.property_name, lease.unit_name].filter(Boolean).join(' '),
-        end_date: lease.end_date,
-      });
+      const message = renewalAsk.renderRenewalAsk(template,
+        renewalAsk.renewalAskVars(lease, { defaultNoticeDays, today }));
       if (!message) {
         summary.no_wording += 1;
         // Only escalate a sequence that has actually started; an unwritten FIRST ask is

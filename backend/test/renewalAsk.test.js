@@ -41,7 +41,7 @@ test('renewalDecisionDueOn rejects junk rather than guessing', () => {
 });
 
 test('eligibility opens on the decision date and not before', () => {
-  const lease = { end_date: '2026-09-25', contract_type: 1, notice_period_days: 45 };
+  const lease = { start_date: '2026-01-01', end_date: '2026-09-25', contract_type: 1, notice_period_days: 45 };
   // Due 2026-08-11.
   assert.equal(renewalAskEligibility(lease, { today: '2026-08-10' }).eligible, false);
   assert.equal(renewalAskEligibility(lease, { today: '2026-08-10' }).reason, 'too_early');
@@ -50,13 +50,45 @@ test('eligibility opens on the decision date and not before', () => {
 });
 
 test('eligibility refuses leases that are decided, answered, or over', () => {
-  const base = { end_date: '2026-09-25', notice_period_days: 45 };
+  const base = { start_date: '2026-01-01', end_date: '2026-09-25', notice_period_days: 45 };
   assert.equal(renewalAskEligibility({ ...base, contract_type: 3 }, { today: '2026-09-01' }).reason, 'already_decided');
   assert.equal(renewalAskEligibility({ ...base, contract_type: 2 }, { today: '2026-09-01' }).reason, 'already_decided');
   assert.equal(renewalAskEligibility({ ...base, contract_type: 4 }, { today: '2026-09-01' }).eligible, true);
   assert.equal(renewalAskEligibility({ ...base, contract_type: 1, renewal_reply: 1 }, { today: '2026-09-01' }).reason, 'already_replied');
-  assert.equal(renewalAskEligibility({ end_date: '2026-07-01', contract_type: 1 }, { today: '2026-09-01' }).reason, 'lease_already_ended');
-  assert.equal(renewalAskEligibility({ end_date: null, contract_type: 1 }, { today: '2026-09-01' }).reason, 'no_end_date');
+  assert.equal(renewalAskEligibility({ start_date: '2026-01-01', end_date: '2026-07-01', contract_type: 1 }, { today: '2026-09-01' }).reason, 'lease_already_ended');
+  assert.equal(renewalAskEligibility({ start_date: '2026-01-01', end_date: null, contract_type: 1 }, { today: '2026-09-01' }).reason, 'no_end_date');
+});
+
+test('the minimum tenancy floor delays a short lease ask until the exact eligible day', () => {
+  const lease = {
+    start_date: '2026-08-01', end_date: '2026-09-01', contract_type: 1, notice_period_days: 30,
+  };
+  assert.deepEqual(renewalAskEligibility(lease, { today: '2026-08-02', minTenancyDays: 7 }), {
+    eligible: false, reason: 'too_soon_after_move_in', eligible_from: '2026-08-08',
+  });
+  assert.equal(renewalAskEligibility(lease, { today: '2026-08-08', minTenancyDays: 7 }).eligible, true);
+});
+
+test('zero disables the floor, while missing or junk settings fall back to seven days', () => {
+  const lease = {
+    start_date: '2026-08-01', end_date: '2026-09-01', contract_type: 1, notice_period_days: 30,
+  };
+  assert.equal(renewalAskEligibility(lease, { today: '2026-08-02', minTenancyDays: 0 }).eligible, true);
+  for (const minTenancyDays of [undefined, null, '', '   ', 'junk', -1]) {
+    const result = renewalAskEligibility(lease, { today: '2026-08-02', minTenancyDays });
+    assert.equal(result.reason, 'too_soon_after_move_in');
+    assert.equal(result.eligible_from, '2026-08-08');
+  }
+});
+
+test('mysql2 string settings are honoured and a missing start date fails closed', () => {
+  const lease = {
+    start_date: '2026-08-01', end_date: '2026-09-01', contract_type: 1, notice_period_days: '30',
+  };
+  assert.equal(renewalAskEligibility(lease, { today: '2026-08-08', minTenancyDays: '7' }).eligible, true);
+  assert.equal(renewalAskEligibility({ ...lease, start_date: null }, {
+    today: '2026-08-08', minTenancyDays: '7',
+  }).reason, 'no_start_date');
 });
 
 test('the cycle key changes when the lease is extended, so a new ask is not suppressed', () => {
@@ -344,7 +376,7 @@ test('a second vague message changes nothing and does not overwrite the first', 
 
 test('an unsure lease is still eligible for the next ask', () => {
   const { renewalAskEligibility } = require('../src/utils/renewalAsk');
-  const base = { end_date: '2026-09-25', contract_type: 1, notice_period_days: 45 };
+  const base = { start_date: '2026-01-01', end_date: '2026-09-25', contract_type: 1, notice_period_days: 45 };
   const opts = { today: '2026-08-19' };
   assert.equal(renewalAskEligibility({ ...base, renewal_reply: null }, opts).eligible, true);
   assert.equal(renewalAskEligibility({ ...base, renewal_reply: 3 }, opts).eligible, true,
@@ -381,7 +413,7 @@ function callCreate(handler, { pool, body = { unit_id: '5' } }) {
 
 const ASKABLE_LEASE = {
   id: '11', unit_id: '5', tenant_id: '77', contract_type: 1, notice_period_days: 45,
-  renewal_reply: null, end_date: '2026-09-25', unit_name: '2A', property_name: 'Hillier',
+  renewal_reply: null, start_date: '2026-01-01', end_date: '2026-09-25', unit_name: '2A', property_name: 'Hillier',
   tenant_name: 'Sam', tenant_phone: '91234567', tenant_email: null,
 };
 
@@ -497,4 +529,110 @@ test('a reply the lease refuses is not reported as applied', () => {
     assert.equal(result.body.data.needs_staff, true, 'a person has to reconcile the two answers');
     assert.ok(writes.some(w => w[0] === 'unapply'), 'the ask row must be corrected, not left claiming applied');
   });
+});
+
+// ── Template variables: what a tenant is told about their own deadline ───────
+
+test('notice_days reports the number we ACT on, and says where it came from', () => {
+  const { renewalAskVars } = require('../src/utils/renewalAsk');
+  const base = { tenant_name: 'Marco Antonio Ming Hon Tang', tenant_first_name: 'Marco',
+    property_name: 'Tai Yuen Apartments', unit_name: '25/F', end_date: '2026-09-29' };
+
+  // Recorded on the lease: quote it, and attribute it to the lease.
+  const recorded = renewalAskVars({ ...base, notice_period_days: 45 }, { defaultNoticeDays: 45 });
+  assert.equal(recorded.notice_days, '45');
+  assert.equal(recorded.notice_source, 'as set out in your lease');
+  assert.equal(recorded.decision_by, '15 August 2026');
+  assert.match(recorded.decision_sentence, /45 days' notice.*15 August 2026/);
+
+  // Not recorded — the NORMAL case, most leases. Still quote the number the scheduler acts
+  // on, because a message naming a deadline we do not enforce is worse than one naming the
+  // default. But it must not claim the lease says so.
+  const missing = renewalAskVars({ ...base, notice_period_days: null }, { defaultNoticeDays: 45 });
+  assert.equal(missing.notice_days, '45', 'must match what the scheduler uses');
+  assert.equal(missing.notice_source, 'our standard notice period');
+  assert.equal(missing.decision_sentence, '',
+    'the whole-sentence form asserts nothing when the lease records nothing');
+
+  // Zero is a real notice period, not "unset". Number(null) is 0 too, which is why the
+  // distinction is made with definedNumber rather than a truthiness check.
+  const zero = renewalAskVars({ ...base, notice_period_days: 0 }, { defaultNoticeDays: 45 });
+  assert.equal(zero.notice_days, '0');
+  assert.equal(zero.notice_source, 'as set out in your lease');
+
+  // mysql2 can hand back strings.
+  assert.equal(renewalAskVars({ ...base, notice_period_days: '30' }, { defaultNoticeDays: 45 }).notice_days, '30');
+});
+
+test('both render paths build their variables the same way', () => {
+  // A placeholder that resolved in the nightly job but not the demand route would put a raw
+  // `{notice_days}` in front of a tenant. Neither caller may assemble its own set.
+  for (const f of ['../src/routes/public', '../src/services/renewalAskDispatch']) {
+    const src = require('node:fs').readFileSync(require.resolve(f), 'utf8');
+    const at = src.indexOf('renderRenewalAsk(');
+    assert.ok(at > 0, `${f} renders an ask`);
+    const call = src.slice(at, at + 260);
+    assert.ok(/renewalAskVars\(/.test(call), `${f} must build variables through the shared helper`);
+    assert.ok(!/tenant_name:\s/.test(call), `${f} must not hand-roll the variable set`);
+  }
+  // …and both lease lookups must supply what the helper reads, or first_name silently
+  // degrades to the full legal name and notice_period_days silently becomes the default.
+  const pub = require('node:fs').readFileSync(require.resolve('../src/routes/public'), 'utf8');
+  const disp = require('node:fs').readFileSync(require.resolve('../src/services/renewalAskDispatch'), 'utf8');
+  for (const [name, src] of [['public', pub], ['dispatch', disp]]) {
+    assert.ok(/t\.first_name AS tenant_first_name/.test(src), `${name} must select first_name`);
+    assert.ok(/notice_period_days/.test(src), `${name} must select notice_period_days`);
+  }
+});
+
+test('longDate renders a date a person would write, and refuses anything else', () => {
+  const { longDate } = require('../src/utils/renewalAsk');
+  assert.equal(longDate('2026-09-29'), '29 September 2026');
+  assert.equal(longDate('2026-01-01'), '1 January 2026');
+  assert.equal(longDate('2026-12-31'), '31 December 2026');
+  assert.equal(longDate('2026-13-01'), null, 'month 13 has no name');
+  assert.equal(longDate('2026-09-29T10:00:00'), null, 'a timestamp is not a date');
+  assert.equal(longDate(null), null);
+  assert.equal(longDate(''), null);
+});
+
+test('junk settings can never switch the minimum-tenancy floor OFF', () => {
+  // Every failure here has to land on the side of NOT messaging someone. A configured 0 means
+  // "no floor" — which makes junk dangerous, because Number([]) is 0 and Number(true) is 1, so
+  // a bad value would arrive looking like a deliberate setting and put a renewal question in
+  // front of a tenant on their second day in the flat.
+  const { renewalAskEligibility } = require('../src/utils/renewalAsk');
+  const lease = { start_date: '2026-08-01', end_date: '2026-09-01', notice_period_days: 30, contract_type: 1 };
+  const on = '2026-08-02';   // inside the notice window, but only day two of the tenancy
+
+  for (const junk of [null, undefined, '', '   ', 'abc', [], {}, true, false, NaN, Infinity, () => 7]) {
+    const e = renewalAskEligibility(lease, { today: on, minTenancyDays: junk });
+    assert.equal(e.eligible, false, `${JSON.stringify(String(junk))} must fall back to the 7-day floor`);
+    assert.equal(e.reason, 'too_soon_after_move_in');
+  }
+
+  // …while a real 0 still disables it, in either the number or the string mysql2 may return.
+  for (const off of [0, '0']) {
+    assert.equal(renewalAskEligibility(lease, { today: on, minTenancyDays: off }).eligible, true,
+      `${JSON.stringify(off)} is a deliberate "no floor" and must be honoured`);
+  }
+});
+
+test('the floor lifts on the right day, not a day either side', () => {
+  // The operator's own example: moves in 1 Aug, 30 days notice, lease ends 1 Sep — so the
+  // notice window opens on 2 Aug, the tenant's second day. With a 7-day floor the first ask
+  // waits until 8 Aug.
+  const { renewalAskEligibility } = require('../src/utils/renewalAsk');
+  const lease = { start_date: '2026-08-01', end_date: '2026-09-01', notice_period_days: 30, contract_type: 1 };
+  const at = (today) => renewalAskEligibility(lease, { today, minTenancyDays: 7 });
+
+  assert.equal(at('2026-08-01').reason, 'too_early', 'the notice window has not opened yet');
+  for (const d of ['2026-08-02', '2026-08-05', '2026-08-07']) {
+    const e = at(d);
+    assert.equal(e.eligible, false, `${d}: still inside the floor`);
+    assert.equal(e.reason, 'too_soon_after_move_in');
+    assert.equal(e.eligible_from, '2026-08-08', `${d}: must report when it lifts`);
+  }
+  assert.equal(at('2026-08-08').eligible, true, 'day 7 is served');
+  assert.equal(at('2026-08-09').eligible, true);
 });
