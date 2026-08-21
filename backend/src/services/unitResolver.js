@@ -15,6 +15,44 @@ function norm(s) {
 }
 function squish(s) { return norm(s).replace(/ /g, ''); }
 function toTokens(s) { const n = norm(s); return n ? n.split(' ') : []; }
+
+const FLOOR_UNIT_WORDS = new Set(['studio', 'flat', 'unit', 'room', 'apt', 'apartment', 'suite', 'rm', 'no']);
+
+function normalizeFloorUnit(text) {
+  if (typeof text !== 'string') return text;
+
+  const floorMarker = /(^|[^a-z0-9])(\d{1,2})\s*\/?\s*f(?=$|[^a-z0-9])/ig;
+  const letterToken = /(^|[^a-z0-9])([a-z])(?=$|[^a-z0-9])/ig;
+
+  for (const floor of text.matchAll(floorMarker)) {
+    const floorStart = floor.index + floor[1].length;
+    const floorEnd = floor.index + floor[0].length;
+    const floorDigits = floor[2];
+
+    for (const letter of text.matchAll(letterToken)) {
+      const letterStart = letter.index + letter[1].length;
+      const letterEnd = letter.index + letter[0].length;
+      const value = letter[2].toLowerCase();
+
+      if (letterStart <= floorEnd) continue;
+      if ((value === 'a' || value === 'i') && toTokens(text.slice(letterEnd)).length > 0) continue;
+
+      const betweenTokens = toTokens(text.slice(floorEnd, letterStart));
+      const allowedGap = betweenTokens.length === 0 ||
+        (betweenTokens.length === 1 && FLOOR_UNIT_WORDS.has(betweenTokens[0]));
+      if (!allowedGap) continue;
+
+      return norm([
+        text.slice(0, floorStart),
+        text.slice(floorEnd, letterStart),
+        text.slice(letterEnd),
+        `${floorDigits}${value}`,
+      ].join(' '));
+    }
+  }
+
+  return text;
+}
 // property initials alias: "Mong Kok" -> "mk", "Nam Pak Hong" -> "nph"
 function initials(name) { return toTokens(name).map(w => w[0]).join(''); }
 // A leading generic word carries no identity — the meaningful token is what
@@ -143,8 +181,9 @@ function candidateList(rows, cap = 8) {
  *   status: 'confident' | 'ambiguous' | 'property_only' | 'multi_unit' | 'none'
  */
 function scoreUnits(text, units) {
-  const qSquish = squish(text);
-  const qTokens = toTokens(text);
+  const scoreText = normalizeFloorUnit(text);
+  const qSquish = squish(scoreText);
+  const qTokens = toTokens(scoreText);
   if (!qTokens.length) return { status: 'none', match: null, candidates: [], query: String(text || '') };
 
   const rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u) }));
@@ -228,5 +267,5 @@ module.exports = {
   // formatters would drift apart silently the first time either gains a field.
   scoreUnits, resolveUnit, loadUnitsWithMarketable, optionsText, unitOut,
   // exported for tests
-  _norm: norm, _squish: squish, _editDistance: editDistance, _unitCore: unitCore,
+  normalizeFloorUnit, _norm: norm, _squish: squish, _editDistance: editDistance, _unitCore: unitCore,
 };
