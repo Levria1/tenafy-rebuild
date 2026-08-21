@@ -6,8 +6,7 @@ Consolidates the outstanding drafts into one message. Supersedes
 `tanechat-ask-relay-2026-08-22.md`, `tanechat-reply-renewals-2026-08-22.md`,
 `tanechat-reply-search-2026-08-21c.md` and `tanechat-reply-window-2026-08-21d.md`.
 
-⚠️ **One item is not deployed** — the classifier fix in §2. Deploy before sending, or cut
-that section. Everything else described here is live and verified.
+**Everything described here is deployed and verified against production.** Sendable as-is.
 
 ---
 
@@ -256,8 +255,9 @@ Chris
 
 ## Notes for Chris (not part of the message)
 
-- **§5 IS NOT DEPLOYED.** Commit `d5d15ca`, not pushed. Deploy before sending or cut that
-  section. Everything else is live and was verified against production.
+- **All live.** The classifier fix (`d5d15ca`) deployed 22 Aug and was verified on the
+  production process itself, not just the source file — questions classify as `unsure`,
+  plain answers unchanged.
 - **Question 1 makes no accusation** — three possibilities, one of them ours. If it turns out
   the relay was never built, nothing here needs walking back.
 - **Question 3 hands them a real decision.** Do not trim it: it is their own flagship example
