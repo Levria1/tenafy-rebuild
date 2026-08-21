@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frequently Asked Questions — Tane Residence</title>
+<meta name="description" content="Answers to common questions about renting with Tane Residence.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&family=DM+Sans:wght@400;500;600&family=Raleway:wght@500;600;700&display=swap">
+<style>
+  /* Palette and type lifted from taneresidence.com (WordPress/Divi custom CSS), so this page
+     reads as part of the same site rather than as a lookalike. The site commits to a single
+     light theme with a black masthead; this page does the same, deliberately, which is why
+     there is no prefers-color-scheme block. */
+  :root{
+    --black:#000000;
+    --ink:#1a1a1a;          /* site hero heading colour */
+    --body:#54595e;         /* a shade darker than the site's #666, for long-form answers */
+    --muted:rgba(30,30,30,0.55);
+    --green:#099679;        /* masthead rule, buttons */
+    --green-deep:#247568;   /* eyebrow + label green */
+    --green-mid:#0c8b78;    /* secondary accent */
+    --line:rgba(45,144,127,0.22);
+    --line-soft:#e8ebe9;
+    --panel:#f5f5f5;
+    --bg:#ffffff;
+    --display:"Cormorant Garamond",Georgia,'Times New Roman',serif;
+    --ui:"Raleway",Helvetica,Arial,sans-serif;
+    --text:"DM Sans",Helvetica,Arial,sans-serif;
+    --pill:100px;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--body);
+    font-family:var(--text);font-size:16px;line-height:1.7;font-weight:400;
+    -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+    display:flex;flex-direction:column;min-height:100vh;
+  }
+
+  /* ---- masthead: black bar, 1px green rule, exactly as the main site ---- */
+  .masthead{background:var(--black);border-bottom:1px solid var(--green)}
+  .masthead-in{
+    max-width:1180px;margin:0 auto;padding:16px 24px;
+    display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;
+  }
+  .brand{display:inline-flex;align-items:center;line-height:0}
+  .brand img{height:38px;width:auto;display:block}
+  .brand:focus-visible{outline:2px solid var(--green);outline-offset:6px}
+  .masthead-nav{display:flex;align-items:center;gap:28px;flex-wrap:wrap}
+  .masthead-nav a{
+    font-family:var(--ui);font-size:13px;font-weight:700;letter-spacing:1.5px;
+    text-transform:uppercase;color:#fff;text-decoration:none;transition:color .18s;
+  }
+  .masthead-nav a:hover,.masthead-nav a:focus-visible{color:var(--green)}
+  .masthead-nav a:focus-visible{outline:2px solid var(--green);outline-offset:4px}
+
+  /* ---- hero ---- */
+  .hero{padding:72px 24px 8px;text-align:center}
+  .eyebrow{
+    font-family:var(--text);font-size:13px;font-weight:600;letter-spacing:3px;
+    text-transform:uppercase;color:var(--green-deep);
+    border:1px solid var(--line);border-radius:var(--pill);
+    padding:9px 26px;display:inline-block;margin:0 0 26px;
+  }
+  .hero h1{
+    font-family:var(--display);font-weight:400;font-size:clamp(2.5rem,6vw,4.25rem);
+    line-height:1.1;color:var(--ink);margin:0 0 18px;text-wrap:balance;
+  }
+  .hero h1 strong{font-weight:600}
+  .hero-sub{
+    font-family:var(--text);font-size:16px;color:var(--muted);
+    max-width:46ch;margin:0 auto;text-wrap:balance;
+  }
+  .hero-sub a{color:var(--green-deep);text-decoration:none;border-bottom:1px solid var(--line)}
+  .hero-sub a:hover{color:var(--green);border-bottom-color:var(--green)}
+
+  /* ---- body ---- */
+  main{flex:1 0 auto}
+  .wrap{max-width:820px;margin:0 auto;padding:44px 24px 88px}
+
+  /* building picker, styled as one of the site's glass pills */
+  .picker{
+    display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:center;
+    margin:0 0 48px;padding:14px 26px;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--pill);width:fit-content;
+    margin-left:auto;margin-right:auto;
+  }
+  .picker label{
+    font-family:var(--text);font-size:12px;font-weight:600;letter-spacing:2px;
+    text-transform:uppercase;color:var(--muted);
+  }
+  select{
+    font-family:var(--ui);font-size:15px;font-weight:600;color:var(--green-deep);
+    padding:6px 30px 6px 12px;border:1px solid var(--line);border-radius:var(--pill);
+    background-color:#fff;cursor:pointer;appearance:none;-webkit-appearance:none;
+    background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23247568' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 12px center;
+  }
+  select:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+
+  /* category eyebrow + hairline rule */
+  .cat{
+    display:flex;align-items:center;gap:18px;
+    margin:52px 0 18px;
+  }
+  .cat:first-child{margin-top:0}
+  .cat h2{
+    font-family:var(--text);font-size:12px;font-weight:600;letter-spacing:3px;
+    text-transform:uppercase;color:var(--green-deep);margin:0;white-space:nowrap;
+  }
+  .cat span{flex:1;height:1px;background:var(--line-soft)}
+
+  /* accordions */
+  details{
+    border:1px solid var(--line-soft);border-radius:8px;margin-bottom:10px;
+    background:#fff;overflow:hidden;transition:border-color .18s;
+  }
+  details:hover{border-color:var(--line)}
+  details[open]{border-color:var(--line)}
+  summary{
+    font-family:var(--ui);font-size:16px;font-weight:600;color:var(--ink);
+    cursor:pointer;padding:18px 56px 18px 22px;list-style:none;position:relative;
+    transition:color .18s;
+  }
+  summary::-webkit-details-marker{display:none}
+  summary:hover{color:var(--green-deep)}
+  details[open] summary{color:var(--green-deep)}
+  summary::after{
+    content:'';position:absolute;right:24px;top:50%;width:8px;height:8px;
+    border-right:2px solid var(--green);border-bottom:2px solid var(--green);
+    transform:translateY(-70%) rotate(45deg);transition:transform .2s ease;
+  }
+  details[open] summary::after{transform:translateY(-30%) rotate(225deg)}
+  summary:focus-visible{outline:2px solid var(--green);outline-offset:-2px;border-radius:8px}
+  .answer{
+    padding:0 22px 22px;color:var(--body);font-size:15.5px;line-height:1.75;
+  }
+
+  .note,.err{font-family:var(--text);color:var(--muted);text-align:center}
+  .err{
+    border:1px solid var(--line-soft);border-radius:8px;padding:28px;
+    background:var(--panel);
+  }
+
+  /* ---- footer ---- */
+  .foot{background:var(--black);border-top:1px solid var(--green);color:rgba(255,255,255,0.62)}
+  .foot-in{
+    max-width:1180px;margin:0 auto;padding:34px 24px;
+    display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;
+    font-family:var(--text);font-size:13px;letter-spacing:.4px;
+  }
+  .foot a{color:#fff;text-decoration:none;border-bottom:1px solid var(--green)}
+  .foot a:hover{color:var(--green)}
+
+  @media (max-width:780px){
+    .masthead-in{padding:14px 18px;gap:14px}
+    .brand img{height:32px}
+    .masthead-nav{gap:18px}
+    .masthead-nav a{font-size:11px;letter-spacing:1.2px}
+    .hero{padding:48px 20px 4px}
+    .eyebrow{font-size:11px;letter-spacing:2px;padding:8px 18px;margin-bottom:20px}
+    .wrap{padding:32px 18px 64px}
+    .picker{border-radius:16px;padding:14px 18px;gap:10px}
+    summary{font-size:15px;padding:16px 48px 16px 18px}
+    .answer{padding:0 18px 18px}
+    .foot-in{justify-content:center;text-align:center}
+  }
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-in">
+    <a class="brand" href="https://taneresidence.com/" aria-label="Tane Residence — home">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAAA9CAMAAAAgXqTNAAAAPFBMVEVHcEz///////////////////////////////////////////////////////////////////////////+PybD1AAAAE3RSTlMA7S7fD1yQRTYEKMYct59severxLSAzgAABqNJREFUeNrtXIuSrKoO9QFiBBXM///r5SUGhJ6evavOPXWKjNVtKw9drKwEtGYYMmMGk5kRG2aWoZu1eUyGONbN4NGBKgyxcUJgZ9YLLFM/Dh2sGrOgfoLjAh2eL92Qd816eRsa6Jr11244MNbRKZmFHYSvwTI3s655zvKseeY87nR/LJn1zuRPHndkx6lg1oyKWRtYMLCpQ9gXuHecXsyCIhrG1GHrYL2i4YysTErDztrBeuVZIzIo8izoYDWZpVrMujpMBbNKN0ya1Zn1ZtbYYlaPhu9o+BJ40wW+lWfBB83qYL3zrJJZB3SBb2fwVWZBYhYT3tY1fqdMY31qwppBrlZXL1YI9pQlx1UqT4vGplau9cm3rIcpFsm6pnWn2Dk5TYoK2yRPpydacf0TzRIvN1yLueNdnpGlaZavj13oYaf2zMrX92GdT07doeX+NfOAJ2rIZrKHumca1HbXWLYCkBYzt724lmxaPP5NNCTMmrxpFGHnLmlvR9zYq3zafQSwYgVvjAwH34JN/ArVFtyIuaI7XkLBwBTffcSxPTgMcff1tpUfEVQL1knqqgFONJzeaYRGo1lWBaDEgWYNMGYVP4BlkmblJ6ZWBi/K5UJcZBoOZQ66HB3BopwF0tAEhGaHB6u4PJ3GYRhOv2/BAtcn3M3BgjqA9QiD72WZD5zoZUIYj4dvavZNhvqp4i7nukmLvhB2s9GQi7AbtuW+HlEIPC8oaG9wwltRFK4r8hysE+ujtRIghkFiDaxxLn9EZpERsWhtHiyR110MSDJOASQeeXjrhCCcS85maobPo+n1eK1nyXrqUILlyqGEG6zT3rEomLV9AZZ2hF1erKVOfZkqWPbXHMBi5SgCzgVY5eIcVMAaFav+nSiX47Abk+i+ww+/ydjuD2Cdjur6PuachIynYwrwOrMgB+uqMmunjzVX3QBrMczpRsks29hkDgpW/VpMCVZDsoSPLW5zmgVD/OG3iNYPYIVCKQh4RTFj7obsC2b5Fl5gMZynnAY1sDxOFTf0V6upZsnawyyqWZ/AOhMFx9ctgUcLPoPFcQ2owJBilf3cW9EQ6EA9DW2h+wWfkt53YTI4Lpz0WAML3O3aaJjH3IB8EgV/p6Y2GzFHVrEJVprUvJLSiBb8wKyowCy2E24lJWnHK89SNADui/f85bId+RMnTXji4HHpBXSZKHfxgKFICxTtRtzMcslH6NNfUvUx+0zeKrKO1mZW8lesOIvn1vQJLHEH5wMpWKBDSFwis9ZkMNST0iPKzFOSuN/GD/e6jyB51vFSHcusp7J6fBrignkEq5Y+HU9Fx6y59UZDAmuXFelzsq8+pQ6zYcpbTBhCFuT1eqrnWTXNAqXvpLSZEDJukxuouyFzxzZcK5rlr0nCTSoj/0KzRFHwxa3jUB+YtZXzBJXSGC9CH/MsQe9OeLBLsMTCsoDJ6mBxNzJbLRqSdUwfDffaaLSi4XLtmUm87MTYbdO0VmyzE4oPYEnkt+k7v37i2K/yLD/mSxGsdIazJ5CqaJY0Ic8qKz9hzNbxHsixMlHGBlj4JyZbYG2UlyS/jvH8+k2eNc81ZmVFfNCrMGvyl/ECizR2WYw8JGDm75k1Ys4cbZklhCWWxjFyjXxG0y2wJJbH2a1ZQdjP4IbfMKsK1oBzmabcYAFJJrwQ1TL4p3Vkow+EPENGm+0Dsww2NGuzYwVxlnt/AsAAlWxDJbdYsnGXd6y69Q7n0VcYfmYWyBpYIMzFnmuVT56VemZLjF5vgccM9fFeBdrZU9XvtwTeFJHpfB5LfPvu2iNBMp/JufmsyjqWGMDSJ09/KXkAkfmNCWCRkucUkrT9dKKqZyPjepa/d19GLzZHWtJwP3W5DRcHnSrZUKTv60fpWuTXfQglqXhSN2w8lhBfLx7zMTKLjUXSYonORj4UdAExvhMq74YjpYJ0swWeFdVh+Oe4nMdjr+5bxoKj1PcNqbHQWZ2lAHxOoSe2OC7qjg/0jXbKLGg98Pr1SjsDeB0p3Bb8nVh3Zs/WSlIgKwqkKGwuy4RsQSyUG7IOP3dDr9a2OClyJKuYdPIDs/5Nr5A6rP5vneMIdc36G2b9V62pWafpYDXB+sCs/ib3m1mlwOvOrD9gVgfrR83qbvgLZiWBN51Z5Xy0fJQqejSsMCuuxxtcJ2q6u+EbrLYdnVmFXbsMZmeYucXpaQeLzLWGhmaRha3uhqWZNlidWaWNjcdSHawqs6C7YWfWP6lZU2dWJeFap63yN/H+tvvL5rFl/V/PRPsfDkCEbANL6moAAAAASUVORK5CYII=" alt="Tane Residence" width="300" height="61">
+    </a>
+    <nav class="masthead-nav" aria-label="Tane Residence">
+      <a href="https://taneresidence.com/">Home</a>
+      <a href="https://taneresidence.com/properties/">Properties</a>
+      <a href="https://taneresidence.com/about/">About</a>
+      <a href="https://taneresidence.com/contact/">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <p class="eyebrow">Residents &amp; enquiries</p>
+  <h1>Frequently <strong>asked questions</strong></h1>
+  <p class="hero-sub">Answers to the things people ask us most. Can’t find it?
+    <a href="mailto:mgmt@taneresidence.com">Email us</a>.</p>
+</div>
+
+<main>
+  <div class="wrap">
+    <div id="picker" class="picker" hidden>
+      <label for="building">Some answers differ by building</label>
+      <select id="building">
+        <option value="">Choose your building…</option>
+      </select>
+    </div>
+
+    <div id="out"><p class="note">Loading…</p></div>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="foot-in">
+    <span>© Tane Residence — Serviced apartments, Hong Kong</span>
+    <span><a href="mailto:mgmt@taneresidence.com">mgmt@taneresidence.com</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  // Same-origin: nginx on this host proxies /api/website/ through to Tenafy. Keeping it relative
+  // means the browser never makes a cross-site request, so there is no CORS grant to maintain and
+  // nothing breaks the day a domain changes.
+  var API = '/api/website/taneres/faqs';
+
+  var LABELS = {
+    payments: 'Payments', moving_in: 'Moving in', moving_out: 'Moving out',
+    maintenance: 'Maintenance', building_access: 'Building access',
+    lease_renewal: 'Leases & renewals', other: 'General'
+  };
+  // Headings appear in this order; anything unrecognised falls to the end.
+  var ORDER = ['payments','moving_in','moving_out','maintenance','building_access','lease_renewal','other'];
+
+  var out = document.getElementById('out');
+  var picker = document.getElementById('picker');
+  var select = document.getElementById('building');
+
+  // Everything from the API is treated as text, never markup. An answer is written by staff in
+  // a CMS; if it ever contained a tag, this is what stops it running in a visitor's browser.
+  function el(tag, text) {
+    var n = document.createElement(tag);
+    if (text != null) n.textContent = String(text);
+    return n;
+  }
+
+  function categoryHeading(key) {
+    var row = document.createElement('div');
+    row.className = 'cat';
+    row.appendChild(el('h2', LABELS[key] || 'General'));
+    row.appendChild(document.createElement('span'));
+    return row;
+  }
+
+  function render(data) {
+    var faqs = (data && data.faqs) || [];
+    out.textContent = '';
+
+    if (!faqs.length) {
+      var empty = el('p', 'No questions have been published yet.');
+      empty.className = 'note';
+      out.appendChild(empty);
+      return;
+    }
+
+    var groups = {};
+    faqs.forEach(function (f) {
+      var key = f.category || 'other';
+      (groups[key] = groups[key] || []).push(f);
+    });
+
+    var keys = Object.keys(groups).sort(function (a, b) {
+      var ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+
+    // A lone "General" heading labels nothing — it is the only group on the page. Any real
+    // categorisation brings the headings straight back.
+    var showHeadings = !(keys.length === 1 && keys[0] === 'other');
+
+    keys.forEach(function (key) {
+      if (showHeadings) out.appendChild(categoryHeading(key));
+      groups[key].forEach(function (f) {
+        var d = document.createElement('details');
+        d.appendChild(el('summary', f.title || 'Question'));
+        var body = el('div', f.body || '');
+        body.className = 'answer';
+        body.style.whiteSpace = 'pre-line';   // keeps paragraph breaks staff typed
+        d.appendChild(body);
+        out.appendChild(d);
+      });
+    });
+  }
+
+  function fillPicker(list, current) {
+    if (!list || !list.length) { picker.hidden = true; return; }
+    picker.hidden = false;
+    while (select.options.length > 1) select.remove(1);
+    list.forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.display_name;
+      if (String(p.id) === String(current)) o.selected = true;
+      select.appendChild(o);
+    });
+  }
+
+  function load(propertyId) {
+    var url = propertyId ? API + '?property_id=' + encodeURIComponent(propertyId) : API;
+    fetch(url, { headers: { Accept: 'application/json' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (json) {
+        var data = json && json.data;
+        render(data);
+        fillPicker(data && data.available_properties, propertyId);
+        try { sessionStorage.setItem('tane_faq_cache', JSON.stringify(data)); } catch (e) {}
+      })
+      .catch(function () {
+        // Show the last copy this visitor saw rather than an empty page.
+        var cached = null;
+        try { cached = JSON.parse(sessionStorage.getItem('tane_faq_cache')); } catch (e) {}
+        if (cached) { render(cached); return; }
+        out.textContent = '';
+        var box = el('div', 'We can’t load the questions just now. Please try again shortly, or email mgmt@taneresidence.com.');
+        box.className = 'err';
+        out.appendChild(box);
+      });
+  }
+
+  select.addEventListener('change', function () {
+    load(select.value || null);
+    // Keep the chosen building in the URL so the page can be linked and reloaded.
+    var u = new URL(window.location.href);
+    if (select.value) u.searchParams.set('building', select.value);
+    else u.searchParams.delete('building');
+    history.replaceState(null, '', u);
+  });
+
+  var initial = new URL(window.location.href).searchParams.get('building');
+  load(initial || null);
+})();
+</script>
+</body>
+</html>
