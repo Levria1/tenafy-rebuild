@@ -264,13 +264,33 @@
   // nothing breaks the day a domain changes.
   var API = '/api/website/taneres/faqs';
 
+  // THIRD copy of the category list — the other two are the admin dropdown
+  // (frontend/src/components/chatbot/KnowledgeCard.jsx) and the validator
+  // (backend/src/routes/chat.js). All three must be extended together: a category
+  // missing here renders as a raw slug heading like "water_heating" on the live
+  // site. Wording may differ from the admin labels on purpose — this is the
+  // resident-facing page, so "General" reads better than "Other".
   var LABELS = {
-    payments: 'Payments', moving_in: 'Moving in', moving_out: 'Moving out',
-    maintenance: 'Maintenance', building_access: 'Building access',
+    your_unit: 'Your unit',
+    power: 'Power & fuse boxes',
+    appliances_laundry: 'Appliances & laundry',
+    water_heating: 'Water, heating & drains',
+    getting_here: 'Getting here & addresses',
+    internet: 'Internet & wifi',
+    rubbish: 'Rubbish & recycling',
+    building_access: 'Building access',
+    access_safety: 'Access & safety',
+    nearby: 'Nearby',
+    house_rules: 'House rules',
+    payments: 'Payments',
+    maintenance: 'Maintenance',
+    moving_in: 'Moving in', moving_out: 'Moving out',
     lease_renewal: 'Leases & renewals', other: 'General'
   };
   // Headings appear in this order; anything unrecognised falls to the end.
-  var ORDER = ['payments','moving_in','moving_out','maintenance','building_access','lease_renewal','other'];
+  var ORDER = ['your_unit','power','appliances_laundry','water_heating','getting_here',
+    'internet','rubbish','building_access','access_safety','nearby','house_rules',
+    'payments','maintenance','moving_in','moving_out','lease_renewal','other'];
 
   var out = document.getElementById('out');
   var picker = document.getElementById('picker');

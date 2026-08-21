@@ -822,7 +822,20 @@ router.put('/settings', async (req, res) => {
 // ---------------------------------------------------------------------------
 const KNOWLEDGE_KINDS = ['rule', 'faq'];
 const KNOWLEDGE_VISIBILITIES = ['public', 'internal'];
-const FAQ_CATEGORIES = ['payments', 'moving_in', 'moving_out', 'maintenance', 'building_access', 'lease_renewal', 'other'];
+// The VALIDATOR. Anything not in this list is rewritten to 'other' on save, so a
+// category added to the UI and not here vanishes silently the moment it is used.
+// MUST stay in sync with FAQ_CATEGORIES in
+// frontend/src/components/chatbot/KnowledgeCard.jsx.
+//
+// Extended for the tenant-handbook import: the original seven were shaped for a
+// leasing FAQ, and the bulk of the real corpus is fuse boxes, appliances and
+// water. The leasing categories are retained so existing entries keep their filing.
+const FAQ_CATEGORIES = [
+  'your_unit', 'power', 'appliances_laundry', 'water_heating', 'getting_here',
+  'internet', 'rubbish', 'building_access', 'access_safety', 'nearby',
+  'house_rules', 'payments', 'maintenance', 'moving_in', 'moving_out',
+  'lease_renewal', 'other',
+];
 
 function normalizePropertyIds(value) {
   if (!Array.isArray(value)) return null;

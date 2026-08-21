@@ -203,8 +203,32 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
     );
 
     // Which buildings the site should offer in its selector — public facts only, never their answers.
+    //
+    // A property qualifies EITHER because the operator gave it a public_label —
+    // curating one is the act of saying "show this building to the public" — OR
+    // because a published website FAQ is scoped to it.
+    //
+    // It used to require the scoped FAQ alone, which made the selector empty
+    // whenever every FAQ was Global. That is the normal state before
+    // building-specific content is written: 7 published FAQs, 0 scoped rows, 16
+    // curated labels going unused, and a search box on the live site that could
+    // not match anything a tenant typed. Requiring content to exist before the
+    // building can be named had the dependency backwards — a tenant identifies
+    // their building first, and the answers they get may well be the global ones.
     const [available] = await pool.execute(
-      `SELECT DISTINCT p.id,p.display_name,p.public_label,p.public_building_name,p.public_aliases,p.street_address,p.district FROM property p JOIN chat_knowledge_property s ON s.property_id=p.id JOIN chat_knowledge ck ON ck.id=s.chat_knowledge_id WHERE p.deleted_at IS NULL AND ck.kind='faq' AND ck.status=1 AND ck.publish_website=1 ORDER BY COALESCE(NULLIF(TRIM(p.public_label),''),p.display_name),p.id`
+      `SELECT DISTINCT p.id,p.display_name,p.public_label,p.public_building_name,p.public_aliases,p.street_address,p.district
+         FROM property p
+        WHERE p.deleted_at IS NULL AND p.status = 1
+          AND (
+            TRIM(COALESCE(p.public_label,'')) <> ''
+            OR EXISTS (
+              SELECT 1 FROM chat_knowledge_property s
+                JOIN chat_knowledge ck ON ck.id = s.chat_knowledge_id
+               WHERE s.property_id = p.id
+                 AND ck.kind='faq' AND ck.status=1 AND ck.publish_website=1
+            )
+          )
+        ORDER BY COALESCE(NULLIF(TRIM(p.public_label),''),p.display_name),p.id`
     );
 
     const faqs = rows.map(r => ({

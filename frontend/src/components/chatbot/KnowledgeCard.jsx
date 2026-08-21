@@ -13,8 +13,10 @@
  * VISIBILITY: each entry is 'internal' (default) or 'public'. Public entries are
  * ALSO served to external prospect-facing channels (TaneChat/WhatsApp) via
  * GET /api/public/chat/knowledge — the internal bot sees both. That makes the
- * Public list the prospect-facing surface, which is why this card carries an
- * All/Public/Internal filter with counts.
+ * Public list the prospect-facing surface. The website is a SEPARATE destination
+ * (publish_website), so the filter is one tab per audience — All / Website /
+ * TaneChat / Tenafy (Internal) — with counts. An entry can be on more than one,
+ * so the tabs overlap by design; Tenafy (Internal) means shared with nobody else.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -30,10 +32,38 @@ import Cookies from 'js-cookie';
 import { chatApi } from '../../lib/api';
 
 const { Paragraph, Text } = Typography;
+// Ordered to match how a resident actually reads the page, and sized to the real
+// corpus rather than guessed: the counts are how the 220 entries of the 2026 Tane
+// Public FAQ document actually cluster.
+//
+// The original seven were designed for a LEASING FAQ. That document is a tenant
+// handbook, and three of them — moving_in, moving_out, lease_renewal — matched
+// almost nothing in it while a third of the entries are fuse boxes, appliances
+// and water. Those three are kept anyway: they are correct for the leasing
+// questions already in the database, and dropping a category would orphan the
+// entries filed under it.
+//
+// MUST stay in sync with FAQ_CATEGORIES in backend/src/routes/chat.js — that list
+// is the validator, and a value only present here is silently rewritten to 'other'
+// on save.
 const FAQ_CATEGORIES = [
-  ['payments','Payments'],['moving_in','Moving in'],['moving_out','Moving out'],
-  ['maintenance','Maintenance'],['building_access','Building access'],
-  ['lease_renewal','Lease renewal'],['other','Other'],
+  ['your_unit','Your unit'],                    // 40 entries — appliances, fittings, how things work
+  ['power','Power & fuse boxes'],               // 36 — the single biggest cluster of photographs
+  ['appliances_laundry','Appliances & laundry'],// 36
+  ['water_heating','Water, heating & drains'],  // 26
+  ['getting_here','Getting here & addresses'],  // 24
+  ['internet','Internet & wifi'],               // 19
+  ['rubbish','Rubbish & recycling'],            // 18
+  ['building_access','Building access'],        // access, keys, doors
+  ['access_safety','Access & safety'],          // 7 — fire, emergencies
+  ['nearby','Nearby'],                          // 5 — shops, transport
+  ['house_rules','House rules'],                // noise, pets, guests
+  ['payments','Payments'],                      // 8
+  ['maintenance','Maintenance'],                // reporting faults
+  ['moving_in','Moving in'],
+  ['moving_out','Moving out'],
+  ['lease_renewal','Lease renewal'],
+  ['other','Other'],
 ];
 
 // ---------------------------------------------------------------------------
@@ -104,7 +134,7 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
   useEffect(() => { chatApi.listKnowledgeProperties().then(r=>setProperties(r.data.data||[])).catch(()=>{}); }, []);
 
   // Filter state — client-side, since every entry is already loaded.
-  const [visFilter, setVisFilter] = useState('all');   // 'all' | 'public' | 'internal'
+  const [visFilter, setVisFilter] = useState('all');   // 'all' | 'website' | 'tanechat' | 'internal'
   const [search, setSearch] = useState('');
 
   // Bulk-import (FAQ only) state
@@ -117,17 +147,26 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
 
   // Counts come from the UNFILTERED set for this kind, so the segmented control
   // always shows the true totals (and doubles as the "what's public?" answer).
+  // One filter per AUDIENCE, matching the "Shared with" column exactly. The old
+  // Public/Internal pair predated the website as a separate destination, so an
+  // entry on the website but not shared with TaneChat counted as "Internal" —
+  // which read as "nobody outside sees this" about a row published to the open
+  // internet. The audiences are not mutually exclusive: an entry can be on the
+  // website AND with TaneChat, so it is counted under both. Tenafy always sees
+  // everything, so "Tenafy (Internal)" means ONLY Tenafy — shared with no one.
   const counts = useMemo(() => ({
     all: items.length,
-    public: items.filter(i => i.visibility === 'public').length,
-    internal: items.filter(i => i.visibility !== 'public').length,
+    website: items.filter(i => !!i.publish_website).length,
+    tanechat: items.filter(i => i.visibility === 'public').length,
+    internal: items.filter(i => i.visibility !== 'public' && !i.publish_website).length,
   }), [items]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((i) => {
-      if (visFilter === 'public' && i.visibility !== 'public') return false;
-      if (visFilter === 'internal' && i.visibility === 'public') return false;
+      if (visFilter === 'website' && !i.publish_website) return false;
+      if (visFilter === 'tanechat' && i.visibility !== 'public') return false;
+      if (visFilter === 'internal' && (i.visibility === 'public' || i.publish_website)) return false;
       if (q) {
         // Rules have no title, so search title+body combined — works for both kinds.
         const hay = `${i.title || ''} ${i.body || ''}`.toLowerCase();
@@ -405,8 +444,9 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
           onChange={setVisFilter}
           options={[
             { label: `All (${counts.all})`, value: 'all' },
-            { label: `Public (${counts.public})`, value: 'public' },
-            { label: `Internal (${counts.internal})`, value: 'internal' },
+            { label: `Website (${counts.website})`, value: 'website' },
+            { label: `TaneChat (${counts.tanechat})`, value: 'tanechat' },
+            { label: `Tenafy (Internal) (${counts.internal})`, value: 'internal' },
           ]}
         />
         <Input
