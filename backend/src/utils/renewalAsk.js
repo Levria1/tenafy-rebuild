@@ -140,17 +140,54 @@ const NO = /\b(no|nope|leaving|leave|moving out|move out|vacate|vacating|termina
 // no and gives up. Strip negated phrases first and the sentence reads correctly.
 const NEGATED = /\b(?:not|never|won'?t|will not|do not|don'?t|cannot|can'?t)\s+(?:be\s+)?(?:renew(?:ing)?|stay(?:ing)?|extend(?:ing)?|continu(?:e|ing))\b/ig;
 
+// A clause opening with one of these is a question even when the tenant omitted the
+// question mark, which in a chat message they routinely do.
+const QUESTION_OPENER = /^(?:can|could|would|will|shall|should|may|might|is|are|was|were|do|does|did|have|has|how|what|when|where|which|who|why|any\s+chance)\b/i;
+
+function isInterrogative(clause) {
+  const t = clause.trim();
+  if (!t) return false;
+  return t.endsWith('?') || QUESTION_OPENER.test(t);
+}
+
+// Split on sentence terminators, KEEPING them, so a trailing '?' survives to be tested.
+function splitClauses(text) {
+  return String(text).split(/(?<=[.!?\n])/).map(s => s.trim()).filter(Boolean);
+}
+
 /**
  * Classify a free-text tenant reply. Deliberately conservative: anything that is not
  * an unambiguous yes or no is UNSURE. A wrong "leaving" is the expensive direction —
  * see applyRenewalReply, which refuses to act on it automatically anyway.
+ *
+ * ASKING ABOUT SOMETHING IS NOT AGREEING TO IT. The keyword lists cannot tell the two
+ * apart on their own: "extend", "continue" and "renew" are exactly the words a tenant
+ * uses to enquire, so "how much to extend?" and "can I extend?" both read as a
+ * confirmation. That is the one misreading with a real cost — "extend" is the only
+ * intent that acts automatically, so it would set renewal_reply and pull a home off
+ * the market on the strength of a question. A real message showed this: "Would it be
+ * possible to pause the lease for 25th Sep to 7th Oct and then continue it until
+ * December?" classified as extend, from a tenant who was simultaneously asking about
+ * a different studio.
+ *
+ * So signals are counted only OUTSIDE interrogative clauses. A yes that exists solely
+ * inside a question leaves nothing to count, and the answer falls through to UNSURE —
+ * recorded, non-acting, and put in front of a human. A statement alongside a question
+ * still counts: "Yes please. How much is it?" is an answer with a question attached.
  */
 function classifyRenewalReply(text) {
   if (typeof text !== 'string' || !text.trim()) return null;
-  const withoutNegations = text.replace(NEGATED, ' ');
-  const negated = withoutNegations !== text;
-  const hasYes = YES.test(withoutNegations);
-  const hasNo = negated || NO.test(withoutNegations);
+  let hasYes = false;
+  let hasNo = false;
+  for (const clause of splitClauses(text)) {
+    if (isInterrogative(clause)) continue;
+    // Negation is stripped per clause, so "not renewing" in one sentence cannot
+    // silence a plain "renewing" in another.
+    const stripped = clause.replace(NEGATED, ' ');
+    if (stripped !== clause) hasNo = true;
+    if (YES.test(stripped)) hasYes = true;
+    if (NO.test(stripped)) hasNo = true;
+  }
   if (hasYes && hasNo) return REPLY_UNSURE;   // "yes but I might leave" — a human should read it
   if (hasYes) return REPLY_EXTEND;
   if (hasNo) return REPLY_LEAVING;

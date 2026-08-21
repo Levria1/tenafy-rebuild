@@ -115,6 +115,61 @@ test('reply classification is conservative — ambiguity is never a decision', (
   assert.equal(classifyRenewalReply(null), null);
 });
 
+// ---------------------------------------------------------------------------
+// Asking about something is not agreeing to it.
+//
+// "extend", "continue" and "renew" are the words a tenant uses to ENQUIRE, so a
+// keyword match alone reads "how much to extend?" as a confirmation. That is the
+// one misreading with a real cost: extend is the only intent that acts
+// automatically, so it sets renewal_reply and withdraws a home from the market on
+// the strength of a question.
+//
+// From a live message, 2026-08-21 (Hollywood 1B): the tenant asked to pause the
+// lease for two weeks and continue to December, while separately asking about a
+// different studio. The old classifier called that "extend".
+// ---------------------------------------------------------------------------
+
+test('a question is never an answer, however affirmative its keywords', () => {
+  const q = [
+    'Would it be possible to pause the lease for 25th Sep to 7th Oct and then continue it until December?',
+    'can I extend?',
+    'how much to extend?',
+    'is it possible to extend',          // no question mark — chat messages often omit it
+    'Any chance of another month?',
+    'Could we renew for 6 months?',
+    'when does my lease renew?',
+  ];
+  for (const text of q) {
+    assert.equal(classifyRenewalReply(text), REPLY_UNSURE, `should not be an answer: ${text}`);
+  }
+});
+
+test('a question about leaving is not a notice either', () => {
+  // Milder — "leaving" never auto-applies — but still wrong, and it would put a
+  // false intent in front of staff as though the tenant had given notice.
+  assert.equal(classifyRenewalReply('do I have to move out?'), REPLY_UNSURE);
+  assert.equal(classifyRenewalReply('what happens if I leave early?'), REPLY_UNSURE);
+});
+
+test('a statement still counts when a question is attached', () => {
+  // The positive control for the rule above. If interrogative filtering were
+  // applied to the whole message rather than per clause, these would all become
+  // unsure and every real answer with a follow-up question would stop working.
+  assert.equal(classifyRenewalReply('Yes please. How much is it?'), REPLY_EXTEND);
+  assert.equal(classifyRenewalReply('We are staying. Can you send the contract?'), REPLY_EXTEND);
+  assert.equal(classifyRenewalReply('I am moving out. What do I do about the deposit?'), REPLY_LEAVING);
+});
+
+test('the four real confirmations of 2026-08-21 still classify as extend', () => {
+  // Recorded by hand after the relay did not run. If a future tightening of the
+  // classifier turns these into "unsure", it has gone too far — these are as
+  // plain as a tenant reply gets.
+  assert.equal(classifyRenewalReply('hello, I would like to confirm the apt for the following month. please extend my stay'), REPLY_EXTEND);
+  assert.equal(classifyRenewalReply('Yes please another month'), REPLY_EXTEND);
+  assert.equal(classifyRenewalReply('Yes please. 3 months please'), REPLY_EXTEND);
+  assert.equal(classifyRenewalReply('yes we will continue. for 1 month, if i needed i extend later'), REPLY_EXTEND);
+});
+
 const asked = { id: '7', end_date: '2026-09-25', contract_type: 1 };
 
 test('"extend" withdraws the unit; "leaving" never makes it firmly available', () => {
