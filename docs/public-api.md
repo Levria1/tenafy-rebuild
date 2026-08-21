@@ -324,6 +324,69 @@ not the rate to quote; use `asking_rent.amount` instead. A lease without an
 invoice schedule can store a whole-stay total, so search falls back to
 `rent_price_min` for `monthly_rent` in that case.
 
+##### `available_until`
+
+Every result carries `available_until`: the last day the unit can be occupied
+before its next booking begins, or `null` when nothing follows. Without it a unit
+that is free today but let from 1 January reads as open-ended, which is why this
+endpoint and `GET /units/:id` appeared to disagree about the same unit.
+
+##### Window search — "free at any point between two dates"
+
+`move_in_date` is a **single day**: the search returns units free on exactly that
+date, and `available_from` defaults to the date you sent. It is therefore not a
+property of the unit, and sending a far-future date does not widen the result —
+it answers for a tenant moving in on that far-future day.
+
+To ask "who could take someone from 21 Aug to 31 Dec", send both:
+
+```
+GET /units/search?available_between_start=2026-08-21&available_between_end=2026-12-31&district=Sheung%20Wan
+```
+
+Window mode takes precedence over `move_in_date` / `move_out_date` for filtering.
+Both bounds are required together; either alone, a malformed date, or an end
+before the start is a `400`.
+
+Each result reports the **longest single unbroken stretch** it is free within
+that window:
+
+| Field | Meaning |
+|---|---|
+| `available_from` | first day of that stretch |
+| `available_until` | last day of that stretch |
+| `coverage_days` | length of the stretch, inclusive — **for sorting; quote the dates** |
+| `availability_certain` | `false` when the opening depends on a tenant who has not confirmed departure |
+| `area_match` | `"district"`, `"same_side"`, or `"other"` |
+
+A unit free in two separate stretches reports only the longer one (ties resolve
+to the earlier). Fragments are never summed: "free 21 Aug–3 Sep and 5 Nov–31 Dec"
+is not an offer anyone can accept for a continuous stay.
+
+**`availability_certain`.** Single-day mode only offers an occupied unit when its
+tenant is Not Renewing. Window mode cannot apply that rule — it would discard the
+units window search exists to find — so it returns them and flags the
+uncertainty instead. `false` means a tenant who has not confirmed they are
+leaving is due out the day before the stretch begins. Quote those as *possible*,
+not as available.
+
+**`district` becomes a preference, `city` stays a constraint.** In window mode
+only, units outside the requested district still come back — in a sibling
+`alternatives_outside_area` array — so you can ask "nothing in Sheung Wan covers
+your dates, would you consider Mong Kok?" rather than reporting nothing. Ranking
+is district → same side of the harbour (`property.city`) → anywhere, then longest
+coverage. `city` remains a hard filter: naming a city states a constraint, and an
+option across the harbour is not an alternative.
+
+`alternatives_outside_area` is **always present in window mode**, as an empty
+array when there are none, so "no alternatives" is distinguishable from a
+deployment that predates the feature.
+
+Fields measured against a move-in date — `forward_gap_days`, `vacancy_gap_days`,
+`gap_within_tolerance`, `lease_duration_days`, `gap_band_days` — are `null` in
+window mode, because window mode has no single move-in date to measure from.
+`days_until_available` is measured from the start of the reported stretch.
+
 ### Advertising posting plan
 
 #### `GET /vacancies`
