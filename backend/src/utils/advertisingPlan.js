@@ -1,4 +1,5 @@
 const { orgTodaySql } = require('./orgTime');
+const { computePostingRent } = require('../services/advertisingTemplate');
 
 function slotKey(row) {
   return `${String(row && row.slot_kind || '').toLowerCase()}:${Number(row && row.slot_no)}`;
@@ -381,6 +382,22 @@ function moneyString(value) {
   return Number.isFinite(n) ? n.toFixed(2) : String(value);
 }
 
+function askingRentPublicShape(rentMin, rentMax, daysToAvailable) {
+  const posting = computePostingRent(rentMin, rentMax, daysToAvailable);
+  if (!posting) return null;
+  return {
+    amount: moneyString(posting.amount),
+    tier: posting.tier,
+    min: moneyString(rentMin),
+    max: moneyString(rentMax),
+  };
+}
+
+function unitDetailDaysToAvailable(currentMoveOut, today) {
+  if (!currentMoveOut) return null;
+  return diffLocalDays(today, currentMoveOut);
+}
+
 function tierName(tier) {
   if (Number(tier) === PRIORITY_VACANT) return 'VACANT';
   if (Number(tier) === PRIORITY_NR) return 'NR';
@@ -423,6 +440,7 @@ function vacancyToPublicShape(row) {
     rent_price_min: moneyString(row?.rent_price_min),
     rent_price_max: moneyString(row?.rent_price_max),
     rent_basis,
+    asking_rent: askingRentPublicShape(row?.rent_price_min, row?.rent_price_max, row?.days_left),
     tier,
     tier_name: tierName(tier),
     intent: row?.intent ?? null,
@@ -791,6 +809,8 @@ module.exports = {
   PRIORITY_VACANT,
   PRIORITY_NR,
   PRIORITY_OTHER,
+  askingRentPublicShape,
+  unitDetailDaysToAvailable,
   vacancyToPublicShape,
   manualVacancyToRow,
   overrideAppliesTo,

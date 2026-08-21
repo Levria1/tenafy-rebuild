@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { vacancyToPublicShape } = require('../src/utils/advertisingPlan');
+const {
+  vacancyToPublicShape,
+  unitDetailDaysToAvailable,
+} = require('../src/utils/advertisingPlan');
 
 function row(overrides = {}) {
   return {
@@ -87,6 +90,72 @@ test('scheduled lease publishes the lease figure with rent_basis lease', () => {
   assert.equal(result.rent_price_max, '10000.00');
 });
 
+test('asking_rent uses high tier at least 56 days out without changing existing rent fields', () => {
+  const result = vacancyToPublicShape(row({
+    invoicing: 'monthly',
+    rent: 12000,
+    rent_price_min: 14000,
+    rent_price_max: 16500,
+    days_left: 56,
+  }));
+
+  assert.deepEqual(result.asking_rent, {
+    amount: '16500.00',
+    tier: 'high',
+    min: '14000.00',
+    max: '16500.00',
+  });
+  assert.equal(result.rent, '12000.00');
+  assert.equal(result.rent_basis, 'lease');
+  assert.equal(result.rent_price_min, '14000.00');
+  assert.equal(result.rent_price_max, '16500.00');
+});
+
+test('asking_rent uses mid tier 42 to 55 days out', () => {
+  const result = vacancyToPublicShape(row({
+    rent_price_min: 14000,
+    rent_price_max: 16500,
+    days_left: 42,
+  }));
+
+  assert.equal(result.asking_rent.tier, 'mid');
+  assert.equal(result.asking_rent.amount, '15250.00');
+});
+
+test('asking_rent uses low tier 0 to 41 days out', () => {
+  const result = vacancyToPublicShape(row({
+    rent_price_min: 14000,
+    rent_price_max: 16500,
+    days_left: 41,
+  }));
+
+  assert.equal(result.asking_rent.tier, 'low');
+  assert.equal(result.asking_rent.amount, '14000.00');
+});
+
+test('already-vacant asking_rent uses raw negative days_left despite clamped availability', () => {
+  const result = vacancyToPublicShape(row({
+    tier: 1,
+    rent_price_min: 14000,
+    rent_price_max: 16500,
+    days_left: -12,
+    end_date: null,
+  }));
+
+  assert.equal(result.availability.days_until, 0);
+  assert.equal(result.asking_rent.tier, 'discount');
+  assert.equal(result.asking_rent.amount, '12600.00');
+});
+
+test('asking_rent is null when no price bounds exist', () => {
+  const result = vacancyToPublicShape(row({
+    rent_price_min: null,
+    rent_price_max: null,
+  }));
+
+  assert.equal(result.asking_rent, null);
+});
+
 test('invoicing NULL publishes advertised rent, not the lease figure', () => {
   const result = vacancyToPublicShape(row({
     invoicing: null,
@@ -131,4 +200,11 @@ test('Mong Kok 3B-style stay total is never published as monthly rent', () => {
   assert.equal(result.rent, '8800.00');
   assert.equal(result.rent_basis, 'advertised');
   assert.notEqual(result.rent, '113638.99');
+});
+
+test('unit detail day count matches DATEDIFF(end_date, today) semantics', () => {
+  assert.equal(unitDetailDaysToAvailable('2026-10-16', '2026-08-21'), 56);
+  assert.equal(unitDetailDaysToAvailable('2026-08-21', '2026-08-21'), 0);
+  assert.equal(unitDetailDaysToAvailable('2026-08-09', '2026-08-21'), -12);
+  assert.equal(unitDetailDaysToAvailable(null, '2026-08-21'), null);
 });

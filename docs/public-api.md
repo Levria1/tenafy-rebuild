@@ -143,6 +143,7 @@ All endpoints return JSON in this shape:
 | GET | `/utility/meters` | `?group_id=&unit_id=` | All meters |
 | GET | `/utility/meters/:id/readings` | | Reading history for a meter |
 | GET | `/utility/settlements` | `?tenant_id=` | All checkout settlements |
+| GET | `/chat/knowledge` | `?property_id=` | Public chat rules and FAQs |
 
 ### Cleaning
 
@@ -235,6 +236,45 @@ Only `confident` is safe to act on without confirming with the customer. Treat
 `ambiguous` and `property_only` as "ask which one" — the resolver deliberately
 declines to guess between equally-good matches rather than picking the first.
 
+#### `GET /units/:id`
+
+Requires `X-API-Key`; read-only keys are allowed. Returns the unit record with
+its current lease, amenities, gallery, booking token, photo URLs, and
+availability block.
+
+`data.asking_rent` is the rate to quote today. It has the same shape and meaning
+as on `GET /vacancies`: `amount`, `tier`, `min`, and `max`, or `null` when the
+unit has no usable price bounds. The tier is driven by the latest lease move-out
+date relative to `orgToday()`; an already-ended lease produces a negative day
+count and can return `discount`. Do not use `data.rent` or a current lease price
+as the asking price.
+
+```json
+{
+  "code": 200,
+  "data": {
+    "id": "123",
+    "name": "5B",
+    "rent_price_min": "14000.00",
+    "rent_price_max": "16500.00",
+    "availability": {
+      "available_from": "2026-09-16",
+      "current_move_out": "2026-09-15",
+      "status": "occupied_until_move_out"
+    },
+    "asking_rent": {
+      "amount": "15250.00",
+      "tier": "mid",
+      "min": "14000.00",
+      "max": "16500.00"
+    }
+  }
+}
+```
+
+`asking_rent.tier` values are `high`, `mid`, `low`, and `discount`, using the
+same timing ladder described under `GET /vacancies`.
+
 ### Advertising posting plan
 
 #### `GET /vacancies`
@@ -273,6 +313,15 @@ caveat instead of stating them as firm availability.
       "baths": 1,
       "size": 320,
       "rent": "12000.00",
+      "rent_price_min": "14000.00",
+      "rent_price_max": "16500.00",
+      "rent_basis": "lease",
+      "asking_rent": {
+        "amount": "15250.00",
+        "tier": "mid",
+        "min": "14000.00",
+        "max": "16500.00"
+      },
       "tier": 2,
       "tier_name": "NR",
       "intent": "NR",
@@ -324,13 +373,29 @@ Turnover is same-day, so `available_from` is the lease end date — the unit is
 free on that day. If a non-vacant row has no `end_date`, `available_from` is
 `null` and `certain` is `false`.
 
+`asking_rent` is the rate to quote today. It is computed from
+`rent_price_min`, `rent_price_max`, and the unit's availability timing. The
+money fields (`amount`, `min`, `max`) use the same two-decimal string format as
+the existing rent fields. If the unit has no usable price bounds,
+`asking_rent` is `null`.
+
+`asking_rent.tier` explains where the quote came from:
+
+| Tier | Meaning |
+|---|---|
+| `high` | Unit is at least 56 days from availability; quote the top of the range |
+| `mid` | Unit is 42-55 days from availability; quote the midpoint |
+| `low` | Unit is available in 0-41 days, has just become vacant, or availability is unknown; quote the bottom of the range |
+| `discount` | Unit has already been vacant for more than one day; quote the discounted bottom rung |
+
 `rent` is accompanied by `rent_price_min`, `rent_price_max` and `rent_basis`
-(`"lease"` | `"advertised"` | `null`), so a caller can quote a range and knows
-which figure it is looking at.
+(`"lease"` | `"advertised"` | `null`) for compatibility. **`rent` is not an
+asking price and must not be treated as the rate to quote today.**
 
 - **`rent_basis: "lease"`** — the unit's current or last lease has a recurring
   invoice schedule, so `rent` is the rent actually invoiced (`leasing.price`,
-  falling back to the legacy `amount` only when `price` is unset).
+  falling back to the legacy `amount` only when `price` is unset). This is the
+  sitting tenant's contracted figure and must never be quoted to a prospect.
 - **`rent_basis: "advertised"`** — that lease has **no** invoice schedule, so
   `rent` is the unit's own advertised price (`rent_price_min`). A lease with no
   schedule stores a figure that is sometimes a whole-stay total and sometimes an
@@ -1015,6 +1080,27 @@ For an LLM-based assistant (ChatGPT, Claude, etc.), provide as the system prompt
 4. Instructions like: "Use the Tenafy Public API to answer questions about the property portfolio. Fetch data via GET requests with the X-API-Key header. Never attempt POST/PUT/DELETE."
 
 If using function-calling / tools, declare one tool per endpoint (or a single generic `tenafy_get(path, query)` tool that the AI can invoke with the path and query params.)
+
+---
+
+## Chat Knowledge
+
+#### `GET /chat/knowledge`
+
+Requires `X-API-Key`; read-only keys are allowed. Returns public team rules and
+FAQs for external chat channels, plus a ready-to-append `prompt_block`.
+Optional `property_id` scopes the response to entries that apply to that
+property.
+
+The response includes `version`, also sent as the ETag. `version` is computed
+over the whole response, including `property_context`, so a scoped and an
+unscoped call return different versions even when the FAQ bodies are
+byte-identical. Clients must key their cache per property. Otherwise the cache
+will thrash, and a scoped response can overwrite an unscoped one. This is
+deliberate: a version that covered only the bodies could collide across scopes.
+
+Use `If-None-Match` with the ETag to receive `304` when that exact scoped
+variant has not changed.
 
 ---
 

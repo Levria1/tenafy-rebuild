@@ -1,5 +1,5 @@
 const express = require('express');
-const { orgToday, orgTodaySql, orgWallClock } = require('../utils/orgTime');
+const { orgToday, orgTodaySql, orgWallClock, dbDate } = require('../utils/orgTime');
 const crypto = require('crypto');
 const router = express.Router();
 const { authenticateApiKey } = require('../middleware/apiKeyAuth');
@@ -41,6 +41,8 @@ const {
   vacancyNoMatchReason,
   partnerForwardBlock,
   compareVacancyFit,
+  askingRentPublicShape,
+  unitDetailDaysToAvailable,
   resolveAvailabilityWindows,
   resolveGapBands,
   resolveInquiryBookingSettings,
@@ -3188,17 +3190,19 @@ router.get('/units/:id', async (req, res) => {
       [id]
     );
     let currentMoveOut = null;
-    let availableFrom = orgToday();
+    const today = orgToday();
+    let availableFrom = today;
     if (latestLease && latestLease.end_date) {
-      const endStr = latestLease.end_date instanceof Date
-        ? latestLease.end_date.toISOString().split('T')[0]
-        : String(latestLease.end_date).split('T')[0];
-      currentMoveOut = endStr;
-      const next = new Date(endStr);
-      next.setDate(next.getDate() + 1);
-      const nextStr = next.toISOString().split('T')[0];
-      if (nextStr > availableFrom) availableFrom = nextStr;
+      const endStr = dbDate(latestLease.end_date);
+      if (endStr) {
+        currentMoveOut = endStr;
+        const next = new Date(endStr);
+        next.setDate(next.getDate() + 1);
+        const nextStr = next.toISOString().split('T')[0];
+        if (nextStr > availableFrom) availableFrom = nextStr;
+      }
     }
+    const daysToAvailable = unitDetailDaysToAvailable(currentMoveOut, today);
 
     const base = `${req.protocol}://${req.get('host')}`;
 
@@ -3223,6 +3227,7 @@ router.get('/units/:id', async (req, res) => {
               ? 'vacant'
               : 'never_leased',
         },
+        asking_rent: askingRentPublicShape(unit.rent_price_min, unit.rent_price_max, daysToAvailable),
       },
     });
   } catch (error) {
