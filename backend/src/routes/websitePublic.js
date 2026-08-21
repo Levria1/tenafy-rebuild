@@ -99,8 +99,27 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
     );
 
     const faqs = rows.map(r => ({
-      id: String(r.id), category: r.category || 'other', title: r.title, body: r.body, updated_at: r.updated_at,
+      id: String(r.id), category: r.category || 'other', title: r.title, body: r.body, updated_at: r.updated_at, images: [],
     }));
+
+    if (faqs.length) {
+      const ids = faqs.map(f => f.id);
+      const byFaq = new Map(faqs.map(f => [f.id, f.images]));
+      const placeholders = ids.map(() => '?').join(',');
+      const [images] = await pool.execute(
+        `SELECT cki.id,cki.chat_knowledge_id,cki.file_id,cki.caption FROM chat_knowledge_image cki JOIN file f ON f.id=cki.file_id WHERE cki.chat_knowledge_id IN (${placeholders}) AND f.deleted_at IS NULL ORDER BY cki.sort_order,cki.id`,
+        ids
+      );
+      for (const img of images) {
+        const list = byFaq.get(String(img.chat_knowledge_id));
+        if (!list) continue;
+        list.push({
+          id: String(img.id),
+          url: `/api/file/preview/${String(img.file_id)}`,
+          caption: img.caption || null,
+        });
+      }
+    }
     const available_properties = available.map(p => ({ id: String(p.id), display_name: p.display_name }));
 
     // Hashed over the response itself, so an edit anywhere — text, order, scope, a renamed

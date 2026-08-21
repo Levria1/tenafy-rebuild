@@ -23,9 +23,10 @@ const publicRouter = require('../src/routes/public');
  * database. This suite exists so the property is guarded on every commit, not only when
  * someone remembers to rehearse.
  */
-function emulatedPool({ knowledge, links, deletedProperties = [] }) {
+function emulatedPool({ knowledge, links, images = [], files = [], deletedProperties = [] }) {
   const linkedTo = (id) => links.filter(l => String(l.knowledge_id) === String(id));
   const isDeleted = (pid) => deletedProperties.map(String).includes(String(pid));
+  const fileFor = (id) => files.find(f => String(f.id) === String(id));
 
   return {
     execute: async (sql, params = []) => {
@@ -36,11 +37,29 @@ function emulatedPool({ knowledge, links, deletedProperties = [] }) {
       const selectsBodies = /SELECT DISTINCT ck\.id/.test(flat) || /SELECT DISTINCT ck\.id,ck\.category/.test(flat);
       const selectsTopics = /SELECT ck\.id, ck\.kind, ck\.category/.test(flat);
       const selectsPropertyRow = /FROM property WHERE id/.test(flat);
+      const selectsImages = /FROM chat_knowledge_image cki JOIN file f ON f\.id=cki\.file_id/.test(flat);
 
       if (selectsPropertyRow) {
         const pid = params[0];
         if (isDeleted(pid) && /deleted_at IS NULL/.test(flat)) return [[]];
         return [[{ id: pid, display_name: 'Right Building' }]];
+      }
+
+      if (selectsImages) {
+        const askedFor = new Set(params.map(String));
+        const excludesDeletedFiles = /f\.deleted_at IS NULL/.test(flat);
+        const rows = images
+          .filter(img => askedFor.has(String(img.chat_knowledge_id)))
+          .filter((img) => {
+            const file = fileFor(img.file_id);
+            if (!file) return false;
+            if (excludesDeletedFiles && file.deleted_at != null) return false;
+            return true;
+          })
+          .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)
+            || (BigInt(a.id) < BigInt(b.id) ? -1 : BigInt(a.id) > BigInt(b.id) ? 1 : 0))
+          .map(img => ({ ...img }));
+        return [rows];
       }
 
       if (selectsBodies) {
@@ -164,6 +183,12 @@ const FIXTURES = {
     // topics query, so dropping that query's visibility filter would go unnoticed.
     { knowledge_id: '6', property_id: '42' },
   ],
+  images: [
+    { id: '100', chat_knowledge_id: '2', file_id: '200', caption: 'Fuse box in the hallway', sort_order: 0 },
+  ],
+  files: [
+    { id: '200', deleted_at: null },
+  ],
 };
 
 function handlerFor(router, routePath) {
@@ -284,6 +309,60 @@ test('website: a scoped answer is absent for a DIFFERENT building', async () => 
 test('website: the right building gets its own answer', async () => {
   const r = await callWebsite('42');
   assert.ok(r.wire.includes(SCOPED_BODY));
+});
+
+test('website: an image on a scoped FAQ is absent until the right building is chosen', async () => {
+  const unscoped = await callWebsite(null);
+  assert.ok(!unscoped.wire.includes('/api/file/preview/200'));
+  assert.equal(unscoped.body.data.faqs.find(f => f.id === '1').images.length, 0);
+
+  const right = await callWebsite('42');
+  const scoped = right.body.data.faqs.find(f => f.id === '2');
+  assert.deepEqual(scoped.images, [
+    { id: '100', url: '/api/file/preview/200', caption: 'Fuse box in the hallway' },
+  ]);
+});
+
+test('website: an image whose file was deleted does not appear', async () => {
+  const r = await callWebsite('42', {
+    ...FIXTURES,
+    files: [{ id: '200', deleted_at: new Date(0) }],
+  });
+  const scoped = r.body.data.faqs.find(f => f.id === '2');
+  assert.deepEqual(scoped.images, []);
+});
+
+test('website: FAQ entries without images return an empty array', async () => {
+  const r = await callWebsite(null);
+  const global = r.body.data.faqs.find(f => f.id === '1');
+  assert.deepEqual(global.images, []);
+});
+
+test('website: version changes when an image is added or captioned', async () => {
+  const bare = await callWebsite(null, {
+    ...FIXTURES,
+    images: [],
+    files: [],
+  });
+  const withImage = await callWebsite(null, {
+    ...FIXTURES,
+    images: [{ id: '101', chat_knowledge_id: '1', file_id: '201', caption: null, sort_order: 0 }],
+    files: [{ id: '201', deleted_at: null }],
+  });
+  const captioned = await callWebsite(null, {
+    ...FIXTURES,
+    images: [{ id: '101', chat_knowledge_id: '1', file_id: '201', caption: 'Lobby panel', sort_order: 0 }],
+    files: [{ id: '201', deleted_at: null }],
+  });
+
+  assert.notEqual(bare.body.data.version, withImage.body.data.version);
+  assert.notEqual(withImage.body.data.version, captioned.body.data.version);
+});
+
+test('website: FAQ body text is unchanged when images are attached', async () => {
+  const r = await callWebsite('42');
+  const scoped = r.body.data.faqs.find(f => f.id === '2');
+  assert.equal(scoped.body, SCOPED_BODY);
 });
 
 test('website: rules, internal entries and archived entries can never be published', async () => {

@@ -137,6 +137,18 @@
   .answer{
     padding:0 22px 22px;color:var(--body);font-size:15.5px;line-height:1.75;
   }
+  .faq-images{
+    display:grid;gap:14px;margin-top:18px;
+  }
+  .faq-images figure{
+    margin:0;
+  }
+  .faq-images img{
+    display:block;max-width:100%;height:auto;border-radius:8px;
+  }
+  .faq-images figcaption{
+    margin-top:7px;color:var(--muted);font-size:13.5px;line-height:1.5;
+  }
 
   .note,.err{font-family:var(--text);color:var(--muted);text-align:center}
   .err{
@@ -248,6 +260,29 @@
     return row;
   }
 
+  function imageList(images) {
+    var list = document.createElement('div');
+    list.className = 'faq-images';
+    images.forEach(function (item) {
+      // Same rule as the rest of this page: nothing from the API is trusted. An <img> src is the
+      // one place feed data reaches the network, so only our own preview path is allowed — never
+      // an absolute URL, never data:, never another host.
+      if (!item || typeof item.url !== 'string') return;
+      if (!/^\/api\/file\/preview\/\d+$/.test(item.url)) return;
+      var figure = document.createElement('figure');
+      var img = document.createElement('img');
+      img.src = String(item.url);
+      img.alt = item.caption ? String(item.caption) : '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.onerror = function () { figure.hidden = true; };
+      figure.appendChild(img);
+      if (item.caption) figure.appendChild(el('figcaption', item.caption));
+      list.appendChild(figure);
+    });
+    return list;
+  }
+
   function render(data) {
     var faqs = (data && data.faqs) || [];
     out.textContent = '';
@@ -282,6 +317,7 @@
         var body = el('div', f.body || '');
         body.className = 'answer';
         body.style.whiteSpace = 'pre-line';   // keeps paragraph breaks staff typed
+        if (f.images && f.images.length) body.appendChild(imageList(f.images));
         d.appendChild(body);
         out.appendChild(d);
       });
