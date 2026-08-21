@@ -333,8 +333,17 @@ router.get('/vacancies', async (req, res) => {
 });
 
 // Helper: consistent JSON response
-function ok(res, data, meta) {
-  res.json({ code: 200, data, meta: { total: Array.isArray(data) ? data.length : undefined, ...(meta || {}) } });
+// `extra` adds sibling keys beside `data`/`meta` for the rare endpoint that
+// returns a second collection. Callers that omit it are unaffected — this is the
+// alternative to hand-rolling res.json() at one call site, which then silently
+// drifts from this shape the next time the envelope changes.
+function ok(res, data, meta, extra) {
+  res.json({
+    code: 200,
+    data,
+    meta: { total: Array.isArray(data) ? data.length : undefined, ...(meta || {}) },
+    ...(extra || {}),
+  });
 }
 function fail(res, message, status = 500) {
   res.status(status).json({ code: status, message });
@@ -2854,6 +2863,12 @@ router.get('/units/available', async (req, res) => {
 // Query params:
 //   move_in_date  (ISO date, default today)   — used for filtering + gap calc
 //   move_out_date (ISO date, optional)        — excludes units booked in this range
+//   available_between_start/end (ISO dates)   — window search; when present, takes precedence over move_in_date/move_out_date for filtering
+//     In window mode `district` stops being a filter and becomes a PREFERENCE: units
+//     outside it still come back, in `alternatives_outside_area`, so the caller can ask
+//     "would you consider elsewhere?" instead of reporting nothing. `city` remains a hard
+//     filter — a caller that names a city is stating a constraint, not a preference, and
+//     an alternative across the harbour is not an alternative.
 //   bedrooms, bathrooms                       — exact match on unit.beds/baths
 //   min_price, max_price                      — matched against last lease price OR rent_price_min/max
 //   property_id                               — filter to property
@@ -2867,6 +2882,22 @@ router.get('/units/search', async (req, res) => {
     const orgId = req.apiKey.orgId;
     const moveIn = req.query.move_in_date || orgToday();
     const moveOut = req.query.move_out_date || null;
+    const hasWindowStart = req.query.available_between_start !== undefined;
+    const hasWindowEnd = req.query.available_between_end !== undefined;
+    if (hasWindowStart !== hasWindowEnd) {
+      return res.status(400).json({ code: 400, message: 'available_between_start and available_between_end must be supplied together' });
+    }
+    const windowStart = hasWindowStart ? String(req.query.available_between_start) : null;
+    const windowEnd = hasWindowEnd ? String(req.query.available_between_end) : null;
+    if (hasWindowStart && !isStrictYmd(windowStart)) {
+      return res.status(400).json({ code: 400, message: 'available_between_start must be in YYYY-MM-DD format' });
+    }
+    if (hasWindowEnd && !isStrictYmd(windowEnd)) {
+      return res.status(400).json({ code: 400, message: 'available_between_end must be in YYYY-MM-DD format' });
+    }
+    if (hasWindowStart && hasWindowEnd && windowEnd < windowStart) {
+      return res.status(400).json({ code: 400, message: 'available_between_end must be on or after available_between_start' });
+    }
     const bedrooms = req.query.bedrooms !== undefined ? Number(req.query.bedrooms) : null;
     const bathrooms = req.query.bathrooms !== undefined ? Number(req.query.bathrooms) : null;
     const minPrice = req.query.min_price !== undefined ? Number(req.query.min_price) : null;
@@ -2886,10 +2917,12 @@ router.get('/units/search', async (req, res) => {
     // tool, so both bots rank/filter identically). budgetMarginPct=0 keeps the
     // public API's strict max_price behavior unchanged.
     const settings = await loadSettings(req.pool, orgId);
-    const { results, total } = await searchUnits(req.pool, {
+    const searchResult = await searchUnits(req.pool, {
       orgId,
       moveIn,
       moveOut,
+      windowStart,
+      windowEnd,
       gapBands: resolveGapBands(settings, 'search'),
       bedrooms: (bedrooms !== null && !Number.isNaN(bedrooms)) ? bedrooms : null,
       bathrooms: (bathrooms !== null && !Number.isNaN(bathrooms)) ? bathrooms : null,
@@ -2900,13 +2933,15 @@ router.get('/units/search', async (req, res) => {
       propertyId,
       cityNames,
       districtNames,
+      preferredDistricts: districtNames,
       amenityNames,
       sortBy,
       limit,
       baseUrl: `${req.protocol}://${req.get('host')}`,
     });
+    const { results, total, alternativesOutsideArea } = searchResult;
 
-    ok(res, results, {
+    const meta = {
       total_matches: total,
       move_in_date: moveIn,
       move_out_date: moveOut,
@@ -2915,7 +2950,17 @@ router.get('/units/search', async (req, res) => {
         : null,
       budget: budget,
       sort_by: sortBy,
-    });
+    };
+    if (windowStart && windowEnd) {
+      meta.available_between_start = windowStart;
+      meta.available_between_end = windowEnd;
+      // ALWAYS present in window mode, empty array included. An absent key and an
+      // empty one are indistinguishable to a consumer — "no alternatives outside
+      // the area" would look identical to "this deployment predates the feature",
+      // and the caller cannot tell whether silence is an answer.
+      return ok(res, results, meta, { alternatives_outside_area: alternativesOutsideArea || [] });
+    }
+    ok(res, results, meta);
   } catch (error) {
     console.error('Public units search error:', error);
     fail(res, 'Failed to search units');
