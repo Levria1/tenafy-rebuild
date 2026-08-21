@@ -828,6 +828,45 @@ function normalizePropertyIds(value) {
   if (!Array.isArray(value)) return null;
   return [...new Set(value.map(String).filter(v => /^\d+$/.test(v) && v !== '0'))];
 }
+function hasKnowledgeImagesPayload(body) {
+  return Object.prototype.hasOwnProperty.call(body || {}, 'images');
+}
+async function normalizeKnowledgeImages(value, fileExists) {
+  if (!Array.isArray(value)) {
+    const err = new Error('images must be an array.');
+    err.status = 400;
+    throw err;
+  }
+  if (value.length > 12) {
+    const err = new Error('A FAQ can have at most 12 images.');
+    err.status = 400;
+    throw err;
+  }
+  const out = [];
+  for (let i = 0; i < value.length; i++) {
+    const raw = value[i] || {};
+    const fileId = raw.file_id != null ? String(raw.file_id).trim() : '';
+    if (!/^\d+$/.test(fileId)) {
+      const err = new Error('Image file_id must be numeric.');
+      err.status = 400;
+      throw err;
+    }
+    if (!(await fileExists(fileId))) {
+      const err = new Error('One or more images are invalid or unavailable.');
+      err.status = 400;
+      err.code = 'INVALID_IMAGE';
+      throw err;
+    }
+    const caption = raw.caption == null ? '' : String(raw.caption).trim();
+    if (caption.length > 255) {
+      const err = new Error('Image captions must be 255 characters or fewer.');
+      err.status = 400;
+      throw err;
+    }
+    out.push({ file_id: fileId, caption: caption || null, sort_order: i });
+  }
+  return out;
+}
 async function validateProperties(conn, ids) {
   if (!ids.length) return true;
   const marks = ids.map(() => '?').join(',');
@@ -840,6 +879,32 @@ async function replaceKnowledgeProperties(conn, knowledgeId, ids) {
   await conn.execute('DELETE FROM chat_knowledge_property WHERE chat_knowledge_id = ?', [knowledgeId]);
   for (const propertyId of ids) {
     await conn.execute('INSERT INTO chat_knowledge_property (chat_knowledge_id, property_id) VALUES (?, ?)', [knowledgeId, propertyId]);
+  }
+}
+async function validateKnowledgeImageFiles(conn, orgId, ids) {
+  if (!ids.length) return true;
+  const unique = [...new Set(ids.map(String))];
+  const marks = unique.map(() => '?').join(',');
+  // An image slot must hold an IMAGE. Without the mime check a PDF or document id is accepted,
+  // the replace succeeds, and the FAQ silently loses its pictures — the public preview refuses
+  // non-images to anonymous visitors, so the page renders nothing and reports nothing.
+  const [rows] = await conn.execute(
+    `SELECT id FROM file
+      WHERE id IN (${marks}) AND org_id = ? AND deleted_at IS NULL
+        AND (UPPER(mime_type) LIKE 'IMAGE/%'
+             OR LOWER(item_name) REGEXP '\\.(png|jpe?g|webp|gif|bmp)$')`,
+    [...unique, orgId]
+  );
+  return new Set(rows.map(r => String(r.id))).size === unique.length;
+}
+async function replaceKnowledgeImages(conn, knowledgeId, images) {
+  await conn.execute('DELETE FROM chat_knowledge_image WHERE chat_knowledge_id = ?', [knowledgeId]);
+  for (const image of images) {
+    await conn.execute(
+      `INSERT INTO chat_knowledge_image (id, chat_knowledge_id, file_id, caption, sort_order)
+       VALUES (?, ?, ?, ?, ?)`,
+      [newId(), knowledgeId, image.file_id, image.caption, image.sort_order]
+    );
   }
 }
 
@@ -872,12 +937,34 @@ router.get('/knowledge', async (req, res) => {
         visibility: r.visibility, publish_website: bitToBool(r.publish_website), status: Number(r.status),
         sort_order: Number(r.sort_order), source: r.source,
         source_ref: r.source_ref != null ? String(r.source_ref) : null, updated_at: r.updated_at,
-        property_ids: [], properties: [],
+        property_ids: [], properties: [], images: [],
       });
       if (r.property_id != null) {
         const item = grouped.get(id);
         item.property_ids.push(String(r.property_id));
         item.properties.push({ id: String(r.property_id), display_name: r.property_name, deleted: bitToBool(r.property_deleted) });
+      }
+    }
+    const ids = [...grouped.keys()];
+    if (ids.length) {
+      const marks = ids.map(() => '?').join(',');
+      const [imageRows] = await req.pool.execute(
+        `SELECT cki.id, cki.chat_knowledge_id, cki.file_id, cki.caption, cki.sort_order
+         FROM chat_knowledge_image cki
+         JOIN file f ON f.id = cki.file_id AND f.org_id = ? AND f.deleted_at IS NULL
+         WHERE cki.chat_knowledge_id IN (${marks})
+         ORDER BY cki.chat_knowledge_id ASC, cki.sort_order ASC, cki.created_at ASC`,
+        [req.user.orgId, ...ids]
+      );
+      for (const img of imageRows) {
+        const item = grouped.get(String(img.chat_knowledge_id));
+        if (item) item.images.push({
+          id: String(img.id),
+          file_id: String(img.file_id),
+          url: `/api/file/preview/${img.file_id}`,
+          caption: img.caption || null,
+          sort_order: Number(img.sort_order),
+        });
       }
     }
     ok(res, [...grouped.values()]);
@@ -914,15 +1001,28 @@ router.post('/knowledge', async (req, res) => {
       ? kind === 'faq'
       : b.publish_website === true;
     if (publishWebsite && kind !== 'faq') return fail(res, 'Only FAQs can be published on the website.', 400);
+    let images = [];
     const id = newId();
     conn = await req.pool.getConnection(); await conn.beginTransaction();
     if (!(await validateProperties(conn, propertyIds))) { await conn.rollback(); return fail(res, 'One or more properties are invalid or deleted.', 400, 'INVALID_PROPERTY'); }
+    if (hasKnowledgeImagesPayload(b)) {
+      try {
+        images = await normalizeKnowledgeImages(b.images, async () => true);
+      } catch (err) {
+        await conn.rollback(); return fail(res, err.message, err.status || 400, err.code || null);
+      }
+      if (!(await validateKnowledgeImageFiles(conn, req.user.orgId, images.map(img => img.file_id)))) {
+        await conn.rollback(); return fail(res, 'One or more images are invalid or unavailable.', 400, 'INVALID_IMAGE');
+      }
+    }
     await conn.execute(
       `INSERT INTO chat_knowledge (id, kind, category, title, body, tags, visibility, publish_website, status, sort_order, source)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'manual')`,
       [id, kind, category, title, body, tags, visibility, publishWebsite ? 1 : 0, sortOrder]
     );
-    await replaceKnowledgeProperties(conn, id, propertyIds); await conn.commit();
+    await replaceKnowledgeProperties(conn, id, propertyIds);
+    if (hasKnowledgeImagesPayload(b)) await replaceKnowledgeImages(conn, id, images);
+    await conn.commit();
     ok(res, { id });
   } catch (err) {
     if (conn) try { await conn.rollback(); } catch {}
@@ -1024,6 +1124,14 @@ router.put('/knowledge/:id', async (req, res) => {
     }
     const propertyIds = b.property_ids === undefined ? null : normalizePropertyIds(b.property_ids);
     if (b.property_ids !== undefined && propertyIds === null) return fail(res, 'property_ids must be an array.', 400);
+    let images = null;
+    if (hasKnowledgeImagesPayload(b)) {
+      try {
+        images = await normalizeKnowledgeImages(b.images, async () => true);
+      } catch (err) {
+        return fail(res, err.message, err.status || 400, err.code || null);
+      }
+    }
     if (b.category !== undefined) {
       if (!FAQ_CATEGORIES.includes(b.category)) return fail(res, 'Invalid FAQ category.', 400);
       updates.push('category = ?'); params.push(b.category);
@@ -1042,7 +1150,8 @@ router.put('/knowledge/:id', async (req, res) => {
     // decision: withdrawing an entry from TaneChat does not withdraw it from the website, and
     // vice versa. Anything that quietly changed the other switch would make the UI a liar.
     if (propertyIds !== null && !(await validateProperties(conn, propertyIds))) { await conn.rollback(); return fail(res, 'One or more properties are invalid or deleted.', 400, 'INVALID_PROPERTY'); }
-    if (!updates.length && propertyIds === null) { await conn.rollback(); return ok(res, { id: req.params.id }); }
+    if (images !== null && !(await validateKnowledgeImageFiles(conn, req.user.orgId, images.map(img => img.file_id)))) { await conn.rollback(); return fail(res, 'One or more images are invalid or unavailable.', 400, 'INVALID_IMAGE'); }
+    if (!updates.length && propertyIds === null && images === null) { await conn.rollback(); return ok(res, { id: req.params.id }); }
     if (updates.length) {
     params.push(req.params.id);
     await conn.execute(
@@ -1050,6 +1159,7 @@ router.put('/knowledge/:id', async (req, res) => {
     );
     }
     if (propertyIds !== null) await replaceKnowledgeProperties(conn, req.params.id, propertyIds);
+    if (images !== null) await replaceKnowledgeImages(conn, req.params.id, images);
     await conn.commit();
     ok(res, { id: req.params.id });
   } catch (err) {
@@ -1080,3 +1190,5 @@ router.delete('/knowledge/:id', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.hasKnowledgeImagesPayload = hasKnowledgeImagesPayload;
+module.exports.normalizeKnowledgeImages = normalizeKnowledgeImages;

@@ -20,12 +20,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Card, Typography, Input, Button, Space, Form, message,
-  Table, Modal, Segmented, Popconfirm, Tooltip, Empty, Select, InputNumber, Tag, Checkbox,
+  Table, Modal, Segmented, Popconfirm, Tooltip, Empty, Select, InputNumber, Tag, Checkbox, Upload,
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, WhatsAppOutlined,
-  UploadOutlined, SearchOutlined,
+  UploadOutlined, SearchOutlined, ArrowUpOutlined, ArrowDownOutlined,
 } from '@ant-design/icons';
+import Cookies from 'js-cookie';
 import { chatApi } from '../../lib/api';
 
 const { Paragraph, Text } = Typography;
@@ -98,6 +99,7 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  const [faqImages, setFaqImages] = useState([]);
   const [properties, setProperties] = useState([]);
   useEffect(() => { chatApi.listKnowledgeProperties().then(r=>setProperties(r.data.data||[])).catch(()=>{}); }, []);
 
@@ -140,6 +142,7 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
   const openAdd = () => {
     setEditing(null);
     form.resetFields();
+    setFaqImages([]);
     // A new FAQ is shared everywhere; a new rule is a team instruction, so TaneChat only.
     form.setFieldsValue({ is_public: true, publish_website: isFaq, title: '', body: '', property_ids:[], sort_order:0, category:'other' });
     setModalOpen(true);
@@ -151,7 +154,72 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
       publish_website:!!item.publish_website, property_ids:item.property_ids||[],
       sort_order:item.sort_order, category:item.category||'other',
     });
+    setFaqImages((item.images || []).slice().sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)).map((img) => ({
+      uid: String(img.id || img.file_id),
+      name: img.caption || `Image ${img.file_id}`,
+      status: 'done',
+      url: img.url,
+      file_id: String(img.file_id),
+      caption: img.caption || '',
+    })));
     setModalOpen(true);
+  };
+
+  const uploadHeaders = useMemo(() => {
+    const token = Cookies.get('__s_t');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, [modalOpen]);
+
+  const beforeFaqImageUpload = (file) => {
+    const allowed = ['image/png', 'image/jpeg', 'image/webp'];
+    if (!allowed.includes(file.type)) {
+      message.error('Only PNG, JPEG, or WebP images can be uploaded.');
+      return Upload.LIST_IGNORE;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      message.error('Image must be 8 MB or smaller.');
+      return Upload.LIST_IGNORE;
+    }
+    if (faqImages.length >= 12) {
+      message.error('A FAQ can have at most 12 images.');
+      return Upload.LIST_IGNORE;
+    }
+    return true;
+  };
+
+  const handleFaqImageChange = ({ file, fileList }) => {
+    if (file.status === 'error') {
+      message.error(file.response?.message || 'Image upload failed.');
+    }
+    setFaqImages((prev) => fileList.slice(0, 12).map((f) => {
+      const existing = prev.find((p) => p.uid === f.uid);
+      const uploaded = f.response?.data || {};
+      return {
+        ...f,
+        file_id: uploaded.id ? String(uploaded.id) : f.file_id,
+        url: uploaded.url || f.url,
+        caption: existing?.caption ?? f.caption ?? '',
+      };
+    }));
+  };
+
+  const updateFaqImageCaption = (uid, caption) => {
+    setFaqImages((prev) => prev.map((img) => img.uid === uid ? { ...img, caption: caption.slice(0, 255) } : img));
+  };
+
+  const moveFaqImage = (uid, direction) => {
+    setFaqImages((prev) => {
+      const next = [...prev];
+      const index = next.findIndex((img) => img.uid === uid);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
+  const removeFaqImage = (uid) => {
+    setFaqImages((prev) => prev.filter((img) => img.uid !== uid));
   };
 
   const handleSubmit = async () => {
@@ -169,6 +237,23 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
         sort_order: values.sort_order,
         category: isFaq ? values.category : 'other',
       };
+      if (isFaq) {
+        // An image only has a file_id once its upload has come back. Filtering silently would
+        // mean a staff member who hits Save a second too early watches the thumbnail sit in the
+        // modal and then finds the picture missing from the answer, with nothing having gone
+        // wrong on screen. Say so instead of dropping it.
+        const pending = faqImages.filter((img) => !img.file_id);
+        if (pending.length) {
+          const stillGoing = pending.some((img) => img.status === 'uploading');
+          message.error(stillGoing
+            ? 'An image is still uploading. Wait for it to finish, then save.'
+            : 'An image failed to upload. Remove it or try again before saving.');
+          setSaving(false);
+          return;
+        }
+        payload.images = faqImages
+          .map((img) => ({ file_id: String(img.file_id), caption: img.caption || null }));
+      }
       if (editing) await chatApi.updateKnowledge(editing.id, payload);
       else await chatApi.createKnowledge(payload);
       message.success(editing ? 'Saved' : 'Added');
@@ -394,6 +479,49 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
                 : 'e.g. Parking is included in the rent — mention it when asked.'}
             />
           </Form.Item>
+          {isFaq && (
+            <Form.Item label="Images">
+              <Upload
+                action={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/file/image/upload`}
+                headers={uploadHeaders}
+                accept="image/png,image/jpeg,image/webp"
+                listType="picture-card"
+                fileList={faqImages}
+                beforeUpload={beforeFaqImageUpload}
+                onChange={handleFaqImageChange}
+                onRemove={(file) => { removeFaqImage(file.uid); return true; }}
+                showUploadList={{ showRemoveIcon: false, showPreviewIcon: false }}
+                itemRender={(originNode, file) => {
+                  const index = faqImages.findIndex((img) => img.uid === file.uid);
+                  return (
+                    <div style={{ width: 104 }}>
+                      {originNode}
+                      <Input
+                        size="small"
+                        maxLength={255}
+                        placeholder="Caption (optional)"
+                        value={file.caption || ''}
+                        onChange={(e) => updateFaqImageCaption(file.uid, e.target.value)}
+                        style={{ marginTop: 6 }}
+                      />
+                      <Space size={4} style={{ marginTop: 4 }}>
+                        <Button size="small" icon={<ArrowUpOutlined />} disabled={index <= 0} onClick={() => moveFaqImage(file.uid, -1)} />
+                        <Button size="small" icon={<ArrowDownOutlined />} disabled={index < 0 || index >= faqImages.length - 1} onClick={() => moveFaqImage(file.uid, 1)} />
+                        <Button size="small" danger icon={<DeleteOutlined />} onClick={() => removeFaqImage(file.uid)} />
+                      </Space>
+                    </div>
+                  );
+                }}
+              >
+                {faqImages.length >= 12 ? null : (
+                  <div>
+                    <PlusOutlined />
+                    <div style={{ marginTop: 8 }}>Upload</div>
+                  </div>
+                )}
+              </Upload>
+            </Form.Item>
+          )}
           <Form.Item name="property_ids" label="Properties" extra="Empty means Global — all properties. Scoped content is withheld until the property is known.">
             <Select mode="multiple" showSearch optionFilterProp="label" options={properties.map(p=>({value:String(p.id),label:p.display_name}))}/>
           </Form.Item>

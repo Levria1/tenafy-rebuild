@@ -15,7 +15,20 @@
 const express = require('express');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
+const fs = require('fs');
+const path = require('path');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
+
+// Resolve a stored file name inside the uploads directory. The name comes from our own DB, but
+// this still refuses anything that escapes the directory — a traversal in stored data would
+// otherwise become a file read.
+const UPLOADS_DIR = path.join(__dirname, '../../uploads');
+function resolveUploadPath(itemName) {
+  if (!itemName) return null;
+  const candidate = path.resolve(UPLOADS_DIR, String(itemName));
+  if (candidate !== path.join(UPLOADS_DIR, path.basename(candidate))) return null;
+  return fs.existsSync(candidate) ? candidate : null;
+}
 
 const router = express.Router();
 
@@ -211,7 +224,7 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
         if (!list) continue;
         list.push({
           id: String(img.id),
-          url: `/api/file/preview/${String(img.file_id)}`,
+          url: `/api/website/${encodeURIComponent(slug)}/faq-image/${String(img.file_id)}`,
           caption: img.caption || null,
         });
       }
@@ -244,6 +257,60 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
   } catch (err) {
     console.error('[website/faqs]', err);
     res.status(500).json({ code: 500, message: 'Failed to fetch FAQs' });
+  }
+});
+
+// An image belonging to a published FAQ, addressed THROUGH the organisation that published it.
+//
+// The obvious URL was /api/file/preview/:id, and it worked here only by accident: with no session
+// that route falls back to "the first active organisation" (an unordered LIMIT 1 in file.js), which
+// today happens to be the right one. That is a coincidence, not a guarantee — MySQL may return a
+// different row at any time, and a second organisation publishing FAQ images would either 404 or be
+// served someone else's picture.
+//
+// This route is also NARROWER than the one it replaces. /api/file/preview will serve any image in
+// the org to an anonymous caller; this serves only a file that is actually attached to a published,
+// website-visible FAQ. A file id that is not on such an FAQ is a 404 here even though the same id
+// is fetchable there.
+router.get('/:org_slug/faq-image/:file_id', limiter, async (req, res) => {
+  try {
+    const slug = String(req.params.org_slug || '');
+    const fileId = String(req.params.file_id || '');
+    if (!SLUG_RE.test(slug) || !/^\d+$/.test(fileId) || fileId === '0') {
+      return res.status(404).json({ code: 404, message: 'Not found' });
+    }
+
+    const [orgs] = await getMasterPool().execute(
+      'SELECT id FROM organizations WHERE public_slug=? AND status=1 AND public_api_enabled=1 LIMIT 1',
+      [slug]
+    );
+    if (!orgs.length) return res.status(404).json({ code: 404, message: 'Not found' });
+    const pool = await getOrgPool(orgs[0].id);
+
+    // Attached to a live, website-published FAQ — the same three conditions the feed itself uses.
+    const [rows] = await pool.execute(
+      `SELECT f.item_name, f.mime_type FROM chat_knowledge_image cki
+         JOIN chat_knowledge ck ON ck.id = cki.chat_knowledge_id
+         JOIN file f ON f.id = cki.file_id
+        WHERE cki.file_id = ? AND f.deleted_at IS NULL
+          AND ck.kind='faq' AND ck.status=1 AND ck.publish_website=1
+        LIMIT 1`,
+      [fileId]
+    );
+    if (!rows.length) return res.status(404).json({ code: 404, message: 'Not found' });
+
+    const mime = String(rows[0].mime_type || '').toLowerCase();
+    if (!mime.startsWith('image/')) return res.status(404).json({ code: 404, message: 'Not found' });
+
+    const filePath = resolveUploadPath(rows[0].item_name);
+    if (!filePath) return res.status(404).json({ code: 404, message: 'Not found' });
+
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    fs.createReadStream(filePath).pipe(res);
+  } catch (err) {
+    console.error('[website/faq-image]', err);
+    res.status(500).json({ code: 500, message: 'Failed to fetch image' });
   }
 });
 

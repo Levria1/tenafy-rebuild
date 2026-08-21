@@ -400,13 +400,13 @@ test('website: a deleted building among requested ids is refused, not treated as
 
 test('website: an image on a scoped FAQ is absent until the right building is chosen', async () => {
   const unscoped = await callWebsite(null);
-  assert.ok(!unscoped.wire.includes('/api/file/preview/200'));
+  assert.ok(!unscoped.wire.includes('/faq-image/200'));
   assert.equal(unscoped.body.data.faqs.find(f => f.id === '1').images.length, 0);
 
   const right = await callWebsite('42');
   const scoped = right.body.data.faqs.find(f => f.id === '2');
   assert.deepEqual(scoped.images, [
-    { id: '100', url: '/api/file/preview/200', caption: 'Fuse box in the hallway' },
+    { id: '100', url: '/api/website/taneres/faq-image/200', caption: 'Fuse box in the hallway' },
   ]);
 });
 

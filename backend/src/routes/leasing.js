@@ -2191,7 +2191,7 @@ async function loadPaperwork(conn, orgId, leaseId, leaseEndDate) {
   let documents = [];
   try {
     const [rows] = await conn.execute(
-      `SELECT id, status, signature_method, template_id, signed_file_id,
+      `SELECT id, status, signature_method, template_id, signed_file_id, original_file_id,
               DATE_FORMAT(term_start, '%Y-%m-%d')     AS term_start,
               DATE_FORMAT(term_end, '%Y-%m-%d')       AS term_end,
               DATE_FORMAT(term_stamp_end, '%Y-%m-%d') AS term_stamp_end,
@@ -2206,6 +2206,9 @@ async function loadPaperwork(conn, orgId, leaseId, leaseEndDate) {
       ...r,
       id: String(r.id),
       signed_file_id: r.signed_file_id != null ? String(r.signed_file_id) : null,
+      // The document as SENT. Staff need this to check what a signer received while it is still
+      // out; without it the ledger can only show a document after it comes back signed.
+      original_file_id: r.original_file_id != null ? String(r.original_file_id) : null,
       template_id: r.template_id != null ? String(r.template_id) : null,
     }));
   } catch (e) {

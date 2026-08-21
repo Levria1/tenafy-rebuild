@@ -1257,6 +1257,16 @@ export default function LeasingDetailPage() {
                             View PDF
                           </Button>
                         )}
+                        {/* The document as it was SENT. Without this there is no way to check what
+                            a signer actually received until they sign — and "View Lease" above is
+                            not it: that re-renders the whole tenancy from the lease record, so an
+                            extension's document appears to cover the full term. Shown only when
+                            there is no signed copy, since the signed one supersedes it. */}
+                        {!d.signed_file_id && d.original_file_id && (
+                          <Button size="small" onClick={() => window.open(`/api/file/preview/${d.original_file_id}`, '_blank')}>
+                            View sent
+                          </Button>
+                        )}
                         {(st === 1 || st === 2) && (
                           <Button size="small" loading={resendingSig} onClick={handleResendSignature}>
                             Resend

@@ -305,7 +305,7 @@
       // one place feed data reaches the network, so only our own preview path is allowed — never
       // an absolute URL, never data:, never another host.
       if (!item || typeof item.url !== 'string') return;
-      if (!/^\/api\/file\/preview\/\d+$/.test(item.url)) return;
+      if (!/^\/api\/website\/[a-z0-9-]{1,63}\/faq-image\/\d+$/.test(item.url)) return;
       var figure = document.createElement('figure');
       var img = document.createElement('img');
       img.src = String(item.url);
