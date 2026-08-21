@@ -4,11 +4,19 @@
  * unit-tested in isolation; resolveUnit() adds the DB load + per-unit marketable
  * flag (used to build disambiguation lists).
  *
- * NO unit is ever renamed — matching tolerates messy names: a stray suffix like
- * "6A Test" still matches "6a" (unit "core" token = the first token of the name).
+ * NO unit is ever renamed — matching tolerates messy names: a stray suffix on a
+ * real unit still matches its core token (unit "core" token = the first token of
+ * the name).
+ *
+ * Placeholder/test records are excluded from the candidate load entirely — see
+ * utils/publicUnitScope. That is scope-by-omission on purpose: a test unit that
+ * never enters the candidate set cannot be scored, cannot win, and cannot be
+ * named back to a customer. Filtering after scoring would leave the "confident"
+ * decision to have already been made against it.
  */
 
 const { orgTodaySql } = require('../utils/orgTime');
+const { PUBLIC_UNIT_NAME_SQL } = require('../utils/publicUnitScope');
 
 function norm(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
@@ -247,6 +255,7 @@ async function loadUnitsWithMarketable(pool, orgId) {
        FROM unit u JOIN property p ON u.property_id = p.id
       WHERE p.org_id = ? AND u.active_status = 1 AND u.deleted_at IS NULL
         AND p.deleted_at IS NULL AND p.status = 1
+        AND ${PUBLIC_UNIT_NAME_SQL}
       ORDER BY p.display_name, u.name`,
     [orgId]
   );

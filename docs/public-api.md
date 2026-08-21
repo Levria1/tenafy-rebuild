@@ -155,6 +155,32 @@ All endpoints return JSON in this shape:
 
 ### Units
 
+#### What counts as a public unit
+
+`GET /vacancies`, `GET /units/search` and `POST /units/resolve` share one
+definition of which units may be shown to a prospect
+(`backend/src/utils/publicUnitScope.js`). A unit is excluded when either its own
+name or its property's display name contains "test" (case-insensitive
+substring) — so `Test Property 2 · Unit 1` and `Mong Kok · 6A Test` are both
+withheld.
+
+The exclusion happens in the SQL, not after scoring. That matters for
+`/units/resolve` in particular: a candidate that never enters the set cannot win
+a confident match, whereas filtering afterwards would mean the decision had
+already been made against it.
+
+Two consequences worth knowing:
+
+- **A real property whose name contains "test" would be withheld.** The rule is a
+  substring match, so a building on a street like "Testbourne Road" is caught.
+  The pattern is deliberately not widened further; the intended remedy is to keep
+  placeholder records out of the production portfolio.
+- **It only catches the word "test".** A placeholder named "Demo" or "Spare" is
+  published like any other unit.
+
+Note this is separate from — and not covered by — the `property.status` filter: a
+test property left *active* passes the status check and is caught only by name.
+
 #### `POST /units/resolve`
 
 Requires `X-API-Key`. **Read-only keys are allowed**, despite the `POST` — this
@@ -345,6 +371,7 @@ caveat instead of stating them as firm availability.
         "min": "14000.00",
         "max": "16500.00"
       },
+      "listing_url": "https://taneresidence.com/product/gilmans-bazaar-5b/",
       "tier": 2,
       "tier_name": "NR",
       "intent": "NR",
@@ -383,6 +410,11 @@ caveat instead of stating them as firm availability.
   }
 }
 ```
+
+`listing_url` is the unit's public listing page on taneresidence.com, or `null`
+when none is recorded. It is the same value `GET /units/:id` returns for that
+unit, so there is no need to make a detail call per row to obtain it. Not every
+unit has one.
 
 Availability rules:
 

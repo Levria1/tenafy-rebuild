@@ -479,6 +479,7 @@ function manualVacancyToRow(override, unitRow, today) {
     size: unitRow?.size != null ? Number(unitRow.size) : null,
     rent_price_min: unitRow?.rent_price_min != null ? Number(unitRow.rent_price_min) : null,
     rent_price_max: unitRow?.rent_price_max != null ? Number(unitRow.rent_price_max) : null,
+    listing_url: unitRow?.listing_url || null,
     template_id: unitRow?.template_id ? String(unitRow.template_id) : null,
     template_name: unitRow?.template_name || null,
     property_id: unitRow?.property_id == null ? null : String(unitRow.property_id),

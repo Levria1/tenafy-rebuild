@@ -13,6 +13,7 @@
 
 const { orgToday } = require('../utils/orgTime');
 const { askingRentPublicShape, gapBandDays } = require('../utils/advertisingPlan');
+const { PUBLIC_UNIT_NAME_SQL } = require('../utils/publicUnitScope');
 
 function toDateStr(d) {
   return (d instanceof Date ? d : new Date(d)).toISOString().split('T')[0];
@@ -68,7 +69,13 @@ async function searchUnits(pool, criteria = {}) {
   const NR_CONTRACT = 3; // contract_type: Not Renewing
   const todayStr = orgToday();
 
-  let where = 'p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL AND u.active_status = 1 AND u.deleted_at IS NULL';
+  // The test-name exclusion matches the vacancy feed. Without it this endpoint
+  // offered "Test Property 2 Unit 1" as an alternative to real prospects — the
+  // two endpoints described the same portfolio and disagreed about what was
+  // public. Note this is NOT the p.status filter beside it: the offending
+  // property is ACTIVE, so status could never have caught it.
+  let where = `p.org_id = ? AND p.status = 1 AND p.deleted_at IS NULL AND u.active_status = 1 AND u.deleted_at IS NULL
+    AND ${PUBLIC_UNIT_NAME_SQL}`;
   const params = [orgId];
   if (propertyId) { where += ' AND p.id = ?'; params.push(propertyId); }
   if (bedrooms !== null && !Number.isNaN(bedrooms)) { where += ' AND u.beds = ?'; params.push(bedrooms); }

@@ -4,6 +4,33 @@ const { authenticate, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const { orgTodaySql } = require('../utils/orgTime');
 
+/**
+ * Reject a rent range entered the wrong way round.
+ *
+ * Not hypothetical: a unit was saved with the floor 1,000 ABOVE the ceiling and
+ * the error reached a partner's quoting path before anyone noticed. The posting
+ * ladder is order-safe — it takes min()/max() of the two bounds, so the
+ * step-down never inverts — but "top of range" then resolved to the typo'd floor
+ * and published a rate above the intended ceiling. Order-safety downstream is
+ * not the same as correct data, and rent_price_min is now the number under every
+ * advertised tier.
+ *
+ * Validates only when BOTH bounds are present and numeric: a unit priced with a
+ * floor and no ceiling (or neither) is legitimate and must keep saving. Returns
+ * an error string, or null when acceptable.
+ */
+function rentRangeError(rentPriceMin, rentPriceMax) {
+  const parse = (v) => (v == null || v === '' ? null : Number(v));
+  const min = parse(rentPriceMin);
+  const max = parse(rentPriceMax);
+  if (min === null || max === null) return null;
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  if (min > max) {
+    return `Minimum rent (${min}) cannot be higher than maximum rent (${max}). Check the two values are the right way round.`;
+  }
+  return null;
+}
+
 
 // POST /api/property/list - List properties with paging
 // Filters: search, propertyType (residential=0/commercial=1), propertyStatus (active=1/inactive=0), unitStatus (vacant/occupied)
@@ -336,6 +363,11 @@ router.put('/unit/:unit_id', authenticate, async (req, res) => {
       listing_url,
     } = req.body;
     const orgId = req.user.orgId;
+
+    // Before any write: this UPDATE sets both bounds unconditionally from the
+    // body, so a reversed pair here overwrites a good stored range.
+    const rangeError = rentRangeError(rent_price_min, rent_price_max);
+    if (rangeError) return res.status(400).json({ code: 400, message: rangeError });
 
     // Block deactivation if there are active or upcoming leases on this unit
     if (active_status != null && Number(active_status) === 0) {
@@ -897,6 +929,9 @@ router.post('/:property_id/unit', authenticate, async (req, res) => {
     } = req.body;
     const orgId = req.user.orgId;
 
+    const rangeError = rentRangeError(rent_price_min, rent_price_max);
+    if (rangeError) return res.status(400).json({ code: 400, message: rangeError });
+
     // Verify property belongs to org
     const [props] = await req.pool.execute('SELECT id FROM property WHERE id = ? AND org_id = ?', [property_id, orgId]);
     if (props.length === 0) {
@@ -1373,3 +1408,6 @@ router.get('/unit/:unit_id/property-info', authenticate, async (req, res) => {
 });
 
 module.exports = router;
+// Exported for unit tests: the rent-range guard is pure and worth testing without
+// standing up a route, a pool and an authenticated request.
+module.exports.rentRangeError = rentRangeError;

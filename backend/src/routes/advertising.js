@@ -9,6 +9,7 @@ const { slotLabel, findRepeatViolations, suggestReplacements, forumWeeklyLoad,
   manualVacancyToRow, overrideAppliesTo, leaseChangedForOverride, pickVacancyRow,
   resolvePageExpiringWindow, PAGE_WINDOW_MAX_DAYS } = require('../utils/advertisingPlan');
 const { hkDate } = require('../utils/inquiryFacts');
+const { PUBLIC_UNIT_NAME_SQL } = require('../utils/publicUnitScope');
 const renewalAsk = require('../utils/renewalAsk');
 
 // Snowflake id (same pattern used across the app).
@@ -132,8 +133,10 @@ function noCurrentLease() {
 }
 
 // Exclude placeholder/test units by name (unit or property). Substring match —
-// catches "Test Unit 1", "6A Test", "Test Property 2".
-const NOT_TEST = `LOWER(u.name) NOT LIKE '%test%' AND LOWER(p.display_name) NOT LIKE '%test%'`;
+// catches "Test Unit 1", "6A Test", "Test Property 2". The definition moved to
+// utils/publicUnitScope so /units/search and /units/resolve enforce the SAME
+// rule; this alias keeps the four call sites below reading as they did.
+const NOT_TEST = PUBLIC_UNIT_NAME_SQL;
 
 // Shared vacancy computation — used by BOTH /vacancies and /scheduler so they can
 // never diverge. Returns the unified, urgency-sorted list plus per-category counts.
@@ -351,6 +354,10 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       size: r.size != null ? Number(r.size) : null,
       rent_price_min: r.rent_price_min != null ? Number(r.rent_price_min) : null,
       rent_price_max: r.rent_price_max != null ? Number(r.rent_price_max) : null,
+      // SELECTed by the query and read by vacancyToPublicShape; it was only ever
+      // missing from the three maps in between, so /vacancies published null for
+      // every row while /units/:id had the same value.
+      listing_url: r.listing_url || null,
       template_id: r.template_id ? String(r.template_id) : null,
       template_name: r.template_name || null,
       property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
@@ -395,6 +402,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
         size: r.size != null ? Number(r.size) : null,
         rent_price_min: r.rent_price_min != null ? Number(r.rent_price_min) : null,
         rent_price_max: r.rent_price_max != null ? Number(r.rent_price_max) : null,
+        listing_url: r.listing_url || null,
         template_id: r.template_id ? String(r.template_id) : null,
         template_name: r.template_name || null,
         property_id: String(r.property_id), property_name: r.property_name, street_address: r.street_address,
@@ -1500,6 +1508,7 @@ async function findBeyondHorizonNrVacancies(pool, orgId, { requestDate, maxGapDa
     size: r.size != null ? Number(r.size) : null,
     rent_price_min: r.rent_price_min != null ? Number(r.rent_price_min) : null,
     rent_price_max: r.rent_price_max != null ? Number(r.rent_price_max) : null,
+    listing_url: r.listing_url || null,
     template_id: r.template_id ? String(r.template_id) : null,
     template_name: r.template_name || null,
     property_id: r.property_id == null ? null : String(r.property_id),
