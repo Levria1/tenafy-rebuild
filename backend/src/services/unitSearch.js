@@ -12,7 +12,7 @@
 // can be shown with a note instead of returning nothing.
 
 const { orgToday } = require('../utils/orgTime');
-const { gapBandDays } = require('../utils/advertisingPlan');
+const { askingRentPublicShape, gapBandDays } = require('../utils/advertisingPlan');
 
 function toDateStr(d) {
   return (d instanceof Date ? d : new Date(d)).toISOString().split('T')[0];
@@ -113,6 +113,7 @@ async function searchUnits(pool, criteria = {}) {
             p.id AS property_id, p.display_name AS property_name,
             p.street_address, p.city, p.state, p.district, p.country, p.zip_code, p.currency,
             last_lease.price AS last_lease_price,
+            last_lease.invoicing AS last_lease_invoicing,
             last_lease.end_date AS last_lease_end_date,
             next_lease.start_date AS next_lease_start_date
      FROM unit u
@@ -121,7 +122,7 @@ async function searchUnits(pool, criteria = {}) {
        ON active_lease.unit_id = u.id AND active_lease.deleted_at IS NULL
        AND active_lease.start_date <= ? AND (active_lease.end_date >= ? OR active_lease.end_date IS NULL)${todayJoin}
      LEFT JOIN (
-       SELECT l1.unit_id, l1.price, l1.end_date
+       SELECT l1.unit_id, l1.price, l1.invoicing, l1.end_date
        FROM leasing l1
        INNER JOIN (
          SELECT unit_id, MAX(start_date) AS max_start FROM leasing
@@ -243,8 +244,20 @@ async function searchUnits(pool, criteria = {}) {
     const forwardGapDays = Math.max(0, Math.round((new Date(moveIn).getTime() - gapFromTs) / 86400000));
     const addressParts = [r.street_address, r.district, r.city, r.state, r.zip_code, r.country]
       .map(s => (s == null ? '' : String(s).trim())).filter(Boolean);
-    const monthlyRent = r.last_lease_price != null ? Number(r.last_lease_price)
-      : r.rent_price_min != null ? Number(r.rent_price_min) : null;
+    // Matches vacancyToPublicShape: a lease figure is only publishable as a
+    // monthly rent when the lease has a recurring invoice schedule.
+    const hasLeaseSchedule = r.last_lease_invoicing != null && String(r.last_lease_invoicing).trim() !== '';
+    const monthlyRent = hasLeaseSchedule
+      ? (r.last_lease_price != null ? Number(r.last_lease_price) : null)
+      : (r.rent_price_min != null ? Number(r.rent_price_min) : null);
+    const monthlyRentBasis = monthlyRent == null ? null : (hasLeaseSchedule ? 'lease' : 'advertised');
+    // computePostingRent uses DATEDIFF(end_date, today) semantics: positive
+    // before move-out, negative after move-out. The search availability fields
+    // clamp already-vacant units for other policy checks, so derive the raw
+    // value from the same last lease end date instead of reusing the clamp.
+    const askingRentDaysToAvailable = r.last_lease_end_date
+      ? Math.round((new Date(toDateStr(r.last_lease_end_date)) - realToday) / 86400000)
+      : null;
     return {
       unit_id: String(r.unit_id),
       unit_name: r.unit_name,
@@ -262,6 +275,7 @@ async function searchUnits(pool, criteria = {}) {
       size: r.size != null ? Number(r.size) : null,
       size_unit: r.size_unit || null,
       monthly_rent: monthlyRent,
+      monthly_rent_basis: monthlyRentBasis,
       rent_price_min: r.rent_price_min != null ? Number(r.rent_price_min) : null,
       rent_price_max: r.rent_price_max != null ? Number(r.rent_price_max) : null,
       deposit: r.deposit_price != null ? Number(r.deposit_price) : null,
@@ -277,6 +291,7 @@ async function searchUnits(pool, criteria = {}) {
       gap_within_tolerance: gapBand == null ? null : (forwardGapDays <= gapBand),
       needs_manager_approval: needsManagerApproval,                       // 12-month+ reservations
       days_until_available: Math.round((new Date(availableFrom) - realToday) / 86400000),
+      asking_rent: askingRentPublicShape(r.rent_price_min, r.rent_price_max, askingRentDaysToAvailable),
       over_budget_by: (budget != null && !Number.isNaN(budget) && monthlyRent != null)
         ? Number(monthlyRent) - budget : null,
       over_budget_pct: (budget != null && !Number.isNaN(budget) && budget > 0 && monthlyRent != null)

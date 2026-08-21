@@ -82,6 +82,7 @@ All endpoints return JSON in this shape:
 |---|---|---|---|
 | GET | `/units` | `?property_id=&status=0\|1&active_status=0\|1` | All units (filtered) |
 | GET | `/units/:id` | | Unit detail + current lease + tenant + amenities + gallery |
+| GET | `/units/search` | `?move_in_date=&move_out_date=&bedrooms=&bathrooms=&min_price=&max_price=&budget=&property_id=&city=&district=&amenities=&sort_by=&limit=` | Smart available-unit search for alternative offers |
 | POST | `/units/resolve` | | Read-only unit lookup from id, listing URL, or free text |
 | GET | `/vacancies` | `?max_tier=3&property_id=&limit=50&free_on=YYYY-MM-DD&target_date=YYYY-MM-DD&move_out=YYYY-MM-DD` | Chatbot availability using advertising vacancy logic. Beyond the 60-day booking horizon only confirmed-leaving units are offered — see Booking horizon below |
 | GET | `/units/available` | `?date=YYYY-MM-DD&property_id=` | Deprecated; use `/vacancies` |
@@ -274,6 +275,28 @@ as the asking price.
 
 `asking_rent.tier` values are `high`, `mid`, `low`, and `discount`, using the
 same timing ladder described under `GET /vacancies`.
+
+#### `GET /units/search`
+
+Requires `X-API-Key`; read-only keys are allowed. Returns available alternative
+units ranked by the shared search engine used by the public API and internal
+chatbot tools.
+
+Each result includes the existing numeric price fields (`monthly_rent`,
+`rent_price_min`, `rent_price_max`) and now also:
+
+- `asking_rent`: `{ amount, tier, min, max }` with two-decimal money strings, or
+  `null` when the unit has no usable price bounds. **`asking_rent.amount` is the
+  rate to quote to a prospect.**
+- `monthly_rent_basis`: `"lease"`, `"advertised"`, or `null`. `"lease"` means
+  `monthly_rent` came from a lease with a recurring invoice schedule.
+  `"advertised"` means it came from the unit's own advertised minimum
+  (`rent_price_min`). `null` means no monthly rent could be published.
+
+`monthly_rent` is retained for compatibility and sorting metadata only. It is
+not the rate to quote; use `asking_rent.amount` instead. A lease without an
+invoice schedule can store a whole-stay total, so search falls back to
+`rent_price_min` for `monthly_rent` in that case.
 
 ### Advertising posting plan
 

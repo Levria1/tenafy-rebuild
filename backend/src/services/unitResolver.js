@@ -188,12 +188,13 @@ function scoreUnits(text, units) {
 
   const rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u) }));
 
-  // "More than one unit" intent: the prospect named ≥2 DISTINCT units, each an
-  // exact unit-token match (e.g. "mongkok 6a 5a"). We don't auto-arrange a
-  // multi-unit viewing — the caller escalates it to staff. "Distinct" is by unit
-  // core, so a single token that merely collides across properties ("6a" at two
-  // buildings) stays a normal ambiguous pick, NOT a multi-unit request.
-  const exactUnitRows = rows.filter(r => r.s.unit === 3);
+  // "More than one unit" intent: the prospect named ≥2 DISTINCT units at a
+  // matched property, each an exact unit-token match (e.g. "mongkok 6a 5a"). We
+  // don't auto-arrange a multi-unit viewing — the caller escalates it to staff.
+  // "Distinct" is by unit core, so a single token that merely collides across
+  // properties ("6a" at two buildings) stays a normal ambiguous pick, NOT a
+  // multi-unit request.
+  const exactUnitRows = rows.filter(r => r.s.unit === 3 && r.s.prop > 0);
   const namedCores = new Set(exactUnitRows.map(r => unitCore(r.u.name)));
   if (namedCores.size >= 2) {
     return { status: 'multi_unit', match: null, candidates: candidateList(exactUnitRows), query: norm(text) };
@@ -227,6 +228,10 @@ function scoreUnits(text, units) {
 
 // Load active units for the org + a `marketable` flag (current lease opted in, or
 // vacant with an active host link — i.e. what resolveMarketedUnit would accept).
+// The property's own status matters as much as the unit's. Deactivating a property in Tenafy is how
+// an operator takes a building out of service; without that filter its units kept matching prospect
+// messages, so a deactivated (or test) building could answer a real customer and collide with a live
+// unit, escalating a straightforward booking as multi_unit.
 async function loadUnitsWithMarketable(pool, orgId) {
   const [rows] = await pool.execute(
     `SELECT u.id, u.name, u.property_id, p.display_name AS property_name, p.district, p.city, p.street_address,
@@ -240,7 +245,8 @@ async function loadUnitsWithMarketable(pool, orgId) {
             (SELECT COUNT(*) FROM viewing_link vl
                WHERE vl.unit_id = u.id AND vl.status = 1 AND vl.employee_id IS NOT NULL) AS host_links
        FROM unit u JOIN property p ON u.property_id = p.id
-      WHERE p.org_id = ? AND u.active_status = 1 AND u.deleted_at IS NULL AND (p.deleted_at IS NULL)
+      WHERE p.org_id = ? AND u.active_status = 1 AND u.deleted_at IS NULL
+        AND p.deleted_at IS NULL AND p.status = 1
       ORDER BY p.display_name, u.name`,
     [orgId]
   );

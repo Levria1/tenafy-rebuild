@@ -59,6 +59,28 @@ test('resolver: two distinct units named → multi_unit (escalate to staff)', ()
   assert.equal(r.status, 'multi_unit');
 });
 
+test('resolver: unrelated exact unit token does not turn one named unit into multi_unit', () => {
+  const r = scoreUnits('Fuk Lo Tsun 3/F Unit 1', [
+    {
+      id: 'real',
+      name: '3/F Unit 1 (Room A and Room B)',
+      property_id: 'flt',
+      property_name: 'Fuk Lo Tsun',
+      marketable: true,
+    },
+    {
+      id: 'test',
+      name: 'Unit 1',
+      property_id: 'test-property-2',
+      property_name: 'Test Property 2',
+      marketable: true,
+    },
+  ]);
+
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'real');
+});
+
 test('resolver: single unit token colliding across properties stays ambiguous (not multi_unit)', () => {
   // "6a" matches 6A at two buildings but is ONE unit intent → ambiguous, not multi.
   assert.equal(R('6a').status, 'ambiguous');
@@ -375,4 +397,22 @@ test('resolver: query reports the original text, not the floor-unit rewrite', ()
   const r = scoreUnits('Mong Kok 1/F Studio C', HK_FLOOR_UNITS);
   assert.equal(r.status, 'confident');
   assert.equal(r.query, 'mong kok 1 f studio c');
+});
+
+// The unit load is a DB query, so this is a tripwire rather than a behavioural test: it pins the
+// two status filters that decide which buildings can answer a customer at all. Dropping either one
+// puts deactivated or removed properties back into live matching, where they both answer real
+// enquiries and collide with real units — which is how a test building turned a straightforward
+// booking into a multi_unit escalation.
+test('resolver: the unit load excludes deactivated and deleted properties', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '../src/services/unitResolver.js'), 'utf8');
+  // Slice from WHERE so a nearby prose comment cannot satisfy these assertions — the
+  // first version of this test passed a mutation for exactly that reason.
+  const where = src.slice(src.indexOf('WHERE p.org_id'), src.indexOf('ORDER BY p.display_name'));
+  assert.ok(/u\.active_status = 1/.test(where), 'inactive units must not resolve');
+  assert.ok(/u\.deleted_at IS NULL/.test(where), 'deleted units must not resolve');
+  assert.ok(/p\.deleted_at IS NULL/.test(where), 'units of deleted properties must not resolve');
+  assert.ok(/p\.status = 1/.test(where), 'units of DEACTIVATED properties must not resolve');
 });

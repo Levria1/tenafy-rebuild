@@ -1539,6 +1539,149 @@ test('/units/search engine keeps out-of-band results advisory-only', async () =>
   assert.ok(executed.length >= 2);
 });
 
+test('/units/search publishes asking_rent tiers and preserves already-vacant discount timing', async () => {
+  const { searchUnits } = require('../src/services/unitSearch');
+  const today = orgToday();
+  const rows = [
+    { unit_id: 'u-high', unit_name: 'High', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(56) },
+    { unit_id: 'u-mid', unit_name: 'Mid', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(42) },
+    { unit_id: 'u-low', unit_name: 'Low', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: today },
+    { unit_id: 'u-discount', unit_name: 'Discount', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(-12) },
+    { unit_id: 'u-null', unit_name: 'No Price', rent_price_min: null, rent_price_max: null, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(56) },
+  ].map(row => ({
+    beds: 1,
+    baths: 1,
+    size: 300,
+    size_unit: 'sqft',
+    deposit_price: null,
+    amenity_detail: null,
+    listing_url: null,
+    unit_photo_id: null,
+    property_id: 'p1',
+    property_name: 'Search House',
+    street_address: '1 Test St',
+    city: 'HK',
+    state: null,
+    district: 'Central',
+    country: 'HK',
+    zip_code: null,
+    currency: 'HKD',
+    next_lease_start_date: null,
+    ...row,
+  }));
+  let calls = 0;
+  const pool = {
+    execute: async () => {
+      calls += 1;
+      if (calls === 1) return [rows];
+      if (calls === 2) return [[]];
+      throw new Error(`unexpected search query call ${calls}`);
+    },
+  };
+
+  const { results } = await searchUnits(pool, {
+    orgId: 'org1',
+    moveIn: addOrgDays(70),
+    moveOut: addOrgDays(100),
+    sortBy: 'price_asc',
+    limit: 10,
+  });
+  const byId = new Map(results.map(r => [r.unit_id, r]));
+
+  assert.deepEqual(byId.get('u-high').asking_rent, {
+    amount: '16500.00',
+    tier: 'high',
+    min: '14000.00',
+    max: '16500.00',
+  });
+  assert.equal(byId.get('u-mid').asking_rent.tier, 'mid');
+  assert.equal(byId.get('u-mid').asking_rent.amount, '15250.00');
+  assert.equal(byId.get('u-low').asking_rent.tier, 'low');
+  assert.equal(byId.get('u-low').asking_rent.amount, '14000.00');
+  assert.equal(byId.get('u-discount').asking_rent.tier, 'discount');
+  assert.equal(byId.get('u-discount').asking_rent.amount, '12600.00');
+  assert.equal(byId.get('u-null').asking_rent, null);
+});
+
+test('/units/search monthly_rent_basis ignores unscheduled lease stay totals', async () => {
+  const { searchUnits } = require('../src/services/unitSearch');
+  const rows = [
+    {
+      unit_id: 'scheduled',
+      unit_name: 'Scheduled',
+      rent_price_min: 8800,
+      rent_price_max: 10200,
+      last_lease_price: 9900,
+      last_lease_invoicing: 'monthly',
+      last_lease_end_date: addOrgDays(20),
+    },
+    {
+      unit_id: 'stay-total',
+      unit_name: 'Stay Total',
+      rent_price_min: 8800,
+      rent_price_max: 10200,
+      last_lease_price: 19829.9,
+      last_lease_invoicing: null,
+      last_lease_end_date: addOrgDays(20),
+    },
+    {
+      unit_id: 'no-price',
+      unit_name: 'No Price',
+      rent_price_min: null,
+      rent_price_max: 10200,
+      last_lease_price: 19829.9,
+      last_lease_invoicing: '',
+      last_lease_end_date: addOrgDays(20),
+    },
+  ].map(row => ({
+    beds: 1,
+    baths: 1,
+    size: 300,
+    size_unit: 'sqft',
+    deposit_price: null,
+    amenity_detail: null,
+    listing_url: null,
+    unit_photo_id: null,
+    property_id: 'p1',
+    property_name: 'Search House',
+    street_address: '1 Test St',
+    city: 'HK',
+    state: null,
+    district: 'Central',
+    country: 'HK',
+    zip_code: null,
+    currency: 'HKD',
+    next_lease_start_date: null,
+    ...row,
+  }));
+  let calls = 0;
+  const pool = {
+    execute: async () => {
+      calls += 1;
+      if (calls === 1) return [rows];
+      if (calls === 2) return [[]];
+      throw new Error(`unexpected search query call ${calls}`);
+    },
+  };
+
+  const { results } = await searchUnits(pool, {
+    orgId: 'org1',
+    moveIn: addOrgDays(30),
+    moveOut: addOrgDays(60),
+    sortBy: 'price_asc',
+    limit: 10,
+  });
+  const byId = new Map(results.map(r => [r.unit_id, r]));
+
+  assert.equal(byId.get('scheduled').monthly_rent, 9900);
+  assert.equal(byId.get('scheduled').monthly_rent_basis, 'lease');
+  assert.equal(byId.get('stay-total').monthly_rent, 8800);
+  assert.equal(byId.get('stay-total').monthly_rent_basis, 'advertised');
+  assert.notEqual(byId.get('stay-total').monthly_rent, 19829.9);
+  assert.equal(byId.get('no-price').monthly_rent, null);
+  assert.equal(byId.get('no-price').monthly_rent_basis, null);
+});
+
 test('PUT /advertising/settings accepts valid inquiry gap bands', async () => {
   const advertising = require('../src/routes/advertising');
   const handler = advertising.stack
