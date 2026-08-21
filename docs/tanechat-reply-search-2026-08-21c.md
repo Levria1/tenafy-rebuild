@@ -2,8 +2,8 @@
 
 **Draft for Chris to review and send. Not sent.**
 
-All three are BUILT and tested. **NOT YET DEPLOYED** — the note reads as though they are
-live, so deploy before sending.
+All three are built, tested and **DEPLOYED** (commit 3473655). Verified against production
+after the restart — the tense in this note is accurate and it is safe to send.
 
 ---
 
@@ -27,8 +27,9 @@ public.
 **The resolver is worse.** We checked it after reading your note:
 
 ```
-"mong kok 6a"             ->  confident   Mong Kok 6A Test
-"test property 2 unit 1"  ->  confident   Test Property 2 Unit 1
+before                                          after
+"mong kok 6a"             confident  6A Test    property_only
+"test property 2 unit 1"  confident  Unit 1     none
 ```
 
 `confident` means you would say that label to a prospect. Search listing a test unit among
@@ -41,9 +42,16 @@ search, and the resolver together, so the three cannot disagree about what is pu
 **One consequence worth flagging, because it touches your example.** Mong Kok's real units run
 1A–5D; there is no 6A. Part of why `"mong kok 6a 5a"` escalated as `multi_unit` was that
 `6A Test` matched "6a". With test units filtered, that query now resolves confidently to 5A
-alone — it answers half a two-unit question instead of asking a human. We think naming a test
-unit to a customer is the worse failure and have filtered anyway, but you should know the
-behaviour of that specific case has changed.
+alone — it answers half a two-unit question instead of asking a human. Confirmed on production:
+
+```
+"mong kok 6a 5a"  ->  confident  Mong Kok 5A     (was: multi_unit)
+```
+
+We think naming a test unit to a customer is the worse failure and have filtered anyway, but
+you should know the behaviour of that specific case has changed. If you would rather it kept
+escalating, say so — we can make a query naming two unit-like tokens escalate on the token
+count rather than on how many happened to match.
 
 ### Your "5 of 6"
 
@@ -96,7 +104,7 @@ Chris
 
 ## Notes for Chris (not part of the message)
 
-- **All three are built and tested; NOT deployed at time of writing.** 954 backend tests pass. Eight deliberate
+- **All three are live.** 954 backend tests pass. Eight deliberate
   mutations were replayed against the new tests, including removing the guard from only one of
   the two write paths; all eight were caught.
 - **The `listing_url` fix was four paths, not the three quoted to you earlier.** The
