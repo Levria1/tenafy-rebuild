@@ -29,6 +29,88 @@ const origins = new Set(
   String(process.env.WEBSITE_CORS_ORIGINS || '').split(',').map(x => x.trim()).filter(Boolean)
 );
 
+function slugForPublicLabel(label) {
+  return String(label || '')
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120) || 'building';
+}
+
+function parseAliases(value) {
+  if (value == null || value === '') return [];
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function addSearchTerm(list, seen, value) {
+  if (value == null) return;
+  const text = String(value).trim();
+  if (!text) return;
+  const key = text.toLocaleLowerCase();
+  if (seen.has(key)) return;
+  seen.add(key);
+  list.push(text);
+}
+
+function groupedProperties(rows) {
+  const groups = new Map();
+
+  for (const p of rows) {
+    const publicLabel = String(p.public_label || '').trim();
+    const label = publicLabel || String(p.display_name || '').trim();
+    if (!label) continue;
+    const buildingName = String(p.public_building_name || '').trim();
+    const groupKey = label.toLocaleLowerCase();
+    let group = groups.get(groupKey);
+    if (!group) {
+      group = {
+        key: slugForPublicLabel(label),
+        label,
+        building_name: buildingName || null,
+        property_ids: [],
+        search_terms: [],
+        _seenTerms: new Set(),
+      };
+      addSearchTerm(group.search_terms, group._seenTerms, label);
+      addSearchTerm(group.search_terms, group._seenTerms, buildingName);
+      groups.set(groupKey, group);
+    } else if (!group.building_name && buildingName) {
+      group.building_name = buildingName;
+      addSearchTerm(group.search_terms, group._seenTerms, buildingName);
+    }
+
+    group.property_ids.push(String(p.id));
+    addSearchTerm(group.search_terms, group._seenTerms, p.display_name);
+    addSearchTerm(group.search_terms, group._seenTerms, p.street_address);
+    addSearchTerm(group.search_terms, group._seenTerms, p.district);
+    for (const alias of parseAliases(p.public_aliases)) addSearchTerm(group.search_terms, group._seenTerms, alias);
+  }
+
+  // Slugs are lossy: "95 Tung Choi St" and "95 Tung Choi St." both reduce to the same string, and a
+  // punctuation-only label reduces to the fallback. Two groups sharing a key would make a shared
+  // ?building= link resolve to whichever sorted first — i.e. quietly serve the other building.
+  // Suffix duplicates so a key always identifies exactly one group.
+  const ordered = [...groups.values()]
+    .sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key));
+  const usedKeys = new Set();
+  for (const group of ordered) {
+    let key = group.key;
+    let n = 2;
+    while (usedKeys.has(key)) key = `${group.key}-${n++}`;
+    usedKeys.add(key);
+    group.key = key;
+  }
+  return ordered.map(({ _seenTerms, ...group }) => group);
+}
+
 // Keyed by IP AND slug so one noisy site cannot exhaust another organisation's allowance.
 const limiter = rateLimit({
   windowMs: 60_000,
@@ -56,22 +138,34 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
 
     const pool = await getOrgPool(orgs[0].id);
 
-    const propertyId = req.query.property_id == null ? null : String(req.query.property_id);
-    if (propertyId !== null && (!/^\d+$/.test(propertyId) || propertyId === '0')) {
+    const rawPropertyId = req.query.property_id == null ? null : String(req.query.property_id);
+    const propertyIds = rawPropertyId == null ? [] : rawPropertyId.split(',').map(x => x.trim());
+    if (propertyIds.length > 20 || propertyIds.some(id => !/^\d+$/.test(id) || id === '0')) {
       return res.status(400).json({ code: 'INVALID_PROPERTY', message: 'Invalid property.' });
     }
+    const uniquePropertyIds = [...new Set(propertyIds)];
 
     // A property that does not exist, or has been removed, is refused outright. It never falls
     // back to the global set, because silently answering a different question than the one asked
     // is how the wrong building's details reach someone.
     let property_context = null;
-    if (propertyId !== null) {
+    if (uniquePropertyIds.length) {
+      const propertyPlaceholders = uniquePropertyIds.map(() => '?').join(',');
       const [ps] = await pool.execute(
-        'SELECT id,display_name FROM property WHERE id=? AND deleted_at IS NULL',
-        [propertyId]
+        `SELECT id,display_name FROM property WHERE id IN (${propertyPlaceholders}) AND deleted_at IS NULL`,
+        uniquePropertyIds
       );
-      if (!ps.length) return res.status(400).json({ code: 'INVALID_PROPERTY', message: 'Invalid property.' });
-      property_context = { id: String(ps[0].id), display_name: ps[0].display_name };
+      if (ps.length !== uniquePropertyIds.length) {
+        return res.status(400).json({ code: 'INVALID_PROPERTY', message: 'Invalid property.' });
+      }
+      const byId = new Map(ps.map(p => [String(p.id), p]));
+      const properties = uniquePropertyIds.map(id => {
+        const p = byId.get(String(id));
+        return { id: String(p.id), display_name: p.display_name };
+      });
+      property_context = propertyIds.length === 1
+        ? properties[0]
+        : { property_ids: properties.map(p => p.id), properties };
     }
 
     // The one statement that returns text, and every clause in it is load-bearing:
@@ -88,14 +182,16 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
     //                       only while that property still exists
     // With no property_id the parameter is NULL, which matches nothing — so scoped bodies are
     // absent from the response rather than filtered out of it later.
+    const scopedPlaceholders = uniquePropertyIds.length ? uniquePropertyIds.map(() => '?').join(',') : '?';
+    const scopedParams = uniquePropertyIds.length ? uniquePropertyIds : [null];
     const [rows] = await pool.execute(
-      `SELECT DISTINCT ck.id,ck.category,ck.title,ck.body,ck.updated_at,ck.sort_order,ck.created_at FROM chat_knowledge ck WHERE ck.kind='faq' AND ck.status=1 AND ck.publish_website=1 AND (NOT EXISTS(SELECT 1 FROM chat_knowledge_property s WHERE s.chat_knowledge_id=ck.id) OR EXISTS(SELECT 1 FROM chat_knowledge_property s JOIN property p ON p.id=s.property_id AND p.deleted_at IS NULL WHERE s.chat_knowledge_id=ck.id AND s.property_id=?)) ORDER BY ck.sort_order,ck.created_at LIMIT 500`,
-      [propertyId]
+      `SELECT DISTINCT ck.id,ck.category,ck.title,ck.body,ck.updated_at,ck.sort_order,ck.created_at FROM chat_knowledge ck WHERE ck.kind='faq' AND ck.status=1 AND ck.publish_website=1 AND (NOT EXISTS(SELECT 1 FROM chat_knowledge_property s WHERE s.chat_knowledge_id=ck.id) OR EXISTS(SELECT 1 FROM chat_knowledge_property s JOIN property p ON p.id=s.property_id AND p.deleted_at IS NULL WHERE s.chat_knowledge_id=ck.id AND s.property_id IN (${scopedPlaceholders}))) ORDER BY ck.sort_order,ck.created_at LIMIT 500`,
+      scopedParams
     );
 
-    // Which buildings the site should offer in its selector — names only, never their answers.
+    // Which buildings the site should offer in its selector — public facts only, never their answers.
     const [available] = await pool.execute(
-      `SELECT DISTINCT p.id,p.display_name FROM property p JOIN chat_knowledge_property s ON s.property_id=p.id JOIN chat_knowledge ck ON ck.id=s.chat_knowledge_id WHERE p.deleted_at IS NULL AND ck.kind='faq' AND ck.status=1 AND ck.publish_website=1 ORDER BY p.display_name,p.id`
+      `SELECT DISTINCT p.id,p.display_name,p.public_label,p.public_building_name,p.public_aliases,p.street_address,p.district FROM property p JOIN chat_knowledge_property s ON s.property_id=p.id JOIN chat_knowledge ck ON ck.id=s.chat_knowledge_id WHERE p.deleted_at IS NULL AND ck.kind='faq' AND ck.status=1 AND ck.publish_website=1 ORDER BY COALESCE(NULLIF(TRIM(p.public_label),''),p.display_name),p.id`
     );
 
     const faqs = rows.map(r => ({
@@ -121,11 +217,12 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
       }
     }
     const available_properties = available.map(p => ({ id: String(p.id), display_name: p.display_name }));
+    const available_property_groups = groupedProperties(available);
 
     // Hashed over the response itself, so an edit anywhere — text, order, scope, a renamed
     // building — changes the tag and the site picks it up rather than serving a stale answer.
     const version = crypto.createHash('sha256')
-      .update(JSON.stringify({ property_context, faqs, available_properties }))
+      .update(JSON.stringify({ property_context, faqs, available_properties, available_property_groups }))
       .digest('hex');
 
     const origin = req.headers.origin;
@@ -139,7 +236,7 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
       return res.status(304).end();
     }
 
-    const payload = { code: 200, data: { version, property_context, faqs, available_properties } };
+    const payload = { code: 200, data: { version, property_context, faqs, available_properties, available_property_groups } };
     if (Buffer.byteLength(JSON.stringify(payload)) > 1_000_000) {
       return res.status(503).json({ code: 503, message: 'Response too large' });
     }

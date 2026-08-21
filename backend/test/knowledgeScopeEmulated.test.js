@@ -18,15 +18,33 @@ const publicRouter = require('../src/routes/public');
  * route and the fake stops filtering too, exactly as MySQL would, and the scoped body
  * surfaces in the response where the assertions can see it.
  *
- * It is still a simulation, and simulations drift. The authoritative check is
- * `scripts/rehearse-knowledge-scope.js`, which runs the real statements against a real
- * database. This suite exists so the property is guarded on every commit, not only when
- * someone remembers to rehearse.
+ * KNOW WHAT THIS DOES AND DOES NOT CATCH. It reads whether a clause is PRESENT and then applies
+ * that clause itself. So:
+ *
+ *   DELETING the property predicate      -> caught. These tests go red.
+ *   NEUTRALISING it while keeping the    -> NOT caught. `AND (1=1 OR s.property_id IN (...))`
+ *   text, e.g. an OR short-circuit          still contains the text this fake looks for, so the
+ *                                           fake keeps filtering when MySQL would not.
+ *
+ * The tripwire test at the bottom of this file covers that second case by pinning the predicate
+ * itself, so any edit to it has to be deliberate.
+ *
+ * There is NO real-database rehearsal yet. An earlier version of this comment claimed one existed
+ * at `scripts/rehearse-knowledge-scope.js`; it never did. Until it does, this fake plus the
+ * tripwire is the whole guard — do not read it as more than that.
  */
-function emulatedPool({ knowledge, links, images = [], files = [], deletedProperties = [] }) {
+function emulatedPool({ knowledge, links, images = [], files = [], deletedProperties = [], properties }) {
   const linkedTo = (id) => links.filter(l => String(l.knowledge_id) === String(id));
   const isDeleted = (pid) => deletedProperties.map(String).includes(String(pid));
   const fileFor = (id) => files.find(f => String(f.id) === String(id));
+  const propertyFixtures = Array.isArray(properties) ? properties : null;
+  const propertyFor = (id) => {
+    const found = propertyFixtures && propertyFixtures.find(p => String(p.id) === String(id));
+    if (found) return found;
+    if (propertyFixtures) return null;
+    return { id, display_name: 'Right Building', public_label: null, public_building_name: null,
+      public_aliases: null, street_address: null, district: null };
+  };
 
   return {
     execute: async (sql, params = []) => {
@@ -40,9 +58,13 @@ function emulatedPool({ knowledge, links, images = [], files = [], deletedProper
       const selectsImages = /FROM chat_knowledge_image cki JOIN file f ON f\.id=cki\.file_id/.test(flat);
 
       if (selectsPropertyRow) {
-        const pid = params[0];
-        if (isDeleted(pid) && /deleted_at IS NULL/.test(flat)) return [[]];
-        return [[{ id: pid, display_name: 'Right Building' }]];
+        const excludesDeleted = /deleted_at IS NULL/.test(flat);
+        const rows = params
+          .map(pid => propertyFor(pid))
+          .filter(Boolean)
+          .filter(p => !(excludesDeleted && isDeleted(p.id)))
+          .map(p => ({ id: p.id, display_name: p.display_name }));
+        return [rows];
       }
 
       if (selectsImages) {
@@ -77,7 +99,8 @@ function emulatedPool({ knowledge, links, images = [], files = [], deletedProper
         // entry from every variant — would go unnoticed.
         const hasGlobalBranch = /NOT EXISTS\s*\(\s*SELECT 1 FROM chat_knowledge_property/.test(flat);
         const hasScopedBranch = /OR EXISTS\s*\(\s*SELECT 1 FROM chat_knowledge_property/.test(flat);
-        const askedFor = params.length ? params[params.length - 1] : null;
+        const hasPropertyPredicate = /s\.property_id\s*(?:=\s*\?|IN\s*\()/.test(flat);
+        const askedFor = new Set(params.filter(v => v != null).map(String));
 
         const rows = knowledge.filter((k) => {
           if (faqOnly && k.kind !== 'faq') return false;
@@ -93,7 +116,7 @@ function emulatedPool({ knowledge, links, images = [], files = [], deletedProper
           // opposite of what the statement does.
           const all = linkedTo(k.id);
           const isGlobal = all.length === 0;
-          const matchesAsked = all.some(l => String(l.property_id) === String(askedFor)
+          const matchesAsked = all.some(l => (!hasPropertyPredicate || askedFor.has(String(l.property_id)))
             && !(excludesDeleted && isDeleted(l.property_id)));
           return (hasGlobalBranch && isGlobal) || (hasScopedBranch && matchesAsked);
         });
@@ -135,9 +158,16 @@ function emulatedPool({ knowledge, links, images = [], files = [], deletedProper
           if (websiteOnly && k.publish_website !== 1) continue;
           for (const l of linkedTo(k.id)) {
             if (excludesDeleted && isDeleted(l.property_id)) continue;
+            const p = propertyFor(l.property_id);
+            if (!p) continue;
             // Only the columns named. A statement that asks for a body gets one — which is how a
             // widened SELECT on this query would be caught.
-            const row = { id: l.property_id, display_name: 'Right Building' };
+            const row = { id: p.id, display_name: p.display_name };
+            if (/p\.public_label/.test(flat)) row.public_label = p.public_label;
+            if (/p\.public_building_name/.test(flat)) row.public_building_name = p.public_building_name;
+            if (/p\.public_aliases/.test(flat)) row.public_aliases = p.public_aliases;
+            if (/p\.street_address/.test(flat)) row.street_address = p.street_address;
+            if (/p\.district/.test(flat)) row.district = p.district;
             if (/ck\.body/.test(flat)) row.body = k.body;
             if (/ck\.title/.test(flat)) row.title = k.title;
             seen.set(String(l.property_id), row);
@@ -311,6 +341,63 @@ test('website: the right building gets its own answer', async () => {
   assert.ok(r.wire.includes(SCOPED_BODY));
 });
 
+test('website: multiple buildings include FAQs scoped to any requested property once', async () => {
+  const fixtures = {
+    knowledge: [
+      { id: '1', kind: 'faq', category: 'other', title: 'Global question', body: 'Global answer',
+        status: 1, visibility: 'public', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) },
+      { id: '2', kind: 'faq', category: 'payments', title: 'Shared title', body: 'Shared answer',
+        status: 1, visibility: 'public', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) },
+      { id: '7', kind: 'faq', category: 'maintenance', title: 'Second title', body: 'Second answer',
+        status: 1, visibility: 'public', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) },
+      { id: '8', kind: 'faq', category: 'other', title: 'Third title', body: 'Third answer',
+        status: 1, visibility: 'public', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) },
+    ],
+    links: [
+      { knowledge_id: '2', property_id: '42' },
+      { knowledge_id: '2', property_id: '77' },
+      { knowledge_id: '7', property_id: '77' },
+      { knowledge_id: '8', property_id: '99' },
+    ],
+  };
+
+  const r = await callWebsite('42,77', fixtures);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.data.faqs.filter(f => f.id === '2').length, 1);
+  assert.ok(r.wire.includes('Shared answer'));
+  assert.ok(r.wire.includes('Second answer'));
+  assert.ok(!r.wire.includes('Third answer'));
+  assert.deepEqual(r.body.data.property_context.property_ids, ['42', '77']);
+});
+
+test('website: one invalid building among valid ids is refused without content', async () => {
+  const r = await callWebsite('42,77,999', {
+    ...FIXTURES,
+    properties: [
+      { id: '42', display_name: 'Right Building' },
+      { id: '77', display_name: 'Second Building' },
+    ],
+  });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, 'INVALID_PROPERTY');
+  assert.equal(r.body.data, undefined);
+  assert.ok(!r.wire.includes(SCOPED_BODY));
+});
+
+test('website: a deleted building among requested ids is refused, not treated as global', async () => {
+  const r = await callWebsite('42,77', {
+    ...FIXTURES,
+    properties: [
+      { id: '42', display_name: 'Right Building' },
+      { id: '77', display_name: 'Deleted Building' },
+    ],
+    deletedProperties: ['77'],
+  });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, 'INVALID_PROPERTY');
+  assert.ok(!r.wire.includes('Global answer'));
+});
+
 test('website: an image on a scoped FAQ is absent until the right building is chosen', async () => {
   const unscoped = await callWebsite(null);
   assert.ok(!unscoped.wire.includes('/api/file/preview/200'));
@@ -383,6 +470,78 @@ test('website: the building selector lists names, never answers', async () => {
   assert.ok(!JSON.stringify(available).includes(SCOPED_TITLE));
 });
 
+test('website: properties sharing a public label produce one public group with both ids', async () => {
+  const fixtures = {
+    knowledge: [
+      { id: '10', kind: 'faq', category: 'other', title: 'Pearl title', body: 'Pearl body',
+        status: 1, visibility: 'public', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) },
+      { id: '11', kind: 'faq', category: 'other', title: 'Lai Yuen title', body: 'Lai Yuen body',
+        status: 1, visibility: 'public', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) },
+    ],
+    links: [
+      { knowledge_id: '10', property_id: '12' },
+      { knowledge_id: '10', property_id: '13' },
+      { knowledge_id: '11', property_id: '14' },
+    ],
+    properties: [
+      { id: '12', display_name: '12-B6 Pearl City Mansion', public_label: '22-36 Paterson St, Causeway Bay',
+        public_building_name: 'Pearl City Mansion', public_aliases: '["PCM","12-B6"]',
+        street_address: '22-36 Paterson Street', district: 'Causeway Bay' },
+      { id: '13', display_name: '12-C1 Pearl City Mansion', public_label: '22-36 Paterson St, Causeway Bay',
+        public_building_name: 'Pearl City Mansion', public_aliases: '["12-C1"]',
+        street_address: '22-36 Paterson Street', district: 'Causeway Bay' },
+      { id: '14', display_name: '13B Lai Yuen Apartments', public_label: null,
+        public_building_name: null, public_aliases: null,
+        street_address: '56-61 Russell Street', district: 'Causeway Bay' },
+    ],
+  };
+
+  const r = await callWebsite(null, fixtures);
+  const groups = r.body.data.available_property_groups;
+  const pearl = groups.find(g => g.label === '22-36 Paterson St, Causeway Bay');
+  assert.ok(pearl);
+  assert.equal(pearl.key, '22-36-paterson-st-causeway-bay');
+  assert.equal(pearl.building_name, 'Pearl City Mansion');
+  assert.deepEqual(pearl.property_ids, ['12', '13']);
+});
+
+test('website: a property without a public label falls back to display_name', async () => {
+  const r = await callWebsite(null, {
+    knowledge: [
+      { id: '11', kind: 'faq', category: 'other', title: 'Lai Yuen title', body: 'Lai Yuen body',
+        status: 1, visibility: 'public', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) },
+    ],
+    links: [{ knowledge_id: '11', property_id: '14' }],
+    properties: [
+      { id: '14', display_name: '13B Lai Yuen Apartments', public_label: null,
+        public_building_name: null, public_aliases: null,
+        street_address: '56-61 Russell Street', district: 'Causeway Bay' },
+    ],
+  });
+  assert.deepEqual(r.body.data.available_property_groups.map(g => g.label), ['13B Lai Yuen Apartments']);
+});
+
+test('website: public group search terms never contain FAQ title or body text', async () => {
+  const r = await callWebsite(null, {
+    knowledge: [
+      { id: '20', kind: 'faq', category: 'other', title: 'SECRET FAQ TITLE', body: 'SECRET FAQ BODY',
+        status: 1, visibility: 'public', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) },
+    ],
+    links: [{ knowledge_id: '20', property_id: '21' }],
+    properties: [
+      { id: '21', display_name: 'Public Display', public_label: '95 Tung Choi St, Mong Kok',
+        public_building_name: 'Mong Kok', public_aliases: '["TC95","FLT"]',
+        street_address: '95 Tung Choi Street', district: 'Mong Kok' },
+    ],
+  });
+  const terms = JSON.stringify(r.body.data.available_property_groups[0].search_terms);
+  assert.ok(terms.includes('95 Tung Choi St, Mong Kok'));
+  assert.ok(terms.includes('Mong Kok'));
+  assert.ok(terms.includes('TC95'));
+  assert.ok(!terms.includes('SECRET FAQ TITLE'));
+  assert.ok(!terms.includes('SECRET FAQ BODY'));
+});
+
 test('website: an unknown building is refused rather than answered globally', async () => {
   const r = await callWebsite('999999', { ...FIXTURES, deletedProperties: ['999999'] });
   assert.equal(r.status, 400);
@@ -442,4 +601,48 @@ test('the website and TaneChat audiences are independent, in both directions', a
   assert.ok(!off.wire.includes('CHAT ONLY BODY'), 'sharing with TaneChat must not publish to the website');
   const chat = await callKnowledge(null, onlyChat);
   assert.ok(chat.wire.includes('CHAT ONLY BODY'), 'and TaneChat must still receive it');
+});
+
+// A TRIPWIRE, not a proof. The emulated pool above cannot tell a live predicate from a neutralised
+// one, because both contain the same text. This pins the predicate so that changing it at all —
+// including the `1=1 OR` short-circuit that would publish every building's answers to everyone —
+// fails here and has to be a conscious decision.
+test('website: the scoped-branch predicate is exactly what it should be', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '../src/routes/websitePublic.js'), 'utf8');
+
+  const expected =
+    "OR EXISTS(SELECT 1 FROM chat_knowledge_property s JOIN property p ON p.id=s.property_id " +
+    "AND p.deleted_at IS NULL WHERE s.chat_knowledge_id=ck.id AND s.property_id IN (${scopedPlaceholders}))";
+
+  assert.ok(
+    src.includes(expected),
+    'The scoped branch of the FAQ query changed. That expression is the only thing keeping one ' +
+    'building\'s answers away from another building\'s tenants. If the change is intentional, ' +
+    'update this string AND re-check that a neutralising edit (1=1, OR TRUE, a commented-out ' +
+    'clause) has not crept in.'
+  );
+  assert.ok(!/\(\s*1\s*=\s*1\s*OR/i.test(src), 'a 1=1 OR short-circuit is present in the route');
+});
+
+test('website: two labels that slugify alike still get distinct keys', async () => {
+  const fixtures = JSON.parse(JSON.stringify(FIXTURES));
+  fixtures.knowledge = FIXTURES.knowledge;
+  fixtures.properties = [
+    { id: '10', display_name: 'A', public_label: '95 Tung Choi St', public_building_name: 'Mong Kok',
+      public_aliases: null, street_address: null, district: null },
+    { id: '11', display_name: 'B', public_label: '95 Tung Choi St.', public_building_name: 'Other',
+      public_aliases: null, street_address: null, district: null },
+  ];
+  fixtures.links = [{ knowledge_id: '2', property_id: '10' }, { knowledge_id: '7', property_id: '11' }];
+  fixtures.knowledge = FIXTURES.knowledge.concat([
+    { id: '7', kind: 'faq', category: 'other', title: 'Other building', body: 'Other body',
+      status: 1, visibility: 'public', publish_website: 1, tags: null, sort_order: 0, updated_at: new Date(0) },
+  ]);
+  const r = await callWebsite(null, fixtures);
+  const groups = r.body.data.available_property_groups;
+  const keys = groups.map(g => g.key);
+  assert.equal(new Set(keys).size, keys.length,
+    'two groups sharing a key make a ?building= link resolve to whichever sorted first');
 });

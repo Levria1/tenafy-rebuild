@@ -99,6 +99,34 @@
     background-repeat:no-repeat;background-position:right 12px center;
   }
   select:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+  .building-search{position:relative;min-width:min(360px,100%);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .building-search input{
+    font-family:var(--ui);font-size:15px;font-weight:600;color:var(--green-deep);
+    padding:9px 14px;border:1px solid var(--line);border-radius:var(--pill);
+    background:#fff;min-width:min(300px,100%);
+  }
+  .building-search input:focus-visible,
+  .building-clear:focus-visible,
+  .match-row:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+  .building-clear{
+    font-family:var(--ui);font-size:12px;font-weight:700;letter-spacing:1px;
+    text-transform:uppercase;color:var(--green-deep);background:#fff;
+    border:1px solid var(--line);border-radius:var(--pill);padding:9px 14px;cursor:pointer;
+  }
+  .building-clear:hover{color:var(--green)}
+  .matches{
+    position:absolute;z-index:5;left:0;right:0;top:calc(100% + 8px);
+    border:1px solid var(--line);border-radius:8px;background:#fff;
+    box-shadow:0 14px 30px rgba(0,0,0,0.08);overflow:hidden;
+  }
+  .match-row{
+    display:block;width:100%;text-align:left;background:#fff;border:0;cursor:pointer;
+    padding:10px 14px;border-bottom:1px solid var(--line-soft);
+  }
+  .match-row:last-child{border-bottom:0}
+  .match-row:hover,.match-row[aria-selected="true"]{background:var(--panel)}
+  .match-label{display:block;font-family:var(--ui);font-size:14px;font-weight:500;color:var(--ink);line-height:1.35}
+  .match-building{display:block;margin-top:2px;font-family:var(--text);font-size:13px;color:var(--muted);line-height:1.35}
 
   /* category eyebrow + hairline rule */
   .cat{
@@ -175,6 +203,8 @@
     .eyebrow{font-size:11px;letter-spacing:2px;padding:8px 18px;margin-bottom:20px}
     .wrap{padding:32px 18px 64px}
     .picker{border-radius:16px;padding:14px 18px;gap:10px}
+    .building-search,.building-search input{width:100%}
+    .building-clear{width:100%}
     summary{font-size:15px;padding:16px 48px 16px 18px}
     .answer{padding:0 18px 18px}
     .foot-in{justify-content:center;text-align:center}
@@ -208,10 +238,12 @@
 <main>
   <div class="wrap">
     <div id="picker" class="picker" hidden>
-      <label for="building">Some answers differ by building</label>
-      <select id="building">
-        <option value="">Choose your building…</option>
-      </select>
+      <label for="buildingSearch">Some answers differ by building</label>
+      <div class="building-search">
+        <input id="buildingSearch" type="text" autocomplete="off" placeholder="Type your street or building" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="buildingMatches">
+        <button id="clearBuilding" class="building-clear" type="button" hidden>Show all buildings</button>
+        <div id="buildingMatches" class="matches" role="listbox" hidden></div>
+      </div>
     </div>
 
     <div id="out"><p class="note">Loading…</p></div>
@@ -242,7 +274,12 @@
 
   var out = document.getElementById('out');
   var picker = document.getElementById('picker');
-  var select = document.getElementById('building');
+  var input = document.getElementById('buildingSearch');
+  var clear = document.getElementById('clearBuilding');
+  var matchesBox = document.getElementById('buildingMatches');
+  var propertyGroups = [];
+  var chosenKey = null;
+  var activeMatch = -1;
 
   // Everything from the API is treated as text, never markup. An answer is written by staff in
   // a CMS; if it ever contained a tag, this is what stops it running in a visitor's browser.
@@ -324,37 +361,121 @@
     });
   }
 
-  function fillPicker(list, current) {
-    if (!list || !list.length) { picker.hidden = true; return; }
-    picker.hidden = false;
-    while (select.options.length > 1) select.remove(1);
-    list.forEach(function (p) {
-      var o = document.createElement('option');
-      o.value = p.id;
-      o.textContent = p.display_name;
-      if (String(p.id) === String(current)) o.selected = true;
-      select.appendChild(o);
-    });
+  function normalise(value) {
+    return String(value || '').toLocaleLowerCase();
   }
 
-  function load(propertyId) {
-    var url = propertyId ? API + '?property_id=' + encodeURIComponent(propertyId) : API;
+  function groupForKey(key) {
+    return propertyGroups.find(function (g) { return String(g.key) === String(key); }) || null;
+  }
+
+  function groupText(group) {
+    return (group.search_terms || []).join(' ');
+  }
+
+  function filteredGroups() {
+    var q = normalise(input.value).trim();
+    if (!q) return propertyGroups.slice(0, 8);
+    return propertyGroups.filter(function (g) {
+      return normalise(groupText(g)).indexOf(q) !== -1;
+    }).slice(0, 8);
+  }
+
+  function setUrlBuilding(key) {
+    var u = new URL(window.location.href);
+    if (key) u.searchParams.set('building', key);
+    else u.searchParams.delete('building');
+    history.replaceState(null, '', u);
+  }
+
+  function hideMatches() {
+    matchesBox.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    activeMatch = -1;
+  }
+
+  function renderMatches() {
+    var list = filteredGroups();
+    matchesBox.textContent = '';
+    activeMatch = Math.min(activeMatch, list.length - 1);
+
+    if (!list.length) {
+      hideMatches();
+      return;
+    }
+
+    list.forEach(function (group, index) {
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'match-row';
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', index === activeMatch ? 'true' : 'false');
+      row.appendChild(el('span', group.label));
+      row.lastChild.className = 'match-label';
+      if (group.building_name) {
+        row.appendChild(el('span', group.building_name));
+        row.lastChild.className = 'match-building';
+      }
+      row.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      row.addEventListener('click', function () { chooseGroup(group); });
+      matchesBox.appendChild(row);
+    });
+
+    matchesBox.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  }
+
+  function fillSearch(list, currentKey) {
+    propertyGroups = Array.isArray(list) ? list : [];
+    if (!propertyGroups.length) {
+      picker.hidden = true;
+      hideMatches();
+      return;
+    }
+
+    picker.hidden = false;
+    var current = currentKey ? groupForKey(currentKey) : null;
+    chosenKey = current ? current.key : null;
+    input.value = current ? current.label : '';
+    clear.hidden = !chosenKey;
+    hideMatches();
+  }
+
+  var loadSeq = 0;
+  function load(propertyIds, afterLoadKey) {
+    var mySeq = ++loadSeq;
+    var stale = function () { return mySeq !== loadSeq; };
+    var url = propertyIds ? API + '?property_id=' + encodeURIComponent(propertyIds) : API;
     fetch(url, { headers: { Accept: 'application/json' } })
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       })
       .then(function (json) {
+        // A response for a building the visitor has already moved on from must never paint. Two
+        // overlapping loads can finish out of order, and the loser would otherwise render its
+        // bodies underneath the winner's label.
+        if (stale()) return;
         var data = json && json.data;
         render(data);
-        fillPicker(data && data.available_properties, propertyId);
+        fillSearch(data && data.available_property_groups, chosenKey);
         try { sessionStorage.setItem('tane_faq_cache', JSON.stringify(data)); } catch (e) {}
+        if (!propertyIds && afterLoadKey) {
+          var initial = groupForKey(afterLoadKey);
+          if (initial) chooseGroup(initial);
+          else setUrlBuilding(null);
+        }
       })
       .catch(function () {
+        if (stale()) return;
         // Show the last copy this visitor saw rather than an empty page.
         var cached = null;
         try { cached = JSON.parse(sessionStorage.getItem('tane_faq_cache')); } catch (e) {}
-        if (cached) { render(cached); return; }
+        if (cached) {
+          render(cached);
+          fillSearch(cached.available_property_groups, chosenKey);
+          return;
+        }
         out.textContent = '';
         var box = el('div', 'We can’t load the questions just now. Please try again shortly, or email mgmt@taneresidence.com.');
         box.className = 'err';
@@ -362,17 +483,71 @@
       });
   }
 
-  select.addEventListener('change', function () {
-    load(select.value || null);
-    // Keep the chosen building in the URL so the page can be linked and reloaded.
-    var u = new URL(window.location.href);
-    if (select.value) u.searchParams.set('building', select.value);
-    else u.searchParams.delete('building');
-    history.replaceState(null, '', u);
+  function chooseGroup(group) {
+    chosenKey = group.key;
+    input.value = group.label;
+    clear.hidden = false;
+    hideMatches();
+    setUrlBuilding(group.key);
+    load((group.property_ids || []).join(','));
+  }
+
+  function clearBuilding() {
+    chosenKey = null;
+    input.value = '';
+    clear.hidden = true;
+    hideMatches();
+    setUrlBuilding(null);
+    load(null);
+  }
+
+  input.addEventListener('input', function () {
+    // Typing abandons the current selection. The list MUST go back with it: leaving the previous
+    // building's answers on screen under a different building's name in the box is how a tenant
+    // ends up following instructions for a flat they do not live in. Only reload on the
+    // chosen -> not-chosen transition, so ordinary typing does not refetch on every keystroke.
+    var hadSelection = chosenKey !== null;
+    chosenKey = null;
+    clear.hidden = !input.value;
+    setUrlBuilding(null);
+    activeMatch = -1;
+    renderMatches();
+    if (hadSelection) load(null);
   });
 
+  input.addEventListener('focus', function () {
+    renderMatches();
+  });
+
+  input.addEventListener('blur', function () {
+    setTimeout(hideMatches, 120);
+  });
+
+  input.addEventListener('keydown', function (e) {
+    var list = filteredGroups();
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeMatch = list.length ? (activeMatch + 1) % list.length : -1;
+      renderMatches();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeMatch = list.length ? (activeMatch <= 0 ? list.length - 1 : activeMatch - 1) : -1;
+      renderMatches();
+    } else if (e.key === 'Enter') {
+      if (list.length) {
+        e.preventDefault();
+        chooseGroup(list[Math.max(activeMatch, 0)]);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      clearBuilding();
+    }
+  });
+
+  clear.addEventListener('click', clearBuilding);
+
   var initial = new URL(window.location.href).searchParams.get('building');
-  load(initial || null);
+  load(null, initial || null);
 })();
 </script>
 </body>
