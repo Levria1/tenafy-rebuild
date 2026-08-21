@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert, Checkbox, InputNumber, Upload, Dropdown, Menu } from 'antd';
+import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert, Checkbox, InputNumber, Upload, Dropdown, Menu, Tooltip } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined, MailOutlined, LogoutOutlined, CalendarOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../components/Layout';
@@ -978,15 +978,17 @@ export default function LeasingDetailPage() {
       <Space direction="vertical" style={{ width: '100%' }} size="large">
         <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 8 : 0 }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/leasing')}>Back to Leases</Button>
+          {/* Document actions deliberately do NOT live here. This bar acts on the
+              TENANCY (check-in, exit, move-out, edit); everything that produces or
+              opens a document belongs in the Documents & Signatures card, next to
+              the documents themselves. The two buttons that used to sit here both
+              misled: "View Lease" re-renders the WHOLE tenancy on the fly, so an
+              extension's row looked like it covered the full term, and it outranked
+              the real signed documents by sitting in the primary bar. The other
+              relabelled itself "View Signed Lease" once a lease had a signed file
+              but still navigated to the composer — a document promised, a send form
+              delivered. */}
           <Space wrap>
-            <Button icon={<FilePdfOutlined />} onClick={() => window.open(pdf.leaseUrl(leaseId), '_blank')}>View Lease</Button>
-            <Button
-              icon={<FilePdfOutlined />}
-              onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}
-              type={isPending ? 'primary' : 'default'}
-            >
-              {lease?.signed_file_id ? 'View Signed Lease' : 'Generate Lease for E-Signature'}
-            </Button>
             <Popconfirm
               title="Send check-in email now?"
               description={`This emails the check-in details to ${lease?.tenant_first_name || 'the tenant'} immediately, regardless of the scheduled timing.`}
@@ -1207,14 +1209,21 @@ export default function LeasingDetailPage() {
         {/* Documents & Signatures — one row per period of the tenancy.
             Extending a lease by editing its end date leaves the new period
             undocumented; this is where each signed document lives, whether
-            e-signed or signed on paper. */}
-        {(lease?.documents?.length > 0 || lease?.paperwork?.needs_document) && (
-          <Card size="small" title="Documents & Signatures">
+            e-signed or signed on paper.
+
+            Rendered UNCONDITIONALLY. It used to appear only once a document
+            existed, which was survivable while the send button lived in the top
+            bar — now that this card owns every document action, hiding it would
+            leave a lease with no paperwork yet (computePaperworkState returns
+            needs_document:false for reason 'no_documents') with no way to send
+            one at all. The empty state below is what a fresh lease sees. */}
+        <Card size="small" title="Documents & Signatures">
             <Table
               size="small"
               pagination={false}
               rowKey="id"
-              dataSource={lease.documents || []}
+              dataSource={lease?.documents || []}
+              locale={{ emptyText: 'No documents yet. Send one for e-signature, or record one signed on paper.' }}
               columns={[
                 {
                   title: 'Period',
@@ -1252,13 +1261,18 @@ export default function LeasingDetailPage() {
                     const st = Number(d.status);
                     return (
                       <Space>
+                        {/* One verb, three states: "View signed" is the executed document,
+                            "View sent" is what the signer received, "Preview full-term draft"
+                            (below the table) is neither. Previously "View PDF" / "View sent" /
+                            "View Lease" / "View Signed Lease" — four names for looking at a
+                            document, only two of which were the same kind of thing. */}
                         {d.signed_file_id && (
                           <Button size="small" onClick={() => window.open(`/api/file/preview/${d.signed_file_id}`, '_blank')}>
-                            View PDF
+                            View signed
                           </Button>
                         )}
                         {/* The document as it was SENT. Without this there is no way to check what
-                            a signer actually received until they sign — and "View Lease" above is
+                            a signer actually received until they sign — and the full-term draft is
                             not it: that re-renders the whole tenancy from the lease record, so an
                             extension's document appears to cover the full term. Shown only when
                             there is no signed copy, since the signed one supersedes it. */}
@@ -1266,6 +1280,13 @@ export default function LeasingDetailPage() {
                           <Button size="small" onClick={() => window.open(`/api/file/preview/${d.original_file_id}`, '_blank')}>
                             View sent
                           </Button>
+                        )}
+                        {/* A signed row with no file behind it. The scan is optional on
+                            "Record signed on paper", so this is a legitimate state — but an
+                            empty action cell reads as a broken row rather than as a document
+                            that exists only on paper. Say which it is. */}
+                        {st === 3 && !d.signed_file_id && !d.original_file_id && (
+                          <span style={{ color: '#999', fontSize: 12 }}>No scan on file</span>
                         )}
                         {(st === 1 || st === 2) && (
                           <Button size="small" loading={resendingSig} onClick={handleResendSignature}>
@@ -1293,14 +1314,14 @@ export default function LeasingDetailPage() {
             {/* The gap. Only ever shown when the uncovered stretch reaches a
                 month — the SERVER decides, so this can never disagree with the
                 prompt shown after saving an extension. */}
-            {lease.paperwork?.needs_document && (
+            {lease?.paperwork?.needs_document && (
               <Alert
                 type="warning"
                 showIcon
                 style={{ marginTop: 12 }}
-                message={lease.paperwork.reason === 'period_not_recorded'
+                message={lease?.paperwork?.reason === 'period_not_recorded'
                   ? 'A signed document exists but the period it covers was never recorded.'
-                  : `No signed document covers ${dayjs(lease.paperwork.uncovered?.from).format('D MMM YYYY')} \u2013 ${dayjs(lease.paperwork.uncovered?.to).format('D MMM YYYY')}.`}
+                  : `No signed document covers ${dayjs(lease?.paperwork?.uncovered?.from).format('D MMM YYYY')} \u2013 ${dayjs(lease?.paperwork?.uncovered?.to).format('D MMM YYYY')}.`}
                 action={
                   <Space>
                     <Button size="small" type="primary" onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}>
@@ -1313,23 +1334,38 @@ export default function LeasingDetailPage() {
             )}
 
             {/* Under a month uncovered: informational, never a warning. */}
-            {!lease.paperwork?.needs_document && lease.paperwork?.reason === 'under_a_month' && (
+            {!lease?.paperwork?.needs_document && lease?.paperwork?.reason === 'under_a_month' && (
               <div style={{ marginTop: 12, color: '#888', fontSize: 12 }}>
-                {dayjs(lease.paperwork.uncovered?.from).format('D MMM YYYY')} \u2013 {dayjs(lease.paperwork.uncovered?.to).format('D MMM YYYY')}
+                {dayjs(lease?.paperwork?.uncovered?.from).format('D MMM YYYY')} \u2013 {dayjs(lease?.paperwork?.uncovered?.to).format('D MMM YYYY')}
                 {' '}\u00b7 no paperwork required (under a month)
               </div>
             )}
 
             <div style={{ marginTop: 12 }}>
-              <Space>
-                <Button size="small" onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}>
+              <Space wrap>
+                {/* Primary only when the alert above is absent, so exactly one
+                    "Send for e-signature" on screen is ever emphasised. */}
+                <Button
+                  size="small"
+                  type={lease?.paperwork?.needs_document ? 'default' : 'primary'}
+                  onClick={() => router.push(`/leasing/${leaseId}/review-and-send`)}
+                >
                   Send for e-signature
                 </Button>
                 <Button size="small" onClick={openPaperModal}>Record signed on paper</Button>
+                {/* Deliberately NOT called "View Lease". Nothing is stored and nothing is
+                    signed: this re-renders the lease record over the WHOLE tenancy, so on
+                    an extended lease it shows the full term rather than the extension. It
+                    is a draft to read or print, which is why it sits last and plain while
+                    the real documents are in the table above. */}
+                <Tooltip title="Renders the whole tenancy from the lease record. Not a signed document, and not what any signer received.">
+                  <Button size="small" icon={<FilePdfOutlined />} onClick={() => window.open(pdf.leaseUrl(leaseId), '_blank')}>
+                    Preview full-term draft
+                  </Button>
+                </Tooltip>
               </Space>
             </div>
-          </Card>
-        )}
+        </Card>
         {/* Pending banner — prominently flags drafts that haven't been
             confirmed. Clicking "Confirm Lease" flips state to active and
             fires the deferred rent + deposit invoices. */}
