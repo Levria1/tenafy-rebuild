@@ -63,8 +63,21 @@ const FAQ_CATEGORIES = [
   ['moving_in','Moving in'],
   ['moving_out','Moving out'],
   ['lease_renewal','Lease renewal'],
+  // Bot-only. These two are EXCLUDED FROM THE PUBLIC FAQ PAGE IN SQL — not hidden
+  // by the browser — so the content never leaves the server, whatever the
+  // "Website" toggle on the entry says. Deliberately belt-and-braces: the toggle
+  // is a per-entry setting someone can tick wrongly, the category is a standing
+  // statement about what the content is.
+  ['internal_private','Internal (Private)'],
+  ['inquiries','Inquiries (Not on FAQ)'],
   ['other','Other'],
 ];
+
+// Keep in step with WEBSITE_HIDDEN_CATEGORIES in backend/src/utils/faqCategories.js.
+// Used to warn in the edit form when an entry is filed bot-only but ticked for the
+// website — the category wins, and the operator should not have to discover that
+// by checking the live site.
+const WEBSITE_HIDDEN_CATEGORIES = ['internal_private', 'inquiries'];
 
 // ---------------------------------------------------------------------------
 // Shared hook — both Rules and FAQs use the same chat_knowledge table; we just
@@ -586,6 +599,20 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
                 <Checkbox disabled={locked || !isFaq}>
                   Website <Text type="secondary" style={{ fontSize: 12 }}>— taneresidence.com/faq, visible to anyone</Text>
                 </Checkbox>
+              </Form.Item>
+              {/* The category overrides this tick, and silently — the entry saves,
+                  the Website tag shows in the table, and it still never appears on
+                  the site. Say so here rather than let it be discovered by looking. */}
+              <Form.Item noStyle shouldUpdate={(prev, cur) => prev.category !== cur.category || prev.publish_website !== cur.publish_website}>
+                {({ getFieldValue }) => (
+                  isFaq && getFieldValue('publish_website') && WEBSITE_HIDDEN_CATEGORIES.includes(getFieldValue('category'))
+                    ? (
+                      <Text type="warning" style={{ fontSize: 12, marginTop: 4 }}>
+                        This category is never shown on the website. The entry stays available to
+                        Tenafy and TaneChat, but the Website tick above has no effect.
+                      </Text>
+                    ) : null
+                )}
               </Form.Item>
             </div>
           </Form.Item>

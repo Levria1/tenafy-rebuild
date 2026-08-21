@@ -18,6 +18,7 @@ const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
+const { WEBSITE_VISIBLE_CATEGORY_SQL } = require('../utils/faqCategories');
 
 // Resolve a stored file name inside the uploads directory. The name comes from our own DB, but
 // this still refuses anything that escapes the directory — a traversal in stored data would
@@ -198,7 +199,7 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
     const scopedPlaceholders = uniquePropertyIds.length ? uniquePropertyIds.map(() => '?').join(',') : '?';
     const scopedParams = uniquePropertyIds.length ? uniquePropertyIds : [null];
     const [rows] = await pool.execute(
-      `SELECT DISTINCT ck.id,ck.category,ck.title,ck.body,ck.updated_at,ck.sort_order,ck.created_at FROM chat_knowledge ck WHERE ck.kind='faq' AND ck.status=1 AND ck.publish_website=1 AND (NOT EXISTS(SELECT 1 FROM chat_knowledge_property s WHERE s.chat_knowledge_id=ck.id) OR EXISTS(SELECT 1 FROM chat_knowledge_property s JOIN property p ON p.id=s.property_id AND p.deleted_at IS NULL WHERE s.chat_knowledge_id=ck.id AND s.property_id IN (${scopedPlaceholders}))) ORDER BY ck.sort_order,ck.created_at LIMIT 500`,
+      `SELECT DISTINCT ck.id,ck.category,ck.title,ck.body,ck.updated_at,ck.sort_order,ck.created_at FROM chat_knowledge ck WHERE ck.kind='faq' AND ck.status=1 AND ck.publish_website=1 AND ${WEBSITE_VISIBLE_CATEGORY_SQL} AND (NOT EXISTS(SELECT 1 FROM chat_knowledge_property s WHERE s.chat_knowledge_id=ck.id) OR EXISTS(SELECT 1 FROM chat_knowledge_property s JOIN property p ON p.id=s.property_id AND p.deleted_at IS NULL WHERE s.chat_knowledge_id=ck.id AND s.property_id IN (${scopedPlaceholders}))) ORDER BY ck.sort_order,ck.created_at LIMIT 500`,
       scopedParams
     );
 
@@ -225,7 +226,7 @@ router.get('/:org_slug/faqs', limiter, async (req, res) => {
               SELECT 1 FROM chat_knowledge_property s
                 JOIN chat_knowledge ck ON ck.id = s.chat_knowledge_id
                WHERE s.property_id = p.id
-                 AND ck.kind='faq' AND ck.status=1 AND ck.publish_website=1
+                 AND ck.kind='faq' AND ck.status=1 AND ck.publish_website=1 AND ${WEBSITE_VISIBLE_CATEGORY_SQL}
             )
           )
         ORDER BY COALESCE(NULLIF(TRIM(p.public_label),''),p.display_name),p.id`
