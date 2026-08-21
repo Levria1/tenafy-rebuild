@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo, Suspense } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useMemo, Suspense } from 'react';
 import { Select, Spin, Input, DatePicker, Tooltip } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -27,6 +27,26 @@ function CalendarInner() {
     dayjs().subtract(1, 'month').startOf('month'),
     dayjs().add(6, 'month').endOf('month'),
   ]);
+
+  // ── Sticky header plumbing ────────────────────────────────────────────────
+  // The month header and the Unit Count row must stay readable while scrolling
+  // through 118 units. Two things make that harder than `position: sticky` alone:
+  //
+  //  1. The table wrapper sets `overflow-x: auto`. Per CSS overflow rules a
+  //     `visible` value on the other axis computes to `auto`, so the wrapper is
+  //     ALREADY a scroll container — a sticky thead inside it sticks to the
+  //     wrapper, not the viewport, and the wrapper's height is unconstrained, so
+  //     it would scroll away with the page and appear not to work at all. The
+  //     wrapper is therefore given a viewport-relative max height and becomes the
+  //     vertical scroller too. A side benefit: the page itself stops scrolling,
+  //     so the filters, legend and marker key above stay put without needing to
+  //     be sticky at all.
+  //  2. The count row sits BELOW the header row, so its offset is the header's
+  //     rendered height. That is font- and zoom-dependent, so it is measured
+  //     rather than guessed — a hard-coded value leaves a gap or an overlap the
+  //     moment the browser font size differs from ours.
+  const theadRef = useRef(null);
+  const [countRowTop, setCountRowTop] = useState(0);
 
   useEffect(() => {
     loadProperties();
@@ -323,12 +343,26 @@ function CalendarInner() {
     return { text, leaseId: best.id || null };
   };
 
-  const headerHeight = 36;
-  const rowHeight = 36;
   const unitColWidth = 220;
   const tenantColWidth = 160;
   const endDateColWidth = 80;
   const statusColWidth = 60;
+
+  // Measure the header row so the count row can sit exactly beneath it. A layout
+  // effect, so the offset lands before paint rather than a frame late (which
+  // shows as a visible jump). ResizeObserver keeps it right when the month
+  // columns rewrap on a resize or zoom; the guard is for environments without
+  // it, where the mount measurement alone is close enough.
+  useLayoutEffect(() => {
+    const el = theadRef.current;
+    if (!el) return undefined;
+    const measure = () => setCountRowTop(el.getBoundingClientRect().height || 0);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [loading, months.length]);
 
   return (
     <MainLayout>
@@ -439,25 +473,31 @@ function CalendarInner() {
       ) : filteredData.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 60, color: '#999' }}>No units found</div>
       ) : (
-        <div style={{ overflowX: 'auto', border: '1px solid #e8e8e8', borderRadius: 4 }}>
-          <table style={{ borderCollapse: 'collapse', width: 'max-content', minWidth: '100%' }}>
-            <thead>
+        /* The vertical scroller. Capped against the viewport so the table scrolls
+           inside itself instead of scrolling the page — which is what keeps the
+           filters, legend and marker key above permanently visible, and what makes
+           position:sticky on the header meaningful (see the note by countRowTop).
+           The floor stops the grid collapsing to a couple of rows on a short window
+           or when the browser chrome is deep. */
+        <div style={{ overflow: 'auto', maxHeight: 'calc(100vh - 330px)', minHeight: 300, border: '1px solid #e8e8e8', borderRadius: 4 }}>
+          <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content', minWidth: '100%' }}>
+            <thead ref={theadRef}>
               <tr style={{ background: '#fafafa' }}>
-                <th style={{ position: 'sticky', left: 0, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: unitColWidth, minWidth: unitColWidth }}>
+                <th style={{ position: 'sticky', top: 0, left: 0, zIndex: 5, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: unitColWidth, minWidth: unitColWidth }}>
                   PROPERTY / UNIT
                 </th>
-                <th style={{ position: 'sticky', left: unitColWidth, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: tenantColWidth, minWidth: tenantColWidth }}>
+                <th style={{ position: 'sticky', top: 0, left: unitColWidth, zIndex: 5, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: tenantColWidth, minWidth: tenantColWidth }}>
                   TENANT
                 </th>
-                <th style={{ position: 'sticky', left: unitColWidth + tenantColWidth, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: endDateColWidth, minWidth: endDateColWidth }} />
-                <th style={{ position: 'sticky', left: unitColWidth + tenantColWidth + endDateColWidth, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: statusColWidth, minWidth: statusColWidth }} />
-                <th style={{ position: 'sticky', left: unitColWidth + tenantColWidth + endDateColWidth + statusColWidth, zIndex: 2, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '2px solid #e8e8e8', textAlign: 'right', fontSize: 12, fontWeight: 700, minWidth: 80 }}>
+                <th style={{ position: 'sticky', top: 0, left: unitColWidth + tenantColWidth, zIndex: 5, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: endDateColWidth, minWidth: endDateColWidth }} />
+                <th style={{ position: 'sticky', top: 0, left: unitColWidth + tenantColWidth + endDateColWidth, zIndex: 5, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #e8e8e8', textAlign: 'left', fontSize: 12, fontWeight: 700, width: statusColWidth, minWidth: statusColWidth }} />
+                <th style={{ position: 'sticky', top: 0, left: unitColWidth + tenantColWidth + endDateColWidth + statusColWidth, zIndex: 5, background: '#fafafa', padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '2px solid #e8e8e8', textAlign: 'right', fontSize: 12, fontWeight: 700, minWidth: 80 }}>
                   RENT
                 </th>
                 {months.map((m, i) => {
                   const isCurrentMonth = m.isSame(dayjs(), 'month');
                   return (
-                    <th key={i} style={{ padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #f0f0f0', textAlign: 'center', fontSize: 12, fontWeight: 600, minWidth: 130, background: isCurrentMonth ? '#e6f7ff' : '#fafafa' }}>
+                    <th key={i} style={{ position: 'sticky', top: 0, zIndex: 4, padding: '8px 12px', borderBottom: '2px solid #e8e8e8', borderRight: '1px solid #f0f0f0', textAlign: 'center', fontSize: 12, fontWeight: 600, minWidth: 130, background: isCurrentMonth ? '#e6f7ff' : '#fafafa' }}>
                       {m.format('D MMM YYYY')}
                     </th>
                   );
@@ -465,9 +505,12 @@ function CalendarInner() {
               </tr>
             </thead>
             <tbody>
-              {/* Count row */}
+              {/* Count row — pinned directly under the month header. It stays in the
+                  tbody rather than moving into the thead so the colSpan={5} label keeps
+                  spanning the frozen columns; `top` is the measured header height so
+                  the two rows meet exactly. */}
               <tr style={{ background: '#fafafa', borderBottom: '2px solid #e8e8e8' }}>
-                <td colSpan={5} style={{ position: 'sticky', left: 0, zIndex: 1, background: '#fafafa', padding: '4px 12px', borderRight: '2px solid #e8e8e8', fontSize: 11, fontWeight: 600, color: '#666' }}>
+                <td colSpan={5} style={{ position: 'sticky', top: countRowTop, left: 0, zIndex: 3, background: '#fafafa', padding: '4px 12px', borderRight: '2px solid #e8e8e8', borderBottom: '2px solid #e8e8e8', fontSize: 11, fontWeight: 600, color: '#666' }}>
                   {statusFilter ? `${statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)} Count` : 'Unit Count'}
                 </td>
                 {months.map((m, mi) => {
@@ -484,7 +527,7 @@ function CalendarInner() {
                   });
                   const isCurrentMonth = m.isSame(dayjs(), 'month');
                   return (
-                    <td key={mi} style={{ padding: '4px 8px', borderRight: '1px solid #f0f0f0', fontSize: 11, fontWeight: 600, textAlign: 'center', color: '#333', background: isCurrentMonth ? '#e6f7ff' : '#fafafa' }}>
+                    <td key={mi} style={{ position: 'sticky', top: countRowTop, zIndex: 2, padding: '4px 8px', borderRight: '1px solid #f0f0f0', borderBottom: '2px solid #e8e8e8', fontSize: 11, fontWeight: 600, textAlign: 'center', color: '#333', background: isCurrentMonth ? '#e6f7ff' : '#fafafa' }}>
                       {count}
                     </td>
                   );
