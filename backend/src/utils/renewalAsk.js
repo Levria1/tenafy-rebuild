@@ -224,6 +224,22 @@ function isDefiniteReply(intent) {
   return Number(intent) !== REPLY_UNSURE;
 }
 
+/**
+ * @param {object} row  aggregated ask row: { reply_intent, reply_applied, escalated,
+ *                      asks_delivered, slots_used }  (values may be strings from SQL)
+ * @returns {string} one of the six renewal ask status strings
+ */
+function renewalAskStatus(row = {}) {
+  const replyIntent = row.reply_intent != null && row.reply_intent !== '' ? Number(row.reply_intent) : null;
+  if (isDefiniteReply(replyIntent)) {
+    if (String(row.reply_applied) !== '1') return 'replied_but_stale_check_lease';
+    return replyIntent === REPLY_EXTEND ? 'extend_pending_paperwork' : 'replied_needs_review';
+  }
+  if (Number(row.escalated) === 1) return 'no_answer_call_them';
+  if (Number(row.asks_delivered) === 0 && Number(row.slots_used) > 0) return 'could_not_reach_them';
+  return 'awaiting_reply';
+}
+
 function applyRenewalReply(intent, { askedLease, currentLease } = {}) {
   const code = Number(intent);
   if (![REPLY_EXTEND, REPLY_LEAVING, REPLY_UNSURE].includes(code)) {
@@ -432,6 +448,7 @@ module.exports = {
   classifyRenewalReply,
   applyRenewalReply,
   isDefiniteReply,
+  renewalAskStatus,
   conversationKey,
   conversationLockKey,
   conflictingOpenAsk,

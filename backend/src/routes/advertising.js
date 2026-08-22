@@ -682,7 +682,13 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
               DATE_FORMAT(r.decision_due_on, '%Y-%m-%d')  AS decision_due_on,
               -- DELIVERED asks only. Counting every row would tell staff a tenant had
               -- been asked when the message never actually left.
-              SUM(r.state = 'SENT')                        AS asks_delivered,
+              --
+              -- Keyed on sent_at, NOT on state='SENT'. State is where the ask is NOW, and
+              -- a row moves SENT -> REPLIED the moment the tenant answers — so counting
+              -- the state made every answered ask read as never delivered. A tenant whose
+              -- only reply was vague then landed on "Could not be reached", which is the
+              -- opposite of what happened: we reached them and they wrote back.
+              SUM(r.sent_at IS NOT NULL)                   AS asks_delivered,
               COUNT(*)                                     AS slots_used,
               MAX(r.ask_number)                            AS last_ask_number,
               DATE_FORMAT(MAX(r.sent_at), '%Y-%m-%d')      AS last_delivered_on,
@@ -743,15 +749,13 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
         // still running, so this row still reads as awaiting a reply (with the vague
         // answer shown alongside). Reporting it as replied would tell staff the matter was
         // settled while we were still asking. Same rule as isDefiniteReply.
-        status: renewalAsk.isDefiniteReply(replyIntent)
-          ? (String(r.reply_applied) !== '1'
-              ? 'replied_but_stale_check_lease'
-              : (replyIntent === 1 ? 'extend_pending_paperwork' : 'replied_needs_review'))
-          : (Number(r.escalated) === 1
-              ? 'no_answer_call_them'
-              : (Number(r.asks_delivered) === 0 && Number(r.slots_used) > 0
-                  ? 'could_not_reach_them'
-                  : 'awaiting_reply')),
+        status: renewalAsk.renewalAskStatus({
+          reply_intent: replyIntent,
+          reply_applied: r.reply_applied,
+          escalated: r.escalated,
+          asks_delivered: r.asks_delivered,
+          slots_used: r.slots_used,
+        }),
       });
       }),
     });

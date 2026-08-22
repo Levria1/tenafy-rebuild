@@ -9,6 +9,7 @@ const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 const config = require('../config');
 const inquiryExtractor = require('./inquiryExtractor');
 const { ORG_TIME_ZONE, orgToday, orgTodayDate } = require('../utils/orgTime');
+const { renewalAskStatus } = require('../utils/renewalAsk');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -64,6 +65,82 @@ async function sendAdminAlert(pool, { orgId, subject, html }) {
   } catch (err) {
     console.error('[Scheduler] Failed to send admin alert email:', err.message);
   }
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const RENEWAL_DIGEST_SECTIONS = [
+  ['extend_pending_paperwork', 'Confirmed — extend the lease and issue paperwork'],
+  ['replied_but_stale_check_lease', 'Replied, but the lease changed since we asked'],
+  ['replied_needs_review', 'Told us they are leaving'],
+  ['no_answer_call_them', 'No answer after 3 asks — call them'],
+  ['could_not_reach_them', 'Could not be reached'],
+];
+
+// The subject is read in a notification list, so it has to carry the count and the
+// job. Pluralised because "3 stale reply needs lease check" reads as a bug in the
+// one place a reader sees before deciding whether to open it.
+const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+const RENEWAL_DIGEST_SUBJECTS = {
+  extend_pending_paperwork: c => `Renewals: ${plural(c, 'confirmation', 'confirmations')} awaiting paperwork`,
+  replied_but_stale_check_lease: c => `Renewals: ${plural(c, 'reply needs', 'replies need')} a lease check`,
+  replied_needs_review: c => `Renewals: ${plural(c, 'tenant is', 'tenants are')} leaving`,
+  no_answer_call_them: c => `Renewals: ${plural(c, 'tenant has', 'tenants have')} not answered after 3 asks`,
+  could_not_reach_them: c => `Renewals: ${plural(c, 'tenant', 'tenants')} could not be reached`,
+};
+
+function buildRenewalDigest(rows = []) {
+  const sections = Object.fromEntries(RENEWAL_DIGEST_SECTIONS.map(([status]) => [status, []]));
+  let awaitingCount = 0;
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const status = renewalAskStatus(row);
+    if (status === 'awaiting_reply') {
+      awaitingCount++;
+    } else if (sections[status]) {
+      sections[status].push(row);
+    }
+  }
+
+  const firstAction = RENEWAL_DIGEST_SECTIONS.find(([status]) => sections[status].length > 0);
+  if (!firstAction) {
+    return { shouldSend: false, subject: null, html: null, sections, awaitingCount, actionCount: 0 };
+  }
+
+  const actionCount = RENEWAL_DIGEST_SECTIONS.reduce((sum, [status]) => sum + sections[status].length, 0);
+  const subject = RENEWAL_DIGEST_SUBJECTS[firstAction[0]](sections[firstAction[0]].length);
+  const htmlSections = RENEWAL_DIGEST_SECTIONS
+    .filter(([status]) => sections[status].length > 0)
+    .map(([status, title]) => {
+      const items = sections[status].map((row) => {
+        const label = [row.property_name, row.unit_name].filter(Boolean).join(' ') || 'Unknown unit';
+        const tenant = row.tenant_name || 'Unknown tenant';
+        const leaseEnd = row.lease_end || row.end_date || '';
+        const stale = status === 'replied_but_stale_check_lease' && row.reply_stale_reason
+          ? `<br>Stale reason: ${escapeHtml(row.reply_stale_reason)}`
+          : '';
+        return `<li><strong>${escapeHtml(label)}</strong><br>${escapeHtml(tenant)}${leaseEnd ? `<br>Lease end: ${escapeHtml(leaseEnd)}` : ''}${stale}</li>`;
+      }).join('');
+      return `<h3>${escapeHtml(title)}</h3><ul>${items}</ul>`;
+    })
+    .join('');
+  const awaitingLine = awaitingCount > 0 ? `<p>${awaitingCount} more awaiting a reply.</p>` : '';
+
+  return {
+    shouldSend: true,
+    subject,
+    html: `<p>Renewals needing action this week:</p>${htmlSections}${awaitingLine}`,
+    sections,
+    awaitingCount,
+    actionCount,
+  };
 }
 
 function toDateString(date) {
@@ -703,6 +780,74 @@ async function sendRenewalEmailsForOrg(pool, orgId) {
 }
 
 // ---------------------------------------------------------------------------
+// Weekly renewal digest — admin work list for renewal answers needing action
+// ---------------------------------------------------------------------------
+
+async function sendRenewalDigestForOrg(pool, orgId) {
+  let rows;
+  try {
+    [rows] = await pool.execute(
+      `SELECT MAX(r.id) AS latest_ask_id, r.lease_id, r.unit_id,
+              DATE_FORMAT(r.lease_end_at_ask, '%Y-%m-%d') AS lease_end,
+              DATE_FORMAT(r.decision_due_on, '%Y-%m-%d')  AS decision_due_on,
+              -- sent_at, not state='SENT' — see the note on the same column in
+              -- routes/advertising.js. State moves to REPLIED on an answer, so counting it
+              -- reports an answered ask as never delivered.
+              SUM(r.sent_at IS NOT NULL)                   AS asks_delivered,
+              COUNT(*)                                     AS slots_used,
+              MAX(r.ask_number)                            AS last_ask_number,
+              DATE_FORMAT(MAX(r.sent_at), '%Y-%m-%d')      AS last_delivered_on,
+              MAX(r.escalated_at IS NOT NULL)              AS escalated,
+              SUBSTRING_INDEX(GROUP_CONCAT(r.reply_intent ORDER BY r.replied_at DESC), ',', 1) AS reply_intent,
+              SUBSTRING_INDEX(GROUP_CONCAT(r.applied ORDER BY r.replied_at DESC), ',', 1)      AS reply_applied,
+              SUBSTRING_INDEX(GROUP_CONCAT(COALESCE(r.stale_reason,'') ORDER BY r.replied_at DESC), ',', 1) AS reply_stale_reason,
+              u.name AS unit_name, p.display_name AS property_name,
+              CASE WHEN t.type = 1 THEN t.company_name
+                   ELSE TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) END AS tenant_name
+         FROM renewal_ask r
+         JOIN unit u ON u.id = r.unit_id
+         JOIN property p ON p.id = u.property_id
+         JOIN leasing l ON l.id = r.lease_id AND l.deleted_at IS NULL
+         LEFT JOIN tenant t ON t.id = r.tenant_id
+        WHERE r.org_id = ?
+          -- OUTSTANDING WORK ONLY. Without these three the digest repeats itself
+          -- forever: a status is derived from the ask row alone and nothing ever
+          -- marks it done, so a confirmation stays 'paperwork due' after the
+          -- paperwork is issued. A weekly email that keeps naming jobs you have
+          -- already finished is one people stop opening, which costs more than
+          -- sending nothing.
+          --
+          -- The lease END DATE is the completion signal. If it still matches what
+          -- we asked about, nobody has acted; if it moved — in either direction —
+          -- someone has, and this row is history.
+          AND l.end_date IS NOT NULL
+          AND DATE(l.end_date) = DATE(r.lease_end_at_ask)
+          -- A lease that has already ended cannot be renewed or chased.
+          AND DATE(l.end_date) >= ?
+        GROUP BY r.lease_id, r.unit_id, r.lease_end_at_ask, r.decision_due_on,
+                 u.name, p.display_name, tenant_name
+        ORDER BY MAX(r.escalated_at IS NOT NULL) DESC, r.decision_due_on ASC
+        LIMIT 500`,
+      [orgId, orgToday()]
+    );
+  } catch (err) {
+    if (err && err.code === 'ER_NO_SUCH_TABLE') {
+      console.log(`[Scheduler][org:${orgId}] renewal_ask table missing; skipping renewal digest.`);
+      return;
+    }
+    throw err;
+  }
+
+  const digest = buildRenewalDigest(rows);
+  if (!digest.shouldSend) {
+    console.log(`[Scheduler][org:${orgId}] Renewal digest skipped; no actionable renewals.`);
+    return;
+  }
+
+  await sendAdminAlert(pool, { orgId, subject: digest.subject, html: digest.html });
+}
+
+// ---------------------------------------------------------------------------
 // Service task auto-promote: pending → in-progress when start date is today
 // ---------------------------------------------------------------------------
 
@@ -1161,6 +1306,12 @@ function startScheduler() {
     });
   }, { timezone: ORG_TIME_ZONE });
 
+  // Every Monday at 11:00 - weekly renewal digest to admins
+  cron.schedule('0 11 * * 1', () => {
+    console.log('[Scheduler] Sending weekly renewal digest...');
+    runForAllOrgs('renewalDigest', sendRenewalDigestForOrg);
+  }, { timezone: ORG_TIME_ZONE });
+
   // Daily at 06:00 - auto-promote pending service tasks to in-progress
   cron.schedule('0 6 * * *', () => {
     console.log('[Scheduler] Promoting pending service tasks to in-progress...');
@@ -1210,3 +1361,5 @@ module.exports.generateRecurringInvoicesForOrg = generateRecurringInvoicesForOrg
 module.exports.sendOverdueRemindersForOrg = sendOverdueRemindersForOrg;
 module.exports.sendLeaseExpiryForOrg = sendLeaseExpiryForOrg;
 module.exports.sendUpcomingInvoiceRemindersForOrg = sendUpcomingInvoiceRemindersForOrg;
+module.exports.sendRenewalDigestForOrg = sendRenewalDigestForOrg;
+module.exports.buildRenewalDigest = buildRenewalDigest;
