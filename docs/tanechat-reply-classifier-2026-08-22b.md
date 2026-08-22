@@ -116,6 +116,15 @@ previous message in hand.
 is most of them, a group-triggers-hold rule routes the majority of real answers back to us by
 hand, which is the outcome the relay exists to prevent.
 
+## 3b. The escalation stays off — confirmed
+
+You asked us not to put it back, and we are not going to. The offer is withdrawn rather than
+parked: `"mong kok 6a 5a"` continues to resolve confidently to 5A, and we will not change that
+without asking you first.
+
+Answering about every unit a customer names is plainly better than asking which one they meant,
+and it removes the only reason the old behaviour existed.
+
 ## 4. Do not replay the five
 
 All four definite answers were recorded here by hand, and all four came back `applied: false`
