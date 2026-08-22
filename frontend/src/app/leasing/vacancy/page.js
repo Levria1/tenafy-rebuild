@@ -37,6 +37,11 @@ const ASK_STATUS_META = {
   could_not_reach_them:        { color: 'orange', label: () => 'Could not reach them',        help: () => 'We tried, but nothing was delivered. Check the phone number or email on the tenant.' },
   no_answer_call_them:         { color: 'red',    label: () => 'No answer · call them',        help: () => 'Three asks, no reply. Someone should phone the tenant.' },
   extend_pending_paperwork:    { color: 'gold',   label: () => 'Extend · paperwork due',      help: () => 'The tenant chose Extend. Not offered to customers. Extend the lease to clear this.' },
+  // The relay captured a message it could not attribute safely — a group thread, a
+  // forward, wording that only reads as an answer in context. Asking again is paused
+  // for a week so we do not nag someone who has replied; nothing has acted. Someone
+  // has to read it, and if the week lapses with no decision the sequence resumes.
+  possible_reply_check_it:     { color: 'geekblue', label: () => 'Possibly answered · read it', help: () => 'A message may be this tenant\u2019s answer, but it could not be attributed with confidence. Asking is paused for 7 days and nothing has changed. Read it and record Extend or Leaving, or leave it to resume.' },
   replied_needs_review:        { color: 'purple', label: (a) => `Replied: ${a.reply}`,        help: () => 'The tenant replied. Nothing has changed for customers — confirm the renewal intent yourself.' },
   replied_but_stale_check_lease: { color: 'volcano', label: () => 'Replied · lease changed',  help: (a) => `The tenant replied, but the lease changed after we asked (${a.reply_stale_reason || 'changed'}), so we did not act on it. Check the lease.` },
 };

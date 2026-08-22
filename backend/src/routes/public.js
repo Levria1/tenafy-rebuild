@@ -2487,8 +2487,13 @@ router.post('/renewal-ask/:id/sent', async (req, res) => {
 router.post('/renewal-ask/:id/reply', async (req, res) => {
   try {
     const body = req.body || {};
+    // `verified: false` — the relay believes this is an answer but cannot attribute
+    // it safely. Records the words, holds the sequence, acts on nothing. Anything
+    // other than an explicit false stays on the normal path, so an absent or
+    // malformed flag can never silently stop a real answer taking effect.
     const result = await recordRenewalReply(req.pool, req.apiKey.orgId, req.params.id, {
       intent: body.intent, text: body.text, recordedBy: 'partner',
+      verified: body.verified === false ? false : true,
     });
     if (result.status !== 200) return fail(res, result.body.message, result.status);
     return ok(res, result.body);

@@ -29,7 +29,66 @@ function resolveIntent({ intent, text }) {
 /**
  * @returns {{status:number, body:object}} shaped for either route to return directly.
  */
-async function recordRenewalReply(pool, orgId, askId, { intent, text, recordedBy = 'partner' } = {}) {
+/**
+ * Capture a message the relay believes is an answer but cannot attribute safely —
+ * a group thread, a forward, wording that only reads as an answer if you saw the
+ * message before it.
+ *
+ * Records the words, holds the ask sequence, changes NOTHING about the lease, and
+ * raises it for a human. Deliberately not an intent: the alternatives available to
+ * a relay without this are to send something it does not believe, or to say nothing
+ * and let the tenant be asked again having already answered. Both are worse.
+ *
+ * Writes to its own columns. reply_intent/reply_text are the answer of record, and a
+ * value nobody trusts must never be able to masquerade as one.
+ */
+async function recordUnverifiedReply(pool, orgId, askId, { text, recordedBy = 'partner' } = {}) {
+  const body = typeof text === 'string' ? text.trim() : '';
+  if (!body) return { status: 400, body: { message: 'text is required for an unverified reply' } };
+
+  const [[ask]] = await pool.execute(
+    `SELECT id, state, reply_intent FROM renewal_ask WHERE id = ? AND org_id = ? LIMIT 1`,
+    [askId, orgId]
+  );
+  if (!ask) return { status: 404, body: { message: 'Renewal ask not found' } };
+
+  // A definite answer already stands. An uncertain message arriving afterwards is
+  // noise against a settled question and must not reopen or hold it.
+  if (renewalAsk.isDefiniteReply(ask.reply_intent)) {
+    return {
+      status: 200,
+      body: {
+        recorded: false, already_replied: true, acted: false, held: false,
+        intent: INTENT_NAME[Number(ask.reply_intent)] || null,
+      },
+    };
+  }
+
+  const now = orgWallClock(new Date());
+  await pool.execute(
+    `UPDATE renewal_ask SET unverified_at = ?, unverified_text = ?, unverified_by = ? WHERE id = ?`,
+    [now, body.slice(0, 2000), String(recordedBy).slice(0, 32), ask.id]
+  );
+
+  return {
+    status: 200,
+    body: {
+      recorded: true,
+      // Said plainly so a caller cannot read this as a reply that took effect.
+      acted: false,
+      held: true,
+      hold_days: renewalAsk.UNVERIFIED_HOLD_DAYS,
+      needs_staff: true,
+      recorded_by: recordedBy,
+      as_of: orgToday(),
+    },
+  };
+}
+
+async function recordRenewalReply(pool, orgId, askId, { intent, text, recordedBy = 'partner', verified = true } = {}) {
+  if (verified === false) {
+    return recordUnverifiedReply(pool, orgId, askId, { text, recordedBy });
+  }
   const resolved = resolveIntent({ intent, text });
   if (resolved.error === 'bad_intent') {
     return { status: 400, body: { message: 'intent must be one of: extend, leaving, unsure' } };
@@ -192,4 +251,4 @@ async function recordRenewalReply(pool, orgId, askId, { intent, text, recordedBy
   };
 }
 
-module.exports = { recordRenewalReply, INTENTS, INTENT_NAME };
+module.exports = { recordRenewalReply, recordUnverifiedReply, INTENTS, INTENT_NAME };

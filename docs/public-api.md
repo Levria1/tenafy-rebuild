@@ -1097,6 +1097,32 @@ good enough to stop us selling is not good enough to let us sell.
 was recorded but not acted on. It is always recorded — a tenant who took the trouble to
 answer is never dropped silently.
 
+#### When you cannot be sure it was an answer
+
+```
+POST /api/public/renewal-ask/:id/reply
+{ "text": "please extend my stay", "verified": false }
+```
+
+For a message you believe is the tenant's answer but cannot attribute safely — it arrived
+in a group thread, it was forwarded, or it only reads as an answer if you saw the message
+before it. This is **not** `unsure`: `unsure` means the tenant has not decided, and the
+sequence rightly keeps asking. `verified: false` means *we* are not certain the message is
+an answer at all.
+
+It records the words, **holds the ask sequence for 7 days**, changes nothing about the
+lease, and raises it on the operator's Vacancy page and in their weekly renewal email.
+Response carries `acted: false`, `held: true`, `hold_days`, `needs_staff: true`.
+
+The hold **expires** on purpose. If it were indefinite, a message misread as a possible
+answer would drop a tenant out of the sequence permanently. When the week lapses with no
+decision, asking resumes.
+
+Anything other than an explicit `false` takes the normal path, so an absent or malformed
+flag can never silently stop a real answer taking effect. A definite answer already on
+record wins: an uncertain message arriving afterwards returns `already_replied` and does
+not hold anything.
+
 ---
 
 ## Field Reference (commonly-needed enums)

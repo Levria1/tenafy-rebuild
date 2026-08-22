@@ -200,7 +200,11 @@ async function askHistory(pool, lease, cycle) {
   const [rows] = await pool.execute(
     `SELECT id, ask_number, state, attempts, channel, escalated_at, reply_intent,
             DATE_FORMAT(sent_at, '%Y-%m-%d') AS sent_at,
-            DATE_FORMAT(COALESCE(sent_at, resolved_on), '%Y-%m-%d') AS attempted_on
+            DATE_FORMAT(COALESCE(sent_at, resolved_on), '%Y-%m-%d') AS attempted_on,
+            -- Feeds the sequence hold in nextAskDue: a message the relay could not
+            -- attribute safely pauses further asks rather than nagging a tenant who
+            -- may already have answered.
+            DATE_FORMAT(unverified_at, '%Y-%m-%d') AS unverified_on
        FROM renewal_ask
       WHERE lease_id = ? AND lease_end_at_ask = ? AND decision_due_on = ?
       ORDER BY ask_number ASC`,

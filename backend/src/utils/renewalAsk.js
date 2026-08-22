@@ -235,6 +235,11 @@ function renewalAskStatus(row = {}) {
     if (String(row.reply_applied) !== '1') return 'replied_but_stale_check_lease';
     return replyIntent === REPLY_EXTEND ? 'extend_pending_paperwork' : 'replied_needs_review';
   }
+  // Ranked ABOVE escalation and below a definite answer. A human must read the
+  // captured message and decide, and until they do the sequence is paused — so this
+  // has to be visible, or the hold becomes a silent stall. It sits under a definite
+  // reply because a real answer arriving later supersedes an uncertain one.
+  if (row.unverified_on || row.unverified_at) return 'possible_reply_check_it';
   if (Number(row.escalated) === 1) return 'no_answer_call_them';
   if (Number(row.asks_delivered) === 0 && Number(row.slots_used) > 0) return 'could_not_reach_them';
   return 'awaiting_reply';
@@ -457,6 +462,29 @@ module.exports = {
   renderRenewalAsk,
 };
 
+// How long an unverified reply holds the sequence. Seven days is chosen to line up
+// with the weekly renewal digest: the hold lasts exactly long enough for the email
+// that reports it to reach a human and be acted on. A shorter window would expire
+// before anyone saw it; a longer one would leave a tenant unasked for a fortnight on
+// the strength of a message we were never sure about.
+const UNVERIFIED_HOLD_DAYS = 7;
+
+/**
+ * The date up to and including which an unverified reply holds the sequence, or null
+ * when there is none. Takes the LATEST capture: a second uncertain message renews the
+ * hold rather than letting the first one's clock run out underneath it.
+ */
+function unverifiedHoldUntil(asks, { holdDays = UNVERIFIED_HOLD_DAYS } = {}) {
+  const stamps = (Array.isArray(asks) ? asks : [])
+    .map(a => parseYmd(a?.unverified_on))
+    .filter(ms => ms != null)
+    .sort((a, b) => b - a);
+  if (!stamps.length) return null;
+  const days = definedNumber(holdDays);
+  const effective = days != null && days >= 0 ? Math.trunc(days) : UNVERIFIED_HOLD_DAYS;
+  return toYmd(stamps[0] + effective * 86400000);
+}
+
 /**
  * Which ask (if any) is due for this lease right now.
  *
@@ -471,6 +499,22 @@ function nextAskDue(asks, { today, gapDays = 3, hasDefiniteReply = false } = {})
   // does not: the tenant has not decided (or never meant to reply at all), so the
   // remaining asks still have work to do.
   if (hasDefiniteReply) return { due: false, reason: 'already_replied' };
+
+  // An UNVERIFIED reply holds the sequence without ending it. The relay believes the
+  // tenant has answered but cannot attribute it safely — a group thread, a forward, a
+  // sentence that only reads as an answer if you saw the one before it. Asking again
+  // would nag someone who did reply; treating it as an answer would act on evidence
+  // nobody trusts. So: pause, and put it in front of a human.
+  //
+  // The hold EXPIRES on purpose. If it were indefinite, a tenant whose message was
+  // misread as a possible answer would never be asked again and would fall silently
+  // out of the sequence — worse than the nagging it prevents, because nothing would
+  // ever surface it. When the window lapses the sequence simply resumes, which is the
+  // behaviour we had before this existed.
+  const heldUntil = unverifiedHoldUntil(asks);
+  if (heldUntil && parseYmd(heldUntil) >= todayMs) {
+    return { due: false, reason: 'held_unverified', hold_expires_on: heldUntil };
+  }
 
   // `attempted_on` counts a delivered ask OR one we gave up on after retries. Counting
   // only delivered asks would strand a tenant whose first message failed: the row still
@@ -537,5 +581,7 @@ function renewalAskChannel({ tenant_phone, tenant_email } = {}) {
 module.exports.MAX_ASKS = MAX_ASKS;
 module.exports.MIN_HOURS_BETWEEN_ASKS = MIN_HOURS_BETWEEN_ASKS;
 module.exports.nextAskDue = nextAskDue;
+module.exports.unverifiedHoldUntil = unverifiedHoldUntil;
+module.exports.UNVERIFIED_HOLD_DAYS = UNVERIFIED_HOLD_DAYS;
 module.exports.shouldEscalate = shouldEscalate;
 module.exports.renewalAskChannel = renewalAskChannel;

@@ -8,6 +8,7 @@ const {
   classifyRenewalReply,
   applyRenewalReply,
   renderRenewalAsk,
+  nextAskDue,
 } = require('../src/utils/renewalAsk');
 
 // Fixed literals throughout: every function here takes `today` explicitly and never
@@ -690,4 +691,91 @@ test('the floor lifts on the right day, not a day either side', () => {
   }
   assert.equal(at('2026-08-08').eligible, true, 'day 7 is served');
   assert.equal(at('2026-08-09').eligible, true);
+});
+
+// ---------------------------------------------------------------------------
+// "Answered, but we cannot be sure it was them."
+//
+// Distinct from unsure (intent 3). Unsure means the TENANT has not decided, so the
+// sequence rightly keeps asking. This means WE cannot attribute the message: it
+// arrived in a group thread, or was forwarded, or only reads as an answer if you
+// saw the one before it. Our chat partner hit exactly this — a tenant answered a
+// renewal question inside an operational group carrying 95 messages from three
+// people, and "extend my stay" in a serviced apartment routinely means a few more
+// nights. Without this state their only options were to relay something they did
+// not believe, or to stay silent and let her be asked again having answered.
+// ---------------------------------------------------------------------------
+
+test('an unverified reply holds the sequence', () => {
+  const held = nextAskDue(
+    [{ ask_number: 1, sent_at: '2026-08-01', unverified_on: '2026-08-20' }],
+    { today: '2026-08-22', gapDays: 3 }
+  );
+  assert.equal(held.due, false);
+  assert.equal(held.reason, 'held_unverified');
+  assert.equal(held.hold_expires_on, '2026-08-27');
+});
+
+test('the hold EXPIRES — a misread message must not strand a tenant forever', () => {
+  // The safety valve. An indefinite hold would drop someone out of the sequence
+  // silently, which is worse than the nagging it prevents because nothing would
+  // ever surface it again.
+  const lapsed = nextAskDue(
+    [{ ask_number: 1, sent_at: '2026-08-01', unverified_on: '2026-08-10' }],
+    { today: '2026-08-22', gapDays: 3 }
+  );
+  assert.equal(lapsed.due, true, 'the sequence must resume once the hold lapses');
+  assert.equal(lapsed.ask_number, 2);
+});
+
+test('the hold is inclusive of its final day', () => {
+  // Captured 20 Aug + 7 days = 27 Aug. On the 27th it still holds; on the 28th it does not.
+  const on = nextAskDue([{ ask_number: 1, sent_at: '2026-08-01', unverified_on: '2026-08-20' }],
+    { today: '2026-08-27', gapDays: 3 });
+  assert.equal(on.reason, 'held_unverified');
+  const after = nextAskDue([{ ask_number: 1, sent_at: '2026-08-01', unverified_on: '2026-08-20' }],
+    { today: '2026-08-28', gapDays: 3 });
+  assert.equal(after.due, true);
+});
+
+test('a later uncertain message renews the hold rather than inheriting the first clock', () => {
+  const held = nextAskDue([
+    { ask_number: 1, sent_at: '2026-08-01', unverified_on: '2026-08-05' },
+    { ask_number: 2, sent_at: '2026-08-08', unverified_on: '2026-08-20' },
+  ], { today: '2026-08-22', gapDays: 3 });
+  assert.equal(held.reason, 'held_unverified');
+  assert.equal(held.hold_expires_on, '2026-08-27');
+});
+
+test('a definite reply outranks a hold — the question is settled', () => {
+  const r = nextAskDue(
+    [{ ask_number: 1, sent_at: '2026-08-01', unverified_on: '2026-08-20' }],
+    { today: '2026-08-22', gapDays: 3, hasDefiniteReply: true }
+  );
+  assert.equal(r.reason, 'already_replied');
+});
+
+test('no unverified capture leaves the sequence exactly as it was', () => {
+  // The positive control: the hold must not change behaviour for the ordinary case.
+  const r = nextAskDue([{ ask_number: 1, sent_at: '2026-08-01' }], { today: '2026-08-22', gapDays: 3 });
+  assert.equal(r.due, true);
+  assert.equal(r.ask_number, 2);
+});
+
+test('a held ask is visible to staff, not a silent stall', () => {
+  const { renewalAskStatus } = require('../src/utils/renewalAsk');
+  assert.equal(
+    renewalAskStatus({ reply_intent: null, escalated: '0', asks_delivered: '1', slots_used: '1', unverified_on: '2026-08-20' }),
+    'possible_reply_check_it'
+  );
+  // A definite answer still wins.
+  assert.equal(
+    renewalAskStatus({ reply_intent: 1, reply_applied: '1', unverified_on: '2026-08-20' }),
+    'extend_pending_paperwork'
+  );
+  // And it outranks escalation: a person should read the message before phoning.
+  assert.equal(
+    renewalAskStatus({ reply_intent: null, escalated: '1', asks_delivered: '3', slots_used: '3', unverified_on: '2026-08-20' }),
+    'possible_reply_check_it'
+  );
 });

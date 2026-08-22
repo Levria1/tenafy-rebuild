@@ -689,6 +689,9 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
               -- only reply was vague then landed on "Could not be reached", which is the
               -- opposite of what happened: we reached them and they wrote back.
               SUM(r.sent_at IS NOT NULL)                   AS asks_delivered,
+              -- Latest uncertain capture in the cycle. Drives the possible_reply status
+              -- so a hold is visible to staff instead of reading as a silent stall.
+              DATE_FORMAT(MAX(r.unverified_at), '%Y-%m-%d') AS unverified_on,
               COUNT(*)                                     AS slots_used,
               MAX(r.ask_number)                            AS last_ask_number,
               DATE_FORMAT(MAX(r.sent_at), '%Y-%m-%d')      AS last_delivered_on,
@@ -755,6 +758,7 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
           escalated: r.escalated,
           asks_delivered: r.asks_delivered,
           slots_used: r.slots_used,
+          unverified_on: r.unverified_on,
         }),
       });
       }),

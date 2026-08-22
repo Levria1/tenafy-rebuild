@@ -19,6 +19,35 @@ function toDateStr(d) {
   return (d instanceof Date ? d : new Date(d)).toISOString().split('T')[0];
 }
 
+/**
+ * Does the last lease bill on a recurring schedule? Only then is its stored `price`
+ * a MONTHLY figure. Without a schedule the column holds whatever was agreed for the
+ * stay — which for a short let is the whole-stay total.
+ */
+function hasRecurringSchedule(row) {
+  return row?.last_lease_invoicing != null && String(row.last_lease_invoicing).trim() !== '';
+}
+
+/**
+ * The unit's monthly rent for COMPARISON — filtering, sorting, budget maths.
+ *
+ * Matches vacancyToPublicShape and the published `monthly_rent`, and that is the
+ * whole point: the price filter used to read `last_lease_price` raw while the
+ * response reported the schedule-aware value, so a caller could be told a unit
+ * costs 12,000 a month and still not get it back under `max_price=14000`.
+ *
+ * Poplar 2B is the live case: an 86-day let with no invoicing schedule stores
+ * 34,434.99 — the total for the stay — against an advertised 12,000–13,000 a month.
+ * A normal monthly band deleted it, and it is exactly the sort of long-availability
+ * unit window search exists to surface.
+ */
+function comparableMonthlyRent(row) {
+  if (hasRecurringSchedule(row)) {
+    return row.last_lease_price != null ? Number(row.last_lease_price) : null;
+  }
+  return row?.rent_price_min != null ? Number(row.rent_price_min) : null;
+}
+
 function addDays(dateStr, days) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const shifted = new Date(Date.UTC(y, m - 1, d + days));
@@ -278,12 +307,27 @@ async function searchUnits(pool, criteria = {}) {
 
   // Price filters. maxPrice is widened by budgetMarginPct so close-but-over
   // options survive (they're flagged via over_budget_* below).
+  // Both bounds compare against the SAME schedule-aware monthly figure the response
+  // publishes as `monthly_rent`. They previously read `last_lease_price` raw, which
+  // is a whole-stay total on a lease with no invoicing schedule — so a caller's
+  // monthly band silently deleted exactly the short-let units it should have matched.
   if (minPrice !== null && !Number.isNaN(minPrice)) {
-    filtered = filtered.filter(r => Number(r.last_lease_price ?? r.rent_price_min ?? 0) >= minPrice);
+    filtered = filtered.filter((r) => {
+      const rent = comparableMonthlyRent(r);
+      // Unpriced units cannot clear a floor. Number(null) is 0, which would have
+      // passed every unpriced unit through a minPrice of 0.
+      return rent != null && rent >= minPrice;
+    });
   }
   if (maxPrice !== null && !Number.isNaN(maxPrice)) {
     const ceiling = maxPrice * (1 + (Number(budgetMarginPct) || 0));
-    filtered = filtered.filter(r => Number(r.last_lease_price ?? r.rent_price_max ?? r.rent_price_min ?? Infinity) <= ceiling);
+    filtered = filtered.filter((r) => {
+      const rent = comparableMonthlyRent(r);
+      // Falls back to the advertised ceiling, then keeps an entirely unpriced unit
+      // rather than dropping it: we cannot prove it is over budget.
+      const compare = rent != null ? rent : (r.rent_price_max != null ? Number(r.rent_price_max) : null);
+      return compare == null || compare <= ceiling;
+    });
   }
 
   // Amenity filter — requires ALL named amenities.
@@ -381,12 +425,8 @@ async function searchUnits(pool, criteria = {}) {
     const forwardGapDays = Math.max(0, Math.round((new Date(moveIn).getTime() - gapFromTs) / 86400000));
     const addressParts = [r.street_address, r.district, r.city, r.state, r.zip_code, r.country]
       .map(s => (s == null ? '' : String(s).trim())).filter(Boolean);
-    // Matches vacancyToPublicShape: a lease figure is only publishable as a
-    // monthly rent when the lease has a recurring invoice schedule.
-    const hasLeaseSchedule = r.last_lease_invoicing != null && String(r.last_lease_invoicing).trim() !== '';
-    const monthlyRent = hasLeaseSchedule
-      ? (r.last_lease_price != null ? Number(r.last_lease_price) : null)
-      : (r.rent_price_min != null ? Number(r.rent_price_min) : null);
+    const hasLeaseSchedule = hasRecurringSchedule(r);
+    const monthlyRent = comparableMonthlyRent(r);
     const monthlyRentBasis = monthlyRent == null ? null : (hasLeaseSchedule ? 'lease' : 'advertised');
     // computePostingRent uses DATEDIFF(end_date, today) semantics: positive
     // before move-out, negative after move-out. The search availability fields
@@ -505,4 +545,4 @@ function compareWindowResult(a, b) {
   return String(a.property_name || '').localeCompare(String(b.property_name || ''));
 }
 
-module.exports = { searchUnits, longestFreeStretch, gapBandDays };
+module.exports = { searchUnits, longestFreeStretch, comparableMonthlyRent, gapBandDays };

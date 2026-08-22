@@ -172,3 +172,56 @@ test('contract_type on a lease never changes which stretch is chosen', () => {
   const notRenewing = longestFreeStretch('2026-08-21', '2026-12-31', leases(3));
   assert.deepEqual(mayRenew, notRenewing);
 });
+
+// ---------------------------------------------------------------------------
+// Price filtering must compare the SAME figure the response publishes.
+//
+// The filter read `last_lease_price` raw while `monthly_rent` reported the
+// schedule-aware value, so a unit could be advertised at 12,000 a month and still
+// be deleted by max_price=14000. Reported by our chat partner against Poplar 2B:
+// an 86-day let with no invoicing schedule stores 34,434.99 — the total for the
+// stay — so a normal monthly band removed the longest-available unit in the
+// building, which is precisely what window search exists to surface.
+// ---------------------------------------------------------------------------
+
+const { comparableMonthlyRent } = require('../src/services/unitSearch');
+
+test('a lease with no invoicing schedule never supplies the monthly rent', () => {
+  // Poplar 2B, exactly as stored.
+  assert.equal(comparableMonthlyRent({
+    last_lease_price: 34434.99, last_lease_invoicing: null,
+    rent_price_min: 12000, rent_price_max: 13000,
+  }), 12000, 'a whole-stay total must not be compared against a monthly band');
+});
+
+test('a lease WITH a schedule does supply it — the positive control', () => {
+  // Without this the function could return rent_price_min always and every
+  // assertion above would still pass.
+  assert.equal(comparableMonthlyRent({
+    last_lease_price: 9500, last_lease_invoicing: 'monthly',
+    rent_price_min: 11500, rent_price_max: 12500,
+  }), 9500);
+  assert.equal(comparableMonthlyRent({
+    last_lease_price: 11000, last_lease_invoicing: '30',
+    rent_price_min: 11500,
+  }), 11000, 'a numeric day-count schedule counts as recurring');
+});
+
+test('an empty or whitespace schedule is treated as absent', () => {
+  // '' and '   ' are how an unset column arrives from some rows; treating them as
+  // a schedule would put the whole-stay total straight back into the comparison.
+  assert.equal(comparableMonthlyRent({
+    last_lease_price: 34434.99, last_lease_invoicing: '', rent_price_min: 12000,
+  }), 12000);
+  assert.equal(comparableMonthlyRent({
+    last_lease_price: 34434.99, last_lease_invoicing: '   ', rent_price_min: 12000,
+  }), 12000);
+});
+
+test('an unpriced unit yields null rather than zero', () => {
+  // Number(null) is 0, which would clear any minPrice floor and mark the unit as
+  // the cheapest thing in the portfolio.
+  assert.equal(comparableMonthlyRent({ last_lease_invoicing: null, rent_price_min: null }), null);
+  assert.equal(comparableMonthlyRent({}), null);
+  assert.equal(comparableMonthlyRent(null), null);
+});

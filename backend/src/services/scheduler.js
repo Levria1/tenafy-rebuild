@@ -78,6 +78,7 @@ function escapeHtml(value) {
 
 const RENEWAL_DIGEST_SECTIONS = [
   ['extend_pending_paperwork', 'Confirmed — extend the lease and issue paperwork'],
+  ['possible_reply_check_it', 'Possibly answered — read it and decide'],
   ['replied_but_stale_check_lease', 'Replied, but the lease changed since we asked'],
   ['replied_needs_review', 'Told us they are leaving'],
   ['no_answer_call_them', 'No answer after 3 asks — call them'],
@@ -90,6 +91,7 @@ const RENEWAL_DIGEST_SECTIONS = [
 const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 const RENEWAL_DIGEST_SUBJECTS = {
   extend_pending_paperwork: c => `Renewals: ${plural(c, 'confirmation', 'confirmations')} awaiting paperwork`,
+  possible_reply_check_it: c => `Renewals: ${plural(c, 'tenant may have', 'tenants may have')} answered`,
   replied_but_stale_check_lease: c => `Renewals: ${plural(c, 'reply needs', 'replies need')} a lease check`,
   replied_needs_review: c => `Renewals: ${plural(c, 'tenant is', 'tenants are')} leaving`,
   no_answer_call_them: c => `Renewals: ${plural(c, 'tenant has', 'tenants have')} not answered after 3 asks`,
@@ -794,6 +796,7 @@ async function sendRenewalDigestForOrg(pool, orgId) {
               -- routes/advertising.js. State moves to REPLIED on an answer, so counting it
               -- reports an answered ask as never delivered.
               SUM(r.sent_at IS NOT NULL)                   AS asks_delivered,
+              DATE_FORMAT(MAX(r.unverified_at), '%Y-%m-%d') AS unverified_on,
               COUNT(*)                                     AS slots_used,
               MAX(r.ask_number)                            AS last_ask_number,
               DATE_FORMAT(MAX(r.sent_at), '%Y-%m-%d')      AS last_delivered_on,
