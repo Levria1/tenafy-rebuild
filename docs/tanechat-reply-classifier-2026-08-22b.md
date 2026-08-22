@@ -5,8 +5,11 @@
 Answers their 22 August reply. Supersedes `tanechat-open-questions-2026-08-22.md`, which was
 written before theirs arrived and asks a question they have now answered.
 
-⚠️ **NOT DEPLOYED.** Commit `4e3cc7a`. Migration `migrations-org/075` must run BEFORE the code.
-Everything in §1 and §5 is described as live; deploy first or change the tense.
+**DEPLOYED and verified** (`4e3cc7a`, migration 075 applied to all 3 orgs first, then the code).
+The `verified: false` path was tested end to end on production and the test row reverted.
+
+One item is still marked **NOT BUILT** in §2 — `unmatched` on `/units/resolve`. That marker is
+deliberate; leave it in unless it gets built before sending.
 
 ---
 
