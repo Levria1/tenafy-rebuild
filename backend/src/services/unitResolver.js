@@ -110,6 +110,15 @@ function locationMatchScore(value, score, qSquish, qTokens) {
   return 0;
 }
 
+function locationMatchedTokens(value, qSquish, qTokens) {
+  const lSquish = squish(value);
+  if (lSquish.length < 3) return [];
+  const lTokens = toTokens(value);
+  if (qSquish.includes(lSquish)) return lTokens;
+  if (lTokens.length === 1 && qTokens.includes(lTokens[0])) return lTokens;
+  return [];
+}
+
 const ADDRESS_STOPWORDS = new Set([
   'street', 'road', 'building', 'mansion', 'apartments', 'apartment', 'bazaar',
   'tower', 'court', 'block', 'house', 'centre', 'center', 'commercial', 'floor',
@@ -117,17 +126,24 @@ const ADDRESS_STOPWORDS = new Set([
   'fl',
 ]);
 
-function addressMatchScore(streetAddress, qTokens) {
-  const query = new Set(qTokens);
-  const tokens = toTokens(streetAddress);
-  return tokens.some(t => {
+function qualifyingAddressTokens(streetAddress) {
+  return toTokens(streetAddress).filter(t => {
     if (t.length < 4) return false;
     // Numeric street-address parts and generic address words carry no property
     // identity: "8 Cleverly Street" must not let "8" identify a unit or property.
     if (/^\d+$/.test(t)) return false;
     if (ADDRESS_STOPWORDS.has(t)) return false;
-    return query.has(t);
-  }) ? 2 : 0;
+    return true;
+  });
+}
+
+function addressMatchedTokens(streetAddress, qTokens) {
+  const query = new Set(qTokens);
+  return [...new Set(qualifyingAddressTokens(streetAddress).filter(t => query.has(t)))];
+}
+
+function addressMatchScore(streetAddress, qTokens) {
+  return addressMatchedTokens(streetAddress, qTokens).length >= 2 ? 2 : 0;
 }
 
 function scoreOne(qSquish, qTokens, unit) {
@@ -159,9 +175,26 @@ function scoreOne(qSquish, qTokens, unit) {
   let u = 0;
   if (core) {
     if (qTokens.includes(core)) u = 3;                                        // exact unit token "6a"
-    else if (qTokens.some(t => t.length >= 2 && (t.startsWith(core) || core.startsWith(t)))) u = 2; // "6" ~ "6a"
+    // A purely-numeric core must match EXACTLY. The prefix tolerance below exists so a
+    // customer who drops the letter ("10" for "10A") still lands; a numeric name has no
+    // letter to drop, so the tolerance buys nothing there and costs plenty — "my budget
+    // is 25k" matched flat 25/F, and "30k" matched a unit whose core is "3".
+    else if (!/^\d+$/.test(core) &&
+             qTokens.some(t => t.length >= 2 && (t.startsWith(core) || core.startsWith(t)))) u = 2; // "6a" ~ "6ab"
   }
-  return { prop, nameProp, unit: u, total: prop + u };
+  const consumed = {
+    property: toTokens(pName).filter(w => w.length >= 3),
+    district: locationMatchScore(unit.district, 2, qSquish, qTokens)
+      ? locationMatchedTokens(unit.district, qSquish, qTokens)
+      : [],
+    city: locationMatchScore(unit.city, 1, qSquish, qTokens)
+      ? locationMatchedTokens(unit.city, qSquish, qTokens)
+      : [],
+    address: addressMatchScore(unit.street_address, qTokens)
+      ? addressMatchedTokens(unit.street_address, qTokens)
+      : [],
+  };
+  return { prop, nameProp, unit: u, total: prop + u, consumed };
 }
 
 function unitOut(u) {
@@ -183,16 +216,115 @@ function candidateList(rows, cap = 8) {
   return chosen.map(r => unitOut(r.u));
 }
 
+function unitShape(core) {
+  return String(core || '').replace(/[0-9]/g, '9').replace(/[a-z]/g, 'x');
+}
+
+const FLOOR_CONTEXT_LIMIT = 8;
+
+function unitCoreFloor(core) {
+  const match = String(core || '').match(/^(\d+)/);
+  return match ? match[1] : null;
+}
+
+function floorContext(token, matchedPropertyIds, units) {
+  const tokenFloor = String(token || '').match(/^(\d+)[a-z]$/);
+  if (!tokenFloor || matchedPropertyIds.size !== 1) {
+    return { floor: null, floor_units: [], floor_unit_count: 0 };
+  }
+
+  const floor = tokenFloor[1];
+  const [propertyId] = matchedPropertyIds;
+  const floorUnits = units
+    .filter(u => String(u.property_id) === propertyId && unitCoreFloor(unitCore(u.name)) === floor)
+    .sort((a, b) => unitCore(a.name).localeCompare(unitCore(b.name)) || String(a.name || '').localeCompare(String(b.name || '')))
+    .map(u => unitOut(u).label);
+
+  return {
+    floor,
+    floor_units: floorUnits.slice(0, FLOOR_CONTEXT_LIMIT),
+    floor_unit_count: floorUnits.length,
+  };
+}
+
+const MONTH_WORDS = new Set([
+  'jan', 'january', 'feb', 'february', 'mar', 'march', 'apr', 'april', 'may',
+  'jun', 'june', 'jul', 'july', 'aug', 'august', 'sep', 'sept', 'september',
+  'oct', 'october', 'nov', 'november', 'dec', 'december',
+]);
+const UNIT_DOMAIN_FOLLOWERS = new Set([
+  'month', 'months', 'year', 'years', 'sqft', 'sq', 'sf', 'ft', 'pax',
+  'bed', 'beds', 'bedroom', 'bedrooms', 'br',
+]);
+
+function suppressedNonUnitToken(tokens, index) {
+  const token = tokens[index];
+  if (/^\d+[km]$/.test(token)) return true;
+  if (/^\d+(am|pm)$/.test(token)) return true;
+  if (MONTH_WORDS.has(token)) return true;
+  return UNIT_DOMAIN_FOLLOWERS.has(tokens[index + 1]);
+}
+
+function scoreResult(status, match, candidates, query, rows, qTokens, units) {
+  const result = { status, match, candidates, query, unmatched: [] };
+  if (status === 'none') return result;
+
+  const candidateIds = new Set((candidates || []).map(c => String(c.unit_id)));
+  if (match) candidateIds.add(String(match.unit_id));
+  const candidateRows = rows.filter(r => candidateIds.has(String(r.u.id)));
+  const matchedRows = candidateRows.length ? candidateRows : rows.filter(r => r.s.prop > 0);
+  const matchedPropertyIds = new Set(matchedRows.map(r => String(r.u.property_id)));
+
+  const consumed = new Set(GENERIC_UNIT_WORDS);
+  for (const row of matchedRows) {
+    for (const group of ['property', 'district', 'city', 'address']) {
+      for (const token of row.s.consumed[group] || []) consumed.add(token);
+    }
+  }
+  for (const row of rows) {
+    if (row.s.unit > 0 && (row.s.prop > 0 || matchedPropertyIds.has(String(row.u.property_id)))) {
+      consumed.add(unitCore(row.u.name));
+    }
+  }
+  for (const row of candidateRows) consumed.add(unitCore(row.u.name));
+
+  const coreByUnit = units.map(u => ({ u, core: unitCore(u.name), shape: unitShape(unitCore(u.name)) }));
+  const shapes = new Set(coreByUnit.map(x => x.shape).filter(Boolean));
+  const matchedPropertyHasNumeric = coreByUnit.some(x =>
+    /^\d+$/.test(x.core) && matchedPropertyIds.has(String(x.u.property_id))
+  );
+  const seen = new Set();
+
+  for (let i = 0; i < qTokens.length; i++) {
+    const token = qTokens[i];
+    if (seen.has(token)) continue;
+    if (consumed.has(token)) continue;
+    if (suppressedNonUnitToken(qTokens, i)) continue;
+    const shape = unitShape(token);
+    if (!shapes.has(shape)) continue;
+    if (/^9+$/.test(shape) && !matchedPropertyHasNumeric) continue;
+
+    seen.add(token);
+    result.unmatched.push({
+      text: token,
+      reason: 'unit_like_not_found',
+      ...floorContext(token, matchedPropertyIds, units),
+    });
+  }
+
+  return result;
+}
+
 /**
  * Pure resolver. `units` = [{id,name,property_id,property_name,marketable}].
- * Returns { status, match, candidates, query }.
+ * Returns { status, match, candidates, query, unmatched }.
  *   status: 'confident' | 'ambiguous' | 'property_only' | 'multi_unit' | 'none'
  */
 function scoreUnits(text, units) {
   const scoreText = normalizeFloorUnit(text);
   const qSquish = squish(scoreText);
   const qTokens = toTokens(scoreText);
-  if (!qTokens.length) return { status: 'none', match: null, candidates: [], query: String(text || '') };
+  if (!qTokens.length) return { status: 'none', match: null, candidates: [], query: String(text || ''), unmatched: [] };
 
   const rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u) }));
 
@@ -205,7 +337,7 @@ function scoreUnits(text, units) {
   const exactUnitRows = rows.filter(r => r.s.unit === 3 && r.s.prop > 0);
   const namedCores = new Set(exactUnitRows.map(r => unitCore(r.u.name)));
   if (namedCores.size >= 2) {
-    return { status: 'multi_unit', match: null, candidates: candidateList(exactUnitRows), query: norm(text) };
+    return scoreResult('multi_unit', null, candidateList(exactUnitRows), norm(text), rows, qTokens, units);
   }
 
   const fullRows = rows.filter(r => r.s.prop > 0 && r.s.unit > 0).sort((a, b) => b.s.total - a.s.total);
@@ -220,18 +352,19 @@ function scoreUnits(text, units) {
   const unitMatched = rows.filter(r => r.s.unit > 0).sort((a, b) => b.s.unit - a.s.unit);
 
   if (full.length === 1) {
-    return { status: 'confident', match: unitOut(full[0].u), candidates: [unitOut(full[0].u)], query: norm(text) };
+    const match = unitOut(full[0].u);
+    return scoreResult('confident', match, [match], norm(text), rows, qTokens, units);
   }
   if (full.length > 1) {
-    return { status: 'ambiguous', match: null, candidates: candidateList(full), query: norm(text) };
+    return scoreResult('ambiguous', null, candidateList(full), norm(text), rows, qTokens, units);
   }
   if (propMatched.length > 0) {
-    return { status: 'property_only', match: null, candidates: candidateList(propMatched), query: norm(text) };
+    return scoreResult('property_only', null, candidateList(propMatched), norm(text), rows, qTokens, units);
   }
   if (unitMatched.length > 0) {
-    return { status: 'ambiguous', match: null, candidates: candidateList(unitMatched), query: norm(text) };
+    return scoreResult('ambiguous', null, candidateList(unitMatched), norm(text), rows, qTokens, units);
   }
-  return { status: 'none', match: null, candidates: [], query: norm(text) };
+  return scoreResult('none', null, [], norm(text), rows, qTokens, units);
 }
 
 // Load active units for the org + a `marketable` flag (current lease opted in, or

@@ -235,6 +235,7 @@ Response:
       "marketable": true
     },
     "candidates": [],
+    "unmatched": [],
     "query": "mong kok flat 5a"
   }
 }
@@ -242,6 +243,31 @@ Response:
 
 `query` is returned only when resolution used `unit_text`. `match` is non-null
 only when `status` is `confident`; otherwise inspect `candidates`.
+`unmatched` is always present. For `unit_text` resolutions, it reports unit-like
+tokens that were not found at the matched property, for example:
+
+```json
+[
+  {
+    "text": "5e",
+    "reason": "unit_like_not_found",
+    "floor": "5",
+    "floor_units": ["Poplar 5A", "Poplar 5B", "Poplar 5C", "Poplar 5D"],
+    "floor_unit_count": 4
+  }
+]
+```
+
+Every entry includes `text`, `reason`, `floor`, `floor_units`, and
+`floor_unit_count`. `floor` is populated only for a digit-run followed by exactly
+one letter, such as `5e`, and only when the resolver has narrowed the request to
+exactly one property. Otherwise `floor` is `null`, `floor_units` is `[]`, and
+`floor_unit_count` is `0`. `floor_units` lists existing unit labels on that floor
+at the resolved property, sorted by unit name and capped at 8 labels;
+`floor_unit_count` is the uncapped total. An empty `floor_units` list with a
+non-null `floor` is meaningful: the identified building has no units on that
+floor. `unmatched` is `[]` when there is nothing useful to report and is always
+`[]` for `status: "none"`.
 
 Status vocabulary:
 
@@ -250,7 +276,7 @@ Status vocabulary:
 | `confident` | Exactly one unit was resolved |
 | `ambiguous` | More than one unit could match; use `candidates` to disambiguate |
 | `property_only` | The text identifies a property but not a specific unit |
-| `multi_unit` | The text appears to name more than one distinct unit |
+| `multi_unit` | The text appears to name more than one distinct unit; use `candidates` so the customer can choose |
 | `none` | No active unit in this org matched |
 
 An unrecognised `unit_id` returns `status: "none"`, not `404`, so a typo and a
@@ -260,8 +286,9 @@ goes stale on its own, whereas a `unit_id` is one we issued, so a miss means a
 caller bug worth surfacing rather than papering over with a fuzzy match.
 
 Only `confident` is safe to act on without confirming with the customer. Treat
-`ambiguous` and `property_only` as "ask which one" — the resolver deliberately
-declines to guess between equally-good matches rather than picking the first.
+`ambiguous`, `property_only`, and `multi_unit` as "ask which one" — the resolver
+deliberately declines to guess between equally-good matches rather than picking
+the first.
 
 #### `GET /units/:id`
 

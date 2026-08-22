@@ -65,16 +65,7 @@ async function computeResolutionPlan(pool, orgId, text, prospectPhone) {
     set.state = 'CONFIRM_UNIT'; set.awaiting = 'prospect';
     outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Confirm-Unit',
       vars: { '%Unit Full Name%': r.match.label, '%Property Name%': r.match.property_name, '%Unit Name%': r.match.unit_name } });
-  } else if (r.status === 'multi_unit') {
-    // Prospect named more than one unit. We don't auto-arrange multi-unit
-    // viewings yet — park it for a human and switch this conversation to manual.
-    set.pending_unit_id = null;
-    set.unit_candidates = JSON.stringify(r.candidates.map(c => ({ unit_id: c.unit_id, label: c.label })));
-    set.state = 'NEEDS_STAFF'; set.awaiting = 'staff'; set.needs_staff_reason = 'multi_unit';
-    outbounds.push({ party: 'prospect', to_phone: prospectPhone, templateType: 'Viewing-Hold-MultiUnit', vars: {} });
-    await notifyStaff(pool, orgId, 'Viewing request needs review',
-      `A prospect asked to view more than one unit ("${String(text || '').slice(0, 120)}"). Arrange this one manually.`);
-  } else if (r.status === 'ambiguous' || r.status === 'property_only') {
+  } else if (r.status === 'ambiguous' || r.status === 'property_only' || r.status === 'multi_unit') {
     set.pending_unit_id = null;
     set.unit_candidates = JSON.stringify(r.candidates.map(c => ({ unit_id: c.unit_id, label: c.label })));
     set.state = 'RESOLVE_UNIT'; set.awaiting = 'prospect';
@@ -1833,6 +1824,7 @@ module.exports = {
   boardNextDeadline, isNudgeCandidate, isStaleCandidate, isSchemaMissingError, dateToWallClock,
   VIEWING_ROUTABLE_GRACE_HOURS, VIEWING_SLOT_MINUTES, addMinutesToWallClock,
   renderMessage, viewingNegotiationVars, formatWhen,
+  computeResolutionPlan,
   // orchestration
   getSetting, startNegotiation, startNegotiationFromText, handleReply, loadNegotiation,
   resolveStaffOfDay, loadStaffById, checkStaffFree, confirmNegotiation,

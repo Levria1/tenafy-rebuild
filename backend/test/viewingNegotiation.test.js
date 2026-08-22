@@ -71,6 +71,33 @@ test('draftQueryOptions: party only accepts TaneChat-sendable parties', () => {
   assert.equal(draftQueryOptions({ party: 'staff' }).party, null);
 });
 
+test('computeResolutionPlan: multi_unit asks the prospect to choose instead of escalating', async () => {
+  const units = [
+    { id: 'mk-5a', name: '5A', property_id: 'mk', property_name: 'Mong Kok', cur_ve: 1, has_lease: 1, host_links: 0 },
+    { id: 'mk-5b', name: '5B', property_id: 'mk', property_name: 'Mong Kok', cur_ve: 1, has_lease: 1, host_links: 0 },
+  ];
+  const pool = {
+    execute: async (sql, params) => {
+      assert.deepEqual(params, ['org-1']);
+      assert.match(sql, /SELECT u\.id, u\.name, u\.property_id/);
+      return [units];
+    },
+  };
+
+  const { set, outbounds } = await viewingService.computeResolutionPlan(pool, 'org-1', 'mong kok 5a 5b', '+85261234567');
+  assert.equal(set.state, 'RESOLVE_UNIT');
+  assert.equal(set.awaiting, 'prospect');
+  assert.equal(set.needs_staff_reason, undefined);
+  assert.deepEqual(JSON.parse(set.unit_candidates), [
+    { unit_id: 'mk-5a', label: 'Mong Kok 5A' },
+    { unit_id: 'mk-5b', label: 'Mong Kok 5B' },
+  ]);
+  assert.equal(outbounds.length, 1);
+  assert.equal(outbounds[0].templateType, 'Viewing-Choose-Unit');
+  assert.match(outbounds[0].vars['%Unit Options%'], /1\) Mong Kok 5A/);
+  assert.match(outbounds[0].vars['%Unit Options%'], /2\) Mong Kok 5B/);
+});
+
 // ── nextStep transitions ─────────────────────────────────────────────────────
 const NS = (state, party, intent, roundCount = 0, maxRounds = 3) =>
   nextStep({ state, party, intent, roundCount, maxRounds });

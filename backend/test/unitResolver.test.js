@@ -54,9 +54,10 @@ test('resolver: same unit token across properties → ambiguous, lists both', ()
   assert.deepEqual(r.candidates.map(c => c.unit_id).sort(), ['1', '4']);
 });
 
-test('resolver: two distinct units named → multi_unit (escalate to staff)', () => {
+test('resolver: two distinct units named → multi_unit with candidates', () => {
   const r = R('mongkok 6a 5a');
   assert.equal(r.status, 'multi_unit');
+  assert.deepEqual(r.candidates.map(c => c.unit_id).sort(), ['1', '2']);
 });
 
 test('resolver: unrelated exact unit token does not turn one named unit into multi_unit', () => {
@@ -232,10 +233,11 @@ test('resolver: street address token resolves Nam Pak Hong 7A from Bonham Strand
   assert.equal(r.match.unit_id, 'nam-pak-hong-7a');
 });
 
-test('resolver: address-only Russell token resolves Lai Yuen 2A', () => {
+test('resolver: one address token no longer identifies a property by itself', () => {
   const r = scoreUnits('russell 2a', REAL_PROPERTY_UNITS);
-  assert.equal(r.status, 'confident');
-  assert.equal(r.match.unit_id, 'lai-yuen-2a');
+  assert.equal(r.status, 'ambiguous');
+  assert.equal(r.match, null);
+  assert.deepEqual(r.candidates.map(c => c.unit_id), ['lai-yuen-2a']);
 });
 
 test('resolver: address-only Tung Choi tokens resolve Mong Kok 5A', () => {
@@ -378,9 +380,9 @@ test('resolver: floor-unit normalization is additive for existing confident quer
   // would silently retarget it at "Flat 3B". Relaxing the one-generic-word gap
   // rule does exactly that, and turns this red.
   const expected = [
-    ['Spread House 3A', 'ambiguous', null],
+    ['Spread House 3A', 'confident', 'spread-3a'],
     ['Spread House Unit 22', 'confident', 'spread-22'],
-    ['Spread House Flat 3B', 'ambiguous', null],
+    ['Spread House Flat 3B', 'confident', 'spread-3b'],
     ['Spread House Room C', 'confident', 'spread-room-c'],
     ['Spread House 3/F Unit 1 (Room A and Room B)', 'confident', 'spread-floor-room'],
     ['Spread House 6A Test', 'confident', 'spread-6a-test'],
@@ -397,6 +399,211 @@ test('resolver: query reports the original text, not the floor-unit rewrite', ()
   const r = scoreUnits('Mong Kok 1/F Studio C', HK_FLOOR_UNITS);
   assert.equal(r.status, 'confident');
   assert.equal(r.query, 'mong kok 1 f studio c');
+});
+
+const LIVE_SHAPE_CORES_9X = [
+  ...'abcdefg'.split('').map(x => `1${x}`),
+  ...'abcdefghijkl'.split('').map(x => `2${x}`),
+  ...'abcd'.split('').map(x => `3${x}`),
+  ...'abcd'.split('').map(x => `4${x}`),
+  ...'abcd'.split('').map(x => `5${x}`),
+  ...'abcdefg'.split('').map(x => `7${x}`),
+  '8a', '8b',
+];
+const LIVE_SHAPE_UNITS = (() => {
+  const units = [];
+  let id = 1;
+  const add = (property_id, property_name, district, city, street_address, name) => {
+    units.push({ id: `live-${id++}`, name, property_id, property_name, district, city, street_address, marketable: true });
+  };
+  for (const core of LIVE_SHAPE_CORES_9X) add('mong-kok', 'Mong Kok', 'Mong Kok', 'Hong Kong', '95 Tung Choi Street, Mong Kok', core.toUpperCase());
+  for (const core of LIVE_SHAPE_CORES_9X) add('jervois', 'Jervois', 'Sheung Wan', 'Hong Kong', '3 Jervois Street, Sheung Wan', core.toUpperCase());
+  for (const core of LIVE_SHAPE_CORES_9X.slice(0, 21)) add('nam-pak-hong', 'Nam Pak Hong', 'Sheung Wan', 'Hong Kong', 'Nam Pak Hong Building, 24 Bonham Strand West, Sheung Wan', core.toUpperCase());
+
+  for (const core of ['10', '11', '21', '25', '26']) add('tai-yuen', 'Tai Yuen Apartments', 'Wan Chai', 'Hong Kong', '15 Tai Yuen Street, Wan Chai', `Unit ${core}`);
+  for (const core of ['22', '23']) add('pearl-city', 'Pearl City', 'Causeway Bay', 'Hong Kong', '22-36 Paterson Street, Causeway Bay', `Unit ${core}`);
+  for (const core of ['22', '23', '59', '60']) add('pearl-city-c1', 'Pearl City Block C1', 'Causeway Bay', 'Hong Kong', '22-36 Paterson Street, Causeway Bay', `Unit ${core}`);
+  add('lai-yuen', 'Lai Yuen Apartments', 'Causeway Bay', 'Hong Kong', '56-61 Russell Street, Causeway Bay', 'Unit 103');
+  add('lai-yuen', 'Lai Yuen Apartments', 'Causeway Bay', 'Hong Kong', '56-61 Russell Street, Causeway Bay', 'Unit 105');
+  add('fuk-lo-tsun', 'Fuk Lo Tsun', 'Kowloon City', 'Hong Kong', '23 Fuk Lo Tsun Road, Kowloon City', '3/F Unit 1 (Room A and Room B)');
+  return units;
+})();
+
+function shapeOfUnitName(name) {
+  return _unitCore(name).replace(/[0-9]/g, '9').replace(/[a-z]/g, 'x');
+}
+
+test('resolver fixture mirrors the live unit-core shape distribution', () => {
+  const counts = LIVE_SHAPE_UNITS.reduce((acc, unit) => {
+    const shape = shapeOfUnitName(unit.name);
+    acc[shape] = (acc[shape] || 0) + 1;
+    return acc;
+  }, {});
+  assert.deepEqual(counts, { '9x': 101, '99': 11, '999': 2, '9': 1 });
+});
+
+test('resolver: purely numeric cores do not partial-match budget tokens', () => {
+  const budget = scoreUnits('tai yuen, my budget is 25k', LIVE_SHAPE_UNITS);
+  assert.notEqual(budget.status, 'confident');
+  assert.notEqual(budget.match && budget.match.unit_name, 'Unit 25');
+
+  const exact = scoreUnits('tai yuen 25', LIVE_SHAPE_UNITS);
+  assert.equal(exact.status, 'confident');
+  assert.equal(exact.match.label, 'Tai Yuen Apartments Unit 25');
+});
+
+test('resolver: alphanumeric partial matching is unchanged', () => {
+  const U = [
+    { id: 'a', name: '6A', property_id: 'alpha', property_name: 'Alpha House', marketable: true },
+  ];
+  // The partial rule needs a token of two characters or more, and always has. A bare
+  // "6" is NOT a partial match for "6A" — pinning that here because it is easy to
+  // misread the `// "6" ~ "6a"` comment on the rule as a promise that it is, and
+  // loosening the length guard turns "2 bedrooms" into a question about flats 2A-2L.
+  assert.equal(scoreUnits('alpha house 6', U).status, 'property_only');
+  // Two characters or more still matches in both directions.
+  assert.equal(scoreUnits('alpha house 6ab', U).match.unit_id, 'a');
+  assert.equal(scoreUnits('alpha house 6a', U).match.unit_id, 'a');
+});
+
+test('resolver: single shared address word no longer creates a property match', () => {
+  const r = scoreUnits('pearl city, my budget is 30k', LIVE_SHAPE_UNITS);
+  assert.notEqual(r.status, 'confident');
+  assert.ok(!r.candidates.some(c => c.property_id === 'fuk-lo-tsun'));
+});
+
+test('resolver: unmatched reports unit-like leftovers at the matched property', () => {
+  const confident = scoreUnits('mong kok 6a 5a', LIVE_SHAPE_UNITS);
+  assert.equal(confident.status, 'confident');
+  assert.equal(confident.match.unit_name, '5A');
+  assert.deepEqual(confident.unmatched.map(u => u.text), ['6a']);
+  assert.ok(!confident.unmatched.some(u => u.text === '5a'));
+  assert.deepEqual(confident.unmatched[0], {
+    text: '6a',
+    reason: 'unit_like_not_found',
+    floor: '6',
+    floor_units: [],
+    floor_unit_count: 0,
+  });
+
+  const propertyOnly = scoreUnits('mong kok 6a', LIVE_SHAPE_UNITS);
+  assert.equal(propertyOnly.status, 'property_only');
+  assert.deepEqual(propertyOnly.unmatched.map(u => u.text), ['6a']);
+});
+
+const FLOOR_CONTEXT_UNITS = [
+  { id: 'poplar-5a', name: '5A', property_id: 'poplar', property_name: 'Poplar', district: 'Prince Edward', city: 'Hong Kong', street_address: '23 Poplar Street', marketable: true },
+  { id: 'poplar-5b', name: '5B', property_id: 'poplar', property_name: 'Poplar', district: 'Prince Edward', city: 'Hong Kong', street_address: '23 Poplar Street', marketable: true },
+  { id: 'poplar-5c', name: '5C', property_id: 'poplar', property_name: 'Poplar', district: 'Prince Edward', city: 'Hong Kong', street_address: '23 Poplar Street', marketable: true },
+  { id: 'poplar-5d', name: '5D', property_id: 'poplar', property_name: 'Poplar', district: 'Prince Edward', city: 'Hong Kong', street_address: '23 Poplar Street', marketable: true },
+  { id: 'mong-kok-5a', name: '5A', property_id: 'mong-kok', property_name: 'Mong Kok', district: 'Mong Kok', city: 'Hong Kong', street_address: '95 Tung Choi Street, Mong Kok', marketable: true },
+  { id: 'pearl-city-22', name: 'Unit 22', property_id: 'pearl-city', property_name: 'Pearl City', district: 'Causeway Bay', city: 'Hong Kong', street_address: '22-36 Paterson Street, Causeway Bay', marketable: true },
+  { id: 'pearl-city-23', name: 'Unit 23', property_id: 'pearl-city', property_name: 'Pearl City', district: 'Causeway Bay', city: 'Hong Kong', street_address: '22-36 Paterson Street, Causeway Bay', marketable: true },
+  { id: 'pearl-city-25', name: 'Unit 25', property_id: 'pearl-city', property_name: 'Pearl City', district: 'Causeway Bay', city: 'Hong Kong', street_address: '22-36 Paterson Street, Causeway Bay', marketable: true },
+  { id: 'pearl-city-26', name: 'Unit 26', property_id: 'pearl-city', property_name: 'Pearl City', district: 'Causeway Bay', city: 'Hong Kong', street_address: '22-36 Paterson Street, Causeway Bay', marketable: true },
+  ...'abcdefghi'.split('').map(letter => ({
+    id: `big-5${letter}`,
+    name: `5${letter.toUpperCase()}`,
+    property_id: 'big-floor',
+    property_name: 'Big Floor',
+    district: 'Central',
+    city: 'Hong Kong',
+    street_address: '5 Big Street',
+    marketable: true,
+  })),
+  { id: 'mercer-5a', name: '5A', property_id: 'mercer', property_name: 'Mercer', district: 'Sheung Wan', city: 'Hong Kong', street_address: '10 Mercer Street, Sheung Wan', marketable: true },
+  { id: 'hollywood-5a', name: '5A', property_id: 'hollywood', property_name: 'Hollywood', district: 'Sheung Wan', city: 'Hong Kong', street_address: '84 Hollywood Road, Sheung Wan', marketable: true },
+];
+
+function assertNoNear(value) {
+  if (!value || typeof value !== 'object') return;
+  assert.ok(!Object.prototype.hasOwnProperty.call(value, 'near'));
+  for (const child of Array.isArray(value) ? value : Object.values(value)) assertNoNear(child);
+}
+
+test('resolver: unmatched floor context describes the selected building floor', () => {
+  const r = scoreUnits('poplar 5e', FLOOR_CONTEXT_UNITS);
+  assert.equal(r.status, 'property_only');
+  assert.deepEqual(r.unmatched, [{
+    text: '5e',
+    reason: 'unit_like_not_found',
+    floor: '5',
+    floor_units: ['Poplar 5A', 'Poplar 5B', 'Poplar 5C', 'Poplar 5D'],
+    floor_unit_count: 4,
+  }]);
+  assertNoNear(r);
+});
+
+test('resolver: unmatched floor context keeps an empty floor as meaningful', () => {
+  const propertyOnly = scoreUnits('mong kok 6a', FLOOR_CONTEXT_UNITS);
+  assert.equal(propertyOnly.status, 'property_only');
+  assert.deepEqual(propertyOnly.unmatched, [{
+    text: '6a',
+    reason: 'unit_like_not_found',
+    floor: '6',
+    floor_units: [],
+    floor_unit_count: 0,
+  }]);
+
+  const confident = scoreUnits('mong kok 6a 5a', FLOOR_CONTEXT_UNITS);
+  assert.equal(confident.status, 'confident');
+  assert.equal(confident.match.unit_id, 'mong-kok-5a');
+  assert.deepEqual(confident.unmatched, propertyOnly.unmatched);
+});
+
+test('resolver: unmatched floor context is null for numeric tokens', () => {
+  const r = scoreUnits('pearl city 24', FLOOR_CONTEXT_UNITS);
+  assert.equal(r.status, 'property_only');
+  assert.deepEqual(r.unmatched, [{
+    text: '24',
+    reason: 'unit_like_not_found',
+    floor: null,
+    floor_units: [],
+    floor_unit_count: 0,
+  }]);
+});
+
+test('resolver: unmatched floor unit list is capped but count remains total', () => {
+  const r = scoreUnits('big floor 5q', FLOOR_CONTEXT_UNITS);
+  assert.equal(r.status, 'property_only');
+  assert.equal(r.unmatched[0].floor, '5');
+  assert.deepEqual(r.unmatched[0].floor_units, [
+    'Big Floor 5A',
+    'Big Floor 5B',
+    'Big Floor 5C',
+    'Big Floor 5D',
+    'Big Floor 5E',
+    'Big Floor 5F',
+    'Big Floor 5G',
+    'Big Floor 5H',
+  ]);
+  assert.equal(r.unmatched[0].floor_unit_count, 9);
+});
+
+test('resolver: unmatched floor context is suppressed for multi-property ambiguity', () => {
+  const r = scoreUnits('sheung wan 5e', FLOOR_CONTEXT_UNITS);
+  assert.equal(r.status, 'property_only');
+  assert.ok(new Set(r.candidates.map(c => c.property_id)).size > 1);
+  assert.deepEqual(r.unmatched, [{
+    text: '5e',
+    reason: 'unit_like_not_found',
+    floor: null,
+    floor_units: [],
+    floor_unit_count: 0,
+  }]);
+});
+
+test('resolver: unmatched suppresses known non-unit domains', () => {
+  assert.ok(!scoreUnits('unit 5a september', LIVE_SHAPE_UNITS).unmatched.some(u => u.text === 'september'));
+  assert.deepEqual(scoreUnits('mong kok around 400 sqft', LIVE_SHAPE_UNITS).unmatched, []);
+  assert.deepEqual(scoreUnits('tai yuen 12 months', LIVE_SHAPE_UNITS).unmatched, []);
+  assert.ok(!scoreUnits('can i see 5a at 6pm', LIVE_SHAPE_UNITS).unmatched.some(u => u.text === '6pm'));
+});
+
+test('resolver: unmatched is always present and empty for none', () => {
+  const r = scoreUnits('not about a flat', LIVE_SHAPE_UNITS);
+  assert.equal(r.status, 'none');
+  assert.deepEqual(r.unmatched, []);
 });
 
 // The unit load is a DB query, so this is a tripwire rather than a behavioural test: it pins the

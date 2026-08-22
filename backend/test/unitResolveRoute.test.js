@@ -61,6 +61,12 @@ async function callResolve(body, pool = makePool()) {
   return res;
 }
 
+function assertNoNear(value) {
+  if (!value || typeof value !== 'object') return;
+  assert.ok(!Object.prototype.hasOwnProperty.call(value, 'near'));
+  for (const child of Array.isArray(value) ? value : Object.values(value)) assertNoNear(child);
+}
+
 test('POST /units/resolve regression: Mong Kok Flat 5A resolves to Mong Kok, not Poplar', async () => {
   const res = await callResolve({ unit_text: 'Mong Kok Flat 5A' });
 
@@ -71,6 +77,7 @@ test('POST /units/resolve regression: Mong Kok Flat 5A resolves to Mong Kok, not
   assert.equal(res.body.data.match.unit_id, 'mong-kok-5a');
   assert.equal(res.body.data.match.label, 'Mong Kok 5A');
   assert.equal(res.body.data.query, 'mong kok flat 5a');
+  assert.deepEqual(res.body.data.unmatched, []);
 });
 
 test('POST /units/resolve returns ambiguous candidates for bare 5A', async () => {
@@ -80,6 +87,22 @@ test('POST /units/resolve returns ambiguous candidates for bare 5A', async () =>
   assert.equal(res.body.data.status, 'ambiguous');
   assert.equal(res.body.data.match, null);
   assert.equal(res.body.data.candidates.length, 5);
+  assert.deepEqual(res.body.data.unmatched, []);
+});
+
+test('POST /units/resolve returns unmatched floor context without near', async () => {
+  const res = await callResolve({ unit_text: 'Poplar 5E' });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data.status, 'property_only');
+  assert.deepEqual(res.body.data.unmatched, [{
+    text: '5e',
+    reason: 'unit_like_not_found',
+    floor: '5',
+    floor_units: ['Poplar 5A'],
+    floor_unit_count: 1,
+  }]);
+  assertNoNear(res.body);
 });
 
 test('POST /units/resolve returns none for unmatched unit_text', async () => {
@@ -89,6 +112,7 @@ test('POST /units/resolve returns none for unmatched unit_text', async () => {
   assert.equal(res.body.data.status, 'none');
   assert.equal(res.body.data.match, null);
   assert.deepEqual(res.body.data.candidates, []);
+  assert.deepEqual(res.body.data.unmatched, []);
 });
 
 test('POST /units/resolve resolves a real unit_id confidently', async () => {
@@ -99,6 +123,7 @@ test('POST /units/resolve resolves a real unit_id confidently', async () => {
   assert.equal(res.body.data.resolved_by, 'unit_id');
   assert.equal(res.body.data.match.unit_id, 'mong-kok-5a');
   assert.equal(res.body.data.match.marketable, true);
+  assert.deepEqual(res.body.data.unmatched, []);
 });
 
 test('POST /units/resolve returns none for another org unit_id without leaking existence', async () => {
@@ -108,6 +133,7 @@ test('POST /units/resolve returns none for another org unit_id without leaking e
   assert.equal(res.body.data.status, 'none');
   assert.equal(res.body.data.resolved_by, 'unit_id');
   assert.equal(res.body.data.match, null);
+  assert.deepEqual(res.body.data.unmatched, []);
 });
 
 test('POST /units/resolve resolves exact listing_url confidently', async () => {
@@ -117,6 +143,7 @@ test('POST /units/resolve resolves exact listing_url confidently', async () => {
   assert.equal(res.body.data.status, 'confident');
   assert.equal(res.body.data.resolved_by, 'listing_url');
   assert.equal(res.body.data.match.unit_id, 'mong-kok-5a');
+  assert.deepEqual(res.body.data.unmatched, []);
 });
 
 test('POST /units/resolve keeps listing_url normalisation for fbclid and trailing slash', async () => {
@@ -138,6 +165,7 @@ test('POST /units/resolve falls through from unknown listing_url to unit_text', 
   assert.equal(res.body.data.status, 'confident');
   assert.equal(res.body.data.resolved_by, 'unit_text');
   assert.equal(res.body.data.match.unit_id, 'mong-kok-5a');
+  assert.deepEqual(res.body.data.unmatched, []);
 });
 
 test('POST /units/resolve returns none for unknown listing_url without unit_text', async () => {
@@ -147,6 +175,7 @@ test('POST /units/resolve returns none for unknown listing_url without unit_text
   assert.equal(res.body.data.status, 'none');
   assert.equal(res.body.data.resolved_by, 'listing_url');
   assert.equal(res.body.data.match, null);
+  assert.deepEqual(res.body.data.unmatched, []);
 });
 
 test('POST /units/resolve rejects requests without unit_id, listing_url, or unit_text', async () => {

@@ -3007,6 +3007,7 @@ router.post('/units/resolve', async (req, res) => {
         resolved_by: 'unit_id',
         match: unit ? publicUnitOut(unit) : null,
         candidates: [],
+        unmatched: [],
       });
     }
 
@@ -3027,6 +3028,7 @@ router.post('/units/resolve', async (req, res) => {
             resolved_by: 'listing_url',
             match: publicUnitOut(unit),
             candidates: [],
+            unmatched: [],
           });
         }
       } else if (listingMatch.status === 'ambiguous') {
@@ -3041,6 +3043,7 @@ router.post('/units/resolve', async (req, res) => {
           resolved_by: 'listing_url',
           match: null,
           candidates,
+          unmatched: [],
         });
       }
       if (!unitText) {
@@ -3049,6 +3052,7 @@ router.post('/units/resolve', async (req, res) => {
           resolved_by: 'listing_url',
           match: null,
           candidates: [],
+          unmatched: [],
         });
       }
     }
@@ -3059,6 +3063,7 @@ router.post('/units/resolve', async (req, res) => {
       resolved_by: 'unit_text',
       match: out.status === 'confident' ? out.match : null,
       candidates: out.candidates || [],
+      unmatched: out.unmatched || [],
       query: out.query,
     });
   } catch (err) {
