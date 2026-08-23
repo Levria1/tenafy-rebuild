@@ -6,7 +6,8 @@ Answers their 22 August reply. Supersedes `tanechat-open-questions-2026-08-22.md
 written before theirs arrived and asks a question they have now answered.
 
 **DEPLOYED and verified** (`4e3cc7a` for the classifier work, `1843076` for the resolver work).
-Both were tested end to end on production.
+Both were tested end to end on production, and every live figure quoted below was re-checked
+against production on 23 August before sending.
 
 Everything in this letter is now built. §2 was marked NOT BUILT in the earlier draft; it has
 since shipped, and §5 is new — two defects we found in our own resolver while building it.
@@ -139,8 +140,10 @@ We read it the same way, recorded it as `extend` by hand, and had already extend
 exactly one month before your letter arrived.
 
 **The asymmetry runs the other way from your caution.** `extend` withdraws a unit from the
-market. If it is wrong we put it back — a listing restored, a day lost. `leaving` is the
-expensive error, which is exactly why it never acts automatically. Our own rule is that evidence
+market. If it is wrong we put it back — a listing restored, a day lost. `leaving` is the expensive
+error, and to be exact about what we do with it: it is recorded on the lease like any other answer,
+but it is never auto-promoted to "firmly available", so it cannot put a home back on the market by
+itself. Only `extend` acts on the market without a person. Our own rule is that evidence
 good enough to stop us selling is not good enough to let us sell; withholding a confirmation
 applies the `leaving` standard to an `extend` decision.
 
@@ -152,9 +155,13 @@ signal, not a veto. When the sender is identified and the words name a period, r
 hold for a forwarded message, an unattributed sender, or wording that only makes sense with the
 previous message in hand.
 
-**A question, because it changes the answer:** what share of your tenant threads are groups? If it
-is most of them, a group-triggers-hold rule routes the majority of real answers back to us by
-hand, which is the outcome the relay exists to prevent.
+**On the share of your threads that are groups — thank you, that settles it.** We asked because
+if most threads were groups, a group-triggers-hold rule would route the majority of real answers
+back to us by hand, which is the outcome the relay exists to prevent. At 12%, and with none of the
+ten tenants currently carrying an ask on a group thread, it does not. We checked the ten against
+our own records and count the same ten, so the two sides agree on the population as well as the
+conclusion. You answered a question that could have gone against you, with the number that decides
+it. That is worth saying out loud.
 
 ## 3b. The escalation stays off — and we went further
 
@@ -169,14 +176,15 @@ customer telling us they are interested in two flats.
 
 ## 4. Do not replay the five
 
-All four definite answers were recorded here by hand, and all four came back `applied: false`
-with `stale_reason: lease_end_changed` — because the leases had already been extended manually,
-each to the term the tenant asked for. A replay would return `already_replied` and change
-nothing.
+All four definite answers were recorded here by hand, and all four still stand as `applied: false`
+with `stale_reason: lease_end_changed` — Mong Kok 1C, Poplar 3D, Gilman's Bazaar 2A and Poplar 4A,
+because the leases had already been extended manually, each to the term the tenant asked for. A
+replay would return `already_replied` and change nothing.
 
-The fifth, Hollywood 1B, is not settled and is not yours to close: he asked to pause the lease
-for two weeks and continue to December while separately asking about another studio. That is a
-conversation for a person.
+The fifth, Hollywood 1B, has since reached us through your relay and is filed as `unsure`. That is
+the right answer — "I'll check when I'm back" is not a decision — and it is still a conversation
+for a person: he asked to pause the lease for two weeks and continue to December while separately
+asking about another studio. Recorded, surfaced, acted on in no way. Nothing for you to replay.
 
 ---
 
@@ -196,42 +204,48 @@ Confirmed against production: `max_price=14000` excluded it, `max_price=40000` i
 after the fix a normal monthly band returns it. You can drop your own banding when this deploys —
 though keeping it costs nothing.
 
-## `alternatives_outside_area` — it is deployed, and here is why you see nothing
+## `alternatives_outside_area` — nothing to do
 
-It is present on every window-mode response. Just now, live:
+You found this one yourselves before we replied, and your diagnosis is right: it is a sibling of
+`data`, your alternatives path reads `altData.data`, and the envelope goes in the bin. Re-checked
+live while writing this — present on every window-mode response, ten entries with
+`district=Sheung Wan`, present and empty without one. Nothing is wrong at our end and there is
+nothing here for either of us to fix.
 
-```
-?available_between_start=…&available_between_end=…&district=Sheung Wan   ->  3 alternatives
-?available_between_start=…&available_between_end=…   (no district)       ->  present, empty
-```
+## Your relay fixes — our logs agree, and the relay is now working
 
-It only fills when you send a `district` — with no preferred area there is nothing to be outside
-of. It is also a **sibling of `data`, not an element of it**, so a caller reading the array
-directly will not see it:
-
-```json
-{ "code": 200, "data": [ … ], "alternatives_outside_area": [ … ], "meta": { … } }
-```
-
-If you are sending `district` and reading the envelope and still see no key, tell us and we will
-look properly.
-
-## Your relay fixes — our logs agree
-
-We can corroborate both faults from our side, which we could not before:
+We can corroborate both faults from our side, which we could not before. Our access log for
+22 August, in order:
 
 ```
-133 × GET  /renewal-asks/open                     200
-  1 × POST /renewal-ask/…/reply                   403   ← the read-only key
-  1 × POST /renewal-ask/0000000000000000000/reply 404   ← the placeholder id
+01:31:19  POST /renewal-ask/1787277601431982422/reply  403   ← the read-only key
+01:52:19  POST /renewal-ask/0000000000000000000/reply  404   ← the placeholder id
+01:54:07  POST /renewal-ask/1787277601431982422/reply  200   ← same ask, 23 minutes later
 ```
 
-The `403` is the one worth keeping an eye on. A refusal you do not notice is indistinguishable
+That third line is the one worth having. The ask that was refused is Hollywood 1B, and your fix
+reached it the same night.
+
+Since then the relay has carried three real answers end to end, all correctly classified:
+
+| when | unit | what the tenant wrote | filed as |
+|---|---|---|---|
+| 22 Aug 01:54 | Hollywood 1B | "Thank you, I'll check when I'm back" | `unsure` — held for a person |
+| 22 Aug 02:01 | Tai Yuen 25/F | "Sorry I thought i have express my intent to leave on my email" | `leaving` |
+| 23 Aug 02:01 | Fuk Lo Tsun 3/F | "yes we would like to extend til the end of the year December 31st please!" | `extend`, applied |
+
+The last one is the whole pipeline: your relay, our classifier, the lease extended and the unit
+withdrawn from customer-facing feeds, no person in the loop. The first is the same pipeline
+declining to guess. Both are the behaviour we agreed to in question 1, observed rather than
+promised.
+
+The `403` remains the fault worth remembering. A refusal you do not notice is indistinguishable
 from a failure, and your old handling turned it into a closed ask — which is the more dangerous
 half of that bug, not the credentials.
 
 Your reconcile alert — "open ask, inbound messages, zero relays" — is the right check, and
-better than anything we would have thought to ask for.
+better than anything we would have thought to ask for. It named Hollywood 1B, and Hollywood 1B is
+the ask that then came through.
 
 ---
 
@@ -273,9 +287,13 @@ Chris
 
 ## Notes for Chris (not part of the message)
 
-- **Everything here is already deployed.** `4e3cc7a` (classifier, migration 075) and `1843076`
-  (resolver). 1024 tests. Verified live on production: "mong kok 6a 5a", "poplar 5e" and
-  "tai yuen, my budget is 25k" all return the responses quoted above.
+- **Everything here is already deployed** and was re-verified against production on 23 August,
+  immediately before this draft was finalised. `4e3cc7a` (classifier, migration 075) and `1843076`
+  (resolver); production is at `4bd803f`. Live checks that passed: "mong kok 6a 5a" returns
+  confident Mong Kok 5A with `unmatched` 6a and an empty floor 6; "poplar 5e" returns floor_units
+  5A–5D; "tai yuen, my budget is 25k" and "pearl city, my budget is 30k" both return
+  `property_only`, i.e. neither budget bug has come back. `alternatives_outside_area` is on the
+  envelope with and without a district. A normal monthly `max_price` band returns Poplar 2B.
 - **§2 no longer says NOT BUILT**, because it now is. That marker was in the previous draft on
   purpose; do not let an old copy go out instead of this one.
 - **§5 is us reporting our own bugs, unprompted.** Worth keeping: the budget one confidently
@@ -287,7 +305,18 @@ Chris
 - **I told you their caution was better founded than my confidence. That was wrong** and the note
   now says the opposite, with the reason. Their own letter confirms the sender's phone matched the
   ask, so attribution was never the issue.
-- The group-share question at the end of §3 is the one to watch for in their reply. If most
-  threads are groups, the hold needs a tighter trigger than they are proposing.
+- **The group-share question is answered and the section now acknowledges it** rather than asking
+  again. 12%, and none of the ten current asks. I counted the ten independently on our side and
+  got the same ten, which is why the letter says so — it is the second time the two sides have
+  agreed on a population without comparing notes first.
+- **The relay-log section changed the most.** It used to show only their two failures. Our access
+  log now also shows the recovery 23 minutes later on the same ask, and three tenant replies
+  carried end to end since — including one that extended a lease and pulled the unit from the
+  public feeds with nobody in the loop. That is the agreement in question 1 working, observed.
+  If you would rather not put the tenants' own words in writing, cut the table; the paragraph
+  above it still makes the point.
+- **One sentence in §3 was loose and is now exact.** It said `leaving` "never acts automatically".
+  It is recorded on the lease like any other answer — what it never does is promote the unit to
+  firmly available. They read carefully and correct us; better we correct ourselves.
 - Not mentioned: their letter references our §6 and §13; our note had 12 sections and the numbers
   run one out. Harmless — the content they quote is unambiguous.
