@@ -17,6 +17,9 @@ const {
   sendOverdueToTenant,
   sendOverdueToLandlord,
   sendCheckinToTenant,
+  sendCheckinFollowUpToTenant,
+  lastSentOrgDate,
+  CHECKIN_FOLLOWUP_TYPE,
   sendCheckoutToTenant,
   sendRenewalToTenant,
   shouldSendEmail,
@@ -153,6 +156,7 @@ function toDateString(date) {
 }
 
 const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
+const { isWithinCheckinWindow, shouldSendCheckinFollowUp } = require('../utils/checkinWindow');
 const { resolveLeaseValues } = require('../utils/leaseRevision');
 
 function daysDiff(date1, date2) {
@@ -603,7 +607,7 @@ async function markOverdueInvoicesForOrg(pool, orgId) {
 async function sendCheckinEmailsForOrg(pool, orgId) {
   // Find leases with tenant_checkin enabled, starting today or in the future
   const [leases] = await pool.execute(
-    `SELECT l.id, l.start_date, l.tenant_id,
+    `SELECT l.id, l.start_date, l.tenant_id, l.lease_state, l.tenant_checkin,
        t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
        p.display_name AS property_name, u.name AS unit_name
      FROM leasing l
@@ -619,32 +623,57 @@ async function sendCheckinEmailsForOrg(pool, orgId) {
   );
   if (leases.length === 0) return;
 
-  // Load the default Checkin-Tenant template to get date_first offset
+  // Both lead times come off the one Checkin-Tenant template: `date_first` is the
+  // first email, `date_second` an optional follow-up nearer the move-in date. Same
+  // arrangement Invoice-Tenant has always used.
   const template = await loadTemplate(pool, orgId, 'Checkin-Tenant');
   const dateFirstDays = template ? (Number(template.date_first) || 0) : 0;
+  const followUpDays = template ? (Number(template.date_second) || 0) : 0;
 
   let sent = 0;
-  const today = orgTodayDate();
+  let followUps = 0;
+  const today = orgToday();
   for (const lease of leases) {
     try {
-      const startDate = new Date(toDateString(new Date(lease.start_date)));
-      const triggerDate = new Date(startDate);
-      triggerDate.setDate(triggerDate.getDate() - dateFirstDays);
+      const firstAlreadySent = await hasEmailBeenSent(pool, lease.id, 'Checkin-Tenant');
 
-      // Send if today is on or after the trigger date (but before/on start date)
-      if (today < triggerDate || today > startDate) continue;
+      // Leg one. Same comparison the create and confirm endpoints use — see
+      // utils/checkinWindow.js for why it lives in one place now.
+      if (!firstAlreadySent) {
+        if (!isWithinCheckinWindow(lease.start_date, today, dateFirstDays)) continue;
+        await sendCheckinToTenant(pool, orgId, lease.id);
+        sent++;
+        // Never both legs in one sweep: the follow-up is a reminder of an email
+        // the tenant has had time to read, not a second copy of one sent seconds
+        // ago. shouldSendCheckinFollowUp would refuse anyway (no gap), but not
+        // asking is clearer than relying on it.
+        continue;
+      }
 
-      // Skip if already sent for this lease
-      if (await hasEmailBeenSent(pool, lease.id, 'Checkin-Tenant')) continue;
+      if (followUpDays <= 0) continue;
+      if (await hasEmailBeenSent(pool, lease.id, CHECKIN_FOLLOWUP_TYPE)) continue;
 
-      await sendCheckinToTenant(pool, orgId, lease.id);
-      sent++;
+      const decision = shouldSendCheckinFollowUp({
+        leaseState: lease.lease_state,
+        tenantCheckin: lease.tenant_checkin,
+        startDate: lease.start_date,
+        today,
+        followUpDays,
+        firstSentOn: await lastSentOrgDate(pool, lease.id, 'Checkin-Tenant'),
+      });
+      if (!decision.send) continue;
+
+      await sendCheckinFollowUpToTenant(pool, orgId, lease.id);
+      followUps++;
     } catch (err) {
       console.error(`[Scheduler] Check-in email error for lease ${lease.id}:`, err.message);
     }
   }
   if (sent > 0) {
     await createNotification(pool, { orgId, type: 'info', title: `${sent} check-in email(s) sent`, link: '/leasing' });
+  }
+  if (followUps > 0) {
+    await createNotification(pool, { orgId, type: 'info', title: `${followUps} check-in follow-up(s) sent`, message: `Sent ${followUpDays} day(s) before move-in.`, link: '/leasing' });
   }
 }
 

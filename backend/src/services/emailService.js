@@ -1,6 +1,8 @@
 
 const { sendMail, sendMailWithAccount } = require('../config/mailer');
 const { pickTemplate } = require('../utils/pickTemplate');
+const { orgTimeSql } = require('../utils/orgTime');
+const { toCalendarDate } = require('../utils/checkinWindow');
 
 // ---------------------------------------------------------------------------
 // SMTP account lookup — match "from" address to smtp_account table
@@ -673,6 +675,12 @@ async function sendTemplateEmail(pool, orgId, {
   extraVariables,
   extraCc,
   attachments,
+  // What to record in email_log.type. Defaults to templateType, which is what
+  // every caller wanted until check-in grew a second send off the SAME template:
+  // both legs render 'Checkin-Tenant', so logging both under that name makes them
+  // indistinguishable and the follow-up's dedup check can never tell whether it
+  // was the first email or its own that already went.
+  logType = null,
 } = {}) {
   // 1. Load template
   const template = await loadTemplate(pool, orgId, templateType, templateId);
@@ -753,7 +761,7 @@ async function sendTemplateEmail(pool, orgId, {
             await pool.execute(
               `INSERT INTO email_log (org_id, to_email, subject, type, template_id, lease_id, status, error, sent_at, created_at)
                VALUES (?, ?, ?, ?, ?, ?, 'whitelist_blocked', 'Recipient not in whitelist', NOW(), NOW())`,
-              [orgId, recipient, renderedSubject, templateType || 'manual', template.id || null, leaseId || null]
+              [orgId, recipient, renderedSubject, logType || templateType || 'manual', template.id || null, leaseId || null]
             );
           } catch (logErr) { /* ignore */ }
           return null;
@@ -815,7 +823,7 @@ async function sendTemplateEmail(pool, orgId, {
       `INSERT INTO email_log (org_id, to_email, subject, type, template_id, lease_id, status, error, sent_at, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
-        orgId, recipient, renderedSubject, templateType || 'manual',
+        orgId, recipient, renderedSubject, logType || templateType || 'manual',
         template.id || null, leaseId || null, status, error,
       ]
     );
@@ -937,6 +945,24 @@ async function sendCheckinToTenant(pool, orgId, leaseId) {
   });
 }
 
+// The check-in follow-up. Renders the SAME template as the first email — the
+// operator configures one Check-In template and gives it two lead times
+// (`date_first`, `date_second`), exactly as Invoice-Tenant already works — but
+// records itself under its own type so the two legs dedup independently.
+const CHECKIN_FOLLOWUP_TYPE = 'Checkin-Tenant-2';
+
+async function sendCheckinFollowUpToTenant(pool, orgId, leaseId) {
+  // Same per-lease toggle as the first email: switching check-in off must silence
+  // both legs, not just the one the operator happens to think of.
+  const shouldSend = await shouldSendEmail(pool, leaseId, 'Checkin-Tenant');
+  if (!shouldSend) return null;
+  return sendTemplateEmail(pool, orgId, {
+    templateType: 'Checkin-Tenant',
+    leaseId,
+    logType: CHECKIN_FOLLOWUP_TYPE,
+  });
+}
+
 async function sendCheckoutToTenant(pool, orgId, leaseId) {
   const shouldSend = await shouldSendEmail(pool, leaseId, 'Checkout-Tenant');
   if (!shouldSend) return null;
@@ -1043,6 +1069,33 @@ async function hasEmailBeenSent(pool, leaseId, templateType) {
   }
 }
 
+/**
+ * The Hong Kong calendar date an email of this type last went out for a lease,
+ * or null if none ever did.
+ *
+ * `sent_at` is a TIMESTAMP — an absolute instant that MySQL renders in the
+ * connection's timezone, which is UTC in production. A bare DATE(sent_at) is
+ * therefore a day behind Hong Kong for anything sent between 00:00 and 08:00 HK,
+ * and the 07:00 check-in sweep lands squarely in that band: its rows read 23:00
+ * the previous day. orgTimeSql shifts the instant onto the operator's clock
+ * first — without it the follow-up would measure its gap from the wrong day.
+ */
+async function lastSentOrgDate(pool, leaseId, templateType) {
+  if (!leaseId || !templateType) return null;
+  try {
+    const [[row]] = await pool.execute(
+      `SELECT DATE(${orgTimeSql('MAX(sent_at)')}) AS d FROM email_log
+       WHERE lease_id = ? AND type = ? AND status = 'sent'`,
+      [leaseId, templateType]
+    );
+    if (!row || !row.d) return null;
+    return row.d instanceof Date ? toCalendarDate(row.d) : String(row.d).slice(0, 10);
+  } catch (err) {
+    console.error(`[EmailService] Error reading last sent date for ${templateType}:`, err.message);
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Payment-Options resolver
 // ---------------------------------------------------------------------------
@@ -1101,6 +1154,8 @@ module.exports = {
   previewTemplate,
   shouldSendEmail,
   hasEmailBeenSent,
+  lastSentOrgDate,
+  CHECKIN_FOLLOWUP_TYPE,
 
   // Convenience senders
   sendInvoiceToTenant,
@@ -1108,6 +1163,7 @@ module.exports = {
   sendOverdueToTenant,
   sendOverdueToLandlord,
   sendCheckinToTenant,
+  sendCheckinFollowUpToTenant,
   sendCheckoutToTenant,
   sendRenewalToTenant,
   sendLeaseExpiryToLandlord,

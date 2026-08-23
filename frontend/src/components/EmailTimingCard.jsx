@@ -5,7 +5,9 @@
  *
  * Only THREE template types actually read these fields:
  *   Invoice-Tenant   → date_first + date_second (scheduler reminder lead times)
- *   Checkin-Tenant   → date_first               (leasing.js send window)
+ *   Checkin-Tenant   → date_first + date_second (first email + follow-up, both
+ *                                                read by the 07:00 sweep;
+ *                                                before_date is NOT read)
  *   Checkout-Tenant  → date_first + before_date (leasing.js send window)
  *
  * Every other type is EVENT-DRIVEN — it sends the moment its trigger happens, so

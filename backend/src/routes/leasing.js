@@ -18,10 +18,12 @@ const {
   sendTemplateEmail,
   loadTemplate,
   resolvePaymentOptionsTemplate,
+  hasEmailBeenSent,
 } = require('../services/emailService');
 const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCalendarWebhook');
 const { loadResolutionData, resolveWithData, resolveLeaseTemplateId, derivePdfStatus, hasTemplateSql } = require('../services/leaseTemplateResolver');
 const { orgToday, orgTodaySql, orgTimeSql } = require('../utils/orgTime');
+const { shouldSendCheckinNow } = require('../utils/checkinWindow');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
@@ -42,6 +44,42 @@ async function maybeSendPaymentOptions(pool, orgId, leaseId) {
     await sendTemplateEmail(pool, orgId, { templateType: 'Payment-Options', templateId: String(tpl.id), leaseId: String(leaseId) });
   } catch (err) {
     console.error('[PaymentOptions] send failed:', err.message);
+  }
+}
+
+// Send the lease's check-in email if it is due right now, instead of leaving the
+// tenant to the next 07:00 sweep. A lease keyed in a week before move-in should
+// not have its check-in instructions wait for the morning.
+//
+// Never throws. A failed send stays a failed send: the sweep re-reads the same
+// leases tomorrow and `hasEmailBeenSent` only counts rows that actually went, so a
+// failure here is retried rather than swallowed.
+//
+// Returns the reason string for logging — callers fire and forget.
+async function maybeSendCheckin(pool, orgId, leaseId, { startDate, tenantCheckin, leaseState }) {
+  try {
+    const template = await loadTemplate(pool, orgId, 'Checkin-Tenant');
+    const decision = shouldSendCheckinNow({
+      leaseState,
+      tenantCheckin,
+      startDate,
+      today: orgToday(),
+      leadDays: template ? template.date_first : 0,
+    });
+    if (!decision.send) return decision.reason;
+    // Cheap insurance now that two endpoints call this. Read-then-send is NOT
+    // atomic, so it does not close the race with the 07:00 sweep — a lease created
+    // in the same second the sweep reads it could still send twice. It is not meant
+    // to: it catches the ordinary case of a second call minutes or hours later
+    // (a manual resend, then a confirm). A unique key on (lease_id, type) would
+    // close the race properly and would also break the manual resend endpoint,
+    // which is deliberately repeatable.
+    if (await hasEmailBeenSent(pool, String(leaseId), 'Checkin-Tenant')) return 'already_sent';
+    await sendCheckinToTenant(pool, orgId, String(leaseId));
+    return 'sent';
+  } catch (err) {
+    console.error('[Lease] Check-in email error:', err.message);
+    return 'error';
   }
 }
 
@@ -1168,24 +1206,14 @@ router.post('/', authenticate, async (req, res) => {
         .catch(err => console.error('[Lease] Deposit email error:', err.message));
     }
 
-    // Send check-in email if lease starts within the template's date_first window (fire-and-forget)
-    if (tenant_checkin && start_date) {
-      (async () => {
-        try {
-          const checkinTemplate = await loadTemplate(req.pool, orgId, 'Checkin-Tenant');
-          const dateFirstDays = checkinTemplate ? (Number(checkinTemplate.date_first) || 0) : 0;
-          const startMs = new Date(start_date).getTime();
-          const todayMs2 = new Date(orgToday()).getTime();
-          const daysUntilStart = Math.round((startMs - todayMs2) / (1000 * 60 * 60 * 24));
-          // Send if start date is today or within the date_first window
-          if (daysUntilStart >= 0 && daysUntilStart <= dateFirstDays) {
-            await sendCheckinToTenant(req.pool, orgId, leaseId.toString());
-          }
-        } catch (err) {
-          console.error('[Lease] Check-in email error:', err.message);
-        }
-      })();
-    }
+    // Send the check-in email now if the lease already starts inside the template's
+    // window (fire-and-forget). A pending lease is deliberately skipped here and
+    // picked up by POST /:id/confirm instead — see maybeSendCheckin.
+    maybeSendCheckin(req.pool, orgId, leaseId.toString(), {
+      startDate: start_date,
+      tenantCheckin: tenant_checkin,
+      leaseState,
+    });
 
     // Send check-out email if lease ends within the template's date_first window (fire-and-forget)
     if (tenant_checkout && end_date) {
@@ -1989,6 +2017,16 @@ router.post('/:id/confirm', authenticate, async (req, res) => {
 
     // Pending -> active: now block the WordPress calendar. Fire-and-forget.
     notifyLeaseBlocked(req.pool, orgId, id);
+
+    // The check-in email was withheld while this lease sat pending. Now that it is
+    // confirmed, send it if move-in is already inside the window. Without this the
+    // 07:00 sweep — which only ever looked at active leases — is the first thing to
+    // notice, so a lease confirmed three days before move-in sat silent overnight.
+    maybeSendCheckin(req.pool, orgId, id, {
+      startDate: lease.start_date,
+      tenantCheckin: lease.tenant_checkin,
+      leaseState: 'active',
+    });
 
     res.json({ code: 200, message: 'Lease confirmed', data: { id } });
   } catch (err) {
