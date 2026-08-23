@@ -9,7 +9,7 @@ import {
 } from 'antd';
 import {
   EditOutlined, ArrowLeftOutlined, UserOutlined, CloseOutlined, CheckOutlined,
-  PlusOutlined, DeleteOutlined, SearchOutlined, MailOutlined, FilterOutlined,
+  PlusOutlined, DeleteOutlined, SearchOutlined, MailOutlined, FilterOutlined, CopyOutlined,
 } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
 import useIsMobile from '../../../../../hooks/useIsMobile';
@@ -801,6 +801,11 @@ export default function UnitDetailPage() {
   const { hasPermission } = useAuth();
   const { isMobile } = useIsMobile();
   const canEditUnit = hasPermission ? hasPermission('LANDLORD/UNIT_EDIT') : false;
+  // See the note on canClone in the property detail page: UNIT_CLONE predates the
+  // feature, so roles that can create a unit can clone one.
+  const canCloneUnit = hasPermission
+    ? (hasPermission('LANDLORD/UNIT_CLONE') || hasPermission('LANDLORD/UNIT_CREATE'))
+    : false;
   const [unit, setUnit] = useState(null);
   const [propertyInfo, setPropertyInfo] = useState(null);
   const [amenities, setAmenities] = useState([]);
@@ -872,6 +877,9 @@ export default function UnitDetailPage() {
         <Title level={4} style={{ margin: 0 }}>General Information</Title>
         <Space>
           <Button onClick={() => router.push(`/property/${propertyId}`)}>Close</Button>
+          {canCloneUnit && <Button icon={<CopyOutlined />} onClick={() => router.push(`/property/${propertyId}/unit/create?copyFrom=${unitId}`)}>
+            Clone
+          </Button>}
           {canEditUnit && <Button type="primary" icon={<EditOutlined />} onClick={() => router.push(`/property/${propertyId}/unit/${unitId}/edit`)}>
             Edit
           </Button>}

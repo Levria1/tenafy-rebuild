@@ -5,7 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import { Button, Spin, Tag, Space, message, Tabs, Modal, Dropdown, Switch } from 'antd';
 import {
   ArrowLeftOutlined, PlusOutlined, HomeOutlined, UserOutlined,
-  RightOutlined, EditOutlined, DeleteOutlined, CopyOutlined, EllipsisOutlined,
+  RightOutlined, EditOutlined, DeleteOutlined, EllipsisOutlined, CopyOutlined,
 } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import useIsMobile from '../../../../hooks/useIsMobile';
@@ -89,7 +89,23 @@ function OccupancyDonut({ occupied, vacant, total }) {
 // ---------------------------------------------------------------------------
 // Unit Card Row
 // ---------------------------------------------------------------------------
-function UnitCard({ unit, propertyId, router, isMobile }) {
+function UnitCard({ unit, propertyId, router, isMobile, canClone }) {
+  // Clone lands on the Add Unit form pre-filled from this unit rather than
+  // inserting a row, so the new unit is named before it exists. Two units
+  // sharing a name make every unitResolver.js lookup for that flat ambiguous.
+  const actionMenu = {
+    items: [
+      {
+        key: 'clone',
+        icon: <CopyOutlined />,
+        label: 'Clone',
+        onClick: () => router.push(`/property/${propertyId}/unit/create?copyFrom=${unit.id}`),
+      },
+    ],
+  };
+  // Nothing but Clone in here yet, so hide the whole control rather than show an
+  // empty menu.
+  const showActions = canClone;
   const isOccupied = unit.status === 1;
   const isInactive = Number(unit.active_status) === 0;
   const tenantName = [unit.tenant_first_name, unit.tenant_last_name].filter(Boolean).join(' ');
@@ -128,6 +144,11 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
           <Button size="small" style={{ fontSize: 11, flex: 1 }}>Listing</Button>
           <Button size="small" style={{ fontSize: 11, flex: 1 }} onClick={() => router.push(`/leasing/create?unit=${unit.id}&property=${propertyId}`)}>Lease</Button>
           <Button size="small" type="primary" ghost style={{ fontSize: 11, flex: 1 }} onClick={() => router.push(`/property/${propertyId}/unit/${unit.id}`)}>View <RightOutlined style={{ fontSize: 9 }} /></Button>
+          {showActions && (
+            <Dropdown trigger={['click']} placement="bottomRight" menu={actionMenu}>
+              <Button size="small" icon={<EllipsisOutlined />} aria-label={`Actions for ${unit.name}`} />
+            </Dropdown>
+          )}
         </div>
       </div>
     );
@@ -170,6 +191,14 @@ function UnitCard({ unit, propertyId, router, isMobile }) {
         <Button size="small" style={{ fontSize: 11, width: 100 }} onClick={() => router.push(`/leasing/create?unit=${unit.id}&property=${propertyId}`)}>Create Lease</Button>
         <Button size="small" type="primary" ghost style={{ fontSize: 11, width: 100 }} onClick={() => router.push(`/property/${propertyId}/unit/${unit.id}`)}>View Unit <RightOutlined style={{ fontSize: 9 }} /></Button>
       </div>
+      {showActions && (
+        <Dropdown trigger={['click']} placement="bottomRight" menu={actionMenu}>
+          <Button
+            type="text" size="small" icon={<EllipsisOutlined style={{ fontSize: 16 }} />}
+            aria-label={`Actions for ${unit.name}`} style={{ flexShrink: 0 }}
+          />
+        </Dropdown>
+      )}
     </div>
   );
 }
@@ -268,6 +297,12 @@ export default function PropertyDetailPage() {
   const { isMobile } = useIsMobile();
   const canEdit = hasPermission ? hasPermission('LANDLORD/PROPERTY_EDIT') : false;
   const canDelete = hasPermission ? hasPermission('LANDLORD/PROPERTY_DELETE') : false;
+  // UNIT_CLONE is in the permission catalogue (role.js:22) but the feature has
+  // never shipped, so older roles may predate it. Cloning posts to the ordinary
+  // create endpoint, so UNIT_CREATE is an honest fallback rather than a widening.
+  const canClone = hasPermission
+    ? (hasPermission('LANDLORD/UNIT_CLONE') || hasPermission('LANDLORD/UNIT_CREATE'))
+    : false;
   const [loading, setLoading] = useState(true);
   const [propertyData, setPropertyData] = useState(null);
   const [units, setUnits] = useState([]);
@@ -348,7 +383,9 @@ export default function PropertyDetailPage() {
           menu={{
             items: [
               ...(canEdit ? [{ key: 'edit', icon: <EditOutlined />, label: 'Edit', onClick: () => router.push(`/property/${params.id}/edit`) }] : []),
-              { key: 'clone', icon: <CopyOutlined />, label: 'Clone' },
+              // Clone hidden: the menu item never had an onClick, and GET /api/property/:id/clone
+              // inserts without a Snowflake id (property.id has no AUTO_INCREMENT), so it 500s.
+              // Restore only alongside a working deep copy — units, amenities and MLS code included.
               ...(canDelete ? [{ key: 'delete', icon: <DeleteOutlined />, label: 'Delete', danger: true, onClick: handleDelete }] : []),
             ],
           }}
@@ -416,7 +453,7 @@ export default function PropertyDetailPage() {
                   </div>
                   {units.length === 0
                     ? <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>No units found</div>
-                    : units.map(unit => <UnitCard key={unit.id} unit={unit} propertyId={params.id} router={router} isMobile={isMobile} />)}
+                    : units.map(unit => <UnitCard key={unit.id} unit={unit} propertyId={params.id} router={router} isMobile={isMobile} canClone={canClone} />)}
                 </div>
               ),
             },

@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter, useParams } from 'next/navigation';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import {
   Form, Input, InputNumber, Select, Button, message, Switch, Radio, Checkbox, Spin, Row, Col, Upload,
 } from 'antd';
-import { ArrowLeftOutlined, UploadOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, UploadOutlined, PlusOutlined, DeleteOutlined, CopyOutlined } from '@ant-design/icons';
 import MainLayout from '../../../../../components/Layout';
 import { property as propertyApi, file as fileApi } from '../../../../../lib/api';
 import { bedsSelectOptions, unitTypeOptions } from '../../../../../lib/format';
@@ -43,6 +43,10 @@ const SectionLabel = ({ children }) => (
 );
 
 export default function PropertyUnitCreatePage() {
+  return <Suspense fallback={<div />}><PropertyUnitCreateInner /></Suspense>;
+}
+
+function PropertyUnitCreateInner() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
@@ -53,13 +57,24 @@ export default function PropertyUnitCreatePage() {
   const [photoFileId, setPhotoFileId] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [galleryFiles, setGalleryFiles] = useState([]);
+  const [copiedFrom, setCopiedFrom] = useState(null);
+  // deposit_price, charge_method, fee and owner_id have no Form.Item on this page
+  // (only on the edit form), so they are carried in state and merged at submit
+  // rather than relying on antd forwarding unregistered store values.
+  const [copiedExtras, setCopiedExtras] = useState({});
+  // antd does not fire onValuesChange for setFieldsValue, but handleValuesChange
+  // reloads the amenity list and CLEARS the selection — so if that ever changed,
+  // a clone would silently lose its copied amenities. Guard rather than rely on it.
+  const prefilling = useRef(false);
   const router = useRouter();
   const params = useParams();
+  const searchParams = useSearchParams();
   const propertyId = params.id;
+  const copyFromId = searchParams.get('copyFrom');
 
   useEffect(() => {
     if (propertyId) loadProperty();
-  }, [propertyId]);
+  }, [propertyId, copyFromId]);
 
   const loadProperty = async () => {
     try {
@@ -69,8 +84,74 @@ export default function PropertyUnitCreatePage() {
       }
     } catch {}
     finally { setFetching(false); }
-    // Load unit amenities for default type (Residential)
-    loadAmenities(1);
+    // A clone loads the source unit's own amenity set; a blank form loads the
+    // default Residential list. Never both — loadAmenities() clears the
+    // selection, so running it after a prefill would silently wipe it.
+    if (copyFromId) loadCopySource();
+    else loadAmenities(1);
+  };
+
+  // Fields deliberately NOT carried over: name, listing_url, key_code, photo and
+  // gallery. Each identifies the SOURCE unit rather than describing it, so a copy
+  // would be actively wrong — listing_url points the public listing at the other
+  // flat, key_code is a code for a different door, the photos are of it. name is
+  // left blank so the unit is named before the row exists: two units sharing a
+  // name make every unitResolver.js lookup for that flat `ambiguous`.
+  const loadCopySource = async () => {
+    setAmenitiesLoading(true);
+    try {
+      const [unitRes, amenRes] = await Promise.all([
+        propertyApi.getUnit(copyFromId),
+        propertyApi.getUnitAmenities(copyFromId),
+      ]);
+      const d = unitRes.data.code === 200 ? unitRes.data.data : null;
+      // getUnit is org-scoped, so this only guards a hand-edited link pointing at
+      // another property in the same org — where this page's currency and amenity
+      // list would not be the source unit's.
+      if (!d || String(d.property_id) !== String(propertyId)) {
+        message.warning('Could not copy that unit — starting from a blank form');
+        loadAmenities(1);
+        return;
+      }
+      prefilling.current = true;
+      form.setFieldsValue({
+        type: d.type || undefined,
+        amenity_type: d.amenity_type != null ? Number(d.amenity_type) : 1,
+        size: d.size ? Number(d.size) : undefined,
+        size_unit: d.size_unit || 'sqft',
+        beds: d.beds != null ? Number(d.beds) : undefined,
+        baths: d.baths != null ? Number(d.baths) : undefined,
+        smoking: !!d.smoking,
+        laundry: !!d.laundry,
+        parking: d.parking != null ? Number(d.parking) : undefined,
+        amenity_detail: d.amenity_detail || '',
+        access_information: d.access_information || '',
+        wifi_information: d.wifi_information || '',
+        account_name: d.account_name || '',
+        bank_details: d.bank_details || '',
+        internal_note: d.internal_note || '',
+        rent_price_min: d.rent_price_min ? Number(d.rent_price_min) : undefined,
+        rent_price_max: d.rent_price_max ? Number(d.rent_price_max) : undefined,
+      });
+      prefilling.current = false;
+      setCopiedExtras({
+        deposit_price: d.deposit_price ? Number(d.deposit_price) : undefined,
+        charge_method: d.charge_method != null ? Number(d.charge_method) : undefined,
+        fee: d.fee ? Number(d.fee) : undefined,
+        owner_id: d.owner_id ? String(d.owner_id) : undefined,
+      });
+      if (amenRes.data.code === 200) {
+        const amenList = amenRes.data.data || [];
+        setAmenities(amenList);
+        setSelectedAmenityIds(amenList.filter(a => Number(a.selected) === 1).map(a => a.id.toString()));
+      }
+      setCopiedFrom(d.name || 'unit');
+    } catch {
+      message.warning('Could not copy that unit — starting from a blank form');
+      loadAmenities(1);
+    } finally {
+      setAmenitiesLoading(false);
+    }
   };
 
   const loadAmenities = async (type = 1) => {
@@ -84,6 +165,7 @@ export default function PropertyUnitCreatePage() {
   };
 
   const handleValuesChange = (changedValues) => {
+    if (prefilling.current) return;
     if ('amenity_type' in changedValues) {
       loadAmenities(changedValues.amenity_type);
     }
@@ -134,6 +216,7 @@ export default function PropertyUnitCreatePage() {
     try {
       setLoading(true);
       const res = await propertyApi.createUnit(propertyId, {
+        ...copiedExtras,
         ...values,
         amenityIds: selectedAmenityIds,
         photo: photoFileId,
@@ -171,6 +254,17 @@ export default function PropertyUnitCreatePage() {
         />
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Add Unit</h2>
       </div>
+
+      {copiedFrom && (
+        <div style={{
+          background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 6,
+          padding: '10px 14px', marginBottom: 20, fontSize: 13, color: '#389e0d',
+        }}>
+          <CopyOutlined style={{ marginRight: 8 }} />
+          Copied from <strong>{copiedFrom}</strong>. Give this unit a name — photos,
+          listing URL and key code were not copied.
+        </div>
+      )}
 
       <Form
         form={form}
