@@ -586,3 +586,68 @@ Repo: <https://github.com/christophertsun7-gif/tenafy-mcp-server>. Public-API en
 
 ### Migration order (this session)
 - `035_commission_view_permission.sql` — committed to repo, run on droplet + local with `mysql -u <user> -p<pass> tena_prod_v2 < .../035_commission_view_permission.sql`
+
+---
+
+## Session 2026-08-23 — check-in emails (window, confirm, follow-up) + FAQ categories
+
+### Check-in emails
+
+**The lead time is `email_template.date_first` on the org's default `Checkin-Tenant`
+template — not a constant.** Org 8300127259922432 moved it 7 → 14 on 23 Aug, and added
+`date_second = 3` for a follow-up. `before_date` is NOT read for check-in; both legs are
+always "before".
+
+**Reading the send log**: `email_log.sent_at` is a TIMESTAMP rendered in the connection's
+timezone (UTC in production). The 07:00 Hong Kong sweep therefore writes rows stamped
+`23:00` the previous day, and a naive `DATEDIFF(start_date, DATE(sent_at))` reports one day
+MORE than the real lead. Anything measuring against `sent_at` must go through
+`orgTimeSql()` first. The 07:00 → 23:00 jump visible in the log from 16 Aug is `dcaa2e4`
+moving cron onto Hong Kong time; before that the job fired at 07:00 UTC, i.e. 3pm locally.
+
+**New: `backend/src/utils/checkinWindow.js`** — the window comparison in one place, working
+on calendar dates rather than instants.
+- `toCalendarDate` uses LOCAL getters for a Date, because mysql2 builds DATE columns with
+  `new Date(y, m, d)`. `getUTC*` would report the previous day everywhere east of Greenwich.
+- `shouldSendCheckinNow({leaseState, tenantCheckin, startDate, today, leadDays})` — every
+  gate, returning `{send, reason}`. **`leaseState` is required and fails CLOSED**: a caller
+  that omits it sends nothing. Failing open would let a future refactor silently mail
+  unconfirmed tenants, and the unit tests would all stay green.
+- `shouldSendCheckinFollowUp({..., followUpDays, firstSentOn})` — leg two.
+
+**Three defects fixed**:
+1. `POST /:id/confirm` never sent a check-in email, so a lease confirmed inside the window
+   waited for the next 07:00 sweep. It now calls `maybeSendCheckin` after the state flip.
+2. The create route was not guarded by `lease_state`, so a *pending* lease got an instant
+   check-in email the sweep would never have sent. Create now refuses pending; confirm sends.
+3. The sweep and the create route computed the window separately and could drift.
+
+**The follow-up (`date_second`)**: same template, two lead times — the arrangement
+`Invoice-Tenant` already used. It logs under **`Checkin-Tenant-2`** via a new `logType`
+option on `sendTemplateEmail`; both legs render `Checkin-Tenant`, so a shared log type would
+leave the follow-up's dedup unable to tell the first email from its own. It refuses when the
+first email went out within `date_second` days of the start date — a lease booked inside the
+gap gets one email, not two near-identical ones a day apart.
+
+**Tests**: `checkinWindow.test.js` (31) and `checkinWiring.test.js` (8). The wiring suite
+reads the route source, in the manner of `noServerClockDates.test.js`, because the original
+bug was the create endpoint knowing the lease was pending and simply not mentioning it — a
+helper-only suite stays green through that. Every guard was mutation-tested; one assertion
+("never send both legs in one sweep") passed against a broken implementation on the first
+attempt because it matched the wrong `continue`, and was re-anchored.
+
+### FAQ categories
+
+- Added **`booking`** / "Booking". The list lives in THREE files and each fails differently
+  and silently: `backend/src/utils/faqCategories.js` (validator — unknown values are rewritten
+  to `other` on save), `frontend/src/components/chatbot/KnowledgeCard.jsx` (admin dropdown),
+  `website/faq/index.html` (public page — a missing key renders the raw slug as a heading).
+  `backend/test/faqCategorySync.test.js` is the only thing that notices; verified it catches
+  a partial addition in both directions.
+- The admin dropdown is now **sorted by label, with "Other" pinned last** — derived once as
+  `FAQ_CATEGORY_OPTIONS`. The canonical array keeps its reading order, because that order is
+  what the public FAQ page's section sequence depends on.
+
+**`website/faq/index.html` is not served from this droplet.** It represents the live page
+hosted with the public site, so the Booking heading does not appear there until that file is
+published separately.
