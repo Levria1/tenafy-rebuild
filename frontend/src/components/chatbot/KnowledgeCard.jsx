@@ -57,7 +57,7 @@ const FAQ_CATEGORIES = [
   ['building_access','Building access'],        // access, keys, doors
   ['access_safety','Access & safety'],          // 7 — fire, emergencies
   ['nearby','Nearby'],                          // 5 — shops, transport
-  ['house_rules','House rules'],                // noise, pets, guests
+  ['house_rules','Rules'],                      // noise, pets, guests
   ['payments','Payments'],                      // 8
   ['maintenance','Maintenance'],                // reporting faults
   ['booking','Booking'],                        // reservations, holding a unit
@@ -164,6 +164,7 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
 
   // Filter state — client-side, since every entry is already loaded.
   const [visFilter, setVisFilter] = useState('all');   // 'all' | 'website' | 'tanechat' | 'internal'
+  const [catFilter, setCatFilter] = useState('all');  // FAQ category, or 'all'
   const [search, setSearch] = useState('');
 
   // Bulk-import (FAQ only) state
@@ -190,12 +191,31 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
     internal: items.filter(i => i.visibility !== 'public' && !i.publish_website).length,
   }), [items]);
 
+  // Only categories that actually hold something are offered. A picker listing all
+  // twenty when four are in use makes the operator hunt; the counts are the point,
+  // since the reason to reach for this is usually "show me what landed in Other".
+  const categoryOptions = useMemo(() => {
+    if (!isFaq) return [];
+    const n = {};
+    for (const i of items) { const k = i.category || 'other'; n[k] = (n[k] || 0) + 1; }
+    const known = FAQ_CATEGORY_OPTIONS
+      .filter((o) => n[o.value])
+      .map((o) => ({ value: o.value, label: `${o.label} (${n[o.value]})` }));
+    // An entry filed under a value no longer in the list would otherwise be
+    // unreachable from here — invisible AND uneditable. Show the raw key instead.
+    const orphans = Object.keys(n)
+      .filter((k) => !FAQ_CATEGORY_OPTIONS.some((o) => o.value === k))
+      .map((k) => ({ value: k, label: `${k} (${n[k]}) — unknown category` }));
+    return [{ value: 'all', label: `All categories (${items.length})` }, ...known, ...orphans];
+  }, [items, isFaq]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((i) => {
       if (visFilter === 'website' && !i.publish_website) return false;
       if (visFilter === 'tanechat' && i.visibility !== 'public') return false;
       if (visFilter === 'internal' && (i.visibility === 'public' || i.publish_website)) return false;
+      if (isFaq && catFilter !== 'all' && (i.category || 'other') !== catFilter) return false;
       if (q) {
         // Rules have no title, so search title+body combined — works for both kinds.
         const hay = `${i.title || ''} ${i.body || ''}`.toLowerCase();
@@ -203,9 +223,9 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
       }
       return true;
     });
-  }, [items, visFilter, search]);
+  }, [items, visFilter, search, catFilter, isFaq]);
 
-  const isFiltering = visFilter !== 'all' || search.trim() !== '';
+  const isFiltering = visFilter !== 'all' || search.trim() !== '' || catFilter !== 'all';
 
   const openAdd = () => {
     setEditing(null);
@@ -478,6 +498,17 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
             { label: `Tenafy (Internal) (${counts.internal})`, value: 'internal' },
           ]}
         />
+        {isFaq && (
+          <Select
+            showSearch
+            optionFilterProp="label"
+            value={catFilter}
+            onChange={setCatFilter}
+            options={categoryOptions}
+            style={{ width: 240 }}
+            aria-label="Filter by category"
+          />
+        )}
         <Input
           allowClear
           prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
