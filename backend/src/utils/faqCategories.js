@@ -26,7 +26,7 @@
 const FAQ_CATEGORIES = [
   'your_unit', 'power', 'appliances_laundry', 'water_heating', 'getting_here',
   'internet', 'rubbish', 'building_access', 'access_safety', 'nearby',
-  'house_rules', 'payments', 'maintenance', 'moving_in', 'moving_out',
+  'house_rules', 'payments', 'maintenance', 'booking', 'moving_in', 'moving_out',
   'lease_renewal', 'internal_private', 'inquiries', 'other',
 ];
 

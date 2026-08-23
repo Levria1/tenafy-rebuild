@@ -60,6 +60,7 @@ const FAQ_CATEGORIES = [
   ['house_rules','House rules'],                // noise, pets, guests
   ['payments','Payments'],                      // 8
   ['maintenance','Maintenance'],                // reporting faults
+  ['booking','Booking'],                        // reservations, holding a unit
   ['moving_in','Moving in'],
   ['moving_out','Moving out'],
   ['lease_renewal','Lease renewal'],
@@ -72,6 +73,21 @@ const FAQ_CATEGORIES = [
   ['inquiries','Inquiries (Not on FAQ)'],
   ['other','Other'],
 ];
+
+// The array above is in READING order, which the public FAQ page and the comments
+// on it depend on. The admin dropdown is a lookup, not a narrative — an operator
+// filing an entry scans for a word, so it is sorted by the label they can see.
+// Derived once at module scope rather than per render.
+//
+// 'Other' is pinned last. It is the fallback every unrecognised value collapses
+// to, so it does not compete for its alphabetical slot in the middle of the list.
+const FAQ_CATEGORY_OPTIONS = FAQ_CATEGORIES
+  .map(([value, label]) => ({ value, label }))
+  .sort((a, b) => {
+    if (a.value === 'other') return 1;
+    if (b.value === 'other') return -1;
+    return a.label.localeCompare(b.label);
+  });
 
 // Keep in step with WEBSITE_HIDDEN_CATEGORIES in backend/src/utils/faqCategories.js.
 // Used to warn in the edit form when an entry is filed bot-only but ticked for the
@@ -519,7 +535,7 @@ export default function KnowledgeCard({ kind, locked, refreshToken }) {
               <Input placeholder="e.g. Do you allow pets?" />
             </Form.Item>
           )}
-          {isFaq && <Form.Item name="category" label="Category"><Select options={FAQ_CATEGORIES.map(([value,label])=>({value,label}))}/></Form.Item>}
+          {isFaq && <Form.Item name="category" label="Category"><Select options={FAQ_CATEGORY_OPTIONS}/></Form.Item>}
           <Form.Item
             name="body"
             label={isFaq ? 'Answer' : 'Rule'}
