@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { longestFreeStretch } = require('../src/services/unitSearch');
+const { longestFreeStretch, askingRentAmount } = require('../src/services/unitSearch');
 
 test('longestFreeStretch returns the full window when there are no leases', () => {
   assert.deepEqual(longestFreeStretch('2026-01-01', '2026-01-31', []), {
@@ -224,4 +224,98 @@ test('an unpriced unit yields null rather than zero', () => {
   assert.equal(comparableMonthlyRent({ last_lease_invoicing: null, rent_price_min: null }), null);
   assert.equal(comparableMonthlyRent({}), null);
   assert.equal(comparableMonthlyRent(null), null);
+});
+
+// ---------------------------------------------------------------------------
+// Price filters now compare the SAME asking figure the response publishes.
+// monthly_rent remains the sitting-tenant comparison field; askingRentAmount is
+// the new-tenant number behind `asking_rent.amount`.
+// ---------------------------------------------------------------------------
+
+// The live Hollywood 5B case: filtering on the sitting tenant's rent EXCLUDED a
+// unit we would have quoted at exactly the caller's ceiling.
+test('asking rent can pass a cap when the sitting-tenant rent is above it', () => {
+  const cap = 14000;
+  const row = {
+    last_lease_price: 15000,
+    last_lease_invoicing: 'monthly',
+    rent_price_min: 14000,
+    rent_price_max: 15000,
+  };
+  // Assert BOTH figures: the point of the test is that they disagree across the
+  // cap. Asserting only the asking side would still pass if the two were equal.
+  assert.equal(comparableMonthlyRent(row) > cap, true, 'sitting-tenant rent is over the cap');
+  assert.equal(askingRentAmount(row, new Date('2026-10-01')) <= cap, true, 'asking rent is within it');
+});
+
+// The live Jardine 2A case, the same fault in the other direction: a unit we
+// would have quoted ABOVE the ceiling was returned as if it were within it.
+test('asking rent can fail a cap when the sitting-tenant rent is below it', () => {
+  const cap = 14000;
+  const row = {
+    last_lease_price: 11000,
+    last_lease_invoicing: 'monthly',
+    rent_price_min: 14500,
+    rent_price_max: 16000,
+  };
+  assert.equal(comparableMonthlyRent(row) <= cap, true, 'sitting-tenant rent is within the cap');
+  assert.equal(askingRentAmount(row, new Date('2026-10-01')) > cap, true, 'asking rent is over it');
+});
+
+test('askingRentAmount returns null when both advertised bounds are null', () => {
+  assert.equal(askingRentAmount({
+    rent_price_min: null,
+    rent_price_max: null,
+  }, new Date('2026-10-01')), null);
+});
+
+test('askingRentAmount returns a number rather than a money string', () => {
+  const rent = askingRentAmount({
+    rent_price_min: 14000,
+    rent_price_max: 15000,
+  }, new Date('2026-10-01'));
+
+  assert.equal(typeof rent, 'number');
+});
+
+test('askingRentAmount follows posting-rent tier boundaries', () => {
+  const realToday = new Date('2026-10-01');
+  const row = (lastLeaseEndDate) => ({
+    rent_price_min: 10000,
+    rent_price_max: 20000,
+    last_lease_end_date: lastLeaseEndDate,
+  });
+
+  assert.equal(askingRentAmount(row('2026-11-26'), realToday), 20000, '56 days out uses high');
+  assert.equal(askingRentAmount(row('2026-11-25'), realToday), 15000, '55 days out uses mid');
+  assert.equal(askingRentAmount(row('2026-11-12'), realToday), 15000, '42 days out uses mid');
+  assert.equal(askingRentAmount(row('2026-11-11'), realToday), 10000, '41 days out uses low');
+  assert.equal(askingRentAmount(row('2026-10-01'), realToday), 10000, '0 days out uses low');
+});
+
+
+// ---------------------------------------------------------------------------
+// The two tests above prove askingRentAmount computes the right number. They do
+// NOT prove the price filters call it — the whole fix can be reverted with every
+// one of them still green, which is how it was caught. searchUnits() needs a
+// database, so this asserts the wiring against the source, the way
+// noServerClockDates.test.js does.
+// ---------------------------------------------------------------------------
+
+test('the min_price and max_price filters compare the asking figure, not the sitting tenant rent', () => {
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '../src/services/unitSearch.js'), 'utf8');
+
+  // Anchor to the price-filter block only. comparableMonthlyRent is still used
+  // further down for the published `monthly_rent`, which is correct and must not
+  // make this test pass or fail.
+  const start = src.indexOf('if (minPrice !== null');
+  const end = src.indexOf('// Amenity filter');
+  assert.ok(start > 0 && end > start, 'price filter block not found — has it moved?');
+  const block = src.slice(start, end);
+
+  assert.equal((block.match(/askingRentAmount\(/g) || []).length, 2,
+    'both bounds must read the asking figure');
+  assert.equal(block.includes('comparableMonthlyRent'), false,
+    'the price filters must not read the sitting tenant rent');
 });

@@ -13,6 +13,7 @@
 
 const { orgToday } = require('../utils/orgTime');
 const { askingRentPublicShape, gapBandDays } = require('../utils/advertisingPlan');
+const { computePostingRent } = require('./advertisingTemplate');
 const { PUBLIC_UNIT_NAME_SQL } = require('../utils/publicUnitScope');
 
 function toDateStr(d) {
@@ -46,6 +47,25 @@ function comparableMonthlyRent(row) {
     return row.last_lease_price != null ? Number(row.last_lease_price) : null;
   }
   return row?.rent_price_min != null ? Number(row.rent_price_min) : null;
+}
+
+// computePostingRent uses DATEDIFF(end_date, today) semantics: positive before
+// move-out, negative after move-out. Keep this as the single derivation for both
+// price filtering and the public `asking_rent` shape.
+function askingRentDays(row, realToday) {
+  return row?.last_lease_end_date
+    ? Math.round((new Date(toDateStr(row.last_lease_end_date)) - realToday) / 86400000)
+    : null;
+}
+
+// The figure a NEW tenant would pay, which is what `asking_rent.amount` publishes
+// and what callers quote. Deliberately NOT comparableMonthlyRent(): that is the
+// sitting tenant's rent, so filtering on it hid units we would have quoted inside
+// the caller's budget and returned units we would have quoted above it. Returns a
+// Number, or null when the unit has no advertised band at all.
+function askingRentAmount(row, realToday) {
+  const posting = computePostingRent(row?.rent_price_min, row?.rent_price_max, askingRentDays(row, realToday));
+  return posting && posting.amount != null ? Number(posting.amount) : null;
 }
 
 function addDays(dateStr, days) {
@@ -169,6 +189,7 @@ async function searchUnits(pool, criteria = {}) {
   const isWindowMode = !!(windowStart && windowEnd);
   const searchDate = isWindowMode ? windowStart : moveIn;
   const requestedDistrictNames = isWindowMode && Array.isArray(preferredDistricts) ? preferredDistricts : districtNames;
+  const realToday = new Date(orgToday());
 
   // The test-name exclusion matches the vacancy feed. Without it this endpoint
   // offered "Test Property 2 Unit 1" as an alternative to real prospects — the
@@ -307,13 +328,12 @@ async function searchUnits(pool, criteria = {}) {
 
   // Price filters. maxPrice is widened by budgetMarginPct so close-but-over
   // options survive (they're flagged via over_budget_* below).
-  // Both bounds compare against the SAME schedule-aware monthly figure the response
-  // publishes as `monthly_rent`. They previously read `last_lease_price` raw, which
-  // is a whole-stay total on a lease with no invoicing schedule — so a caller's
-  // monthly band silently deleted exactly the short-let units it should have matched.
+  // Both bounds compare against the SAME asking figure the response publishes as
+  // `asking_rent.amount`. The published `monthly_rent` can be the sitting tenant's
+  // rent, which is not what a new tenant would quote or pay.
   if (minPrice !== null && !Number.isNaN(minPrice)) {
     filtered = filtered.filter((r) => {
-      const rent = comparableMonthlyRent(r);
+      const rent = askingRentAmount(r, realToday);
       // Unpriced units cannot clear a floor. Number(null) is 0, which would have
       // passed every unpriced unit through a minPrice of 0.
       return rent != null && rent >= minPrice;
@@ -322,11 +342,11 @@ async function searchUnits(pool, criteria = {}) {
   if (maxPrice !== null && !Number.isNaN(maxPrice)) {
     const ceiling = maxPrice * (1 + (Number(budgetMarginPct) || 0));
     filtered = filtered.filter((r) => {
-      const rent = comparableMonthlyRent(r);
-      // Falls back to the advertised ceiling, then keeps an entirely unpriced unit
-      // rather than dropping it: we cannot prove it is over budget.
-      const compare = rent != null ? rent : (r.rent_price_max != null ? Number(r.rent_price_max) : null);
-      return compare == null || compare <= ceiling;
+      const rent = askingRentAmount(r, realToday);
+      // Keep an entirely unpriced unit rather than dropping it: we cannot prove
+      // it is over budget. No rent_price_max fallback is needed because
+      // computePostingRent only returns null when both advertised bounds are unset.
+      return rent == null || rent <= ceiling;
     });
   }
 
@@ -394,7 +414,6 @@ async function searchUnits(pool, criteria = {}) {
   }
 
   const today = new Date(moveIn);
-  const realToday = new Date(orgToday());
   const leaseDurationDays = moveOut
     ? Math.max(0, Math.round((new Date(moveOut) - new Date(moveIn)) / 86400000))
     : null;
@@ -428,13 +447,8 @@ async function searchUnits(pool, criteria = {}) {
     const hasLeaseSchedule = hasRecurringSchedule(r);
     const monthlyRent = comparableMonthlyRent(r);
     const monthlyRentBasis = monthlyRent == null ? null : (hasLeaseSchedule ? 'lease' : 'advertised');
-    // computePostingRent uses DATEDIFF(end_date, today) semantics: positive
-    // before move-out, negative after move-out. The search availability fields
-    // clamp already-vacant units for other policy checks, so derive the raw
-    // value from the same last lease end date instead of reusing the clamp.
-    const askingRentDaysToAvailable = r.last_lease_end_date
-      ? Math.round((new Date(toDateStr(r.last_lease_end_date)) - realToday) / 86400000)
-      : null;
+    const askingRentDaysToAvailable = askingRentDays(r, realToday);
+    const askingAmount = askingRentAmount(r, realToday);
     return {
       unit_id: String(r.unit_id),
       unit_name: r.unit_name,
@@ -487,10 +501,10 @@ async function searchUnits(pool, criteria = {}) {
         ? Math.round((new Date(stretchByUnit.get(String(r.unit_id)).from) - realToday) / 86400000)
         : Math.round((new Date(availableFrom) - realToday) / 86400000),
       asking_rent: askingRentPublicShape(r.rent_price_min, r.rent_price_max, askingRentDaysToAvailable),
-      over_budget_by: (budget != null && !Number.isNaN(budget) && monthlyRent != null)
-        ? Number(monthlyRent) - budget : null,
-      over_budget_pct: (budget != null && !Number.isNaN(budget) && budget > 0 && monthlyRent != null)
-        ? Math.round(((monthlyRent - budget) / budget) * 1000) / 10 : null,
+      over_budget_by: (budget != null && !Number.isNaN(budget) && askingAmount != null)
+        ? askingAmount - budget : null,
+      over_budget_pct: (budget != null && !Number.isNaN(budget) && budget > 0 && askingAmount != null)
+        ? Math.round(((askingAmount - budget) / budget) * 1000) / 10 : null,
       listing_url: r.listing_url || null,
       description: r.amenity_detail || null,
       ...(isWindowMode ? { area_match: areaMatch(r, requestedDistrictNames, requestedDistrictCities) } : {}),
@@ -545,4 +559,4 @@ function compareWindowResult(a, b) {
   return String(a.property_name || '').localeCompare(String(b.property_name || ''));
 }
 
-module.exports = { searchUnits, longestFreeStretch, comparableMonthlyRent, gapBandDays };
+module.exports = { searchUnits, longestFreeStretch, comparableMonthlyRent, askingRentAmount, gapBandDays };
