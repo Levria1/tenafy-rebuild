@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { scoreUnits, optionsText, normalizeFloorUnit, _editDistance, _unitCore } = require('../src/services/unitResolver');
+const { scoreUnits, optionsText, normalizeFloorUnit, collapseThousands, _editDistance, _unitCore } = require('../src/services/unitResolver');
 
 // A small fixture: two properties, a stray-suffix unit, and a colliding "6A".
 const UNITS = [
@@ -46,6 +46,34 @@ test('resolver: property only → list marketable units at that property', () =>
   const r = R('mongkok');
   assert.equal(r.status, 'property_only');
   assert.deepEqual(r.candidates.map(c => c.unit_id).sort(), ['1', '2']);
+});
+
+test('resolver: property-only candidate order follows typed property words, not input order', () => {
+  const U = [
+    { id: 'tai-25', name: 'Unit 25', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true },
+    { id: 'lai-103', name: 'Unit 103', property_id: 'lai-yuen', property_name: '13B Lai Yuen Apartments', marketable: true },
+  ];
+
+  for (const units of [U, [...U].reverse()]) {
+    const tai = scoreUnits('tai yuen', units);
+    assert.equal(tai.status, 'property_only');
+    assert.match(tai.candidates[0].label, /Tai Yuen/);
+
+    const lai = scoreUnits('lai yuen', units);
+    assert.equal(lai.status, 'property_only');
+    assert.match(lai.candidates[0].label, /Lai Yuen/);
+  }
+});
+
+test('resolver: single-property query ordering is unaffected', () => {
+  const U = [
+    { id: 'mk-6a', name: '6A', property_id: 'mong-kok', property_name: 'Mong Kok', marketable: true },
+    { id: 'mk-5a', name: '5A', property_id: 'mong-kok', property_name: 'Mong Kok', marketable: true },
+  ];
+  const r = scoreUnits('mong kok', U);
+  assert.equal(r.status, 'property_only');
+  assert.ok(r.candidates.length > 0);
+  assert.ok(r.candidates.every(c => c.property_name === 'Mong Kok'));
 });
 
 test('resolver: same unit token across properties → ambiguous, lists both', () => {
@@ -464,6 +492,25 @@ test('resolver: purely numeric cores do not partial-match budget tokens', () => 
 
   const unmarked = scoreUnits('tai yuen 25', LIVE_SHAPE_UNITS);
   assert.notEqual(unmarked.status, 'confident');
+});
+
+test('resolver: comma-grouped budgets do not create unmatched numeric flat reports', () => {
+  const U = [
+    { id: 'ty-25', name: 'Unit 25', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true },
+    { id: 'ty-103', name: 'Unit 103', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true },
+  ];
+
+  assert.deepEqual(scoreUnits('tai yuen my budget is 25,000', U).unmatched, []);
+  assert.deepEqual(scoreUnits('tai yuen around HK$12,000 per month', U).unmatched, []);
+  assert.deepEqual(scoreUnits('tai yuen my budget is 25k', U).unmatched, []);
+
+  // This guards against suppressing any 3-digit token after another number: without
+  // a comma, "105" is still a genuine second unit-like token and must be reported.
+  assert.deepEqual(scoreUnits('tai yuen unit 103 105', U).unmatched.map(u => u.text), ['105']);
+});
+
+test('helpers: collapseThousands collapses repeated comma groups', () => {
+  assert.equal(collapseThousands('1,234,567'), '1234567');
 });
 
 test('resolver: bare numeric tokens do not identify numeric-named units', () => {

@@ -24,6 +24,22 @@ function norm(s) {
 function squish(s) { return norm(s).replace(/ /g, ''); }
 function toTokens(s) { const n = norm(s); return n ? n.split(' ') : []; }
 
+// "25,000" must survive normalisation as ONE token. norm() turns every
+// non-alphanumeric run into a space, so a comma-written budget arrives as
+// ["25","000"] - neither half looks like money, so the /^\d+[km]$/ rule never
+// fires and "000" was reported to callers as a flat we could not find.
+// Collapsing here rather than suppressing later keeps a real "unit 103 105"
+// intact: it is the COMMA that says these digits are one number.
+function collapseThousands(text) {
+  let out = String(text == null ? '' : text);
+  let prev;
+  do {
+    prev = out;
+    out = out.replace(/(\d),(\d{3})(?!\d)/g, '$1$2');
+  } while (out !== prev);
+  return out;
+}
+
 const FLOOR_UNIT_WORDS = new Set(['studio', 'flat', 'unit', 'room', 'apt', 'apartment', 'suite', 'rm', 'no']);
 
 function normalizeFloorUnit(text) {
@@ -173,6 +189,12 @@ function scoreOne(qSquish, qTokens, unit, markedNumbers = new Set()) {
   const pInit = initials(pName);
   let prop = 0;
   let nameProp = 0;
+  // How much of the property's name the customer actually typed. `prop`
+  // deliberately scores 2 for ANY single matching word, so "tai yuen" ties Tai
+  // Yuen Apartments with 13B Lai Yuen Apartments on the shared word "yuen" - and
+  // a stable sort then hands the tie to database order. This breaks that tie by
+  // the customer's own words WITHOUT moving anyone between score tiers.
+  const nameWordHits = toTokens(pName).filter(w => w.length >= 3 && qTokens.includes(w)).length;
   if (pSquish && qSquish.includes(pSquish)) prop = 3;                          // "mongkok" in "mongkok6a"
   else if (pInit.length >= 2 && qTokens.includes(pInit)) prop = 3;            // alias "mk"
   else {
@@ -215,7 +237,7 @@ function scoreOne(qSquish, qTokens, unit, markedNumbers = new Set()) {
       ? addressMatchedTokens(unit.street_address, qTokens)
       : [],
   };
-  return { prop, nameProp, unit: u, total: prop + u, consumed };
+  return { prop, nameProp, nameWordHits, unit: u, total: prop + u, consumed };
 }
 
 function unitOut(u) {
@@ -342,7 +364,7 @@ function scoreResult(status, match, candidates, query, rows, qTokens, units) {
  *   status: 'confident' | 'ambiguous' | 'property_only' | 'multi_unit' | 'none'
  */
 function scoreUnits(text, units) {
-  const scoreText = normalizeFloorUnit(text);
+  const scoreText = normalizeFloorUnit(collapseThousands(text));
   const qSquish = squish(scoreText);
   const qTokens = toTokens(scoreText);
   if (!qTokens.length) return { status: 'none', match: null, candidates: [], query: String(text || ''), unmatched: [] };
@@ -362,7 +384,9 @@ function scoreUnits(text, units) {
     return scoreResult('multi_unit', null, candidateList(exactUnitRows), norm(text), rows, qTokens, units);
   }
 
-  const fullRows = rows.filter(r => r.s.prop > 0 && r.s.unit > 0).sort((a, b) => b.s.total - a.s.total);
+  const byNameWordHits = (a, b) => b.s.nameWordHits - a.s.nameWordHits;
+  const fullRows = rows.filter(r => r.s.prop > 0 && r.s.unit > 0)
+    .sort((a, b) => b.s.total - a.s.total || byNameWordHits(a, b));
   // Naming a BUILDING beats merely naming its area. If any full match got there via
   // the property name, location-only matches are discarded rather than ranked below
   // it — otherwise "mercer 5b" at a Sheung Wan property would stay 'ambiguous'
@@ -370,8 +394,10 @@ function scoreUnits(text, units) {
   // already answered. Location only ever decides when NO name matched at all.
   const namedFull = fullRows.filter(r => r.s.nameProp > 0);
   const full = namedFull.length ? namedFull : fullRows;
-  const propMatched = rows.filter(r => r.s.prop > 0).sort((a, b) => b.s.prop - a.s.prop);
-  const unitMatched = rows.filter(r => r.s.unit > 0).sort((a, b) => b.s.unit - a.s.unit);
+  const propMatched = rows.filter(r => r.s.prop > 0)
+    .sort((a, b) => b.s.prop - a.s.prop || byNameWordHits(a, b));
+  const unitMatched = rows.filter(r => r.s.unit > 0)
+    .sort((a, b) => b.s.unit - a.s.unit || byNameWordHits(a, b));
 
   if (full.length === 1) {
     const match = unitOut(full[0].u);
@@ -437,5 +463,5 @@ module.exports = {
   // formatters would drift apart silently the first time either gains a field.
   scoreUnits, resolveUnit, loadUnitsWithMarketable, optionsText, unitOut,
   // exported for tests
-  normalizeFloorUnit, _norm: norm, _squish: squish, _editDistance: editDistance, _unitCore: unitCore,
+  normalizeFloorUnit, collapseThousands, _norm: norm, _squish: squish, _editDistance: editDistance, _unitCore: unitCore,
 };
