@@ -318,4 +318,11 @@ test('the min_price and max_price filters compare the asking figure, not the sit
     'both bounds must read the asking figure');
   assert.equal(block.includes('comparableMonthlyRent'), false,
     'the price filters must not read the sitting tenant rent');
+
+  const minStart = src.indexOf('if (minPrice !== null');
+  const minEnd = src.indexOf('if (maxPrice !== null');
+  assert.ok(minStart > 0 && minEnd > minStart, 'min_price filter block not found — has it moved?');
+  const minBlock = src.slice(minStart, minEnd);
+  assert.equal(minBlock.includes('rent == null ||'), true,
+    'min_price must keep unpriced units so callers can decide how to handle asking_rent: null');
 });

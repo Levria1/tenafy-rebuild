@@ -29,15 +29,30 @@ function toTokens(s) { const n = norm(s); return n ? n.split(' ') : []; }
 // ["25","000"] - neither half looks like money, so the /^\d+[km]$/ rule never
 // fires and "000" was reported to callers as a flat we could not find.
 // Collapsing here rather than suppressing later keeps a real "unit 103 105"
-// intact: it is the COMMA that says these digits are one number.
+// intact: it is the COMMA that says these digits are one number, unless the run
+// is explicitly introduced as a unit reference.
+const UNIT_MARKER_BEFORE_DIGITS = /(\b(?:units?|flats?|apt|apartments?|rooms?|suites?|rm|nos?)\.?\s*|#\s*)$/i;
+
 function collapseThousands(text) {
   let out = String(text == null ? '' : text);
   let prev;
   do {
     prev = out;
-    out = out.replace(/(\d),(\d{3})(?!\d)/g, '$1$2');
+    out = out.replace(/(\d),(\d{3})(?!\d)/g, (match, a, b, offset, whole) => {
+      let runStart = offset;
+      while (runStart > 0 && /\d/.test(whole[runStart - 1])) runStart -= 1;
+      return UNIT_MARKER_BEFORE_DIGITS.test(whole.slice(0, runStart)) ? match : a + b;
+    });
   } while (out !== prev);
   return out;
+}
+
+// "12,500.50" is one price. collapseThousands makes it "12500.50" and norm() then
+// splits on the dot, leaving a bare "50" that gets reported as a flat we could not
+// find. A dot between digits is a decimal point; no unit we own has one in its name.
+// Dropping the fraction here keeps the integer part intact for every other rule.
+function dropDecimalFraction(text) {
+  return String(text == null ? '' : text).replace(/(\d)\.\d{1,2}(?!\d)/g, '$1');
 }
 
 const FLOOR_UNIT_WORDS = new Set(['studio', 'flat', 'unit', 'room', 'apt', 'apartment', 'suite', 'rm', 'no']);
@@ -251,12 +266,61 @@ function unitOut(u) {
   };
 }
 
+function toDateStr(value) {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''));
+  return match ? match[0] : null;
+}
+
+function hasAvailability(u) {
+  return Object.prototype.hasOwnProperty.call(u, 'vacant_now') ||
+    Object.prototype.hasOwnProperty.call(u, 'occupied_until');
+}
+
+function availabilityCompare(a, b) {
+  if (!hasAvailability(a.u) || !hasAvailability(b.u)) return 0;
+
+  if (a.u.vacant_now === true || b.u.vacant_now === true) {
+    if (a.u.vacant_now === true && b.u.vacant_now !== true) return -1;
+    if (b.u.vacant_now === true && a.u.vacant_now !== true) return 1;
+  }
+
+  const aEnd = a.u.occupied_until || null;
+  const bEnd = b.u.occupied_until || null;
+  if (aEnd && bEnd) return String(aEnd).localeCompare(String(bEnd));
+  if (aEnd) return -1;
+  if (bEnd) return 1;
+  return 0;
+}
+
+function candidateCompare(a, b) {
+  return b.s.prop - a.s.prop ||
+    b.s.nameWordHits - a.s.nameWordHits ||
+    // Unit score belongs ABOVE availability: an exact unit token ("6a") must outrank
+    // a partial one at the same building, which is how the ambiguous list was ordered
+    // before candidateList sorted internally. Availability only breaks ties between
+    // units the customer's words rank equally.
+    b.s.unit - a.s.unit ||
+    availabilityCompare(a, b) ||
+    String(a.u.name || '').localeCompare(String(b.u.name || '')) ||
+    String(a.u.property_name || '').localeCompare(String(b.u.property_name || ''));
+}
+
 // Build the candidate list for a disambiguation prompt: marketable units first;
 // if none are marketable, fall back to all so the prospect still gets options.
-function candidateList(rows, cap = 8) {
+function candidateList(rows, cap = 40) {
   const marketable = rows.filter(r => r.u.marketable);
-  const chosen = (marketable.length ? marketable : rows).slice(0, cap);
-  return chosen.map(r => unitOut(r.u));
+  const availableRows = (marketable.length ? marketable : rows).slice().sort(candidateCompare);
+  return {
+    candidates: availableRows.slice(0, cap).map(r => unitOut(r.u)),
+    candidate_count: availableRows.length,
+  };
 }
 
 function unitShape(core) {
@@ -300,21 +364,31 @@ const UNIT_DOMAIN_FOLLOWERS = new Set([
   'bed', 'beds', 'bedroom', 'bedrooms', 'br',
 ]);
 
-function suppressedNonUnitToken(tokens, index) {
+function suppressedNonUnitToken(tokens, index, markedNumbers = new Set()) {
   const token = tokens[index];
   if (/^\d+[km]$/.test(token)) return true;
   if (/^\d+(am|pm)$/.test(token)) return true;
   if (MONTH_WORDS.has(token)) return true;
+  if (/^\d{1,3}$/.test(token) && /^\d{3}$/.test(tokens[index + 1] || '') &&
+      !markedNumbers.has(token) && !markedNumbers.has(tokens[index + 1])) return true;
+  if (/^\d{3}$/.test(token) && /^\d{1,3}$/.test(tokens[index - 1] || '') &&
+      !markedNumbers.has(token) && !markedNumbers.has(tokens[index - 1])) return true;
   return UNIT_DOMAIN_FOLLOWERS.has(tokens[index + 1]);
 }
 
-function scoreResult(status, match, candidates, query, rows, qTokens, units) {
-  const result = { status, match, candidates, query, unmatched: [] };
+function scoreResult(status, match, candidateInfo, query, rows, qTokens, units, markedNumbers = new Set(), ignoredUnitPropertyIds = new Set()) {
+  const candidates = Array.isArray(candidateInfo) ? candidateInfo : (candidateInfo && candidateInfo.candidates) || [];
+  const candidate_count = Array.isArray(candidateInfo)
+    ? candidateInfo.length
+    : Number(candidateInfo && candidateInfo.candidate_count) || 0;
+  const result = { status, match, candidates, candidate_count, query, unmatched: [] };
   if (status === 'none') return result;
 
   const candidateIds = new Set((candidates || []).map(c => String(c.unit_id)));
   if (match) candidateIds.add(String(match.unit_id));
-  const candidateRows = rows.filter(r => candidateIds.has(String(r.u.id)));
+  const candidateRows = rows.filter(r =>
+    candidateIds.has(String(r.u.id)) && !ignoredUnitPropertyIds.has(String(r.u.property_id))
+  );
   const matchedRows = candidateRows.length ? candidateRows : rows.filter(r => r.s.prop > 0);
   const matchedPropertyIds = new Set(matchedRows.map(r => String(r.u.property_id)));
 
@@ -325,6 +399,7 @@ function scoreResult(status, match, candidates, query, rows, qTokens, units) {
     }
   }
   for (const row of rows) {
+    if (ignoredUnitPropertyIds.has(String(row.u.property_id))) continue;
     if (row.s.unit > 0 && (row.s.prop > 0 || matchedPropertyIds.has(String(row.u.property_id)))) {
       consumed.add(unitCore(row.u.name));
     }
@@ -342,7 +417,7 @@ function scoreResult(status, match, candidates, query, rows, qTokens, units) {
     const token = qTokens[i];
     if (seen.has(token)) continue;
     if (consumed.has(token)) continue;
-    if (suppressedNonUnitToken(qTokens, i)) continue;
+    if (suppressedNonUnitToken(qTokens, i, markedNumbers)) continue;
     const shape = unitShape(token);
     if (!shapes.has(shape)) continue;
     if (/^9+$/.test(shape) && !matchedPropertyHasNumeric) continue;
@@ -364,10 +439,10 @@ function scoreResult(status, match, candidates, query, rows, qTokens, units) {
  *   status: 'confident' | 'ambiguous' | 'property_only' | 'multi_unit' | 'none'
  */
 function scoreUnits(text, units) {
-  const scoreText = normalizeFloorUnit(collapseThousands(text));
+  const scoreText = normalizeFloorUnit(dropDecimalFraction(collapseThousands(text)));
   const qSquish = squish(scoreText);
   const qTokens = toTokens(scoreText);
-  if (!qTokens.length) return { status: 'none', match: null, candidates: [], query: String(text || ''), unmatched: [] };
+  if (!qTokens.length) return { status: 'none', match: null, candidates: [], candidate_count: 0, query: String(text || ''), unmatched: [] };
 
   const markedNumbers = markedNumericTokens(qTokens);
   const rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u, markedNumbers) }));
@@ -381,7 +456,7 @@ function scoreUnits(text, units) {
   const exactUnitRows = rows.filter(r => r.s.unit === 3 && r.s.prop > 0);
   const namedCores = new Set(exactUnitRows.map(r => unitCore(r.u.name)));
   if (namedCores.size >= 2) {
-    return scoreResult('multi_unit', null, candidateList(exactUnitRows), norm(text), rows, qTokens, units);
+    return scoreResult('multi_unit', null, candidateList(exactUnitRows), norm(text), rows, qTokens, units, markedNumbers);
   }
 
   const byNameWordHits = (a, b) => b.s.nameWordHits - a.s.nameWordHits;
@@ -394,25 +469,39 @@ function scoreUnits(text, units) {
   // already answered. Location only ever decides when NO name matched at all.
   const namedFull = fullRows.filter(r => r.s.nameProp > 0);
   const full = namedFull.length ? namedFull : fullRows;
+  // A full match at a building the customer named LESS well than another building is
+  // not a confident answer, it is a guess. "tai yuen unit 103" matched 13B Lai Yuen on
+  // the shared word "yuen" alone, while Tai Yuen Apartments matched both words and
+  // simply has no 103 — so the honest reply is "Tai Yuen has no 103", not a confident
+  // flat in a different building.
+  const bestNameHits = rows.reduce((m, r) => Math.max(m, r.s.nameWordHits), 0);
+  const fullWellNamed = full.filter(r => r.s.nameWordHits >= bestNameHits);
   const propMatched = rows.filter(r => r.s.prop > 0)
     .sort((a, b) => b.s.prop - a.s.prop || byNameWordHits(a, b));
   const unitMatched = rows.filter(r => r.s.unit > 0)
     .sort((a, b) => b.s.unit - a.s.unit || byNameWordHits(a, b));
 
-  if (full.length === 1) {
-    const match = unitOut(full[0].u);
-    return scoreResult('confident', match, [match], norm(text), rows, qTokens, units);
+  if (fullWellNamed.length === 1) {
+    const match = unitOut(fullWellNamed[0].u);
+    return scoreResult('confident', match, { candidates: [match], candidate_count: 1 }, norm(text), rows, qTokens, units, markedNumbers);
   }
-  if (full.length > 1) {
-    return scoreResult('ambiguous', null, candidateList(full), norm(text), rows, qTokens, units);
+  if (fullWellNamed.length > 1) {
+    return scoreResult('ambiguous', null, candidateList(fullWellNamed), norm(text), rows, qTokens, units, markedNumbers);
   }
   if (propMatched.length > 0) {
-    return scoreResult('property_only', null, candidateList(propMatched), norm(text), rows, qTokens, units);
+    const weakFullRejected = full.length > 0 && fullWellNamed.length === 0;
+    const propertyRows = weakFullRejected
+      ? propMatched.filter(r => r.s.nameWordHits >= bestNameHits)
+      : propMatched;
+    const ignoredUnitPropertyIds = weakFullRejected
+      ? new Set(full.map(r => String(r.u.property_id)))
+      : new Set();
+    return scoreResult('property_only', null, candidateList(propertyRows), norm(text), rows, qTokens, units, markedNumbers, ignoredUnitPropertyIds);
   }
   if (unitMatched.length > 0) {
-    return scoreResult('ambiguous', null, candidateList(unitMatched), norm(text), rows, qTokens, units);
+    return scoreResult('ambiguous', null, candidateList(unitMatched), norm(text), rows, qTokens, units, markedNumbers);
   }
-  return scoreResult('none', null, [], norm(text), rows, qTokens, units);
+  return scoreResult('none', null, [], norm(text), rows, qTokens, units, markedNumbers);
 }
 
 // Load active units for the org + a `marketable` flag (current lease opted in, or
@@ -431,6 +520,10 @@ async function loadUnitsWithMarketable(pool, orgId) {
             (SELECT COUNT(*) FROM leasing l
                WHERE l.unit_id = u.id AND l.deleted_at IS NULL
                  AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)) AS has_lease,
+            (SELECT l.end_date FROM leasing l
+               WHERE l.unit_id = u.id AND l.deleted_at IS NULL
+                 AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
+               ORDER BY l.start_date DESC LIMIT 1) AS cur_end,
             (SELECT COUNT(*) FROM viewing_link vl
                WHERE vl.unit_id = u.id AND vl.status = 1 AND vl.employee_id IS NOT NULL) AS host_links
        FROM unit u JOIN property p ON u.property_id = p.id
@@ -444,6 +537,8 @@ async function loadUnitsWithMarketable(pool, orgId) {
     id: r.id, name: r.name, property_id: r.property_id, property_name: r.property_name,
     district: r.district, city: r.city, street_address: r.street_address,
     marketable: (Number(r.has_lease) > 0 && Number(r.cur_ve) === 1) || (Number(r.has_lease) === 0 && Number(r.host_links) > 0),
+    vacant_now: Number(r.has_lease) === 0,
+    occupied_until: r.cur_end ? toDateStr(r.cur_end) : null,
   }));
 }
 
@@ -463,5 +558,5 @@ module.exports = {
   // formatters would drift apart silently the first time either gains a field.
   scoreUnits, resolveUnit, loadUnitsWithMarketable, optionsText, unitOut,
   // exported for tests
-  normalizeFloorUnit, collapseThousands, _norm: norm, _squish: squish, _editDistance: editDistance, _unitCore: unitCore,
+  candidateList, normalizeFloorUnit, collapseThousands, dropDecimalFraction, _norm: norm, _squish: squish, _editDistance: editDistance, _unitCore: unitCore,
 };

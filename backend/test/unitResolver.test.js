@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { scoreUnits, optionsText, normalizeFloorUnit, collapseThousands, _editDistance, _unitCore } = require('../src/services/unitResolver');
+const { scoreUnits, candidateList, optionsText, normalizeFloorUnit, collapseThousands, dropDecimalFraction, _editDistance, _unitCore } = require('../src/services/unitResolver');
 
 // A small fixture: two properties, a stray-suffix unit, and a colliding "6A".
 const UNITS = [
@@ -65,6 +65,119 @@ test('resolver: property-only candidate order follows typed property words, not 
   }
 });
 
+test('resolver: property-only candidates order by soonest availability within a building', () => {
+  const U = [
+    { id: 'open', name: '4A', property_id: 'available', property_name: 'Available House', marketable: true, vacant_now: false, occupied_until: null },
+    { id: 'later', name: '2A', property_id: 'available', property_name: 'Available House', marketable: true, vacant_now: false, occupied_until: '2026-12-15' },
+    { id: 'vacant', name: '3A', property_id: 'available', property_name: 'Available House', marketable: true, vacant_now: true, occupied_until: null },
+    { id: 'earlier', name: '1A', property_id: 'available', property_name: 'Available House', marketable: true, vacant_now: false, occupied_until: '2026-09-01' },
+  ];
+
+  const r = scoreUnits('available house', U);
+  assert.equal(r.status, 'property_only');
+  assert.deepEqual(r.candidates.map(c => c.unit_id), ['vacant', 'earlier', 'later', 'open']);
+});
+
+test('resolver: property relevance beats availability across shared building words', () => {
+  const U = [
+    { id: 'ly-103', name: 'Unit 103', property_id: 'lai-yuen', property_name: '13B Lai Yuen Apartments', marketable: true, vacant_now: true, occupied_until: null },
+    { id: 'ty-25', name: 'Unit 25', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true, vacant_now: false, occupied_until: '2027-12-31' },
+    { id: 'ty-10', name: 'Unit 10', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true, vacant_now: false, occupied_until: '2027-11-30' },
+  ];
+
+  const r = scoreUnits('tai yuen', U);
+  assert.equal(r.status, 'property_only');
+  const firstLaiYuen = r.candidates.findIndex(c => c.property_id === 'lai-yuen');
+  const lastTaiYuen = r.candidates.map(c => c.property_id).lastIndexOf('tai-yuen');
+  assert.ok(firstLaiYuen > lastTaiYuen);
+});
+
+test('resolver: fixtures without availability fields still sort by unit name', () => {
+  const U = [
+    { id: 'three', name: '3A', property_id: 'plain', property_name: 'Plain House', marketable: true },
+    { id: 'one', name: '1A', property_id: 'plain', property_name: 'Plain House', marketable: true },
+    { id: 'two', name: '2A', property_id: 'plain', property_name: 'Plain House', marketable: true },
+  ];
+
+  const r = scoreUnits('plain house', U);
+  assert.equal(r.status, 'property_only');
+  assert.deepEqual(r.candidates.map(c => c.unit_id), ['one', 'two', 'three']);
+});
+
+// The guard above is `if (!hasAvailability(a.u) || !hasAvailability(b.u)) return 0`.
+// With every fixture bare it is redundant — both sides fall through to a null/null
+// comparison anyway — so deleting it broke nothing and no test noticed. It only bites
+// in the MIXED case: one unit carrying availability, another not. Ranking a
+// known-vacant unit above a unit we know nothing about would be a guess dressed as
+// data, so the comparison stays neutral and unit name decides. Pinned here because
+// that is a decision, and because a guard nothing can break is not a guard.
+test('resolver: a unit with availability does not outrank one with none', () => {
+  const U = [
+    { id: 'known-vacant', name: '9A', property_id: 'mix', property_name: 'Mixed House',
+      marketable: true, vacant_now: true, occupied_until: null },
+    { id: 'unknown', name: '1A', property_id: 'mix', property_name: 'Mixed House',
+      marketable: true },
+  ];
+
+  const r = scoreUnits('mixed house', U);
+  assert.equal(r.status, 'property_only');
+  assert.deepEqual(r.candidates.map(c => c.unit_id), ['unknown', 'known-vacant'],
+    'unit name decides when the two sides are not comparable');
+});
+
+test('resolver: candidate_count is true total and default cap does not trim current stock', () => {
+  const U = Array.from({ length: 12 }, (_, i) => ({
+    id: `stock-${i + 1}`,
+    name: `Unit ${String(i + 1).padStart(2, '0')}`,
+    property_id: 'stock',
+    property_name: 'Stock House',
+    marketable: true,
+  }));
+
+  const r = scoreUnits('stock house', U);
+  assert.equal(r.status, 'property_only');
+  assert.equal(r.candidates.length, 12);
+  assert.equal(r.candidate_count, 12);
+
+  const direct = candidateList(U.map(u => ({ u, s: { prop: 1, nameWordHits: 1 } })), 5);
+  assert.equal(direct.candidates.length, 5);
+  assert.equal(direct.candidate_count, 12);
+});
+
+test('resolver: candidate ordering is deterministic regardless of input order', () => {
+  const U = [
+    { id: 'b', name: '2B', property_id: 'order', property_name: 'Order House', marketable: true, vacant_now: false, occupied_until: '2026-10-01' },
+    { id: 'a', name: '2A', property_id: 'order', property_name: 'Order House', marketable: true, vacant_now: false, occupied_until: '2026-10-01' },
+    { id: 'c', name: '2C', property_id: 'order', property_name: 'Order House', marketable: true, vacant_now: false, occupied_until: '2026-11-01' },
+  ];
+
+  const forward = scoreUnits('order house', U).candidates.map(c => c.label);
+  const reversed = scoreUnits('order house', [...U].reverse()).candidates.map(c => c.label);
+  assert.deepEqual(forward, reversed);
+});
+
+test('resolver: weaker shared-name full match is not confident', () => {
+  const U = [
+    { id: 'ty-10f', name: '10/F', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true },
+    { id: 'ty-25', name: 'Unit 25', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true },
+    { id: 'ly-103', name: 'Unit 103', property_id: 'lai-yuen', property_name: '13B Lai Yuen Apartments', marketable: true },
+    { id: 'ly-105', name: 'Unit 105', property_id: 'lai-yuen', property_name: '13B Lai Yuen Apartments', marketable: true },
+  ];
+
+  const weaker = scoreUnits('tai yuen unit 103', U);
+  assert.notEqual(weaker.status, 'confident');
+  assert.equal(weaker.match, null);
+  assert.deepEqual(weaker.unmatched.map(u => u.text), ['103']);
+
+  const betterNamed = scoreUnits('lai yuen unit 103', U);
+  assert.equal(betterNamed.status, 'confident');
+  assert.equal(betterNamed.match.unit_id, 'ly-103');
+
+  const taiUnit = scoreUnits('tai yuen unit 25', U);
+  assert.equal(taiUnit.status, 'confident');
+  assert.equal(taiUnit.match.unit_id, 'ty-25');
+});
+
 test('resolver: single-property query ordering is unaffected', () => {
   const U = [
     { id: 'mk-6a', name: '6A', property_id: 'mong-kok', property_name: 'Mong Kok', marketable: true },
@@ -74,6 +187,10 @@ test('resolver: single-property query ordering is unaffected', () => {
   assert.equal(r.status, 'property_only');
   assert.ok(r.candidates.length > 0);
   assert.ok(r.candidates.every(c => c.property_name === 'Mong Kok'));
+
+  const exact = scoreUnits('mong kok 5a', U);
+  assert.equal(exact.status, 'confident');
+  assert.equal(exact.match.unit_id, 'mk-5a');
 });
 
 test('resolver: same unit token across properties → ambiguous, lists both', () => {
@@ -179,6 +296,16 @@ test('resolver: district signal narrows Sheung Wan 5B to the two matching proper
     r.candidates.map(c => c.property_name).sort(),
     ['Hollywood', 'Mercer']
   );
+});
+
+test('resolver: district-only full match is unaffected by name-hit confidence guard', () => {
+  const U = [
+    { id: 'wc-9c', name: '9C', property_id: 'harbour', property_name: 'Harbour View', district: 'Wan Chai', city: 'Hong Kong', marketable: true },
+    { id: 'central-9c', name: '9C', property_id: 'queens', property_name: 'Queens Place', district: 'Central', city: 'Hong Kong', marketable: true },
+  ];
+  const r = scoreUnits('wan chai 9c', U);
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.unit_id, 'wc-9c');
 });
 
 test('resolver: city signal narrows Kowloon 5B to Mong Kok and Poplar', () => {
@@ -496,21 +623,45 @@ test('resolver: purely numeric cores do not partial-match budget tokens', () => 
 
 test('resolver: comma-grouped budgets do not create unmatched numeric flat reports', () => {
   const U = [
+    { id: 'ty-10', name: 'Unit 10', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true },
     { id: 'ty-25', name: 'Unit 25', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true },
     { id: 'ty-103', name: 'Unit 103', property_id: 'tai-yuen', property_name: 'Tai Yuen Apartments', marketable: true },
   ];
 
+  const unspaced = scoreUnits('tai yuen unit 103,105', U);
+  assert.equal(unspaced.status, 'confident');
+  assert.equal(unspaced.match.unit_id, 'ty-103');
+  assert.deepEqual(unspaced.unmatched.map(u => u.text), ['105']);
+
+  const spaced = scoreUnits('tai yuen unit 103, 105', U);
+  assert.equal(spaced.status, 'confident');
+  assert.equal(spaced.match.unit_id, 'ty-103');
+  assert.deepEqual(spaced.unmatched.map(u => u.text), ['105']);
+
   assert.deepEqual(scoreUnits('tai yuen my budget is 25,000', U).unmatched, []);
+  assert.deepEqual(scoreUnits('tai yuen budget 10 000', U).unmatched, []);
   assert.deepEqual(scoreUnits('tai yuen around HK$12,000 per month', U).unmatched, []);
   assert.deepEqual(scoreUnits('tai yuen my budget is 25k', U).unmatched, []);
+  assert.deepEqual(scoreUnits('tai yuen 12,500.50 per month', U).unmatched, []);
+  assert.deepEqual(scoreUnits('tai yuen 12,500 per month', U).unmatched, []);
 
   // This guards against suppressing any 3-digit token after another number: without
   // a comma, "105" is still a genuine second unit-like token and must be reported.
   assert.deepEqual(scoreUnits('tai yuen unit 103 105', U).unmatched.map(u => u.text), ['105']);
+  assert.deepEqual(scoreUnits('tai yuen flat 10 105', U).unmatched.map(u => u.text), ['105']);
 });
 
 test('helpers: collapseThousands collapses repeated comma groups', () => {
   assert.equal(collapseThousands('1,234,567'), '1234567');
+  assert.equal(collapseThousands('unit 103,105'), 'unit 103,105');
+  assert.equal(collapseThousands('budget 25,000'), 'budget 25000');
+});
+
+test('helpers: dropDecimalFraction removes one- and two-digit decimal tails', () => {
+  assert.equal(dropDecimalFraction('12500.50'), '12500');
+  // Distances are non-unit quantities too; keeping the integer part cannot create
+  // a unit match unless some other rule already decides the number is unit-like.
+  assert.equal(dropDecimalFraction('3.5 km'), '3 km');
 });
 
 test('resolver: bare numeric tokens do not identify numeric-named units', () => {

@@ -334,9 +334,12 @@ async function searchUnits(pool, criteria = {}) {
   if (minPrice !== null && !Number.isNaN(minPrice)) {
     filtered = filtered.filter((r) => {
       const rent = askingRentAmount(r, realToday);
-      // Unpriced units cannot clear a floor. Number(null) is 0, which would have
-      // passed every unpriced unit through a minPrice of 0.
-      return rent != null && rent >= minPrice;
+      // Keep an unpriced unit, exactly as maxPrice does. These two bounds are NOT
+      // symmetric: hiding a unit is recoverable by the caller, deleting one is not.
+      // `asking_rent` is null on precisely these units, so the caller can decide.
+      // An unpriced unit is a blank field nobody filled in, not a fact about the
+      // flat — dropping it lets a data-entry gap silently delete lettable stock.
+      return rent == null || rent >= minPrice;
     });
   }
   if (maxPrice !== null && !Number.isNaN(maxPrice)) {

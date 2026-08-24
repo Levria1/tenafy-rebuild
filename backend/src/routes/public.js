@@ -2875,7 +2875,7 @@ router.get('/units/available', async (req, res) => {
 //     filter — a caller that names a city is stating a constraint, not a preference, and
 //     an alternative across the harbour is not an alternative.
 //   bedrooms, bathrooms                       — exact match on unit.beds/baths
-//   min_price, max_price                      — matched against the figure published as asking_rent.amount
+//   min_price, max_price                      — matched against asking_rent.amount; both bounds keep unpriced units
 //   property_id                               — filter to property
 //   city (csv)                                — region match, e.g. "Kowloon" or "Hong Kong Island" (case-insensitive)
 //   district (csv)                            — neighbourhood match, e.g. "Causeway Bay,Wan Chai" (case-insensitive)
@@ -3063,6 +3063,7 @@ router.post('/units/resolve', async (req, res) => {
       resolved_by: 'unit_text',
       match: out.status === 'confident' ? out.match : null,
       candidates: out.candidates || [],
+      candidate_count: out.candidate_count || 0,
       unmatched: out.unmatched || [],
       query: out.query,
     });
