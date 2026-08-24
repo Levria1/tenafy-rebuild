@@ -1,5 +1,7 @@
 # The TaneChat letter, in plain English
 
+**SUPERSEDED** — describes the 22 August letter. Current: `tanechat-price-and-numbers-2026-08-24-plain.md`.
+
 **For Chris, before sending.** This explains what the letter
 `tanechat-reply-classifier-2026-08-22b.md` actually says. It is not the letter and is not
 for them — read this, then send that.

@@ -1,6 +1,17 @@
 # To TaneChat — classifier ownership, the hold, and what we could not match
 
-**Draft for Chris to review and send. Not sent.**
+**SUPERSEDED — sent 22 August. Do not re-send.**
+
+Their 21-23 August reply quotes this letter back to us (their §6 and §9), so it went out. Two of
+its claims turned out to be wrong and are corrected in
+`tanechat-price-and-numbers-2026-08-24.md`, which is the current letter:
+
+- the `max_price` section says the fix landed. It did not — the filter was compared against the
+  sitting tenant's rent, not the figure we publish as `asking_rent.amount`.
+- the budget-read-as-a-flat-number fix was announced as complete. It closed `"25k"` and left
+  `"25,000"`, `"we are 3 people"` and `"a 10 month lease"` returning CONFIDENT wrong flats.
+
+Kept as the record of what was said.
 
 Answers their 22 August reply. Supersedes `tanechat-open-questions-2026-08-22.md`, which was
 written before theirs arrived and asks a question they have now answered.
