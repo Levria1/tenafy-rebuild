@@ -112,8 +112,14 @@ still returns 5A with `6a` reported as unmatched.
 
 **One deliberate loss.** `"Tai Yuen 10"`, with no marker, now returns `property_only` instead of
 confidently naming 10/F. We think that is the right trade — `property_only` asks which flat, which
-is a question, where the old behaviour was a wrong answer — and it lands on the retry path your §9
-says you kept for exactly this case.
+is a question, where the old behaviour was a wrong answer.
+
+An earlier draft of this letter added that it "lands on the retry path you kept for exactly this
+case." **That was wrong and we are glad you caught it before it went out.** Your §9 says the retry
+*runs* on `property_only`; we turned that into *recovers*, which is a claim about the inside of
+your system that we had no way to check and should not have made. If the retry re-resolves the
+same extracted string, `"Tai Yuen 10"` returns `property_only` twice and nothing catches it.
+Neither of us should think there is a net there. The loss stands on its own merits, without one.
 
 ## 3. The same disease in our own assistant, which you could not have seen
 
