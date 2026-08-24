@@ -60,6 +60,7 @@ const search_available_units = {
         'come first. Each result carries fit metadata: available_from, days_until_available (<=0 means vacant now), ' +
         'vacancy_gap_days, and over_budget_pct (when a budget is given). Units slightly over budget are INCLUDED and ' +
         'flagged so you can offer them with a note. ' +
+        'QUOTE `asking_rent` as the monthly rent — it is the price a new tenant pays. ' +
         'IMPORTANT: before searching, make sure you have the prospect’s move-in date and budget — if either is missing, ' +
         'ask for it first (one question at a time). Pass move_in_date as YYYY-MM-DD; omit only if truly unknown. ' +
         'Each result includes a listing_url — INCLUDE that link so the prospect can see photos.',
@@ -199,7 +200,13 @@ const search_available_units = {
         baths: r.bathrooms,
         size: r.size,
         size_unit: r.size_unit,
-        monthly_rent: r.monthly_rent,
+        // The price a NEW tenant pays — the same figure TaneChat quotes as
+        // `asking_rent.amount`, so both assistants say the same thing about the same
+        // flat. Deliberately NOT `monthly_rent`: that is the SITTING tenant's rent
+        // (last_lease_price), it differs from the asking rent on 41 of 49 live units,
+        // and quoting it under-quoted 35 of them by HK$1,401/month on average.
+        // amount is a moneyString ("14000.00"), so Number() is exact — no separators.
+        asking_rent: r.asking_rent && r.asking_rent.amount != null ? Number(r.asking_rent.amount) : null,
         currency: r.currency || 'HKD',
         over_budget_pct: r.over_budget_pct, // >0 = over the stated budget (flag it); null = no budget given
         available_from: r.available_from,

@@ -128,3 +128,26 @@ test('buildTaneChatSearchParams ignores malformed dates', () => {
 test('routeChatSearch treats the airbnb OTA channel as a TaneChat channel', () => {
   assert.equal(routeChatSearch({ channel: 'airbnb' }), 'tanechat');
 });
+
+// ---------------------------------------------------------------------------
+// Our own assistant must quote the SAME figure TaneChat quotes. It was handed
+// `monthly_rent` — the sitting tenant's rent — which under-quoted 35 of 49 live
+// units by HK$1,401/month on average. chatTools builds that payload against a
+// database, so this asserts the mapping against the source, the way
+// windowSearch.test.js guards the price filters.
+// ---------------------------------------------------------------------------
+
+test('the chat search payload quotes asking_rent, not the sitting tenant rent', () => {
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '../src/services/chatTools.js'), 'utf8');
+
+  const start = src.indexOf('units: results.map(');
+  assert.ok(start > 0, 'unit payload mapping not found — has it moved?');
+  const end = src.indexOf('booking', start);
+  const block = src.slice(start, end > start ? end : start + 4000);
+
+  assert.ok(/asking_rent:\s*r\.asking_rent/.test(block),
+    'the payload must carry the asking rent');
+  assert.ok(!/^\s*monthly_rent:/m.test(block),
+    'the payload must not hand the model the sitting tenant rent');
+});
