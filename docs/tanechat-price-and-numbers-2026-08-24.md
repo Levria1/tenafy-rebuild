@@ -5,6 +5,10 @@
 Answers their 21–23 August note. Follows our 22 August letter, which they clearly received — their
 §6 and §9 quote it back to us.
 
+**Both fixes are DEPLOYED and re-verified against production** (`d60b474` price filter, `6d1a6f5`
+resolver, `7436c7b` our own assistant; production at `ae5adde`). Every live figure below was
+re-measured after the deploy.
+
 ---
 
 Hi team,
@@ -41,6 +45,16 @@ that this is the normal case and not an edge one.
 **What we have changed.** Both bounds now read the same asking figure the response publishes, and
 they read it through one function that the response also uses, so the filter and the quote cannot
 drift apart again. That last part is the actual fix; the first part is just the symptom.
+
+Re-measured after the deploy, the same three caps:
+
+```
+max_price=11000   returned 14   asking_rent <= cap: 14   (was matching monthly_rent: 19)
+max_price=14000   returned 26   asking_rent <= cap: 26   (was 28)
+max_price=17000   returned 40   asking_rent <= cap: 40   (was 45)
+```
+
+An exact match against the right field at every cap, and against the wrong one at none.
 
 **The line in our last letter we would most like back** is *"you can drop your own banding when
 this deploys."* You did not drop it — you extended it to two more paths — and that was the right
@@ -89,6 +103,12 @@ true of the case you found. It was not true of the cases you did not.
 the number as a unit reference — `flat 10`, `unit 25`, `10/F`. A bare number is treated as what it
 almost always is: a price, a headcount or a duration. Names carrying a letter (`6a`, `3b`) are
 untouched; they cannot collide with a quantity in the first place.
+
+Re-run after the deploy, the ten phrases that produced nine confident wrong flats now produce
+**none** — every one returns `property_only`, which is the question "which flat?" rather than a
+wrong answer. The marked forms are untouched: `"tai yuen unit 25"` and `"tai yuen 10/F"` still
+resolve confidently, `"pearl city unit 22 and 23"` is still `multi_unit`, and `"mong kok 6a 5a"`
+still returns 5A with `6a` reported as unmatched.
 
 **One deliberate loss.** `"Tai Yuen 10"`, with no marker, now returns `property_only` instead of
 confidently naming 10/F. We think that is the right trade — `property_only` asks which flat, which
@@ -221,11 +241,11 @@ Chris
 
 ## Notes for Chris (not part of the message)
 
-- **DO NOT SEND BEFORE THE DEPLOY.** §1 and §2 both say "we have changed" in the present tense.
-  Both fixes are built, reviewed and tested here — 1070 backend tests, 0 failures — but at the time
-  of writing they are **not yet on production.** The whole point of this letter is correcting a
-  claim we made too early; making the same mistake in the letter that apologises for it would be
-  bleak. Deploy, re-run the probes, then send.
+- **Deployed and re-verified, so it is safe to send.** This letter corrects a claim we made before
+  it was true, so it was held back until the fixes were actually live. 1071 backend tests pass;
+  production is at `ae5adde`; every live figure quoted was re-measured after the restart. The
+  before/after numbers in §1 and §2 are both real measurements, not one measurement and one
+  expectation.
 - **We were wrong twice on `max_price` and the letter says so twice.** That is deliberate. They
   gave a wrong cause too, and said so plainly in their own §6 — the exchange works because neither
   side defends a bad diagnosis.

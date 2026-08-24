@@ -9,8 +9,10 @@ then send that. This is not for them.
 
 TaneChat found two bugs on our side. **They were right about both, and we had already told them
 one of them was fixed.** Investigating the second one turned up something worse than what they
-found. Both are now fixed and tested, but **not yet deployed** — the letter must not go out until
-they are.
+found.
+
+Both are now **fixed, deployed and re-checked on the live system**, along with a third bug in our
+own chatbot that the investigation turned up. The letter is ready to send.
 
 ---
 
@@ -31,7 +33,8 @@ fixed it. They didn't — they extended it instead. If they had listened to us, 
 have seen wrong flats. The letter says this plainly.
 
 **Now fixed** so that the filter and the quoted price come from the same function, which is the
-part that stops it happening again.
+part that stops it happening again. Checked live afterwards: the filter now matches the asking
+price exactly at every cap I tried, and the old wrong figure at none of them.
 
 ## Bug two: a number in a sentence was being read as a flat number
 
@@ -59,6 +62,10 @@ number to match *exactly*, and a comma-formatted budget produces exactly the num
 
 **One deliberate trade-off:** "Tai Yuen 10" on its own now answers "which flat?" instead of
 guessing 10/F. A question beats a wrong answer.
+
+Checked live afterwards: the ten sentences that produced nine wrong flats now produce none.
+Genuine questions are unaffected — "tai yuen unit 25", "tai yuen 10/F" and "mong kok 6a 5a" all
+still work.
 
 ## Bug three: our own chatbot has the same problem, and it's costing money
 
@@ -105,9 +112,8 @@ against their own earlier position — 12%, and none of the ten tenants currentl
 
 ## Before you send
 
-1. **Deploy first.** The letter says "we have changed" about both fixes. They're built and tested
-   (1070 tests passing) but not live yet. Sending first would repeat the exact mistake the letter
-   apologises for.
-2. **Section 3 is optional** — it discloses our own bot's under-quoting, now fixed. Keeping it is
+1. **Section 3 is optional** — it discloses our own bot's under-quoting, now fixed. Keeping it is
    honest and answers a partner who reports things honestly. Cutting it costs them nothing.
-3. Nothing else needs a decision. The rest is reporting.
+   I'd keep it.
+2. Nothing else needs a decision. Everything is deployed and re-checked, so the letter's claims
+   are true as written — which is the thing we got wrong last time.
