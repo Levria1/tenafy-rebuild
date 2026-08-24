@@ -146,7 +146,28 @@ function addressMatchScore(streetAddress, qTokens) {
   return addressMatchedTokens(streetAddress, qTokens).length >= 2 ? 2 : 0;
 }
 
-function scoreOne(qSquish, qTokens, unit) {
+// A bare number in a sentence is a price, a headcount or a duration far more often
+// than it is a flat: "my budget is 10,000" tokenises to ["my","budget","is","10","000"]
+// and "10" is the exact core of unit "10/F". So a purely numeric unit name is only
+// matched when the customer MARKED the number as a unit reference - "flat 10",
+// "unit 25", "10/F". Names carrying a letter ("6a") are unaffected; they cannot
+// collide with a quantity.
+function markedNumericTokens(qTokens) {
+  const marked = new Set();
+  for (let i = 0; i < qTokens.length; i++) {
+    if (!/^\d+$/.test(qTokens[i])) continue;
+    const before = i > 0 ? qTokens[i - 1] : null;
+    const after = i + 1 < qTokens.length ? qTokens[i + 1] : null;
+    const coordinatedAfterMarkedNumber =
+      before === 'and' && i > 1 && marked.has(qTokens[i - 2]);
+    if ((before && FLOOR_UNIT_WORDS.has(before)) || after === 'f' || after === 'floor' || coordinatedAfterMarkedNumber) {
+      marked.add(qTokens[i]);
+    }
+  }
+  return marked;
+}
+
+function scoreOne(qSquish, qTokens, unit, markedNumbers = new Set()) {
   const pName = unit.property_name || '';
   const pSquish = squish(pName);
   const pInit = initials(pName);
@@ -174,7 +195,7 @@ function scoreOne(qSquish, qTokens, unit) {
   const core = unitCore(unit.name);
   let u = 0;
   if (core) {
-    if (qTokens.includes(core)) u = 3;                                        // exact unit token "6a"
+    if (qTokens.includes(core) && (!/^\d+$/.test(core) || markedNumbers.has(core))) u = 3; // exact unit token "6a"
     // A purely-numeric core must match EXACTLY. The prefix tolerance below exists so a
     // customer who drops the letter ("10" for "10A") still lands; a numeric name has no
     // letter to drop, so the tolerance buys nothing there and costs plenty — "my budget
@@ -326,7 +347,8 @@ function scoreUnits(text, units) {
   const qTokens = toTokens(scoreText);
   if (!qTokens.length) return { status: 'none', match: null, candidates: [], query: String(text || ''), unmatched: [] };
 
-  const rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u) }));
+  const markedNumbers = markedNumericTokens(qTokens);
+  const rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u, markedNumbers) }));
 
   // "More than one unit" intent: the prospect named ≥2 DISTINCT units at a
   // matched property, each an exact unit-token match (e.g. "mongkok 6a 5a"). We

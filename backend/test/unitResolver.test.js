@@ -262,12 +262,18 @@ test('resolver: generic address words alone match nothing', () => {
 });
 
 test('resolver: shared Paterson address remains ambiguous across both Pearl City properties', () => {
-  const r = scoreUnits('paterson 22', REAL_PROPERTY_UNITS);
+  // This read 'paterson 22' until 2026-08-24. The marker is now required because a
+  // bare number is a price or a headcount far more often than a flat; the point of
+  // THIS test is the cross-property ambiguity, so it keeps its scenario with the
+  // number marked. The unmarked form is asserted below so the change stays visible.
+  const r = scoreUnits('paterson unit 22', REAL_PROPERTY_UNITS);
   assert.equal(r.status, 'ambiguous');
   assert.deepEqual(
     r.candidates.map(c => c.unit_id).sort(),
     ['pearl-b6-22', 'pearl-c1-22']
   );
+
+  assert.notEqual(scoreUnits('paterson 22', REAL_PROPERTY_UNITS).status, 'confident');
 });
 
 test('resolver: property name match still beats location-only Sheung Wan 5B matches', () => {
@@ -447,9 +453,51 @@ test('resolver: purely numeric cores do not partial-match budget tokens', () => 
   assert.notEqual(budget.status, 'confident');
   assert.notEqual(budget.match && budget.match.unit_name, 'Unit 25');
 
-  const exact = scoreUnits('tai yuen 25', LIVE_SHAPE_UNITS);
+  // This line read 'tai yuen 25' and expected `confident` until 2026-08-24. A bare
+  // number no longer names a numeric unit, because "my budget is 10,000" and "we are
+  // 3 people" were confidently resolving to flats 10/F and 3/F. The old input is kept
+  // below asserting its NEW result rather than deleted: the behaviour changed, and a
+  // test that quietly swaps its input hides that from the next reader.
+  const exact = scoreUnits('tai yuen unit 25', LIVE_SHAPE_UNITS);
   assert.equal(exact.status, 'confident');
   assert.equal(exact.match.label, 'Tai Yuen Apartments Unit 25');
+
+  const unmarked = scoreUnits('tai yuen 25', LIVE_SHAPE_UNITS);
+  assert.notEqual(unmarked.status, 'confident');
+});
+
+test('resolver: bare numeric tokens do not identify numeric-named units', () => {
+  const U = [
+    { id: 'n10', name: '10/F', property_id: 'ty', property_name: 'Tai Yuen Apartments', marketable: true },
+    { id: 'n3', name: '3/F', property_id: 'ty', property_name: 'Tai Yuen Apartments', marketable: true },
+    { id: 'a', name: '6A', property_id: 'alpha', property_name: 'Alpha House', marketable: true },
+  ];
+
+  const budget = scoreUnits('tai yuen, my budget is 10,000', U);
+  assert.notEqual(budget.status, 'confident');
+  assert.equal(budget.match, null);
+
+  const headcount = scoreUnits('tai yuen, we are 3 people', U);
+  assert.notEqual(headcount.status, 'confident');
+
+  const lease = scoreUnits('tai yuen for a 10 month lease', U);
+  assert.notEqual(lease.status, 'confident');
+
+  const beforeMarker = scoreUnits('tai yuen flat 10', U);
+  assert.equal(beforeMarker.status, 'confident');
+  assert.equal(beforeMarker.match.unit_id, 'n10');
+
+  const afterMarker = scoreUnits('tai yuen 10/F', U);
+  assert.equal(afterMarker.status, 'confident');
+  assert.equal(afterMarker.match.unit_id, 'n10');
+
+  // Deliberate: a bare number is usually a quantity, price or duration, so ask
+  // which flat instead of confidently naming a numeric unit.
+  assert.equal(scoreUnits('tai yuen 10', U).status, 'property_only');
+
+  const letterNamed = scoreUnits('alpha house 6a', U);
+  assert.equal(letterNamed.status, 'confident');
+  assert.equal(letterNamed.match.unit_id, 'a');
 });
 
 test('resolver: alphanumeric partial matching is unchanged', () => {
