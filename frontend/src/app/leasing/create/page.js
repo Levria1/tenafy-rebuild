@@ -331,7 +331,10 @@ export default function LeaseCreatePage() {
   const nextStep = async () => {
     try {
       if (currentStep === 0) {
-        const step1Fields = ['property_id', 'unit_id', 'start_date', 'tenant_id', 'type', 'price'];
+        // contract_type (Tenant Status) is rendered in step 1, so it validates here
+        // where the user can see the field. Leaving it out was why the required rule
+        // never fired: nothing else in this wizard calls validateFields.
+        const step1Fields = ['property_id', 'unit_id', 'start_date', 'tenant_id', 'type', 'price', 'contract_type'];
         const leaseType = form.getFieldValue('type');
         if (makeRecurring && leaseType === 1) {
           step1Fields.push('invoicing', 'due_date');
@@ -380,7 +383,9 @@ export default function LeaseCreatePage() {
       amount: price,
       first_invoice_date: makeRecurring ? (values.first_invoice_date?.format('YYYY-MM-DD') || null) : null,
       share_lease: makeRecurring ? 1 : 0,
-      contract_type: values.contract_type ?? 0,
+      // No fallback. An absent Tenant Status must reach the server as null and be
+      // rejected, never silently stored as 0.
+      contract_type: values.contract_type ?? null,
       // Marketable by default; only opt out when explicitly unchecked. The tenant
       // is contacted on demand by the relay, inside the per-status lead window.
       viewing_enabled: values.viewing_enabled === false ? 0 : 1,

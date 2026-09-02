@@ -9,6 +9,7 @@ const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
 const { resolveLeaseValues } = require('../utils/leaseRevision');
 const { computePaperworkState, addDays } = require('../utils/paperworkPeriod');
+const { parseContractType, CONTRACT_TYPE_REQUIRED_MESSAGE } = require('../utils/contractType');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -1071,6 +1072,19 @@ router.post('/', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const leaseState = lease_state === 'pending' ? 'pending' : 'active';
 
+    // Tenant Status is mandatory on every lease, including pending drafts. Refused
+    // rather than defaulted to 0: see utils/contractType.js for what a 0 does to the
+    // posting plan and the renewal ask. Checked before any query so a bad payload
+    // costs nothing.
+    const resolvedContractType = parseContractType(contract_type);
+    if (resolvedContractType == null) {
+      return res.status(400).json({
+        code: 400,
+        message: CONTRACT_TYPE_REQUIRED_MESSAGE,
+        field: 'contract_type',
+      });
+    }
+
     // Backstop for the frontend prompt — also catches API/import callers and a
     // stale client whose tenant list predates an email being added elsewhere.
     if (await blockIfUnreachable(req, res, tenant_id, additionalTenantIds)) return;
@@ -1146,7 +1160,7 @@ router.post('/', authenticate, async (req, res) => {
         leaseId.toString(), unit_id, tenant_id, start_date, end_date || null,
         price || 0, type || 0, invoicing || null,
         amount || price || 0, due_date || null, deposit || 0, currencyId,
-        contract_type || 0,
+        resolvedContractType,
         (notice_period_days != null && notice_period_days !== '') ? Number(notice_period_days) : null,
         stamp_end_date || null,
         unit_information || null, note || null, credits || null, utility_credit ?? null,
@@ -1491,7 +1505,22 @@ router.put('/:id', authenticate, async (req, res) => {
     if (deposit !== undefined) { fields.push('deposit = ?'); params.push(deposit); }
     if (due_date !== undefined) { fields.push('due_date = ?'); params.push(due_date); }
     if (invoicing !== undefined) { fields.push('invoicing = ?'); params.push(invoicing); }
-    if (contract_type !== undefined) { fields.push('contract_type = ?'); params.push(contract_type); }
+    // Omitting the field leaves the stored intent alone; sending one that is not
+    // 1-4 (a 0, a null, an empty string) is a request to blank it, and is refused.
+    // An edit must never be able to put a lease back into the undecided state that
+    // utils/contractType.js exists to prevent.
+    if (contract_type !== undefined) {
+      const parsedContractType = parseContractType(contract_type);
+      if (parsedContractType == null) {
+        return res.status(400).json({
+          code: 400,
+          message: CONTRACT_TYPE_REQUIRED_MESSAGE,
+          field: 'contract_type',
+        });
+      }
+      fields.push('contract_type = ?');
+      params.push(parsedContractType);
+    }
     if (notice_period_days !== undefined) {
       fields.push('notice_period_days = ?');
       params.push((notice_period_days != null && notice_period_days !== '') ? Number(notice_period_days) : null);

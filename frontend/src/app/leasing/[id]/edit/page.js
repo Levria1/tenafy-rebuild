@@ -288,7 +288,7 @@ export default function LeasingEditPage() {
         due_date: makeRecurring ? (values.due_date || null) : null,
         invoicing: makeRecurring ? (values.invoicing || null) : null,
         first_invoice_date: makeRecurring ? (values.first_invoice_date?.format('YYYY-MM-DD') || null) : null,
-        contract_type: values.contract_type ?? 0,
+        contract_type: values.contract_type ?? null,
         // Marketable unless the unit is explicitly opted out here. Tenant contact
         // is handled on demand by the relay, inside the per-status lead window.
         viewing_enabled: values.viewing_enabled ? 1 : 0,
