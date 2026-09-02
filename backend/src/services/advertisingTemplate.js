@@ -198,8 +198,32 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
     daysToAvailable = past && past.days_vacant != null ? -Number(past.days_vacant) : null;
   }
 
+  // Is the unit handed straight to a next tenant when this lease ends? Reporting
+  // the end date then advertises a flat on the exact day it is taken, which is
+  // worse than saying nothing. Mirrors the rule the vacancy feed already uses
+  // (any lease running past this one means "already re-let") so the renderer and
+  // the feed cannot disagree about what is free.
+  //
+  // Only an immediate handover makes the date a lie. A genuine gap between the
+  // two tenancies IS a real availability window; whether it is long enough to be
+  // worth advertising is min_gap_days' decision upstream, not this function's.
+  let reletFrom = null;
+  if (cur && availableDate) {
+    const [[next]] = await pool.execute(
+      `SELECT DATE_FORMAT(MIN(start_date), '%Y-%m-%d') AS next_start
+         FROM leasing
+        WHERE unit_id = ? AND deleted_at IS NULL
+          AND (end_date IS NULL OR end_date > ?)`,
+      [String(unitId), availableDate]
+    );
+    if (next && next.next_start) reletFrom = next.next_start;
+  }
+  const takenOnHandover = reletFrom != null && reletFrom <= availableDate;
+
   // "Now" reads better than a past date for an already-vacant unit.
-  const availableLabel = (daysToAvailable != null && daysToAvailable <= 0) ? 'Now' : fmtDate(availableDate);
+  const availableLabel = takenOnHandover
+    ? ''
+    : ((daysToAvailable != null && daysToAvailable <= 0) ? 'Now' : fmtDate(availableDate));
 
   const posting = computePostingRent(u.rent_price_min, u.rent_price_max, daysToAvailable);
   const postingAmount = posting ? posting.amount : (rent != null ? Number(rent) : null);
@@ -226,6 +250,14 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
     '%Deposit%':         fmtMoney(deposit),
     '%AvailableDate%':   availableLabel,
     '%WebpageLink%':     template.webpage_link || '',
+    // NOT a placeholder token — applyPlaceholders only substitutes keys in
+    // TOKEN_SET, so this rides along without ever reaching ad text. Callers read
+    // it to refuse to advertise a unit that is already spoken for.
+    __availability: {
+      date: takenOnHandover ? null : (availableDate || null),
+      relet_from: reletFrom,
+      taken: takenOnHandover,
+    },
   };
 }
 

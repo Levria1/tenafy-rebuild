@@ -190,6 +190,14 @@ def _explain_empty(plan: dict) -> None:
     if needs_template:
         print(f"  {len(needs_template)} property/properties have no advertising template "
               f"assigned, so nothing could be rendered.")
+    # Held back rather than posted: a unit in the bundle is handed to a new tenant
+    # the day the current lease ends, so it has no availability date to advertise.
+    # Worth printing loudly — it means the vacancy feed and the leases disagree.
+    already_let = [p for p in plan.get("posts") or [] if p.get("status") == "already_let"]
+    if already_let:
+        print(f"  {len(already_let)} post(s) were HELD BACK because a unit is already re-let:")
+        for post in already_let:
+            print(f"    {post.get('property_name')}: {post.get('reason')}")
     unfilled = plan.get("unfilled_slots") or []
     if unfilled and not no_slot:
         print(f"  {len(unfilled)} slot(s) had nothing to advertise — check whether the "

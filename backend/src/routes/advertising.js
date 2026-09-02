@@ -2239,6 +2239,25 @@ async function buildPostingPlan(pool, orgId, { date } = {}) {
       }
       const rendered = await renderBundle(pool, orgId, b, tpl, settings.footer);
 
+      // Belt and braces. The vacancy feed already drops a unit that has been re-let,
+      // so this should not fire — but if it ever does, the post would go out with a
+      // blank availability date, and a blank date reads as an oversight rather than
+      // as "taken". Refuse the whole post and name the units: a bundle is one message,
+      // and quietly dropping a unit's line would hide the data problem that caused it.
+      const alreadyLet = (rendered.unit_values || [])
+        .map((v, i) => (v && v.__availability && v.__availability.taken) ? b.units[i] : null)
+        .filter(Boolean);
+      if (alreadyLet.length) {
+        const names = alreadyLet.map(u => u.unit_name).join(', ');
+        posts.push({ ...bundleSummary(b, rendered), status: 'already_let',
+          reason: `${names} ${alreadyLet.length > 1 ? 'have' : 'has'} a tenant moving in the day the current lease ends`,
+          extra,
+          slot_id: slot.id, slot_label: slot.slot_label, slot_kind: slot.slot_kind, slot_no: slot.slot_no, position: slot.position,
+          template_id: String(b.template_id), template_name: b.template_name,
+          forum: slot.forum, account: slot.account });
+        continue;
+      }
+
       posts.push({
         ...bundleSummary(b, rendered),
         status: 'ready',

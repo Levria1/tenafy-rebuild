@@ -685,3 +685,47 @@ happened, so this is a derived list and nothing can be ticked off. Adding that n
 
 **Verified** against production read-only: 19 check-ins, 22 check-outs and 8 correctly paired
 same-day turnovers in the next 30 days, with 19-digit lease ids intact in the response.
+
+---
+
+## Session 2026-09-02 (continued) — advertising a flat on the day it is handed over
+
+**The report.** A Facebook post listed Mong Kok 3D as "Available from 2026-09-30". A lease
+starting 2026-09-30 already existed for that unit, created 26 Aug, six days before the post.
+5C was the same shape. So the ad named the exact day the next tenant moved in.
+
+**Root cause.** `%AvailableDate%` in `resolveUnitValues` (`services/advertisingTemplate.js`)
+read only the lease covering today and reported its `end_date`. It never asked whether
+anything ran past that lease. Normally masked, because the vacancy feed drops a re-let unit
+before the renderer ever sees it, so the placeholder was wrong without being visibly wrong.
+
+**Fix.** After resolving the current lease's end, look for any lease running past it. If that
+tenancy starts on or before the end date, the handover is immediate and the token returns
+blank rather than a date the unit does not have. A genuine gap keeps its date: that is a real
+availability window, and `min_gap_days` upstream decides whether it is worth advertising. The
+"running past this one" test deliberately mirrors the vacancy feed's own `NOT EXISTS` rule so
+the renderer and the feed cannot disagree about what is free.
+
+`__availability { date, relet_from, taken }` rides along on the values map. It is not a
+placeholder token, and `applyPlaceholders` substitutes only `TOKEN_SET` keys, so it cannot
+reach ad text. There is a test asserting exactly that.
+
+**Guard in `buildPostingPlan`.** A blank date renders as "Available from , and price is…",
+which reads as an oversight rather than as "taken". A bundle containing a re-let unit is now
+held back with status `already_let` and a reason naming the units. It blocks the whole bundle
+rather than dropping one unit's line: a bundle is one message, and trimming it silently would
+hide the data problem. The Scheduler page already renders unknown statuses as an orange tag
+with the reason, so no frontend change was needed. `scripts/tenafy_posting_plan.py` now prints
+held-back posts; it already skipped anything not `ready`, so it was safe but silent.
+
+**Verified.** 6 new tests, each mutation-tested. Disabling the fix fails 3; weakening `<=` to
+`<` (the same-day case that caused this) fails the boundary test. Full suite 1090 pass. Run
+against all 119 live units read-only: 11 units stop advertising a date they do not have, all
+same-day handovers, 108 unchanged.
+
+**Not fixed by this, on purpose.** The same post showed Mong Kok 2C at an old date and the
+bottom-of-range price that only follows from that old date. 2C has no follow-on lease; its own
+lease was edited on 26 Aug. That post was stale copy reposted, not a render fault. Nothing in
+the code prevents pasting an old draft. Note also that `advertising_post_log` had no rows for
+the five days around it: the `mark` step is what records a post, so there is currently no way
+to tell a fresh post from a recycled one without reconstructing it from lease timestamps.

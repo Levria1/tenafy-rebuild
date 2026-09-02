@@ -159,3 +159,94 @@ test('resolveUnitValues returns null when the unit is not found', async () => {
   const values = await resolveUnitValues(pool, 'org', 'missing', {});
   assert.equal(values, null);
 });
+
+// ---------------------------------------------------------------------------
+// Availability vs a follow-on lease.
+//
+// The live bug this covers: a Mong Kok unit was advertised "Available from
+// 2026-09-30" when the next tenant's lease started on 2026-09-30. The renderer
+// read only the lease covering today and never asked whether anything came after
+// it, so the ad named the exact day the flat was handed over.
+// ---------------------------------------------------------------------------
+
+// Shared fake: an occupied unit whose current lease ends `endsOn`, with an
+// optional follow-on tenancy starting `nextStartsOn`.
+function poolWithFollowOn(endsOn, nextStartsOn) {
+  return {
+    execute: async (sql) => {
+      if (/FROM unit u JOIN property p/.test(sql)) {
+        return [[{ unit_name: '3D', property_name: 'Mong Kok', beds: 0, baths: 1,
+                   size: 160, size_unit: 'sqft', rent_price_min: 8500, rent_price_max: 9900 }]];
+      }
+      // the lease covering today
+      if (/start_date <= \S+ AND \(end_date IS NULL OR end_date >= \S+\)/.test(sql)) {
+        return [[{ d: endsOn, days_to_end: 28 }]];
+      }
+      // the follow-on lookup added by this fix
+      if (/MIN\(start_date\)/.test(sql)) {
+        return [[{ next_start: nextStartsOn }]];
+      }
+      return [[]];
+    },
+  };
+}
+
+test('AvailableDate: a same-day handover is not an availability date', async () => {
+  const values = await resolveUnitValues(poolWithFollowOn('2026-09-30', '2026-09-30'), 'org', '3D', {});
+  assert.equal(values['%AvailableDate%'], '', 'must not advertise the day the next tenant moves in');
+  assert.equal(values.__availability.taken, true);
+  assert.equal(values.__availability.relet_from, '2026-09-30');
+  assert.equal(values.__availability.date, null);
+});
+
+test('AvailableDate: an overlapping follow-on also counts as taken', async () => {
+  // Next tenancy starts BEFORE the current one ends (re-dated or duplicated row).
+  // `<=` rather than `===` is what makes this case land with the same verdict.
+  const values = await resolveUnitValues(poolWithFollowOn('2026-09-30', '2026-09-25'), 'org', '3D', {});
+  assert.equal(values['%AvailableDate%'], '');
+  assert.equal(values.__availability.taken, true);
+});
+
+test('AvailableDate: a genuine gap keeps its date', async () => {
+  // Free from 30 Sep until 1 Dec. That is a real window, and whether it is long
+  // enough to advertise is min_gap_days' call upstream, not the renderer's.
+  const values = await resolveUnitValues(poolWithFollowOn('2026-09-30', '2026-12-01'), 'org', '3D', {});
+  assert.equal(values['%AvailableDate%'], '2026-09-30');
+  assert.equal(values.__availability.taken, false);
+  assert.equal(values.__availability.relet_from, '2026-12-01');
+  assert.equal(values.__availability.date, '2026-09-30');
+});
+
+test('AvailableDate: no follow-on lease leaves the old behaviour untouched', async () => {
+  const values = await resolveUnitValues(poolWithFollowOn('2026-11-01', null), 'org', '2C', {});
+  assert.equal(values['%AvailableDate%'], '2026-11-01');
+  assert.equal(values.__availability.taken, false);
+  assert.equal(values.__availability.relet_from, null);
+});
+
+test('AvailableDate: an open-ended current lease never runs the follow-on query', async () => {
+  // No end date means no handover date to contradict, and the query below takes
+  // that end date as a parameter — running it with null would match every lease.
+  let followOnQueried = false;
+  const pool = {
+    execute: async (sql) => {
+      if (/FROM unit u JOIN property p/.test(sql)) {
+        return [[{ unit_name: '4A', property_name: 'Mercer', beds: 1, baths: 1 }]];
+      }
+      if (/start_date <= \S+ AND \(end_date IS NULL OR end_date >= \S+\)/.test(sql)) return [[{ d: null }]];
+      if (/MIN\(start_date\)/.test(sql)) { followOnQueried = true; return [[{ next_start: '2026-01-01' }]]; }
+      return [[]];
+    },
+  };
+  const values = await resolveUnitValues(pool, 'org', '4A', {});
+  assert.equal(values['%AvailableDate%'], '');
+  assert.equal(followOnQueried, false, 'must not query follow-ons with a null end date');
+});
+
+test('__availability never reaches ad text', async () => {
+  // applyPlaceholders substitutes only TOKEN_SET keys, so the piggybacked field
+  // cannot leak into a Facebook post even if a template names it.
+  const values = await resolveUnitValues(poolWithFollowOn('2026-09-30', '2026-09-30'), 'org', '3D', {});
+  const line = applyPlaceholders('%UnitName%: available %AvailableDate% __availability', values);
+  assert.equal(line, '3D: available  __availability');
+});
