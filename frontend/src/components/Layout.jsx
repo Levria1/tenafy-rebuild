@@ -97,6 +97,7 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
       children: [
         { key: '/leasing/list', label: <Link href="/leasing">Leases</Link> },
         { key: '/leasing/calendar', label: <Link href="/leasing/calendar">Calendar</Link> },
+        { key: '/leasing/check-in-out', label: <Link href="/leasing/check-in-out">Check In / Check Out</Link> },
         { key: '/leasing/vacancy', label: <Link href="/leasing/vacancy">Vacancy</Link> },
       ],
     });
@@ -577,6 +578,7 @@ function MainLayout({ children }) {
     // Leasing sub-routes
     if (pathname.startsWith('/leasing')) {
       if (pathname === '/leasing/calendar') return ['/leasing/calendar'];
+      if (pathname.startsWith('/leasing/check-in-out')) return ['/leasing/check-in-out'];
       if (pathname.startsWith('/leasing/vacancy')) return ['/leasing/vacancy'];
       return ['/leasing/list'];
     }

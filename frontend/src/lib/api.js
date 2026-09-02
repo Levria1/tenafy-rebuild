@@ -206,6 +206,7 @@ export const leasing = {
   getAvailableUnits: (data) => api.post('/api/leasing/unit/available', data),
   checkConflict: (data) => api.post('/api/leasing/check-conflict', data),
   getCalendar: (params) => api.get('/api/leasing/calendar', { params }),
+  getCheckInOut: (params) => api.get('/api/leasing/check-in-out', { params }),
   getSettlement: (id) => api.get(`/api/leasing/${id}/settlement`),
   saveSettlementNotes: (id, notes) => api.put(`/api/leasing/${id}/settlement-notes`, { notes }),
 };

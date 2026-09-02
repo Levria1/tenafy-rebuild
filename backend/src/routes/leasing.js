@@ -8,7 +8,7 @@ const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequence
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
 const { resolveLeaseValues } = require('../utils/leaseRevision');
-const { computePaperworkState } = require('../utils/paperworkPeriod');
+const { computePaperworkState, addDays } = require('../utils/paperworkPeriod');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -480,6 +480,112 @@ router.get('/calendar', authenticate, async (req, res) => {
     res.status(500).json({ code: 500, message: 'Failed to load calendar data' });
   }
 });
+// GET /api/leasing/check-in-out - Upcoming arrivals and departures in one date-ordered list.
+//
+// MUST stay above router.get('/:id') or Express reads "check-in-out" as a lease id.
+//
+// Deliberately forward-only. This is the list staff carry on a phone to see what is
+// coming, so a `from` in the past is clamped to today rather than rejected. Dates are
+// formatted in SQL, never in JS: the server runs UTC and a JS Date would shift a
+// Hong Kong calendar day by one.
+router.get('/check-in-out', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { from, to, propertyId } = req.query;
+
+    const today = orgToday();
+    const start = from && from > today ? from : today;
+    const end = to && to >= start ? to : addDays(start, 30);
+
+    // A company tenant has no first/last name, but the arrival still has to say who
+    // is turning up, so fall back to the company name.
+    const nameSql = `TRIM(CASE WHEN t.type = 1 THEN COALESCE(t.company_name, '')
+                               ELSE CONCAT(COALESCE(t.first_name, ''), ' ', COALESCE(t.last_name, '')) END)`;
+
+    const propertyFilter = propertyId ? ' AND p.id = ?' : '';
+
+    // end_date is the single source of truth for a departure: recording a move-out
+    // shortens the lease itself, so an early leaver already reads correctly here.
+    const selectFor = (dateCol) => `
+      SELECT l.id AS lease_id, l.lease_no,
+             DATE_FORMAT(l.${dateCol}, '%Y-%m-%d') AS date,
+             ${nameSql} AS tenant_name, t.phone AS tenant_phone, l.tenant_id,
+             p.id AS property_id, p.display_name AS property_name,
+             u.id AS unit_id, u.name AS unit_name
+        FROM leasing l
+        JOIN unit u ON l.unit_id = u.id
+        JOIN property p ON u.property_id = p.id
+        LEFT JOIN tenant t ON l.tenant_id = t.id
+       WHERE p.org_id = ? AND l.deleted_at IS NULL AND p.deleted_at IS NULL
+         AND l.${dateCol} IS NOT NULL
+         AND DATE(l.${dateCol}) BETWEEN ? AND ?${propertyFilter}`;
+
+    const params = propertyId ? [orgId, start, end, propertyId] : [orgId, start, end];
+    const [ins] = await req.pool.execute(selectFor('start_date'), params);
+    const [outs] = await req.pool.execute(selectFor('end_date'), params);
+
+    const rows = [
+      ...outs.map(r => ({ ...r, type: 'out' })),
+      ...ins.map(r => ({ ...r, type: 'in' })),
+    ];
+
+    // A unit that empties and refills on the same day is one physical handover.
+    // Flag it here rather than leaving the reader to notice two identical unit names.
+    const byDateUnit = new Map();
+    for (const r of rows) {
+      const key = `${r.date}|${r.unit_id}`;
+      if (!byDateUnit.has(key)) byDateUnit.set(key, new Set());
+      byDateUnit.get(key).add(r.type);
+    }
+    const turnovers = new Set(
+      [...byDateUnit.entries()].filter(([, t]) => t.has('in') && t.has('out')).map(([k]) => k)
+    );
+
+    // Sorting alone makes a same-day turnover land as an adjacent pair, with no special
+    // casing at render time: same date, same property, same unit, and 'out' before 'in'
+    // because the flat has to empty before anyone moves in.
+    const typeRank = (t) => (t === 'out' ? 0 : 1);
+    rows.sort((a, b) =>
+      a.date.localeCompare(b.date)
+      || String(a.property_name || '').localeCompare(String(b.property_name || ''))
+      || String(a.unit_name || '').localeCompare(String(b.unit_name || ''))
+      || typeRank(a.type) - typeRank(b.type)
+    );
+
+    const data = rows.map(r => ({
+      id: `${r.type}-${r.lease_id}`,
+      lease_id: String(r.lease_id),
+      lease_no: r.lease_no || null,
+      type: r.type,
+      date: r.date,
+      tenant_id: r.tenant_id ? String(r.tenant_id) : null,
+      tenant_name: r.tenant_name || null,
+      tenant_phone: r.tenant_phone || null,
+      property_id: String(r.property_id),
+      property_name: r.property_name || null,
+      unit_id: String(r.unit_id),
+      unit_name: r.unit_name || null,
+      turnover: turnovers.has(`${r.date}|${r.unit_id}`),
+    }));
+
+    res.json({
+      code: 200,
+      data: {
+        rows: data,
+        from: start,
+        to: end,
+        counts: {
+          in: data.filter(r => r.type === 'in').length,
+          out: data.filter(r => r.type === 'out').length,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Check-in/check-out list error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load check-in / check-out list' });
+  }
+});
+
 
 // GET /api/leasing/:id - Get lease detail
 router.get('/:id', authenticate, async (req, res) => {

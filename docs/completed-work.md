@@ -651,3 +651,37 @@ attempt because it matched the wrong `continue`, and was re-anchored.
 **`website/faq/index.html` is not served from this droplet.** It represents the live page
 hosted with the public site, so the Booking heading does not appear there until that file is
 published separately.
+
+---
+
+## Session 2026-09-02 — Leasing → Check In / Check Out
+
+A single mobile-first list of every upcoming arrival and departure, added because there was
+nowhere to see both together. Cleaning's "Checkout Schedule" tab is week-scoped and
+cleaning-oriented, and the leasing calendar is a grid, not a list you can read on a phone.
+
+**`GET /api/leasing/check-in-out`** (`backend/src/routes/leasing.js`, above `/:id` — the
+static-before-dynamic rule, or Express reads the path as a lease id). Two SELECTs, one on
+`start_date` and one on `end_date`, merged and sorted in JS.
+
+- **Forward-only.** A `from` earlier than the org's today is clamped, not rejected: the page
+  answers "what is coming", so a stale bookmark cannot resurrect last month.
+- **Dates are formatted in SQL** (`DATE_FORMAT`), never in JS. The server runs UTC and a JS
+  `Date` shifts a Hong Kong calendar day by one.
+- **`end_date` is the departure**, with no special handling for early leavers, because
+  recording a move-out shortens the lease row itself.
+- **Same-day turnovers fall out of the sort order** rather than a render-time special case:
+  date, then property, then unit, then `out` before `in`. A unit appearing twice on one day
+  is therefore already adjacent, and only needs the `turnover` flag to say so.
+- Company tenants fall back to `company_name`, so an arrival never renders nameless.
+
+**`frontend/src/app/leasing/check-in-out/page.js`** — one date-grouped card list on both
+desktop and mobile, rather than the table/`MobileCardList` split used elsewhere in Leasing.
+The day grouping is what makes it readable, and a table cannot express it. Filters: property,
+date range (default today → +30d), and an All / In / Out toggle applied client-side.
+
+**No completion state exists.** Nothing in the schema records that a check-in actually
+happened, so this is a derived list and nothing can be ticked off. Adding that needs a table.
+
+**Verified** against production read-only: 19 check-ins, 22 check-outs and 8 correctly paired
+same-day turnovers in the next 30 days, with 19-digit lease ids intact in the response.
