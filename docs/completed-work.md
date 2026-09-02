@@ -729,3 +729,78 @@ lease was edited on 26 Aug. That post was stale copy reposted, not a render faul
 the code prevents pasting an old draft. Note also that `advertising_post_log` had no rows for
 the five days around it: the `mark` step is what records a post, so there is currently no way
 to tell a fresh post from a recycled one without reconstructing it from lease timestamps.
+
+---
+
+## 2026-09-02 — Tenant Status is required, never defaulted to 0
+
+**Commit:** `879765d`. Deployed and verified on the droplet the same day.
+
+### The bug
+
+`leasing.contract_type` has four values (1 MR, 2 MTM, 3 NR, 4 UC). It also had a fifth
+state nobody chose: `contract_type || 0` on create wrote a 0 whenever the field was
+skipped. That is the worst state a lease can hold, because the two systems that read the
+field disagree about what it means:
+
+- `utils/advertisingPlan.js` special-cases only NR, so anything else including 0 becomes
+  advertisable at `lead_days_other` (45 days) and the unit goes to market;
+- `utils/renewalAsk.js` counts only `[1, 4]` as undecided, so a 0 returns
+  `already_decided` and the tenant is never asked.
+
+The home gets listed while nobody is chasing the answer.
+
+### Why the existing "required" rule never fired
+
+`frontend/src/app/leasing/create/page.js` is a 3-step wizard. Its only `validateFields`
+call is in `nextStep()` at step 0 and passes an explicit field list that omitted
+`contract_type`; `onSubmit` then builds the payload straight from `getFieldsValue(true)`.
+The red asterisk rendered and nothing blocked. Commit `8df0562` (2026-04-21, "Make lease
+Tenant Status required on create and edit") therefore closed nothing on the create path:
+**7 of the 11 bad rows were created after it landed**, across three staff accounts at 4
+to 14 percent each. That spread is what a silently accepting form looks like, not what
+one person's habit looks like. The edit page was fine, because `<Form onFinish>` runs
+full validation.
+
+### The fix
+
+- **`backend/src/utils/contractType.js`** (new) — one `parseContractType()`, 1-4 only.
+  Stricter than `Number()` on purpose: `Number(true)` is 1 and `Number(['3'])` is 3, so a
+  bare coercion would let a boolean or array through looking like a deliberate MR or NR.
+  Mirrors `definedNumber()` in `renewalAsk.js`.
+- **`POST /api/leasing`** — 400 before any query, pending drafts included, since a draft
+  becomes a real lease without passing through creation again. The `contract_type || 0`
+  in the INSERT is gone.
+- **`PUT /api/leasing/:id`** — omitting the field still leaves the stored intent alone,
+  but sending a 0, null or empty string is refused rather than written. An edit cannot
+  put a lease back into the undecided state.
+- **`create/page.js`** — `contract_type` joins `step1Fields`, so the rule fires on a
+  field the user can see. Both create and edit drop the `?? 0` fallback.
+
+Requiring a choice is safe because UC (Unconfirmed) already exists and is already treated
+as undecided by the renewal ask. Nobody has to guess: "I do not know yet" is itself a
+recordable answer, and one the automation acts on.
+
+### Verified
+
+12 new tests in `backend/test/contractTypeRequired.test.js`, mutation-checked: re-allowing
+0 fails 2, dropping the non-string rejection fails 1. One test asserts the guard and the
+renewal ask agree, so no accepted value can be both advertisable and unaskable. Full suite
+**1102 pass** locally and on the droplet. Frontend builds clean.
+
+### Data backfill
+
+All 11 leases sitting at 0 were set to **UC**: 4 live, 2 upcoming, 5 already ended. Every
+`UPDATE` was guarded on `contract_type = 0`. Org-wide count of 0 rows is now zero. The 5
+ended ones are cosmetic (`renewalAskEligibility` returns `lease_already_ended` before it
+reads the field, and the vacancy and posting queries filter `end_date >= today`) and were
+included at the operator's explicit request for uniformity. **March 2026 ended leases
+marked Unconfirmed are deliberate, not corruption.** The backfill was written by direct
+SQL, so there is no `activity_log` attribution for it.
+
+### Deliberately not done
+
+`UNDECIDED_CONTRACT_TYPES` in `utils/renewalAsk.js` is still `[1, 4]`. Adding `0` was
+recommended as a safety net but skipped, because `renewal_ask_enabled` is 1 in production
+and the change would make real tenants messageable without a separate decision. With the
+write guard in place no new 0 can be created, so it is belt-and-braces rather than urgent.
