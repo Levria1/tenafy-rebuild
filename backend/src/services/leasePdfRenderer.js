@@ -254,7 +254,7 @@ async function renderInlinePreview({ body_html, header_html, footer_html, page_s
 async function loadLeaseContext(pool, orgId, leaseId) {
   const [[lease]] = await pool.execute(
     `SELECT l.*,
-            t.id   AS tenant_id_row, t.first_name, t.last_name, t.company_name,
+            t.id   AS tenant_id_row, t.first_name, t.middle_name, t.last_name, t.company_name,
             t.email, t.phone, t.id_card, t.type AS tenant_type,
             u.id   AS unit_id_row,   u.name AS unit_name, u.beds, u.baths, u.size,
             p.id   AS property_id_row, p.display_name AS property_name,
@@ -270,7 +270,7 @@ async function loadLeaseContext(pool, orgId, leaseId) {
   if (!lease) throw new Error('Lease not found');
 
   const [additionalTenants] = await pool.execute(
-    `SELECT t.first_name, t.last_name, t.company_name, t.type
+    `SELECT t.first_name, t.middle_name, t.last_name, t.company_name, t.type
        FROM leasing_additional_tenant lat
        JOIN tenant t ON t.id = lat.tenant_id
       WHERE lat.leasing_id = ?`,
@@ -294,6 +294,7 @@ async function loadLeaseContext(pool, orgId, leaseId) {
     lease,
     tenant: {
       first_name:  lease.first_name,
+      middle_name: lease.middle_name,
       last_name:   lease.last_name,
       company_name: lease.company_name,
       email:       lease.email,

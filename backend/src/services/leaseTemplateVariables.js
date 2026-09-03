@@ -15,6 +15,8 @@
  * dropdown is fed by GET /api/lease-template/variables.
  */
 
+const { personOrCompanyName, sanitiseNamePart } = require('../utils/personName');
+
 // ───────────────────────────────────────────────────────────────────────────
 // Formatters — keep money/dates consistent across every template.
 // ───────────────────────────────────────────────────────────────────────────
@@ -182,9 +184,8 @@ function applyPageBreakMarkers(html) {
   return out;
 }
 
-function joinName(first, last, company, type) {
-  if (Number(type) === 1 && company) return company;
-  return [first, last].filter(Boolean).join(' ').trim();
+function joinName(first, middle, last, company, type) {
+  return personOrCompanyName({ first_name: first, middle_name: middle, last_name: last, company_name: company, type });
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -207,13 +208,16 @@ const VARIABLES = [
   // ── Tenant ─────────────────────────────────────────────────────────────
   { key: 'TENANT_NAME',       group: 'Tenant', label: 'Tenant full name',
     sample: 'Alice Wong',
-    resolve: (ctx) => joinName(ctx.tenant?.first_name, ctx.tenant?.last_name, ctx.tenant?.company_name, ctx.tenant?.type) },
+    resolve: (ctx) => joinName(ctx.tenant?.first_name, ctx.tenant?.middle_name, ctx.tenant?.last_name, ctx.tenant?.company_name, ctx.tenant?.type) },
   { key: 'TENANT_FIRST_NAME', group: 'Tenant', label: 'Tenant first name',
     sample: 'Alice',
     resolve: (ctx) => ctx.tenant?.first_name || '' },
   { key: 'TENANT_LAST_NAME',  group: 'Tenant', label: 'Tenant last name',
     sample: 'Wong',
     resolve: (ctx) => ctx.tenant?.last_name || '' },
+  { key: 'TENANT_MIDDLE_NAME', group: 'Tenant', label: 'Tenant middle name',
+    sample: 'Marie',
+    resolve: (ctx) => sanitiseNamePart(ctx.tenant?.middle_name) || '' },
   { key: 'TENANT_EMAIL',      group: 'Tenant', label: 'Tenant email',
     sample: 'alice@example.com',
     resolve: (ctx) => ctx.tenant?.email || '' },
@@ -226,7 +230,7 @@ const VARIABLES = [
   { key: 'ADDITIONAL_TENANTS', group: 'Tenant', label: 'Additional tenants (comma-joined)',
     sample: 'Bob Wong, Charlie Wong',
     resolve: (ctx) => (ctx.additionalTenants || [])
-      .map(t => joinName(t.first_name, t.last_name, t.company_name, t.type))
+      .map(t => joinName(t.first_name, t.middle_name, t.last_name, t.company_name, t.type))
       .filter(Boolean).join(', ') },
 
   // ── Landlord / Org ─────────────────────────────────────────────────────

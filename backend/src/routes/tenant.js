@@ -8,6 +8,8 @@ const { logActivity } = require('../utils/activityLog');
 const visionClient = require('../services/visionClient');
 const llmClient = require('../services/llmClient');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
+const { sanitiseNamePart, nameProblem } = require('../utils/personName');
+const { decodeLeasingBitsAll } = require('../utils/mysqlBit');
 
 // In-memory multer for the Smart Extract /parse endpoint. Files NEVER touch
 // disk — we OCR the buffer and discard. This is deliberately stricter than
@@ -288,12 +290,23 @@ router.post('/', authenticate, async (req, res) => {
 
     const tenantId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
+    // Refuse rather than silently rewrite. Quietly stripping a character someone just
+    // typed makes them doubt the save; naming it lets them fix it.
+    for (const [label, value] of [['First name', first_name], ['Middle name', middle_name], ['Last name', last_name]]) {
+      const problem = nameProblem(value, label);
+      if (problem) return res.status(400).json({ code: 400, message: problem, field: label.toLowerCase().replace(' ', '_') });
+    }
+
+    const cleanFirst  = sanitiseNamePart(first_name);
+    const cleanMiddle = sanitiseNamePart(middle_name);
+    const cleanLast   = sanitiseNamePart(last_name);
+
     await req.pool.execute(
       `INSERT INTO tenant (id, org_id, first_name, last_name, middle_name, email, secondary_email, phone,
        birth_date, company_name, type, sex, id_card, profession, budget, employer, salary,
        emergency_contact, referral, notes, cleaning_notes, status, lead_source_id, whatsapp_opt_out, category, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
-      [tenantId, orgId, first_name || null, last_name || null, middle_name || null,
+      [tenantId, orgId, cleanFirst, cleanLast, cleanMiddle,
        email || null, secondary_email || null, phone || null, birth_date || null,
        company_name || null, type ?? 0, sex ?? 0, id_card || null, profession || null,
        budget || null, employer || null, salary || null, emergency_contact || null,
@@ -397,13 +410,24 @@ router.put('/:id/profile', authenticate, async (req, res) => {
             emergency_contact, referral, notes, cleaning_notes, status, lead_source_id,
             whatsapp_opt_out } = req.body;
 
+    // Refuse rather than silently rewrite. Quietly stripping a character someone just
+    // typed makes them doubt the save; naming it lets them fix it.
+    for (const [label, value] of [['First name', first_name], ['Middle name', middle_name], ['Last name', last_name]]) {
+      const problem = nameProblem(value, label);
+      if (problem) return res.status(400).json({ code: 400, message: problem, field: label.toLowerCase().replace(' ', '_') });
+    }
+
+    const cleanFirst  = sanitiseNamePart(first_name);
+    const cleanMiddle = sanitiseNamePart(middle_name);
+    const cleanLast   = sanitiseNamePart(last_name);
+
     await req.pool.execute(
       `UPDATE tenant SET first_name = ?, last_name = ?, middle_name = ?, email = ?, secondary_email = ?,
        phone = ?, birth_date = ?, company_name = ?, type = ?, sex = ?, id_card = ?, profession = ?,
        budget = ?, employer = ?, salary = ?, emergency_contact = ?, referral = ?, notes = ?,
        cleaning_notes = ?, status = ?, lead_source_id = ?, whatsapp_opt_out = ?,
        updated_at = NOW() WHERE id = ?`,
-      [first_name || null, last_name || null, middle_name || null, email || null, secondary_email || null,
+      [cleanFirst, cleanLast, cleanMiddle, email || null, secondary_email || null,
        phone || null, birth_date || null, company_name || null, type ?? 0, sex ?? 0,
        id_card || null, profession || null, budget || null, employer || null, salary || null,
        emergency_contact || null, referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null,
@@ -610,7 +634,9 @@ router.get('/:id/leases', authenticate, async (req, res) => {
       lease.additional_tenants = additionalTenants;
     }
 
-    res.json({ code: 200, data: leases });
+    // bit(1) -> boolean before it leaves the API; a raw Buffer is truthy even at 0.
+    // See utils/mysqlBit.js.
+    res.json({ code: 200, data: decodeLeasingBitsAll(leases) });
   } catch (error) {
     console.error('Get tenant leases error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get tenant leases' });
