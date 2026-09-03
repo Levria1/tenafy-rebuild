@@ -1348,13 +1348,11 @@ router.post('/', authenticate, async (req, res) => {
         try {
           const checkoutTemplate = await loadTemplate(req.pool, orgId, 'Checkout-Tenant');
           const dateFirstDays = checkoutTemplate ? (Number(checkoutTemplate.date_first) || 0) : 0;
+          // Absent means "send before the end date", which bitToBool alone would not
+          // preserve, so the null check stays outside it.
           let beforeDate = true;
-          if (checkoutTemplate && checkoutTemplate.before_date !== undefined && checkoutTemplate.before_date !== null) {
-            if (Buffer.isBuffer(checkoutTemplate.before_date)) {
-              beforeDate = checkoutTemplate.before_date[0] === 1;
-            } else {
-              beforeDate = Boolean(checkoutTemplate.before_date);
-            }
+          if (checkoutTemplate && checkoutTemplate.before_date != null) {
+            beforeDate = bitToBool(checkoutTemplate.before_date);
           }
           // Only send at creation if before_date is true (sending before end date)
           if (beforeDate) {

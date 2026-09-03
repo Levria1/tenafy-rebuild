@@ -60,14 +60,8 @@ function ocrSingle(req, res, next) {
 
 // MySQL BIT(1) columns come back as Buffer (<Buffer 00> / <Buffer 01>) in mysql2.
 // A Buffer is always truthy, so we need this helper for every BIT column.
-function bitToBool(v) {
-  if (v == null) return false;
-  if (typeof v === 'boolean') return v;
-  if (typeof v === 'number') return v !== 0;
-  if (typeof v === 'string') return v !== '' && v !== '0';
-  if (Buffer.isBuffer(v)) return v.length > 0 && v[0] !== 0;
-  return Boolean(v);
-}
+// Was a third local copy. Delegated so the rule lives in one place; see utils/mysqlBit.js.
+const { bitToBool } = require('../utils/mysqlBit');
 
 // Load or lazy-create the bot_settings row.
 async function loadBotSettings(pool) {

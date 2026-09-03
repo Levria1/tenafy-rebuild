@@ -1,5 +1,6 @@
 
 const { sendMail, sendMailWithAccount } = require('../config/mailer');
+const { bitToBool } = require('../utils/mysqlBit');
 const { pickTemplate } = require('../utils/pickTemplate');
 const { orgTimeSql } = require('../utils/orgTime');
 const { toCalendarDate } = require('../utils/checkinWindow');
@@ -614,9 +615,7 @@ async function shouldSendEmail(pool, leaseId, toggleColumn) {
     );
     if (rows.length === 0) return false;
     // Bit/boolean columns: could be Buffer, number, or boolean
-    const val = rows[0].toggled;
-    if (Buffer.isBuffer(val)) return val[0] === 1;
-    return Boolean(val);
+    return bitToBool(rows[0].toggled);
   } catch (err) {
     console.error(`[EmailService] Error checking toggle ${column}:`, err.message);
     return false;
@@ -738,14 +737,7 @@ async function sendTemplateEmail(pool, orgId, {
       [orgId]
     );
     if (orgRow) {
-      let whitelistEnabled = false;
-      if (orgRow.email_whitelist_enabled) {
-        if (Buffer.isBuffer(orgRow.email_whitelist_enabled)) {
-          whitelistEnabled = orgRow.email_whitelist_enabled[0] === 1;
-        } else {
-          whitelistEnabled = Boolean(orgRow.email_whitelist_enabled);
-        }
-      }
+      const whitelistEnabled = bitToBool(orgRow.email_whitelist_enabled);
 
       if (whitelistEnabled) {
         const whitelist = (orgRow.email_whitelist || '')

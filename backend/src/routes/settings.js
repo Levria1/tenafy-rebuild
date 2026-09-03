@@ -1,4 +1,5 @@
 const express = require('express');
+const { bitToBool } = require('../utils/mysqlBit');
 const router = express.Router();
 const crypto = require('crypto');
 const { authenticate, requireSuperAdmin } = require('../middleware/auth');
@@ -21,14 +22,7 @@ router.get('/setting/email', authenticate, async (req, res) => {
     if (!org) return res.json({ code: 404, message: 'Organization not found' });
 
     // Convert BIT to boolean
-    let enabled = false;
-    if (org.email_whitelist_enabled) {
-      if (Buffer.isBuffer(org.email_whitelist_enabled)) {
-        enabled = org.email_whitelist_enabled[0] === 1;
-      } else {
-        enabled = Boolean(org.email_whitelist_enabled);
-      }
-    }
+    const enabled = bitToBool(org.email_whitelist_enabled);
 
     res.json({
       code: 200,
@@ -76,14 +70,7 @@ router.get('/setting/whatsapp', authenticate, async (req, res) => {
     );
     if (!org) return res.json({ code: 404, message: 'Organization not found' });
 
-    let enabled = false;
-    if (org.whatsapp_whitelist_enabled) {
-      if (Buffer.isBuffer(org.whatsapp_whitelist_enabled)) {
-        enabled = org.whatsapp_whitelist_enabled[0] === 1;
-      } else {
-        enabled = Boolean(org.whatsapp_whitelist_enabled);
-      }
-    }
+    const enabled = bitToBool(org.whatsapp_whitelist_enabled);
 
     // Mask API key — show only last 4 chars to confirm what's stored
     const rawKey = org.whatsapp_api_key || '';

@@ -1,4 +1,5 @@
 const express = require('express');
+const { bitToBool } = require('../utils/mysqlBit');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 
@@ -271,6 +272,17 @@ router.get('/:id', authenticate, async (req, res) => {
 
     const row = templates[0];
     row.property_ids = await getEmailAllowedProperties(req.pool, orgId, req.params.id);
+    // bit(1) -> boolean here rather than in the browser. Two React edit pages were
+    // parsing MySQL's wire format (`data.before_date.data[0] === 1`) to work around
+    // this; they keep a Boolean() fallback, so a real boolean still works for them.
+    // NULL is preserved, not coerced. scheduler.js and leasing.js both read an absent
+    // before_date as "send BEFORE the end date", so answering `false` here would let an
+    // edit form render it unticked and save that back as 0, flipping checkout email
+    // timing with nobody having asked for it — the same shape as the lease-checkbox bug
+    // this decoder was written for. No rows are NULL today; the guard is for the day one is.
+    if (row.before_date != null) row.before_date = bitToBool(row.before_date);
+    // is_default_template is deliberately NOT decoded here: it is a tinyint where 2 means
+    // NON-default, so any boolean coercion reports every template as the default one.
     res.json({ code: 200, data: row });
   } catch (error) {
     console.error('Get email template error:', error);

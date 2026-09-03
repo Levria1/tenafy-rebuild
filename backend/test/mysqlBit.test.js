@@ -136,3 +136,31 @@ test('the strings that used to switch a notification ON now switch it off', () =
   assert.equal(bitToBool(1) ? 1 : 0, 1);
   assert.equal(bitToBool('1') ? 1 : 0, 1);
 });
+
+// ── the field that must NOT go through this decoder ─────────────────────────
+
+test('is_default_template is a tinyint where 2 means NON-default, not a bit', () => {
+  // Caught by codex on 2026-09-04 and confirmed in production: email_template holds 66
+  // rows at 1 and 20 at 2. bitToBool(2) is true, so routing this field through the
+  // decoder would report every ordinary template as the default one, and template
+  // selection would return the first candidate instead of the real default.
+  assert.equal(bitToBool(2), true, 'which is exactly why this field must not use it');
+
+  const { pickTemplate } = require('../src/utils/pickTemplate');
+  const rows = [
+    { id: 'newer-but-not-default', is_default_template: 2, created_time: '2026-01-01' },
+    { id: 'the-real-default',      is_default_template: 1, created_time: '2020-01-01' },
+  ];
+  assert.equal(pickTemplate(rows).id, 'the-real-default',
+    'an explicit default must beat a newer non-default');
+});
+
+test('a NULL before_date must not be answered as false', () => {
+  // scheduler.js and leasing.js read absent as "send BEFORE the end date". If an API
+  // handler flattens NULL to false, an edit form renders it unticked and saves 0,
+  // flipping checkout email timing with no user intent. Raised by grok, 2026-09-04.
+  // The handlers therefore guard with `!= null` rather than `in row`.
+  const row = { before_date: null };
+  assert.equal('before_date' in row, true, 'the key exists, so an `in` check is not enough');
+  assert.equal(bitToBool(null), false, 'which is why the guard cannot be bitToBool alone');
+});

@@ -1,4 +1,5 @@
 const express = require('express');
+const { bitToBool } = require('../utils/mysqlBit');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 
@@ -119,7 +120,19 @@ router.get('/:id', authenticate, async (req, res) => {
       [id, orgId]
     );
     if (rows.length === 0) return res.status(404).json({ code: 404, message: 'WhatsApp template not found' });
-    res.json({ code: 200, data: rows[0] });
+    const row = rows[0];
+    // bit(1) -> boolean here rather than in the browser. Two React edit pages were
+    // parsing MySQL's wire format (`data.before_date.data[0] === 1`) to work around
+    // this; they keep a Boolean() fallback, so a real boolean still works for them.
+    // NULL is preserved, not coerced. scheduler.js and leasing.js both read an absent
+    // before_date as "send BEFORE the end date", so answering `false` here would let an
+    // edit form render it unticked and save that back as 0, flipping checkout email
+    // timing with nobody having asked for it — the same shape as the lease-checkbox bug
+    // this decoder was written for. No rows are NULL today; the guard is for the day one is.
+    if (row.before_date != null) row.before_date = bitToBool(row.before_date);
+    // is_default_template is deliberately NOT decoded here: it is a tinyint where 2 means
+    // NON-default, so any boolean coercion reports every template as the default one.
+    res.json({ code: 200, data: row });
   } catch (err) {
     console.error('Get WA template error:', err);
     res.status(500).json({ code: 500, message: 'Failed to get template' });

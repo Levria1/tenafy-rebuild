@@ -1,4 +1,5 @@
 const express = require('express');
+const { bitToBool } = require('../utils/mysqlBit');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 
@@ -17,8 +18,8 @@ router.post('/list', authenticate, async (req, res) => {
     // Convert BIT fields
     const accounts = rows.map(r => ({
       ...r,
-      is_secure: Buffer.isBuffer(r.is_secure) ? r.is_secure[0] === 1 : Boolean(r.is_secure),
-      is_default: Buffer.isBuffer(r.is_default) ? r.is_default[0] === 1 : Boolean(r.is_default),
+      is_secure: bitToBool(r.is_secure),
+      is_default: bitToBool(r.is_default),
     }));
 
     res.json({ code: 200, data: accounts });

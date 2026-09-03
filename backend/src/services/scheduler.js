@@ -3,6 +3,7 @@ const {
   assessFactDeliveryHealth, STALE_HOURS, LOOKBACK_DAYS,
 } = require('../utils/inquiryFactHealth');
 const { sendMail } = require('../config/mailer');
+const { bitToBool } = require('../utils/mysqlBit');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
@@ -703,13 +704,11 @@ async function sendCheckoutEmailsForOrg(pool, orgId) {
   // Load the default Checkout-Tenant template to get date_first offset and before_date flag
   const template = await loadTemplate(pool, orgId, 'Checkout-Tenant');
   const dateFirstDays = template ? (Number(template.date_first) || 0) : 0;
-  let beforeDate = true; // default: send before end date
-  if (template && template.before_date !== undefined && template.before_date !== null) {
-    if (Buffer.isBuffer(template.before_date)) {
-      beforeDate = template.before_date[0] === 1;
-    } else {
-      beforeDate = Boolean(template.before_date);
-    }
+  // Absent means "send before the end date"; bitToBool would say false, so the null
+  // check stays outside it.
+  let beforeDate = true;
+  if (template && template.before_date != null) {
+    beforeDate = bitToBool(template.before_date);
   }
 
   let sent = 0;

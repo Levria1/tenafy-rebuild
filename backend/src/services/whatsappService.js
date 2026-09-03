@@ -2,6 +2,7 @@
 // Sends are fire-and-forget from the caller's perspective; this module never throws.
 
 const axios = require('axios');
+const { bitToBool } = require('../utils/mysqlBit');
 const {
   resolveVariables,
   substituteVariables,
@@ -102,12 +103,7 @@ async function passesWhitelist(pool, orgId, phoneDigits) {
       [orgId]
     );
     if (!org) return true;
-    let enabled = false;
-    if (Buffer.isBuffer(org.whatsapp_whitelist_enabled)) {
-      enabled = org.whatsapp_whitelist_enabled[0] === 1;
-    } else {
-      enabled = Boolean(org.whatsapp_whitelist_enabled);
-    }
+    const enabled = bitToBool(org.whatsapp_whitelist_enabled);
     if (!enabled) return true;
     const list = (org.whatsapp_whitelist || '')
       .split(/[,\n;]/)
@@ -152,12 +148,7 @@ async function getRecipient(pool, orgId, { leaseId, templateType, toOverride }) 
       [leaseId]
     );
     if (!row) return { phone: null, optedOut: false, tenantId: null };
-    let optedOut = false;
-    if (Buffer.isBuffer(row.whatsapp_opt_out)) {
-      optedOut = row.whatsapp_opt_out[0] === 1;
-    } else {
-      optedOut = Boolean(row.whatsapp_opt_out);
-    }
+    const optedOut = bitToBool(row.whatsapp_opt_out);
     return { phone: row.phone || null, optedOut, tenantId: row.tenant_id };
   } catch (err) {
     console.error('[WhatsApp] getRecipient failed:', err.message);

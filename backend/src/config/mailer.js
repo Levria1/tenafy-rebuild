@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const { bitToBool } = require('../utils/mysqlBit');
 const { sendWithRetry } = require('../utils/mailRetry');
 
 /**
@@ -100,8 +101,11 @@ async function sendMailWithAccount(account, { to, subject, html, text, from, cc,
   const cacheKey = account.email;
 
   if (!accountTransporters.has(cacheKey)) {
+    // Only the Buffer branch is shared. The fallback deliberately treats a MISSING
+    // is_secure as secure — bitToBool returns false for null, and swapping it in here
+    // would quietly turn TLS off for any account with no value stored.
     const isSecure = Buffer.isBuffer(account.is_secure)
-      ? account.is_secure[0] === 1
+      ? bitToBool(account.is_secure)
       : account.is_secure !== false && account.is_secure !== 0;
 
     const transport = nodemailer.createTransport({
