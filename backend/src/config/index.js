@@ -6,6 +6,13 @@ module.exports = {
   port: process.env.PORT || 3001,
   jwtSecret: process.env.JWT_SECRET || 'tenafy-secret-key-change-in-production',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '24h',
+  // Tenant portal tokens are signed with their OWN secret so a tenant token cannot
+  // verify against the 412 staff endpoints behind `authenticate`. No default and no
+  // fallback to jwtSecret on purpose: either is the hole this exists to close, and
+  // utils/tenantPortalTokens.js refuses to sign without it. Unset simply means the
+  // tenant portal is off, which is the correct fail-closed state.
+  tenantJwtSecret: process.env.TENANT_JWT_SECRET || '',
+  tenantJwtExpiresIn: process.env.TENANT_JWT_EXPIRES_IN || '2h',
   database: {
     host: process.env.DB_HOST || 'localhost',
     port: process.env.DB_PORT || 3306,

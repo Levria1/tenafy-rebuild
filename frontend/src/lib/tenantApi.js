@@ -1,34 +1,51 @@
 import axios from 'axios';
-import Cookies from 'js-cookie';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-const tenantApi = axios.create({ baseURL: API_URL, headers: { 'Content-Type': 'application/json' } });
-
-tenantApi.interceptors.request.use((config) => {
-  const token = Cookies.get('__s_t');
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
+// `withCredentials` and nothing else. The session cookie (__t_p) is httpOnly, so this
+// file cannot read it and does not try: the browser attaches it automatically. The old
+// client pulled a token out of a JS-readable cookie and set an Authorization header,
+// which meant any XSS on a tenant page could walk off with a working session.
+const tenantApi = axios.create({
+  baseURL: API_URL,
+  withCredentials: true,
+  headers: { 'Content-Type': 'application/json' },
 });
 
 tenantApi.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      Cookies.remove('__s_t');
-      if (typeof window !== 'undefined') window.location.href = '/tenant-portal/login';
+    // 401 means the session is gone or was never there. 403 means the account is real
+    // but disabled, or its tenant records were removed; both need a fresh sign-in, and
+    // neither should be handled by the page that happened to make the call.
+    const status = error.response?.status;
+    if ((status === 401 || status === 403) && typeof window !== 'undefined') {
+      const onAuthPage = ['/tenant-portal/login', '/tenant-portal/register', '/tenant-portal/set-password']
+        .some((p) => window.location.pathname.startsWith(p));
+      if (!onAuthPage) window.location.href = '/tenant-portal/login';
     }
     return Promise.reject(error);
   }
 );
 
 export const tenantPortal = {
+  register: (data) => tenantApi.post('/api/tenant-portal/register', data),
+  completeRegistration: (data) => tenantApi.post('/api/tenant-portal/register/complete', data),
   login: (data) => tenantApi.post('/api/tenant-portal/login', data),
+  logout: () => tenantApi.post('/api/tenant-portal/logout'),
+
   getDashboard: () => tenantApi.get('/api/tenant-portal/dashboard'),
   getLeases: () => tenantApi.get('/api/tenant-portal/leases'),
   getInvoices: (params) => tenantApi.get('/api/tenant-portal/invoices', { params }),
   getProfile: () => tenantApi.get('/api/tenant-portal/profile'),
   updateProfile: (data) => tenantApi.put('/api/tenant-portal/profile', data),
+
+  getRepairs: () => tenantApi.get('/api/tenant-portal/service'),
+  getRepairOptions: () => tenantApi.get('/api/tenant-portal/service/options'),
+  // Multipart: photos ride along with the form so there is no orphan-file-id to validate.
+  createRepair: (formData) => tenantApi.post('/api/tenant-portal/service', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }),
 };
 
 export default tenantApi;

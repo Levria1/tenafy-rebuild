@@ -11,6 +11,16 @@ const authenticate = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, config.jwtSecret);
+
+    // Tenant portal tokens must never authenticate a staff route. The dedicated secret
+    // in utils/tenantPortalTokens.js already makes such a token fail verification above,
+    // so reaching this line means either a legacy token issued before the split or a
+    // future bug. Both are refused here rather than inheriting a staff identity across
+    // the 412 endpoints that sit behind this middleware.
+    if (decoded?.role === 'tenant') {
+      return res.status(401).json({ code: 401, message: 'Authentication required' });
+    }
+
     req.user = decoded;
 
     // Attach org pool for non-master-admin users
