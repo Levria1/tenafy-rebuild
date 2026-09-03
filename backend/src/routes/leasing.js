@@ -10,6 +10,7 @@ const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
 const { resolveLeaseValues } = require('../utils/leaseRevision');
 const { computePaperworkState, addDays } = require('../utils/paperworkPeriod');
 const { parseContractType, CONTRACT_TYPE_REQUIRED_MESSAGE } = require('../utils/contractType');
+const { bitToBool, decodeLeasingBits, decodeLeasingBitsAll } = require('../utils/mysqlBit');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -258,7 +259,7 @@ router.post('/list', authenticate, async (req, res) => {
       params
     );
 
-    res.json({ code: 200, data: { content: leases, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page } });
+    res.json({ code: 200, data: { content: decodeLeasingBitsAll(leases), totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page } });
   } catch (error) {
     console.error('List leases error:', error);
     res.status(500).json({ code: 500, message: 'Failed to list leases' });
@@ -673,7 +674,10 @@ router.get('/:id', authenticate, async (req, res) => {
     // Sign-status for the "View Lease" button tag (see leaseTemplateResolver).
     lease.pdf_status = derivePdfStatus(lease, await resolveLeaseTemplateId(req.pool, orgId, lease));
 
-    res.json({ code: 200, data: lease });
+    // bit(1) -> boolean before it leaves the API. `!!Buffer.from([0])` is true, so an
+    // undecoded row makes every notification checkbox render ticked, and saving the form
+    // then writes those ticks back as 1. See utils/mysqlBit.js.
+    res.json({ code: 200, data: decodeLeasingBits(lease) });
   } catch (error) {
     console.error('Get lease error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get lease' });
@@ -1168,13 +1172,16 @@ router.post('/', authenticate, async (req, res) => {
         resolvedCheckInMeter != null ? new Date() : null, check_out_meter != null ? new Date() : null,
         contact_phone || null, leaseNo, first_invoice_date || null,
         access_setting || null, share_lease ? 1 : 0, all_past ? 1 : 0,
-        tenant_posted ? 1 : 0, landlord_posted ? 1 : 0,
-        landlord_due ? 1 : 0, tenant_due ? 1 : 0,
-        landlord_overdue ? 1 : 0, tenant_overdue ? 1 : 0,
-        landlord_expired ? 1 : 0, landlord_expired_days || 0,
-        tenant_checkin ? 1 : 0, tenant_checkout ? 1 : 0,
-        tenant_renewal ? 1 : 0, tenant_renewal_days || 0,
-        tenant_deposit_posted ? 1 : 0, payment_receipt ? 1 : 0, email_template_id || null,
+        // bitToBool, not a bare `? 1 : 0`. The string "false" and the string "0" are
+        // both truthy in JS, so a client that posts JSON-ish strings would switch an
+        // email notification ON while appearing to switch it off.
+        bitToBool(tenant_posted) ? 1 : 0, bitToBool(landlord_posted) ? 1 : 0,
+        bitToBool(landlord_due) ? 1 : 0, bitToBool(tenant_due) ? 1 : 0,
+        bitToBool(landlord_overdue) ? 1 : 0, bitToBool(tenant_overdue) ? 1 : 0,
+        bitToBool(landlord_expired) ? 1 : 0, landlord_expired_days || 0,
+        bitToBool(tenant_checkin) ? 1 : 0, bitToBool(tenant_checkout) ? 1 : 0,
+        bitToBool(tenant_renewal) ? 1 : 0, tenant_renewal_days || 0,
+        bitToBool(tenant_deposit_posted) ? 1 : 0, payment_receipt ? 1 : 0, email_template_id || null,
         booking_platform_id || null, sales_agent_id || null, leaseState
       ]
     );
@@ -1543,18 +1550,18 @@ router.put('/:id', authenticate, async (req, res) => {
     if (sales_agent_id !== undefined) { fields.push('sales_agent_id = ?'); params.push(sales_agent_id || null); }
     if (payment_receipt !== undefined) { fields.push('payment_receipt = ?'); params.push(payment_receipt ? 1 : 0); }
     // Email notifications
-    if (tenant_posted !== undefined) { fields.push('tenant_posted = ?'); params.push(tenant_posted ? 1 : 0); }
-    if (landlord_posted !== undefined) { fields.push('landlord_posted = ?'); params.push(landlord_posted ? 1 : 0); }
-    if (tenant_due !== undefined) { fields.push('tenant_due = ?'); params.push(tenant_due ? 1 : 0); }
-    if (landlord_due !== undefined) { fields.push('landlord_due = ?'); params.push(landlord_due ? 1 : 0); }
-    if (tenant_overdue !== undefined) { fields.push('tenant_overdue = ?'); params.push(tenant_overdue ? 1 : 0); }
-    if (landlord_overdue !== undefined) { fields.push('landlord_overdue = ?'); params.push(landlord_overdue ? 1 : 0); }
-    if (tenant_deposit_posted !== undefined) { fields.push('tenant_deposit_posted = ?'); params.push(tenant_deposit_posted ? 1 : 0); }
-    if (tenant_checkin !== undefined) { fields.push('tenant_checkin = ?'); params.push(tenant_checkin ? 1 : 0); }
-    if (tenant_checkout !== undefined) { fields.push('tenant_checkout = ?'); params.push(tenant_checkout ? 1 : 0); }
-    if (landlord_expired !== undefined) { fields.push('landlord_expired = ?'); params.push(landlord_expired ? 1 : 0); }
+    if (tenant_posted !== undefined) { fields.push('tenant_posted = ?'); params.push(bitToBool(tenant_posted) ? 1 : 0); }
+    if (landlord_posted !== undefined) { fields.push('landlord_posted = ?'); params.push(bitToBool(landlord_posted) ? 1 : 0); }
+    if (tenant_due !== undefined) { fields.push('tenant_due = ?'); params.push(bitToBool(tenant_due) ? 1 : 0); }
+    if (landlord_due !== undefined) { fields.push('landlord_due = ?'); params.push(bitToBool(landlord_due) ? 1 : 0); }
+    if (tenant_overdue !== undefined) { fields.push('tenant_overdue = ?'); params.push(bitToBool(tenant_overdue) ? 1 : 0); }
+    if (landlord_overdue !== undefined) { fields.push('landlord_overdue = ?'); params.push(bitToBool(landlord_overdue) ? 1 : 0); }
+    if (tenant_deposit_posted !== undefined) { fields.push('tenant_deposit_posted = ?'); params.push(bitToBool(tenant_deposit_posted) ? 1 : 0); }
+    if (tenant_checkin !== undefined) { fields.push('tenant_checkin = ?'); params.push(bitToBool(tenant_checkin) ? 1 : 0); }
+    if (tenant_checkout !== undefined) { fields.push('tenant_checkout = ?'); params.push(bitToBool(tenant_checkout) ? 1 : 0); }
+    if (landlord_expired !== undefined) { fields.push('landlord_expired = ?'); params.push(bitToBool(landlord_expired) ? 1 : 0); }
     if (landlord_expired_days !== undefined) { fields.push('landlord_expired_days = ?'); params.push(landlord_expired_days || 0); }
-    if (tenant_renewal !== undefined) { fields.push('tenant_renewal = ?'); params.push(tenant_renewal ? 1 : 0); }
+    if (tenant_renewal !== undefined) { fields.push('tenant_renewal = ?'); params.push(bitToBool(tenant_renewal) ? 1 : 0); }
     if (tenant_renewal_days !== undefined) { fields.push('tenant_renewal_days = ?'); params.push(tenant_renewal_days || 0); }
     // Access & sharing
     if (access_setting !== undefined) { fields.push('access_setting = ?'); params.push(access_setting || null); }
@@ -2218,7 +2225,7 @@ router.get('/unit/lease/:unit_id', authenticate, async (req, res) => {
       'SELECT l.*, t.first_name, t.last_name, t.email, t.phone FROM leasing l LEFT JOIN tenant t ON l.tenant_id = t.id WHERE l.unit_id = ? AND l.deleted_at IS NULL',
       [unit_id]
     );
-    res.json({ code: 200, data: leases });
+    res.json({ code: 200, data: decodeLeasingBitsAll(leases) });
   } catch (error) {
     console.error('Get unit lease error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get lease' });
@@ -2248,7 +2255,7 @@ router.get('/list/expiring', authenticate, async (req, res) => {
       [orgId]
     );
 
-    res.json({ code: 200, data: { content: leases, totalElements: leases.length } });
+    res.json({ code: 200, data: { content: decodeLeasingBitsAll(leases), totalElements: leases.length } });
   } catch (error) {
     console.error('Get expiring leases error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get expiring leases' });

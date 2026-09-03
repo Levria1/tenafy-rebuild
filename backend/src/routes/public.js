@@ -1,5 +1,6 @@
 const express = require('express');
 const { orgToday, orgTodaySql, orgWallClock, dbDate } = require('../utils/orgTime');
+const { decodeLeasingBits, decodeLeasingBitsAll } = require('../utils/mysqlBit');
 const crypto = require('crypto');
 const router = express.Router();
 const { authenticateApiKey } = require('../middleware/apiKeyAuth');
@@ -3266,7 +3267,7 @@ router.get('/units/:id', async (req, res) => {
       code: 200,
       data: {
         ...unit,
-        current_lease: currentLease || null,
+        current_lease: currentLease ? decodeLeasingBits(currentLease) : null,
         // Existing fields preserved for MCP/Telegram callers
         amenity_ids: amenityRows.map(r => r.amenity_id),
         gallery: galleryRows,
@@ -3574,7 +3575,9 @@ router.get('/tenants/:id/leases', async (req, res) => {
        ORDER BY l.start_date DESC`,
       [id, orgId]
     );
-    ok(res, leases);
+    // bit(1) -> boolean. A raw Buffer serialises as {"type":"Buffer","data":[0]} and
+    // reads as truthy even when the bit is 0. See utils/mysqlBit.js.
+    ok(res, decodeLeasingBitsAll(leases));
   } catch (error) {
     console.error('Public tenant leases error:', error);
     fail(res, 'Failed to fetch tenant leases');
@@ -3724,7 +3727,9 @@ router.get('/leases/expiring', async (req, res) => {
        ORDER BY l.end_date ASC`,
       [orgId, days]
     );
-    ok(res, leases, { days });
+    // bit(1) -> boolean. A raw Buffer serialises as {"type":"Buffer","data":[0]} and
+    // reads as truthy even when the bit is 0. See utils/mysqlBit.js.
+    ok(res, decodeLeasingBitsAll(leases), { days });
   } catch (error) {
     console.error('Public expiring leases error:', error);
     fail(res, 'Failed to fetch expiring leases');
@@ -3768,7 +3773,9 @@ router.get('/leases', async (req, res) => {
        ORDER BY l.start_date DESC`,
       params
     );
-    ok(res, leases);
+    // bit(1) -> boolean. A raw Buffer serialises as {"type":"Buffer","data":[0]} and
+    // reads as truthy even when the bit is 0. See utils/mysqlBit.js.
+    ok(res, decodeLeasingBitsAll(leases));
   } catch (error) {
     console.error('Public leases list error:', error);
     fail(res, 'Failed to fetch leases');
@@ -3807,7 +3814,9 @@ router.get('/leases/:id', async (req, res) => {
       [id]
     );
 
-    res.json({ code: 200, data: { ...lease, additional_tenants: additional } });
+    // bit(1) -> boolean. A raw Buffer serialises as {"type":"Buffer","data":[0]} and
+    // reads as truthy even when the bit is 0. See utils/mysqlBit.js.
+    res.json({ code: 200, data: { ...decodeLeasingBits(lease), additional_tenants: additional } });
   } catch (error) {
     console.error('Public lease detail error:', error);
     fail(res, 'Failed to fetch lease');

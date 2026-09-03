@@ -3,6 +3,7 @@ const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const { orgTodaySql } = require('../utils/orgTime');
+const { decodeLeasingBits } = require('../utils/mysqlBit');
 
 /**
  * Reject a rent range entered the wrong way round.
@@ -1275,7 +1276,12 @@ router.get('/unit/:unit_id/current-lease', authenticate, async (req, res) => {
        ORDER BY l.start_date ASC LIMIT 1`,
       [unitId]
     );
-    res.json({ code: 200, data: { current: leases[0] || null, next: nextLeases[0] || null } });
+    // bit(1) -> boolean before it leaves the API; a raw Buffer is truthy even at 0.
+    // See utils/mysqlBit.js.
+    res.json({ code: 200, data: {
+      current: leases[0] ? decodeLeasingBits(leases[0]) : null,
+      next: nextLeases[0] ? decodeLeasingBits(nextLeases[0]) : null,
+    } });
   } catch (error) {
     console.error('Get current lease error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get lease' });

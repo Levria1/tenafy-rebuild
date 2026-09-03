@@ -86,18 +86,15 @@ function isWithinCheckinWindow(startDate, today, leadDays) {
   return days >= 0 && days <= normaliseLeadDays(leadDays);
 }
 
-// `tenant_checkin` is a MySQL bit(1), and mysql2 hands those back as a one-byte
-// Buffer. `Boolean(buffer)` is true even when the bit is 0, which is the single
-// most common way this column gets misread — so decode it explicitly.
-function bitToBool(value) {
-  if (Buffer.isBuffer(value)) return value.length > 0 && value[0] !== 0;
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    const t = value.trim().toLowerCase();
-    return t !== '' && t !== '0' && t !== 'false';
-  }
-  return Number(value) > 0;
-}
+// `tenant_checkin` is a MySQL bit(1) and mysql2 returns those as a one-byte Buffer,
+// which is truthy even when the bit is 0. Delegated to the shared decoder so this copy
+// and the one the lease API uses cannot drift apart.
+//
+// The local copy this replaced agreed on every value a bit(1) can actually hold, and on
+// null. It differed only on malformed input: it returned false for a negative number and
+// for most objects, where a permissive decoder would return true. The shared version now
+// fails closed for the same reason, so the gate did not loosen.
+const { bitToBool } = require('./mysqlBit');
 
 /**
  * Every gate on an immediate check-in send, in one place.
