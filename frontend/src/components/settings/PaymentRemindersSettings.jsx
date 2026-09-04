@@ -8,6 +8,17 @@
  * Overdue-Tenant email template because the policy is about WHICH invoices get
  * chased and HOW OFTEN, which is not a property of a template.
  *
+ * Categories are ticks, not a dropdown. Who gets chased is the consequential
+ * part of this screen, and a closed multi-select shows it as a row of tags you
+ * have to open something to verify. Laid out flat, the policy is legible at a
+ * glance and a mis-tick is visible without hunting for it.
+ *
+ * The list is split by whether a category has ever carried a charge to a
+ * tenant. Around thirty categories are enabled and most are the expense side of
+ * the ledger, which can never appear on a tenant invoice; burying those keeps
+ * the real choices readable. They stay reachable rather than hidden, because
+ * "you cannot pick it" and "we did not list it" are different promises.
+ *
  * Two separate day counts, because they answer different questions. "Days after
  * due" is the rope a late payer gets. "Days after the invoice was raised" is a
  * guard against back-dated bills: a utility invoice is dated to the end of its
@@ -19,38 +30,44 @@
  * tenants unattended and the backlog it can reach is years deep.
  */
 
-import { useEffect, useState } from 'react';
-import { Card, Form, Switch, Select, InputNumber, Button, Alert, Space, Typography, message, Spin } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Card, Form, Switch, Checkbox, InputNumber, Button, Alert, Space,
+  Typography, message, Spin, Row, Col, Divider, Tag,
+} from 'antd';
 import { settings } from '../../lib/api';
 
 const { Text } = Typography;
 
 export default function PaymentRemindersSettings() {
   const [form] = Form.useForm();
-  const [categories, setCategories] = useState([]);
+  const [available, setAvailable] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [enabled, setEnabled] = useState(false);
+  const [picked, setPicked] = useState([]);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => { load(); }, []);
 
   const load = async () => {
     try {
       setLoading(true);
-      const [policyRes, catRes] = await Promise.all([
-        settings.getPaymentReminders(),
-        settings.getCategories(),
-      ]);
-      const policy = policyRes.data?.data || {};
-      setCategories(catRes.data?.data || []);
+      const res = await settings.getPaymentReminders();
+      const policy = res.data?.data || {};
+      setAvailable(policy.categories_available || []);
       const on = Number(policy.enabled) === 1;
+      const chosen = policy.categories || [];
       setEnabled(on);
+      setPicked(chosen);
+      // A saved category with no charges against it sits in the "other" group.
+      // Open that group so a ticked box is never rendered out of sight.
+      const others = (policy.categories_available || [])
+        .filter((c) => c.charge_count === 0)
+        .map((c) => c.id);
+      if (chosen.some((id) => others.includes(id))) setShowAll(true);
       form.setFieldsValue({
         enabled: on,
-        // null means "rent only", which the backend resolves at send time. The
-        // picker shows it as empty rather than inventing a selection, so saving
-        // an untouched form cannot silently pin the rent category by id.
-        categories: policy.categories || [],
         days_after_due: policy.days_after_due ?? 0,
         days_after_issue: policy.days_after_issue ?? 7,
         repeat_days: policy.repeat_days ?? 7,
@@ -68,7 +85,9 @@ export default function PaymentRemindersSettings() {
       await settings.updatePaymentReminders({
         ...values,
         enabled: values.enabled ? 1 : 0,
-        categories: values.categories?.length ? values.categories : null,
+        // Empty means "rent only", resolved by the backend at send time. Sending
+        // null rather than [] keeps that distinct from "chase nothing".
+        categories: picked.length ? picked : null,
       });
       message.success('Saved');
       load();
@@ -79,11 +98,39 @@ export default function PaymentRemindersSettings() {
     }
   };
 
+  const { charged, unused } = useMemo(() => ({
+    charged: available.filter((c) => c.charge_count > 0),
+    unused: available.filter((c) => c.charge_count === 0),
+  }), [available]);
+
+  const toggle = (id, on) =>
+    setPicked((prev) => (on ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)));
+
+  const boxes = (list, { muted } = {}) => (
+    <Row gutter={[8, 8]}>
+      {list.map((c) => (
+        <Col xs={24} sm={12} md={8} key={c.id}>
+          <Checkbox
+            checked={picked.includes(c.id)}
+            onChange={(e) => toggle(c.id, e.target.checked)}
+          >
+            <span style={{ color: muted ? '#8c8c8c' : undefined }}>{c.name}</span>
+            {!muted && (
+              <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+                {c.charge_count}
+              </Text>
+            )}
+          </Checkbox>
+        </Col>
+      ))}
+    </Row>
+  );
+
   if (loading) return <Card><Spin /></Card>;
 
   return (
     <Card>
-      <Form form={form} layout="vertical" onFinish={onSave} style={{ maxWidth: 640 }}>
+      <Form form={form} layout="vertical" onFinish={onSave} style={{ maxWidth: 760 }}>
         <Alert
           type={enabled ? 'warning' : 'info'}
           showIcon
@@ -105,19 +152,43 @@ export default function PaymentRemindersSettings() {
           <Switch onChange={setEnabled} />
         </Form.Item>
 
-        <Form.Item
-          name="categories"
-          label="Which charges to chase"
-          extra="Leave empty to chase rent only. The Overdue email threatens a late fee of 5% of the monthly rent, which does not read sensibly on a utility bill or a stamp duty charge."
-        >
-          <Select
-            mode="multiple"
-            allowClear
-            placeholder="Rent only"
-            optionFilterProp="label"
-            options={categories.map((c) => ({ value: String(c.id), label: c.name }))}
+        <Divider orientation="left" plain style={{ marginTop: 32 }}>Which charges to chase</Divider>
+
+        {picked.length === 0 ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Rent only"
+            description="Nothing ticked means rent, which is the sensible default. The Overdue email threatens a late fee of 5% of the monthly rent, which does not read sensibly attached to a utility bill or a stamp duty charge."
           />
-        </Form.Item>
+        ) : (
+          <div style={{ marginBottom: 16 }}>
+            {picked.map((id) => {
+              const c = available.find((x) => x.id === id);
+              return <Tag key={id} color="blue">{c ? c.name : id}</Tag>;
+            })}
+          </div>
+        )}
+
+        {boxes(charged)}
+
+        {unused.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setShowAll((v) => !v)}>
+              {showAll
+                ? 'Hide categories never charged to a tenant'
+                : `Show ${unused.length} more (never charged to a tenant)`}
+            </Button>
+            {showAll && <div style={{ marginTop: 8 }}>{boxes(unused, { muted: true })}</div>}
+          </div>
+        )}
+
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          The number beside each category is how many tenant charges it has carried.
+        </Text>
+
+        <Divider orientation="left" plain style={{ marginTop: 32 }}>Timing</Divider>
 
         <Form.Item
           name="days_after_due"

@@ -165,10 +165,47 @@ router.delete('/setting/whatsapp/key', authenticate, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 // GET /api/setting/payment-reminders
+//
+// Returns the policy AND the categories it can be applied to, so the screen can
+// render every choice as a tick rather than hiding them behind a dropdown.
+//
+// `charge_count` does two jobs. It separates the two groups on that screen, and
+// it orders the first one. This org has 103 enabled categories and 73 of them
+// have never carried a charge to a tenant — Salaries, MPF, Petty Cash, the whole
+// expense side of the ledger. Offering those as "charges to chase" is noise at
+// best. There is no column marking a category as tenant-facing, so usage is the
+// honest proxy: inflow invoices (type = 0) actually addressed to a tenant.
+//
+// Ordering by count rather than name matters as much as the split. Alphabetical
+// puts " Advertising" (2 charges) at the top and Rental Income (9,436) in the
+// middle; by usage, the four anyone would realistically tick are the first four.
 router.get('/setting/payment-reminders', authenticate, async (req, res) => {
   try {
-    const data = await loadChaseSettings(req.pool, req.user.orgId);
-    res.json({ code: 200, data });
+    const orgId = req.user.orgId;
+    const data = await loadChaseSettings(req.pool, orgId);
+    const [categories] = await req.pool.execute(
+      `SELECT CAST(cs.id AS CHAR) AS id, cs.name,
+              COUNT(i.id) AS charge_count
+         FROM category_setting cs
+         LEFT JOIN invoice i
+           ON i.category = cs.id AND i.org_id = cs.org_id
+          AND i.deleted_at IS NULL AND i.tenant_id IS NOT NULL AND i.type = 0
+        WHERE cs.org_id = ? AND cs.enabled = 1
+        GROUP BY cs.id, cs.name
+        ORDER BY charge_count DESC, cs.name`,
+      [orgId]
+    );
+    res.json({
+      code: 200,
+      data: {
+        ...data,
+        categories_available: categories.map((c) => ({
+          id: String(c.id),
+          name: c.name,
+          charge_count: Number(c.charge_count) || 0,
+        })),
+      },
+    });
   } catch (error) {
     console.error('Get payment reminder settings error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get payment reminder settings' });
