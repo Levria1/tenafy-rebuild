@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { useRouter, useParams } from 'next/navigation';
+import { Suspense, useEffect, useState, useCallback, useRef } from 'react';
+import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import { Card, Descriptions, Button, Space, Tag, Tabs, Table, message, Input, Divider, Popconfirm, Modal, DatePicker, Alert, Checkbox, InputNumber, Upload, Dropdown, Menu, Tooltip } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, FilePdfOutlined, SaveOutlined, MailOutlined, LogoutOutlined, CalendarOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -23,7 +23,8 @@ const INVOICING_MAP = {
 
 const READING_TYPE_LABELS = { 0: 'Move-In', 1: 'Move-Out', 2: 'Billing', 3: 'Monthly' };
 
-export default function LeasingDetailPage() {
+function LeasingDetailPageInner() {
+  const searchParams = useSearchParams();
   const [lease, setLease] = useState(null);
   const [readings, setReadings] = useState([]);
   const [readingsLoading, setReadingsLoading] = useState(false);
@@ -335,6 +336,21 @@ export default function LeasingDetailPage() {
     setMoveOutOpen(true);
     loadMoveOutPreview(when);
   };
+
+  // Arriving from the edit page's Move Out button. The modal prefills from
+  // lease.moveout, so it cannot open until the lease has loaded — hence a effect
+  // keyed on the lease rather than opening on mount. The ref stops a re-render
+  // (or a later lease refresh after recording) from reopening it.
+  const autoOpenedMoveOut = useRef(false);
+  useEffect(() => {
+    if (autoOpenedMoveOut.current) return;
+    if (!lease) return;
+    if (searchParams.get('moveout') !== '1') return;
+    autoOpenedMoveOut.current = true;
+    handleOpenMoveOut();
+    // Drop the parameter so a refresh or a back-navigation does not reopen it.
+    router.replace(`/leasing/${leaseId}/detail`);
+  }, [lease, searchParams]);
 
   const handleUndoMoveOut = async () => {
     setUndoingMoveOut(true);
@@ -1408,4 +1424,11 @@ export default function LeasingDetailPage() {
       </Space>
     </MainLayout>
   );
+}
+
+// useSearchParams (for the ?moveout=1 hand-off from the edit page) has to sit
+// inside a Suspense boundary or the build fails on this route. Same wrapper the
+// accounting and leasing-calendar pages use.
+export default function LeasingDetailPage() {
+  return <Suspense fallback={<div />}><LeasingDetailPageInner /></Suspense>;
 }

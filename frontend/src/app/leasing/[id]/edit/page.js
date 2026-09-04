@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Form, Input, InputNumber, DatePicker, Select, Button, message, Spin, Row, Col, Divider, Switch, Checkbox, Modal, Popconfirm } from 'antd';
-import { ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined, LogoutOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
 import SelectAllCheckbox from '../../../../components/SelectAllCheckbox';
@@ -716,13 +716,18 @@ export default function LeasingEditPage() {
                 existed. Active/Upcoming is shown from the dates.
               </div>
               {leaseStillRunning && (
-                <div style={{ fontSize: 12, color: '#faad14', marginTop: 4 }}>
-                  This lease is still running. To end it early, use{' '}
-                  <a onClick={() => router.push(`/leasing/${leaseId}/detail`)} style={{ cursor: 'pointer' }}>
-                    Move Out
-                  </a>{' '}
-                  on the lease detail page — it shortens the lease, settles the remaining
-                  invoices, and can be undone.
+                <div style={{ marginTop: 8 }}>
+                  <Button
+                    size="small"
+                    icon={<LogoutOutlined />}
+                    onClick={() => router.push(`/leasing/${leaseId}/detail?moveout=1`)}
+                  >
+                    Record move-out
+                  </Button>
+                  <div style={{ fontSize: 12, color: '#faad14', marginTop: 4 }}>
+                    This lease is still running. To end it early use Move Out, not Inactive —
+                    it shortens the lease, settles the remaining invoices, and can be undone.
+                  </div>
                 </div>
               )}
             </Col>
