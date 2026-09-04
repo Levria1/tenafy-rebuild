@@ -8,16 +8,18 @@
  * Overdue-Tenant email template because the policy is about WHICH invoices get
  * chased and HOW OFTEN, which is not a property of a template.
  *
- * Categories are ticks, not a dropdown. Who gets chased is the consequential
- * part of this screen, and a closed multi-select shows it as a row of tags you
- * have to open something to verify. Laid out flat, the policy is legible at a
- * glance and a mis-tick is visible without hunting for it.
+ * Categories are a searchable multi-select. This org has 103 enabled categories,
+ * which is well past the point where a flat grid of tickboxes reads as a wall,
+ * and typing three letters beats scanning for a name you already know.
  *
- * The list is split by whether a category has ever carried a charge to a
- * tenant. Around thirty categories are enabled and most are the expense side of
- * the ledger, which can never appear on a tenant invoice; burying those keeps
- * the real choices readable. They stay reachable rather than hidden, because
- * "you cannot pick it" and "we did not list it" are different promises.
+ * The options are grouped by whether a category has ever carried a charge to a
+ * tenant. 73 of the 103 never have: Salaries, MPF, Petty Cash, the whole
+ * expense side of the ledger. They stay in the list rather than being filtered
+ * out, because "you cannot pick it" and "we did not list it" are different
+ * promises — they just sit below the ones that matter.
+ *
+ * Selections render as tags in the control, so what is chosen stays visible
+ * without opening anything.
  *
  * Two separate day counts, because they answer different questions. "Days after
  * due" is the rope a late payer gets. "Days after the invoice was raised" is a
@@ -32,8 +34,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Card, Form, Switch, Checkbox, InputNumber, Button, Alert, Space,
-  Typography, message, Spin, Row, Col, Divider, Tag,
+  Card, Form, Switch, Select, InputNumber, Button, Alert, Space,
+  Typography, message, Spin, Divider,
 } from 'antd';
 import { settings } from '../../lib/api';
 
@@ -46,7 +48,6 @@ export default function PaymentRemindersSettings() {
   const [saving, setSaving] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [picked, setPicked] = useState([]);
-  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => { load(); }, []);
 
@@ -60,12 +61,6 @@ export default function PaymentRemindersSettings() {
       const chosen = policy.categories || [];
       setEnabled(on);
       setPicked(chosen);
-      // A saved category with no charges against it sits in the "other" group.
-      // Open that group so a ticked box is never rendered out of sight.
-      const others = (policy.categories_available || [])
-        .filter((c) => c.charge_count === 0)
-        .map((c) => c.id);
-      if (chosen.some((id) => others.includes(id))) setShowAll(true);
       form.setFieldsValue({
         enabled: on,
         days_after_due: policy.days_after_due ?? 0,
@@ -98,33 +93,25 @@ export default function PaymentRemindersSettings() {
     }
   };
 
-  const { charged, unused } = useMemo(() => ({
-    charged: available.filter((c) => c.charge_count > 0),
-    unused: available.filter((c) => c.charge_count === 0),
-  }), [available]);
-
-  const toggle = (id, on) =>
-    setPicked((prev) => (on ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)));
-
-  const boxes = (list, { muted } = {}) => (
-    <Row gutter={[8, 8]}>
-      {list.map((c) => (
-        <Col xs={24} sm={12} md={8} key={c.id}>
-          <Checkbox
-            checked={picked.includes(c.id)}
-            onChange={(e) => toggle(c.id, e.target.checked)}
-          >
-            <span style={{ color: muted ? '#8c8c8c' : undefined }}>{c.name}</span>
-            {!muted && (
-              <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
-                {c.charge_count}
-              </Text>
-            )}
-          </Checkbox>
-        </Col>
-      ))}
-    </Row>
-  );
+  // The backend already orders by charge_count, so the first group arrives in
+  // the order someone would actually reach for. Empty groups are dropped rather
+  // than rendered as a bare heading over nothing.
+  const options = useMemo(() => {
+    const label = (c) => (c.charge_count > 0 ? `${c.name} (${c.charge_count})` : c.name);
+    const groups = [
+      {
+        label: 'Charged to tenants',
+        options: available.filter((c) => c.charge_count > 0)
+          .map((c) => ({ value: c.id, label: label(c) })),
+      },
+      {
+        label: 'Never charged to a tenant',
+        options: available.filter((c) => c.charge_count === 0)
+          .map((c) => ({ value: c.id, label: label(c) })),
+      },
+    ];
+    return groups.filter((g) => g.options.length > 0);
+  }, [available]);
 
   if (loading) return <Card><Spin /></Card>;
 
@@ -154,38 +141,32 @@ export default function PaymentRemindersSettings() {
 
         <Divider orientation="left" plain style={{ marginTop: 32 }}>Which charges to chase</Divider>
 
-        {picked.length === 0 ? (
+        <Select
+          mode="multiple"
+          allowClear
+          showSearch
+          value={picked}
+          onChange={setPicked}
+          placeholder="Rent only"
+          // Search the visible label, not the value: the values are Snowflake
+          // ids, so the default would have people typing digits.
+          optionFilterProp="label"
+          options={options}
+          style={{ width: '100%' }}
+        />
+
+        {picked.length === 0 && (
           <Alert
             type="info"
             showIcon
-            style={{ marginBottom: 16 }}
+            style={{ marginTop: 12 }}
             message="Rent only"
-            description="Nothing ticked means rent, which is the sensible default. The Overdue email threatens a late fee of 5% of the monthly rent, which does not read sensibly attached to a utility bill or a stamp duty charge."
+            description="Leaving this empty means rent, which is the sensible default. The Overdue email threatens a late fee of 5% of the monthly rent, which does not read sensibly attached to a utility bill or a stamp duty charge."
           />
-        ) : (
-          <div style={{ marginBottom: 16 }}>
-            {picked.map((id) => {
-              const c = available.find((x) => x.id === id);
-              return <Tag key={id} color="blue">{c ? c.name : id}</Tag>;
-            })}
-          </div>
-        )}
-
-        {boxes(charged)}
-
-        {unused.length > 0 && (
-          <div style={{ marginTop: 16 }}>
-            <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setShowAll((v) => !v)}>
-              {showAll
-                ? 'Hide categories never charged to a tenant'
-                : `Show ${unused.length} more (never charged to a tenant)`}
-            </Button>
-            {showAll && <div style={{ marginTop: 8 }}>{boxes(unused, { muted: true })}</div>}
-          </div>
         )}
 
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-          The number beside each category is how many tenant charges it has carried.
+          The number beside a category is how many charges it has carried to a tenant.
         </Text>
 
         <Divider orientation="left" plain style={{ marginTop: 32 }}>Timing</Divider>
