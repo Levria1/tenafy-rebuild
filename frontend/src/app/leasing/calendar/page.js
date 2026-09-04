@@ -445,7 +445,7 @@ function CalendarInner() {
             <Select.Option value="paperwork_gap">Paperwork gap</Select.Option>
           </Select>
           <Input
-            placeholder="Search tenant..."
+            placeholder="Tenant, unit or LEA no."
             prefix={<SearchOutlined />}
             value={search}
             onChange={(e) => setSearch(e.target.value)}

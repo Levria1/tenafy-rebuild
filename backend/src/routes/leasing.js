@@ -148,9 +148,12 @@ router.post('/list', authenticate, async (req, res) => {
     const params = [orgId];
 
     if (search) {
-      whereClause += ' AND (u.name LIKE ? OR p.display_name LIKE ? OR t.first_name LIKE ? OR t.last_name LIKE ? OR CONCAT(t.first_name, " ", t.last_name) LIKE ?)';
+      // lease_no is in here because every invoice, email log and PDF refers to a lease
+      // by its LEA number, so that is what people paste into the box. Without it the
+      // search silently returns nothing for a lease that plainly exists.
+      whereClause += ' AND (u.name LIKE ? OR p.display_name LIKE ? OR t.first_name LIKE ? OR t.last_name LIKE ? OR CONCAT(t.first_name, " ", t.last_name) LIKE ? OR l.lease_no LIKE ?)';
       const searchParam = '%' + search + '%';
-      params.push(searchParam, searchParam, searchParam, searchParam, searchParam);
+      params.push(searchParam, searchParam, searchParam, searchParam, searchParam, searchParam);
     }
     // Filter by computed status (0=inactive, 1=active, 2=upcoming)
     if (status !== undefined && status !== null) {
@@ -290,9 +293,9 @@ router.get('/calendar', authenticate, async (req, res) => {
       unitParams.push(unitId);
     }
     if (search) {
-      unitWhere += ' AND (u.name LIKE ? OR p.display_name LIKE ? OR t_search.first_name LIKE ? OR t_search.last_name LIKE ? OR CONCAT(COALESCE(t_search.first_name,""), " ", COALESCE(t_search.last_name,"")) LIKE ?)';
+      unitWhere += ' AND (u.name LIKE ? OR p.display_name LIKE ? OR t_search.first_name LIKE ? OR t_search.last_name LIKE ? OR CONCAT(COALESCE(t_search.first_name,""), " ", COALESCE(t_search.last_name,"")) LIKE ? OR t_search_l.lease_no LIKE ?)';
       const s = `%${search}%`;
-      unitParams.push(s, s, s, s, s);
+      unitParams.push(s, s, s, s, s, s);
     }
 
     // Get units with current active tenant via subquery

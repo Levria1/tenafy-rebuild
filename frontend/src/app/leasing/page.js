@@ -448,7 +448,7 @@ export default function LeasingPage() {
             </Space>
           </div>
           <Input.Search
-            placeholder="Type here to search"
+            placeholder="Tenant, unit or LEA no."
             allowClear
             onSearch={(v) => { setSearch(v); setPagination(p => ({ ...p, current: 1 })); }}
           />
@@ -470,7 +470,7 @@ export default function LeasingPage() {
           <div style={{ color: '#666' }}>{pagination.total} Total</div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Input.Search
-              placeholder="Type here to search"
+              placeholder="Tenant, unit or LEA no."
               style={{ width: 200 }}
               allowClear
               onSearch={(v) => { setSearch(v); setPagination(p => ({ ...p, current: 1 })); }}
