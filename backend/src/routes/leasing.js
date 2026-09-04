@@ -26,6 +26,7 @@ const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCale
 const { loadResolutionData, resolveWithData, resolveLeaseTemplateId, derivePdfStatus, hasTemplateSql } = require('../services/leaseTemplateResolver');
 const { orgToday, orgTodaySql, orgTimeSql } = require('../utils/orgTime');
 const { shouldSendCheckinNow } = require('../utils/checkinWindow');
+const { checkTermination } = require('../utils/leaseTermination');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
@@ -1466,6 +1467,33 @@ router.put('/:id', authenticate, async (req, res) => {
     // Note: toggling viewing_enabled no longer messages the tenant. Marketability
     // is decoupled from tenant contact — the relay reaches out on demand, inside
     // the per-status lead window only (viewingNegotiation.startNegotiation).
+
+    // Refuse to void a lease that is still running. `status = 0` silently stops
+    // rent invoices and returns the unit to availability, which is never what
+    // "the tenant is leaving early" means — that is Move Out. See
+    // utils/leaseTermination.js for what this column actually controls.
+    if (status !== undefined && Number(status) === 0) {
+      const [[existing]] = await req.pool.execute(
+        `SELECT l.status, l.end_date FROM leasing l
+           JOIN unit u ON l.unit_id = u.id
+           JOIN property p ON u.property_id = p.id
+          WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL`,
+        [id, orgId]
+      );
+      if (existing) {
+        const verdict = checkTermination({
+          requestedStatus: status,
+          currentStatus: existing.status,
+          // The same request may be shortening the lease; judge the term it will
+          // have after this save, not the one it had before.
+          endDate: end_date !== undefined ? (end_date || null) : existing.end_date,
+          today: orgToday(),
+        });
+        if (verdict.blocked) {
+          return res.status(400).json({ code: 400, message: verdict.message });
+        }
+      }
+    }
 
     // Server-side overlap check on edit — check if new dates/unit conflict with other leases
     const checkUnit = unit_id || null;

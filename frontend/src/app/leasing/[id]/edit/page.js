@@ -42,6 +42,10 @@ const FLabel = ({ children, required }) => (
 
 export default function LeasingEditPage() {
   const [form] = Form.useForm();
+  // Is this lease still running today? Drives the Move Out pointer under Status.
+  // Watches the form rather than the saved value, so shortening the lease in the
+  // same edit clears the warning — that is the case the server also allows.
+  const watchedEndDate = Form.useWatch('end_date', form);
   const [loading, setLoading] = useState(false);
   // The end date as it stood BEFORE this edit, so an EXTENSION can be told apart
   // from any other change. Set once when the lease loads.
@@ -65,6 +69,13 @@ export default function LeasingEditPage() {
   const router = useRouter();
   const params = useParams();
   const leaseId = params.id;
+  const effectiveEndDate = watchedEndDate
+    ? watchedEndDate.format('YYYY-MM-DD')
+    : loadedEndDate;
+  // No end date means open-ended, which is still running. Matches the server's
+  // fail-closed reading in utils/leaseTermination.js.
+  const leaseStillRunning = !effectiveEndDate
+    || effectiveEndDate >= dayjs().format('YYYY-MM-DD');
 
   useEffect(() => {
     loadAll();
@@ -692,10 +703,28 @@ export default function LeasingEditPage() {
               <Form.Item name="status" noStyle>
                 <Select options={[
                   { label: 'Active', value: 1 },
-                  { label: 'Inactive (Terminated)', value: 0 },
+                  { label: 'Inactive (void this record)', value: 0 },
                 ]} />
               </Form.Item>
-              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>Set to Inactive to terminate early. Active/Upcoming is determined by dates.</div>
+              {/* Inactive is not "the tenant left early" — it stops rent invoices and
+                  returns the unit to availability. Three occupied flats were voided
+                  this way. The server refuses it on a running lease; this says so
+                  before the save, and points at the flow that does the right thing. */}
+              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                Inactive voids the record entirely: no rent invoices, no emails, and the unit
+                goes back into availability. Use it only for a lease that should never have
+                existed. Active/Upcoming is shown from the dates.
+              </div>
+              {leaseStillRunning && (
+                <div style={{ fontSize: 12, color: '#faad14', marginTop: 4 }}>
+                  This lease is still running. To end it early, use{' '}
+                  <a onClick={() => router.push(`/leasing/${leaseId}/detail`)} style={{ cursor: 'pointer' }}>
+                    Move Out
+                  </a>{' '}
+                  on the lease detail page — it shortens the lease, settles the remaining
+                  invoices, and can be undone.
+                </div>
+              )}
             </Col>
           </Row>
         </div>
