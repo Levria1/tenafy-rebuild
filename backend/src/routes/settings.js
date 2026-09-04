@@ -2,7 +2,7 @@ const express = require('express');
 const { bitToBool } = require('../utils/mysqlBit');
 const router = express.Router();
 const crypto = require('crypto');
-const { authenticate, requireSuperAdmin } = require('../middleware/auth');
+const { authenticate, requireSuperAdmin, requirePermission } = require('../middleware/auth');
 const { getMasterPool } = require('../config/poolRegistry');
 const { logActivity } = require('../utils/activityLog');
 const { loadChaseSettings, serialiseCategories, CHASE_DEFAULTS } = require('../utils/chaseSettings');
@@ -214,7 +214,12 @@ router.get('/setting/payment-reminders', authenticate, async (req, res) => {
 });
 
 // PUT /api/setting/payment-reminders
-router.put('/setting/payment-reminders', authenticate, async (req, res) => {
+// Gated on EMAIL_TEMPLATE_EDIT rather than plain authentication. Saving here can
+// switch on a job that emails real tenants unattended, which is a bigger blast
+// radius than any other row on the settings screen; anyone trusted to edit the
+// wording of tenant email is the right audience for its schedule. The GET stays
+// open so the screen can render for anyone who can reach it.
+router.put('/setting/payment-reminders', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_EDIT'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { enabled, categories, days_after_due, days_after_issue, repeat_days } = req.body || {};

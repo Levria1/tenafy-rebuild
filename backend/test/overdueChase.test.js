@@ -97,8 +97,12 @@ test('empty arguments do not throw', () => {
 
 test('the SQL fragment defaults to the same grace constant as the JS', () => {
   const sql = chaseableSql('i.due_on', 'i.created_at');
-  assert.match(sql, new RegExp(`DATE\\(i\\.created_at\\) < DATE_SUB\\(\\?, INTERVAL ${CHASE_GRACE_DAYS} DAY\\)`),
+  assert.match(sql, new RegExp(`< DATE_SUB\\(\\?, INTERVAL ${CHASE_GRACE_DAYS} DAY\\)`),
     'the SQL and the JS must not drift apart on the default grace period');
+  // created_at is a TIMESTAMP rendered in the connection's zone (UTC in prod)
+  // while the rules run on the Hong Kong calendar, so it is shifted first.
+  assert.match(sql, /DATE\(DATE_ADD\(i\.created_at, INTERVAL/,
+    'created_at must be converted to org time before its date is taken');
   // Both windows are expressed the same way, so the due side can be widened by
   // policy without a second code path.
   assert.match(sql, /i\.due_on < DATE_SUB\(\?, INTERVAL 0 DAY\)/);

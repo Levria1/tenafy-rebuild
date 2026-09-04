@@ -176,14 +176,53 @@ test('the sweep leaves departed tenants alone', () => {
     'someone who moved out must not keep receiving automated demands');
 });
 
-test('last_chased_at is stamped only after a send succeeded', () => {
+test('the invoice is claimed before the send, not stamped after it', () => {
+  // Stamping afterwards left a window where two overlapping runs both read
+  // last_chased_at IS NULL and both sent. For a dunning letter a duplicate is
+  // worse than a delay, so the claim is an atomic conditional update taken
+  // first, and released again if the send does not happen.
   const job = overdueJob();
-  const stamp = job.indexOf('last_chased_at = NOW()');
-  assert.ok(stamp > -1, 'repeat_days is meaningless without recording the send');
-  assert.ok(stamp > job.indexOf('sendOverdueToTenant'),
-    'stamping before the send would silence a failed invoice for a whole cycle');
-  assert.ok(stamp < job.indexOf('sent++'),
-    'the stamp belongs inside the same try, so a failed stamp is not counted as sent');
+  const claim = job.indexOf('last_chased_at = NOW()');
+  assert.ok(claim > -1, 'repeat_days is meaningless without recording the send');
+  assert.ok(claim < job.indexOf('sendOverdueToTenant'),
+    'the claim must be taken before the send, or concurrent runs double-chase');
+  assert.match(job, /if \(claim\.affectedRows === 0\) continue;/,
+    'losing the race must skip the invoice, not send anyway');
+});
+
+test('a claim is released when the send does not happen', () => {
+  const job = overdueJob();
+  const releases = job.match(/UPDATE invoice SET last_chased_at = \? WHERE id = \?/g) || [];
+  assert.equal(releases.length, 2,
+    'both the declined path and the thrown path must put the old value back, ' +
+    'otherwise a failure silences the invoice for a whole repeat_days window');
+  assert.match(job, /i\.last_chased_at,/,
+    'the previous value has to be selected to be restorable');
+});
+
+test('there is no hand-rolled fallback email', () => {
+  // sendOverdueToTenant returns null for FOUR reasons: no template, the lease
+  // has overdue email switched off (83 of 329 active leases do), the recipient
+  // failed the org whitelist, or the send failed. The old fallback treated all
+  // four as "improvise one" and called sendMail directly, overriding every one
+  // of those controls.
+  const job = overdueJob();
+  assert.ok(!/sendMail\(/.test(job),
+    'the sweep must not send outside the template path, which is what enforces ' +
+    'the per-lease toggle and the org email whitelist');
+  assert.match(job, /if \(!templateResult\) \{/,
+    'a declined send must be recorded and skipped, not worked around');
+});
+
+test('reminders bill the outstanding balance, not the invoice face value', () => {
+  // Twelve open rent invoices are part paid, one by HK$106,170 against
+  // HK$162,203. Passing i.amount would demand the whole sum back.
+  const job = overdueJob();
+  assert.match(job, /overdueAmount: inv\.outstanding/,
+    'the email must quote what is still owed');
+  assert.match(job, /AS outstanding/, 'outstanding has to be computed in the query');
+  assert.match(job, /HAVING outstanding > 0/,
+    'a fully settled invoice must drop out even if its status flag is stale');
 });
 
 test('the category list is bound, not interpolated', () => {
@@ -221,4 +260,22 @@ test('the stored default for enabled matches the code default', () => {
 test('the migration adds the column repeat_days depends on', () => {
   assert.match(migration, /ADD COLUMN last_chased_at TIMESTAMP NULL/,
     'repeat_days is per invoice and email_log has no invoice_id to read');
+});
+
+// ---------------------------------------------------------------------------
+// Saving the policy is a privileged act: it can switch on a job that emails real
+// tenants with nobody reviewing the output.
+// ---------------------------------------------------------------------------
+
+test('saving the policy requires a permission, reading it does not', () => {
+  const routes = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'routes', 'settings.js'), 'utf8');
+  const put = routes.match(/router\.put\('\/setting\/payment-reminders'[^\n]*/);
+  assert.ok(put, 'PUT /setting/payment-reminders not found');
+  assert.match(put[0], /requirePermission\(/,
+    'plain authenticate would let any logged-in user start mailing tenants');
+  const get = routes.match(/router\.get\('\/setting\/payment-reminders'[^\n]*/);
+  assert.ok(get, 'GET /setting/payment-reminders not found');
+  assert.ok(!/requirePermission\(/.test(get[0]),
+    'the settings screen still has to be able to render the current policy');
 });

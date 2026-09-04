@@ -571,11 +571,23 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
   // names the charge, and an invoice fetched without its category renders that
   // line with a hole in it.
   //
+  // Outstanding is computed rather than assumed. Twelve of this org's open rent
+  // invoices are PART paid, one of them by HK$106,170 against HK$162,203, and
+  // billing i.amount would demand the whole sum back from someone who has
+  // already paid most of it. HAVING outstanding > 0 is also the backstop against
+  // a stale status flag emailing somebody who has settled in full.
+  //
   // Every policy test is applied in SQL rather than after the fact, so a
   // backlog of ineligible invoices cannot crowd genuinely late ones out of the
   // 50 rows this job will look at.
   const [invoices] = await pool.execute(
     `SELECT i.id, i.invoice_code, i.amount, i.due_on, i.org_id, i.leasing_id, i.category,
+       i.last_chased_at,
+       (i.amount - COALESCE((SELECT SUM(al.amount) FROM accounting_line al
+                               JOIN accounting a ON al.accounting_id = a.id
+                              WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id
+                                AND a.deleted_at IS NULL AND al.deleted_at IS NULL), 0)
+       ) AS outstanding,
        t.email AS tenant_email, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
        p.display_name AS property_name, u.name AS unit_name, DATEDIFF(?, i.due_on) AS days_overdue
      FROM invoice i
@@ -589,39 +601,62 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
        AND ${repeatDueSql('i.last_chased_at', policy.repeat_days)}
        AND l.status = 1 AND (l.end_date IS NULL OR l.end_date >= ?) AND l.deleted_at IS NULL
        AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
+     HAVING outstanding > 0
      ORDER BY i.due_on ASC LIMIT 50`,
     [today, ...categoryIds, today, today, today, today, orgId]
   );
 
   if (invoices.length === 0) return;
-  let sent = 0, failures = 0;
+  let sent = 0, failures = 0, skipped = 0;
 
   for (const inv of invoices) {
+    // Claim the invoice BEFORE sending, with a conditional update that only
+    // succeeds if nobody else has taken it since the SELECT. Two overlapping
+    // runs would otherwise both read last_chased_at IS NULL and both send. For a
+    // dunning letter a duplicate is worse than a delay, so the claim comes first
+    // and is rolled back below if the send fails.
+    const [claim] = await pool.execute(
+      `UPDATE invoice SET last_chased_at = NOW()
+        WHERE id = ? AND ${repeatDueSql('last_chased_at', policy.repeat_days)}`,
+      [inv.id, today]
+    );
+    if (claim.affectedRows === 0) continue;
+
     try {
-      let emailSent = false;
-      if (inv.leasing_id) {
-        const templateResult = await sendOverdueToTenant(pool, orgId, inv.leasing_id, { dueDate: inv.due_on, overdueAmount: inv.amount, invoiceId: inv.id, invoiceCode: inv.invoice_code, category: inv.category });
-        if (templateResult) emailSent = true;
+      if (!inv.leasing_id) throw new Error('invoice has no lease');
+      const templateResult = await sendOverdueToTenant(pool, orgId, inv.leasing_id, {
+        dueDate: inv.due_on,
+        overdueAmount: inv.outstanding,
+        invoiceId: inv.id,
+        invoiceCode: inv.invoice_code,
+        category: inv.category,
+      });
+      // A null here is NOT "no template, improvise one". It also means this
+      // lease has overdue email switched off (83 of 329 active leases do), or
+      // the recipient failed the org email whitelist, or the send failed after
+      // retries. The old hand-rolled fallback called sendMail directly and so
+      // overrode every one of those controls. There is no fallback now: if the
+      // configured path declines to send, that is the answer.
+      if (!templateResult) {
+        skipped++;
+        await pool.execute('UPDATE invoice SET last_chased_at = ? WHERE id = ?', [inv.last_chased_at, inv.id]);
+        continue;
       }
-      if (!emailSent) {
-        const dueDateFormatted = new Date(inv.due_on).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-        await sendMail({
-          to: inv.tenant_email,
-          subject: `Payment Reminder — Invoice ${inv.invoice_code} is Overdue`,
-          html: `<p>Dear ${inv.tenant_first_name} ${inv.tenant_last_name},</p><p>Invoice <strong>${inv.invoice_code}</strong> for <strong>$${Number(inv.amount).toFixed(2)}</strong> was due on <strong>${dueDateFormatted}</strong> and is now <strong>${inv.days_overdue} day(s) overdue</strong>.</p>`
-        });
-      }
-      // Stamped only after a send actually succeeded. Doing it up front would
-      // make a failed send look like a delivered one and silence this invoice
-      // for a full repeat_days window.
-      await pool.execute('UPDATE invoice SET last_chased_at = NOW() WHERE id = ?', [inv.id]);
       sent++;
     } catch (err) {
       failures++;
+      // Release the claim so a failed send is retried next run rather than
+      // silently swallowing this invoice for a whole repeat_days window.
+      try {
+        await pool.execute('UPDATE invoice SET last_chased_at = ? WHERE id = ?', [inv.last_chased_at, inv.id]);
+      } catch (releaseErr) {
+        console.error(`[Scheduler] Could not release chase claim on ${inv.invoice_code}:`, releaseErr.message);
+      }
       console.error(`[Scheduler] Overdue reminder error for ${inv.invoice_code}:`, err.message);
     }
   }
 
+  if (skipped > 0) console.log(`[Scheduler][overdueReminders][org:${orgId}] ${skipped} invoice(s) skipped: lease toggle off, whitelist, or no template.`);
   if (sent > 0) await createNotification(pool, { orgId, type: 'warning', title: `${sent} overdue reminder(s) sent`, message: `Sent reminders for ${sent} overdue invoice(s).`, link: '/invoices' });
   if (failures > 0) await createNotification(pool, { orgId, type: 'error', title: `${failures} overdue reminder(s) failed`, message: 'Check tenant email addresses.', link: '/invoices' });
 }

@@ -30,6 +30,8 @@
  * is being changed here.
  */
 
+const { toOrgWallClock, orgTimeSql } = require('./orgTime');
+
 const CHASE_GRACE_DAYS = 7;
 
 /**
@@ -41,7 +43,13 @@ function toCalendarDate(value) {
   if (!value) return null;
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) return null;
-    return value.toISOString().slice(0, 10);
+    // toOrgWallClock, NOT toISOString. created_at is a TIMESTAMP and the driver
+    // hands it back as a Date in UTC, while every business rule here runs on the
+    // Hong Kong calendar. An invoice raised at 00:30 HK on 3 September is
+    // 16:30 UTC on the 2nd, so toISOString would date it a day early and the
+    // grace period would expire a day early with it.
+    const wall = toOrgWallClock(value);
+    return wall ? String(wall).slice(0, 10) : null;
   }
   const s = String(value).trim();
   const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
@@ -114,8 +122,13 @@ function chaseableSql(dueCol, createdCol, {
 } = {}) {
   const afterDue = intOrDefault(daysAfterDue, 0);
   const afterIssue = intOrDefault(daysAfterIssue, CHASE_GRACE_DAYS);
+  // due_on is a DATE and carries no instant, so it needs no conversion.
+  // created_at is a TIMESTAMP that MySQL renders in the connection's zone (UTC
+  // in production), so it goes through orgTimeSql first — otherwise this and the
+  // JS twin agree with each other while both being a day out against the
+  // operator's calendar.
   return `${dueCol} < DATE_SUB(?, INTERVAL ${afterDue} DAY)`
-       + ` AND DATE(${createdCol}) < DATE_SUB(?, INTERVAL ${afterIssue} DAY)`;
+       + ` AND DATE(${orgTimeSql(createdCol)}) < DATE_SUB(?, INTERVAL ${afterIssue} DAY)`;
 }
 
 /**
@@ -127,7 +140,9 @@ function chaseableSql(dueCol, createdCol, {
  */
 function repeatDueSql(lastChasedCol, repeatDays) {
   const days = intOrDefault(repeatDays, CHASE_GRACE_DAYS);
-  return `(${lastChasedCol} IS NULL OR DATE(${lastChasedCol}) <= DATE_SUB(?, INTERVAL ${days} DAY))`;
+  // Same TIMESTAMP-on-the-org-calendar reasoning as chaseableSql above.
+  return `(${lastChasedCol} IS NULL`
+       + ` OR DATE(${orgTimeSql(lastChasedCol)}) <= DATE_SUB(?, INTERVAL ${days} DAY))`;
 }
 
 module.exports = {
