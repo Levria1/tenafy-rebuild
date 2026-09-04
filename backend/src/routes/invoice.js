@@ -10,6 +10,7 @@ const { generateInvoicePdfBuffer } = require('./pdf');
 const { sendTemplateEmail } = require('../services/emailService');
 const { sendMail, sendMailWithAccount } = require('../config/mailer');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
+const { isChaseable } = require('../utils/overdueChase');
 
 // Internal helper used by both /publish and /publish-preview to figure out the
 // authoritative amount for a given lease + due_date. Returns:
@@ -760,7 +761,7 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
 
     const [[inv]] = await req.pool.execute(
       `SELECT i.id, i.invoice_code, i.leasing_id, i.due_on, i.amount, i.status,
-              i.tenant_id, i.category, i.invoice_code,
+              i.tenant_id, i.category, i.invoice_code, i.created_at,
               t.email AS tenant_email, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name
        FROM invoice i
        LEFT JOIN tenant t ON i.tenant_id = t.id
@@ -790,10 +791,21 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
     // Overdue when: explicitly status=2, OR status is Open/Overdue and past due AND outstanding > 0.
     // Fully-paid invoices (status=1 or outstanding=0) are never overdue.
     const isPaid = Number(inv.status) === 1 || outstanding <= 0;
-    const isOverdue = !isPaid && (
+    const ledgerSaysOverdue = (
       Number(inv.status) === 2 ||
       ([0, 2].includes(Number(inv.status)) && dueStr && dueStr < todayStr)
     );
+    // The ledger being right about the date does not make a chaser fair to send.
+    // A utility bill dated to the end of its meter period is past due the moment
+    // it is created, and the nightly markOverdue job flips it to status=2 on the
+    // same evidence — so both branches above fire on an invoice the tenant has
+    // never seen. isChaseable adds the missing half: the tenant must also have
+    // had time to pay since it was issued. See utils/overdueChase.js.
+    const isOverdue = !isPaid && ledgerSaysOverdue && isChaseable({
+      dueOn: inv.due_on,
+      createdAt: inv.created_at,
+      today: todayStr,
+    });
 
     const pdfBuffer = await generateInvoicePdfBuffer(req.pool, id, orgId);
     const filename = `invoice-${inv.invoice_code || id}.pdf`;

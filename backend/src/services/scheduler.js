@@ -11,6 +11,7 @@ const config = require('../config');
 const inquiryExtractor = require('./inquiryExtractor');
 const { ORG_TIME_ZONE, orgToday, orgTodayDate } = require('../utils/orgTime');
 const { renewalAskStatus } = require('../utils/renewalAsk');
+const { chaseableSql } = require('../utils/overdueChase');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -526,17 +527,26 @@ async function sendUpcomingInvoiceRemindersForOrg(pool, orgId) {
 // ---------------------------------------------------------------------------
 
 async function sendOverdueRemindersForOrg(pool, orgId) {
-  // Bound once and reused for both placeholders so the DATEDIFF and the
-  // comparison cannot straddle midnight and disagree.
+  // Bound once and reused for all three placeholders so the DATEDIFF, the
+  // due-date test and the grace-period test cannot straddle midnight and
+  // disagree with each other.
   const today = orgToday();
+  // i.category rides along so %Category% resolves. The tenant-facing template
+  // names the charge ("Details: Utilities for August"), and an invoice fetched
+  // without its category renders that line with a hole in it.
+  //
+  // chaseableSql keeps back-dated invoices out of the sweep at the database
+  // rather than after the LIMIT, so a backlog of them cannot crowd genuinely
+  // late invoices out of the 50 rows this job will look at.
   const [invoices] = await pool.execute(
-    `SELECT i.id, i.invoice_code, i.amount, i.due_on, i.org_id, i.leasing_id,
+    `SELECT i.id, i.invoice_code, i.amount, i.due_on, i.org_id, i.leasing_id, i.category,
        t.email AS tenant_email, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
        p.display_name AS property_name, u.name AS unit_name, DATEDIFF(?, i.due_on) AS days_overdue
      FROM invoice i JOIN tenant t ON i.tenant_id = t.id JOIN unit u ON i.unit_id = u.id JOIN property p ON u.property_id = p.id
-     WHERE i.status = 0 AND i.due_on < ? AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
+     WHERE i.status = 0 AND ${chaseableSql('i.due_on', 'i.created_at')}
+       AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
      ORDER BY i.due_on ASC LIMIT 50`,
-    [today, today, orgId]
+    [today, today, today, orgId]
   );
 
   if (invoices.length === 0) return;
@@ -546,7 +556,7 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
     try {
       let emailSent = false;
       if (inv.leasing_id) {
-        const templateResult = await sendOverdueToTenant(pool, orgId, inv.leasing_id, { dueDate: inv.due_on, overdueAmount: inv.amount, invoiceId: inv.id, invoiceCode: inv.invoice_code });
+        const templateResult = await sendOverdueToTenant(pool, orgId, inv.leasing_id, { dueDate: inv.due_on, overdueAmount: inv.amount, invoiceId: inv.id, invoiceCode: inv.invoice_code, category: inv.category });
         if (templateResult) emailSent = true;
       }
       if (!emailSent) {

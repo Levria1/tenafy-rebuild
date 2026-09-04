@@ -118,6 +118,31 @@ const TOGGLE_MAP = {
 // Available template variables with descriptions
 // ---------------------------------------------------------------------------
 
+// Category names are chosen for the ledger, not for tenants. Rent is filed under
+// "Rental Income", which is correct in a P&L and reads like an accountant wrote
+// the email when it lands in "Details: Rental Income for August". Rent is the
+// bulk of what goes out (1,111 of 2026's invoices against 218 utilities), so the
+// jargon would be the common case rather than the edge case.
+//
+// Only names that are actually wrong for a tenant belong here. "Utilities",
+// "Deposit" and "Stamp Fee" already say what they mean and pass through
+// untouched, so this stays a short list rather than a second naming system to
+// keep in sync. Keys are compared lower-cased and trimmed, because one live
+// category is stored as "Garbage disposal fee " with a trailing space.
+const TENANT_CATEGORY_LABELS = {
+  'rental income': 'Rent payment',
+};
+
+/**
+ * The wording a tenant should see for a category. Unknown names are returned
+ * as-is (trimmed), so adding a category never breaks an email.
+ */
+function tenantCategoryLabel(name) {
+  const trimmed = String(name == null ? '' : name).trim();
+  if (!trimmed) return '';
+  return TENANT_CATEGORY_LABELS[trimmed.toLowerCase()] || trimmed;
+}
+
 const TEMPLATE_VARIABLES = [
   { key: '%Name - Lease%', description: 'Tenant full name (or company name)' },
   { key: '%Unit # - Property%', description: 'Unit name/number' },
@@ -141,7 +166,7 @@ const TEMPLATE_VARIABLES = [
   { key: '%Due Date%', description: 'Full due date (e.g. March 15, 2026)' },
   { key: '%Overdue Amount%', description: 'Total overdue invoice amount' },
   { key: '%Tenant Number%', description: 'Tenant phone number' },
-  { key: '%Category%', description: 'Invoice category name' },
+  { key: '%Category%', description: 'Invoice category, in tenant-facing wording' },
   { key: '%Invoice Number%', description: 'Invoice code (e.g. TRIV0000000001)' },
   { key: '%Receipt Amount%', description: 'Payment receipt amount' },
   { key: '%Transaction Code%', description: 'Payment transaction code' },
@@ -430,14 +455,22 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
   // 8. Resolve category name
   let categoryName = category || '';
   if (category && !isNaN(category)) {
-    // category is an ID — look up the name
+    // category is an ID, so look up the name. The column is `name`; there is no
+    // `display_name` on category_setting, so the old query threw on every call
+    // and the silent catch left categoryName holding the raw bigint. %Category%
+    // therefore rendered a 16-digit ID rather than "Utilities". Blank out first
+    // so a lookup that fails degrades to a missing word, never to an ID in a
+    // tenant's inbox, and log it so the next failure is visible.
+    categoryName = '';
     try {
       const [[catRow]] = await pool.execute(
-        'SELECT display_name FROM category_setting WHERE id = ?',
+        'SELECT name FROM category_setting WHERE id = ?',
         [category]
       );
-      categoryName = catRow ? catRow.display_name : '';
-    } catch (err) { /* ignore */ }
+      categoryName = catRow ? (catRow.name || '') : '';
+    } catch (err) {
+      console.error('[EmailService] Category lookup failed for id', String(category), '-', err.message);
+    }
   }
 
   // 9. Resolve invoice code
@@ -482,7 +515,7 @@ async function resolveVariables(pool, orgId, leaseId, { category, dueDate, overd
     '%Due Date%': formatDueDate(effectiveDueDate),
     '%Overdue Amount%': formatAmount(sym, overdue),
     '%Tenant Number%': r.tenant_phone || '',
-    '%Category%': categoryName,
+    '%Category%': tenantCategoryLabel(categoryName),
     '%Invoice Number%': resolvedInvoiceCode,
   };
 }
@@ -902,12 +935,15 @@ async function sendInvoiceToLandlord(pool, orgId, leaseId, { invoiceId, invoiceC
   });
 }
 
-async function sendOverdueToTenant(pool, orgId, leaseId, { dueDate, overdueAmount, invoiceId, invoiceCode } = {}) {
+async function sendOverdueToTenant(pool, orgId, leaseId, { dueDate, overdueAmount, invoiceId, invoiceCode, category } = {}) {
   const shouldSend = await shouldSendEmail(pool, leaseId, 'Overdue-Tenant');
   if (!shouldSend) return null;
   return sendTemplateEmail(pool, orgId, {
     templateType: 'Overdue-Tenant',
     leaseId,
+    // Accepted above and forwarded here. Leaving it out of either half is
+    // what made %Category% render blank in every overdue email.
+    category,
     dueDate,
     overdueAmount,
     invoiceId,
@@ -915,12 +951,15 @@ async function sendOverdueToTenant(pool, orgId, leaseId, { dueDate, overdueAmoun
   });
 }
 
-async function sendOverdueToLandlord(pool, orgId, leaseId, { dueDate, overdueAmount, invoiceId, invoiceCode } = {}) {
+async function sendOverdueToLandlord(pool, orgId, leaseId, { dueDate, overdueAmount, invoiceId, invoiceCode, category } = {}) {
   const shouldSend = await shouldSendEmail(pool, leaseId, 'Overdue-Landlord');
   if (!shouldSend) return null;
   return sendTemplateEmail(pool, orgId, {
     templateType: 'Overdue-Landlord',
     leaseId,
+    // Accepted above and forwarded here. Leaving it out of either half is
+    // what made %Category% render blank in every overdue email.
+    category,
     dueDate,
     overdueAmount,
     invoiceId,
@@ -1142,6 +1181,7 @@ module.exports = {
   substituteVariables,
   wrapEmailHtml,
   getSampleVariables,
+  tenantCategoryLabel,
   sendTemplateEmail,
   previewTemplate,
   shouldSendEmail,
