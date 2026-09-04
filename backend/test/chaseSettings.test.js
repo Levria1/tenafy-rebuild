@@ -193,9 +193,10 @@ test('the invoice is claimed before the send, not stamped after it', () => {
 test('a claim is released when the send does not happen', () => {
   const job = overdueJob();
   const releases = job.match(/UPDATE invoice SET last_chased_at = \? WHERE id = \?/g) || [];
-  assert.equal(releases.length, 2,
-    'both the declined path and the thrown path must put the old value back, ' +
-    'otherwise a failure silences the invoice for a whole repeat_days window');
+  assert.equal(releases.length, 3,
+    'every path that claims but does not send must put the old value back: ' +
+    'settled-since-selection, declined by the template layer, and thrown. ' +
+    'Missing one silences that invoice for a whole repeat_days window');
   assert.match(job, /i\.last_chased_at,/,
     'the previous value has to be selected to be restorable');
 });
@@ -218,8 +219,9 @@ test('reminders bill the outstanding balance, not the invoice face value', () =>
   // Twelve open rent invoices are part paid, one by HK$106,170 against
   // HK$162,203. Passing i.amount would demand the whole sum back.
   const job = overdueJob();
-  assert.match(job, /overdueAmount: inv\.outstanding/,
-    'the email must quote what is still owed');
+  // The query filters on it; the send quotes the value re-read after the claim.
+  assert.match(job, /overdueAmount: owed/,
+    'the email must quote what is still owed at the moment it goes out');
   assert.match(job, /AS outstanding/, 'outstanding has to be computed in the query');
   assert.match(job, /HAVING outstanding > 0/,
     'a fully settled invoice must drop out even if its status flag is stale');
@@ -278,4 +280,61 @@ test('saving the policy requires a permission, reading it does not', () => {
   assert.ok(get, 'GET /setting/payment-reminders not found');
   assert.ok(!/requirePermission\(/.test(get[0]),
     'the settings screen still has to be able to render the current policy');
+});
+
+// ---------------------------------------------------------------------------
+// The SELECT is a snapshot. Between it and the send, a payment can land, an
+// invoice can be written off or deleted. Everything consequential is re-tested
+// after the claim rather than trusted from the snapshot.
+// ---------------------------------------------------------------------------
+
+test('the claim re-tests status and deletion, not just the repeat window', () => {
+  const job = overdueJob();
+  const claim = job.match(/UPDATE invoice SET last_chased_at = NOW\(\)[\s\S]*?`,/);
+  assert.ok(claim, 'claim update not found');
+  assert.match(claim[0], /status IN \(0, 2\)/,
+    'an invoice settled since the SELECT must not still be claimable');
+  assert.match(claim[0], /deleted_at IS NULL/,
+    'an invoice deleted since the SELECT must not still be claimable');
+});
+
+test('the amount emailed is re-read after the claim, not taken from the snapshot', () => {
+  const job = overdueJob();
+  assert.match(job, /overdueAmount: owed/,
+    'a payment landing mid-run would otherwise be quoted at the older, higher figure');
+  assert.match(job, /if \(!\(owed > 0\)\) \{/,
+    'an invoice paid in full mid-run must be released, not demanded');
+  const reread = job.indexOf('AS outstanding\n           FROM invoice i WHERE i.id = ?');
+  assert.ok(reread > job.indexOf('claim.affectedRows'),
+    'the re-read belongs after the claim, so it reflects the state being sent about');
+});
+
+// ---------------------------------------------------------------------------
+// The manual button and the org policy: which half of it applies by hand.
+// ---------------------------------------------------------------------------
+
+test('the manual button honours days_after_issue but not days_after_due', () => {
+  const routes = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'routes', 'invoice.js'), 'utf8');
+  const decision = routes.match(/const isOverdue = [\s\S]*?\}\);/);
+  assert.ok(decision, 'isOverdue assignment not found');
+  // days_after_issue is a correctness guard: nobody, by hand or otherwise,
+  // should demand payment for a bill the tenant has not yet had.
+  assert.match(decision[0], /daysAfterIssue: policy\.days_after_issue/,
+    'the built-in 7 must not override a configured value');
+  // days_after_due is the cadence of the unattended job. A person choosing to
+  // chase one invoice is not bound by it.
+  assert.ok(!/daysAfterDue/.test(decision[0]),
+    'the manual button must not inherit the automated cadence');
+  assert.ok(!/isRent/.test(decision[0]),
+    'nor the automated category scope');
+});
+
+test('the queue cannot starve behind its own LIMIT', () => {
+  // repeat_days matches the weekly cron, so ordering by due_on alone makes the
+  // same oldest 50 eligible again every Monday and an invoice at position 51 is
+  // never reached. Never-chased invoices have to outrank already-chased ones.
+  const job = overdueJob();
+  assert.match(job, /ORDER BY i\.last_chased_at IS NULL DESC, i\.last_chased_at ASC, i\.due_on ASC/,
+    'never-chased first, then longest-since-chased, then oldest due');
 });

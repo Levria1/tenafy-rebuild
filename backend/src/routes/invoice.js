@@ -11,6 +11,7 @@ const { sendTemplateEmail } = require('../services/emailService');
 const { sendMail, sendMailWithAccount } = require('../config/mailer');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { isChaseable } = require('../utils/overdueChase');
+const { loadChaseSettings } = require('../utils/chaseSettings');
 
 // Internal helper used by both /publish and /publish-preview to figure out the
 // authoritative amount for a given lease + due_date. Returns:
@@ -798,8 +799,16 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
     // Category is deliberately NOT filtered here. This endpoint fires because a
     // person opened one invoice and chose to chase it; scoping automated sweeps
     // to certain categories is a policy about unattended sending, not a limit on
-    // what a human may do by hand.
+    // what a human may do by hand. days_after_due is skipped for the same
+    // reason: it is the cadence of the unattended job, not a rule about when a
+    // person may act.
     //
+    // days_after_issue IS honoured, because it is not a cadence — it is the
+    // guard that stops anyone, by hand or otherwise, demanding payment for a
+    // back-dated bill the tenant has not yet had. Reading it from the org
+    // policy rather than the built-in default keeps one number in charge.
+    const policy = await loadChaseSettings(req.pool, orgId);
+
     // The ledger being right about the date does not make a chaser fair to send.
     // A utility bill dated to the end of its meter period is past due the moment
     // it is created, and the nightly markOverdue job flips it to status=2 on the
@@ -810,6 +819,7 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
       dueOn: inv.due_on,
       createdAt: inv.created_at,
       today: todayStr,
+      daysAfterIssue: policy.days_after_issue,
     });
 
     const pdfBuffer = await generateInvoicePdfBuffer(req.pool, id, orgId);

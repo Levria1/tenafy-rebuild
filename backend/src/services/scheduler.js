@@ -602,7 +602,14 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
        AND l.status = 1 AND (l.end_date IS NULL OR l.end_date >= ?) AND l.deleted_at IS NULL
        AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
      HAVING outstanding > 0
-     ORDER BY i.due_on ASC LIMIT 50`,
+     -- Never-chased first, then longest-since-chased, then oldest due. Ordering
+     -- by due_on alone starves the queue: with repeat_days matching the weekly
+     -- cron, the same oldest 50 become eligible again every Monday and an
+     -- invoice sitting at position 51 is never reached at all. Only 9 are
+     -- eligible today, so this is a guard against the backlog growing rather
+     -- than a live fault.
+     ORDER BY i.last_chased_at IS NULL DESC, i.last_chased_at ASC, i.due_on ASC
+     LIMIT 50`,
     [today, ...categoryIds, today, today, today, today, orgId]
   );
 
@@ -615,18 +622,43 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
     // runs would otherwise both read last_chased_at IS NULL and both send. For a
     // dunning letter a duplicate is worse than a delay, so the claim comes first
     // and is rolled back below if the send fails.
+    // The claim re-tests status and deletion as well as the repeat window. The
+    // SELECT above is a snapshot, and a payment or a write-off landing between
+    // the two would otherwise still produce a demand.
     const [claim] = await pool.execute(
       `UPDATE invoice SET last_chased_at = NOW()
-        WHERE id = ? AND ${repeatDueSql('last_chased_at', policy.repeat_days)}`,
+        WHERE id = ? AND status IN (0, 2) AND deleted_at IS NULL
+          AND ${repeatDueSql('last_chased_at', policy.repeat_days)}`,
       [inv.id, today]
     );
     if (claim.affectedRows === 0) continue;
 
     try {
       if (!inv.leasing_id) throw new Error('invoice has no lease');
+
+      // Re-read what is owed now rather than trusting the snapshot. A part
+      // payment arriving mid-run would otherwise be quoted at the older, higher
+      // figure, and a payment that settles the invoice outright would still get
+      // a demand. Fifty rows a week makes the extra query free.
+      const [[fresh]] = await pool.execute(
+        `SELECT (i.amount - COALESCE((SELECT SUM(al.amount) FROM accounting_line al
+                                        JOIN accounting a ON al.accounting_id = a.id
+                                       WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id
+                                         AND a.deleted_at IS NULL AND al.deleted_at IS NULL), 0)
+                ) AS outstanding
+           FROM invoice i WHERE i.id = ?`,
+        [inv.id]
+      );
+      const owed = fresh ? Number(fresh.outstanding) : 0;
+      if (!(owed > 0)) {
+        skipped++;
+        await pool.execute('UPDATE invoice SET last_chased_at = ? WHERE id = ?', [inv.last_chased_at, inv.id]);
+        continue;
+      }
+
       const templateResult = await sendOverdueToTenant(pool, orgId, inv.leasing_id, {
         dueDate: inv.due_on,
-        overdueAmount: inv.outstanding,
+        overdueAmount: owed,
         invoiceId: inv.id,
         invoiceCode: inv.invoice_code,
         category: inv.category,
