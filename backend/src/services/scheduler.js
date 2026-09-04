@@ -11,7 +11,9 @@ const config = require('../config');
 const inquiryExtractor = require('./inquiryExtractor');
 const { ORG_TIME_ZONE, orgToday, orgTodayDate } = require('../utils/orgTime');
 const { renewalAskStatus } = require('../utils/renewalAsk');
-const { chaseableSql } = require('../utils/overdueChase');
+const { chaseableSql, repeatDueSql } = require('../utils/overdueChase');
+const { loadChaseSettings } = require('../utils/chaseSettings');
+const { resolveRentCategoryId } = require('../utils/rentCategory');
 const {
   sendInvoiceToTenant,
   sendInvoiceToLandlord,
@@ -527,26 +529,68 @@ async function sendUpcomingInvoiceRemindersForOrg(pool, orgId) {
 // ---------------------------------------------------------------------------
 
 async function sendOverdueRemindersForOrg(pool, orgId) {
-  // Bound once and reused for all three placeholders so the DATEDIFF, the
-  // due-date test and the grace-period test cannot straddle midnight and
-  // disagree with each other.
+  // Bound once and reused for every date placeholder so the DATEDIFF, the
+  // due-date test, the grace test and the repeat test cannot straddle midnight
+  // and disagree with each other.
   const today = orgToday();
-  // i.category rides along so %Category% resolves. The tenant-facing template
-  // names the charge ("Details: Utilities for August"), and an invoice fetched
-  // without its category renders that line with a hole in it.
+
+  const policy = await loadChaseSettings(pool, orgId);
+
+  // Off by default, and off is a real answer. This job had been sending nothing
+  // at all, so switching it on wakes a backlog years deep; that has to be a
+  // deliberate act in the UI rather than a side effect of a deploy.
+  if (!policy.enabled) return;
+
+  // Which categories get chased automatically. Null means rent only: the
+  // Overdue template threatens "5% of the monthly rent" per week, which reads
+  // as nonsense attached to a HK$305 utility bill. A person can still chase
+  // anything by hand from the invoice screen — that endpoint is deliberately
+  // not category-scoped.
+  let categoryIds = policy.categories;
+  if (!categoryIds) {
+    const rentCategoryId = await resolveRentCategoryId(pool, orgId);
+    if (!rentCategoryId) {
+      console.warn(`[Scheduler][overdueReminders][org:${orgId}] No 'Rental Income' category and no category list — nothing to chase.`);
+      return;
+    }
+    categoryIds = [rentCategoryId];
+  }
+  const categoryPlaceholders = categoryIds.map(() => '?').join(',');
+
+  // status IN (0, 2), not status = 0. markOverdueInvoicesForOrg runs at 00:05
+  // and flips every past-due unpaid invoice to 2, so by the time this job ran
+  // on Monday morning its status = 0 filter matched nothing. The sweep sent
+  // zero emails for as long as both jobs coexisted, and a job that sends
+  // nothing is indistinguishable from a job with nothing to send.
   //
-  // chaseableSql keeps back-dated invoices out of the sweep at the database
-  // rather than after the LIMIT, so a backlog of them cannot crowd genuinely
-  // late invoices out of the 50 rows this job will look at.
+  // The lease join is a filter, not decoration: a tenant who has moved out
+  // should not still be receiving automated demands, and a lease voided to
+  // status 0 is not something to bill against at all.
+  //
+  // i.category rides along so %Category% resolves. The tenant-facing template
+  // names the charge, and an invoice fetched without its category renders that
+  // line with a hole in it.
+  //
+  // Every policy test is applied in SQL rather than after the fact, so a
+  // backlog of ineligible invoices cannot crowd genuinely late ones out of the
+  // 50 rows this job will look at.
   const [invoices] = await pool.execute(
     `SELECT i.id, i.invoice_code, i.amount, i.due_on, i.org_id, i.leasing_id, i.category,
        t.email AS tenant_email, t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
        p.display_name AS property_name, u.name AS unit_name, DATEDIFF(?, i.due_on) AS days_overdue
-     FROM invoice i JOIN tenant t ON i.tenant_id = t.id JOIN unit u ON i.unit_id = u.id JOIN property p ON u.property_id = p.id
-     WHERE i.status = 0 AND ${chaseableSql('i.due_on', 'i.created_at')}
+     FROM invoice i
+     JOIN tenant t ON i.tenant_id = t.id
+     JOIN unit u ON i.unit_id = u.id
+     JOIN property p ON u.property_id = p.id
+     JOIN leasing l ON i.leasing_id = l.id
+     WHERE i.status IN (0, 2)
+       AND i.category IN (${categoryPlaceholders})
+       AND ${chaseableSql('i.due_on', 'i.created_at', { daysAfterDue: policy.days_after_due, daysAfterIssue: policy.days_after_issue })}
+       AND ${repeatDueSql('i.last_chased_at', policy.repeat_days)}
+       AND l.status = 1 AND (l.end_date IS NULL OR l.end_date >= ?) AND l.deleted_at IS NULL
        AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
      ORDER BY i.due_on ASC LIMIT 50`,
-    [today, today, today, orgId]
+    [today, ...categoryIds, today, today, today, today, orgId]
   );
 
   if (invoices.length === 0) return;
@@ -567,6 +611,10 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
           html: `<p>Dear ${inv.tenant_first_name} ${inv.tenant_last_name},</p><p>Invoice <strong>${inv.invoice_code}</strong> for <strong>$${Number(inv.amount).toFixed(2)}</strong> was due on <strong>${dueDateFormatted}</strong> and is now <strong>${inv.days_overdue} day(s) overdue</strong>.</p>`
         });
       }
+      // Stamped only after a send actually succeeded. Doing it up front would
+      // make a failed send look like a delivered one and silence this invoice
+      // for a full repeat_days window.
+      await pool.execute('UPDATE invoice SET last_chased_at = NOW() WHERE id = ?', [inv.id]);
       sent++;
     } catch (err) {
       failures++;

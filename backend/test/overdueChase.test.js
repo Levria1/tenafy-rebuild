@@ -95,12 +95,13 @@ test('empty arguments do not throw', () => {
 // same statement; the second keeps a bare column on the left for MySQL.
 // ---------------------------------------------------------------------------
 
-test('the SQL fragment encodes the same grace constant', () => {
+test('the SQL fragment defaults to the same grace constant as the JS', () => {
   const sql = chaseableSql('i.due_on', 'i.created_at');
-  assert.match(sql, new RegExp(`INTERVAL ${CHASE_GRACE_DAYS} DAY`),
-    'the SQL and the JS must not drift apart on the grace period');
-  assert.match(sql, /i\.due_on < \?/);
-  assert.match(sql, /DATE\(i\.created_at\) < DATE_SUB\(\?, INTERVAL/);
+  assert.match(sql, new RegExp(`DATE\\(i\\.created_at\\) < DATE_SUB\\(\\?, INTERVAL ${CHASE_GRACE_DAYS} DAY\\)`),
+    'the SQL and the JS must not drift apart on the default grace period');
+  // Both windows are expressed the same way, so the due side can be widened by
+  // policy without a second code path.
+  assert.match(sql, /i\.due_on < DATE_SUB\(\?, INTERVAL 0 DAY\)/);
 });
 
 test('the SQL fragment declares exactly two placeholders', () => {
@@ -139,11 +140,14 @@ test('the Monday sweep filters on chaseability in SQL, before its LIMIT', () => 
   const job = scheduler.slice(jobStart, scheduler.indexOf('\nasync function', jobStart + 1));
   const query = job.match(/const \[invoices\] = await pool\.execute\([\s\S]*?\);/);
   assert.ok(query, 'overdue reminder query not found');
-  assert.ok(/chaseableSql\('i\.due_on', 'i\.created_at'\)/.test(query[0]),
+  assert.ok(/chaseableSql\('i\.due_on', 'i\.created_at'/.test(query[0]),
     'the sweep must filter in SQL so back-dated invoices cannot fill its LIMIT 50');
-  // DATEDIFF takes one `today`, chaseableSql takes two, then orgId.
+  // The full binding order is pinned in rentOnlyChasing.test.js. Here we only
+  // care that chaseableSql's two placeholders are actually fed a date each.
   const binding = query[0].match(/\[([^\]]*)\]\s*\)/);
   assert.ok(binding, 'parameter array not found');
-  assert.equal(binding[1].trim(), 'today, today, today, orgId',
-    'three placeholders take today; a short bind shifts orgId into a date comparison');
+  assert.equal((binding[1].match(/\btoday\b/g) || []).length, 5,
+    'DATEDIFF takes one today, chaseableSql two, repeatDueSql one and the ' +
+    'lease end-date test one; a short bind shifts every later parameter and ' +
+    'compares a date against an id');
 });

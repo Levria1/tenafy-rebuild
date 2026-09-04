@@ -10,6 +10,7 @@ import { useCallback } from 'react';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
 import TypedDeleteModal from '../../components/TypedDeleteModal';
+import PaymentRemindersSettings from '../../components/settings/PaymentRemindersSettings';
 
 export default function SettingsPageWrapper() {
   return <Suspense fallback={<div />}><SettingsPage /></Suspense>;
@@ -382,6 +383,9 @@ function SettingsPage() {
     )},
     { key: 'smtpAccounts', label: 'SMTP Accounts', children: <SmtpAccountSettings isMobile={isMobile} /> },
     { key: 'emailSettings', label: 'Whitelist', children: <EmailWhitelistSettings /> },
+    // Lives in components/settings rather than inline: this file already
+    // carries fourteen tab components and 2,200 lines.
+    { key: 'reminders', label: 'Payment Reminders', children: <PaymentRemindersSettings /> },
   ];
 
   const whatsappTemplateColumns = [

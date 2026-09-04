@@ -48,6 +48,14 @@ function toCalendarDate(value) {
   return m ? m[1] : null;
 }
 
+// A setting that is blank, null or non-numeric becomes the default rather than
+// NaN, which would otherwise poison every date comparison downstream and, for
+// the SQL builders, reach the query as literal text.
+function intOrDefault(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
 function addDays(calendarDate, days) {
   const d = new Date(`${calendarDate}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
@@ -56,24 +64,35 @@ function addDays(calendarDate, days) {
 
 /**
  * @param {object} args
- * @param {*} args.dueOn      invoice.due_on (nullable)
- * @param {*} args.createdAt  invoice.created_at
- * @param {*} args.today      the org's today, as 'YYYY-MM-DD'
+ * @param {*} args.dueOn             invoice.due_on (nullable)
+ * @param {*} args.createdAt         invoice.created_at
+ * @param {*} args.today             the org's today, as 'YYYY-MM-DD'
+ * @param {number} [args.daysAfterDue]   chase_setting.days_after_due: how much
+ *                                       rope a late payer gets past the due date
+ * @param {number} [args.daysAfterIssue] chase_setting.days_after_issue: how long
+ *                                       after the invoice was raised before it
+ *                                       may be chased at all
  * @returns {boolean} true when a dunning email is fair to send
  */
-function isChaseable({ dueOn, createdAt, today } = {}) {
+function isChaseable({
+  dueOn, createdAt, today,
+  daysAfterDue = 0,
+  daysAfterIssue = CHASE_GRACE_DAYS,
+} = {}) {
+  const afterDue = intOrDefault(daysAfterDue, 0);
+  const afterIssue = intOrDefault(daysAfterIssue, CHASE_GRACE_DAYS);
   const due = toCalendarDate(dueOn);
   const now = toCalendarDate(today);
   // No due date, or no idea what day it is: never chase. An invoice with no due
   // date was never late.
   if (!due || !now) return false;
-  // Not past due yet.
-  if (due >= now) return false;
+  // Past the due date, plus whatever rope the org grants.
+  if (addDays(due, afterDue) >= now) return false;
   const created = toCalendarDate(createdAt);
   // created_at is NOT NULL in the schema. If it is somehow missing, fall back to
-  // the old due-date-only rule rather than silently suppressing the reminder.
+  // the due-date test alone rather than silently suppressing the reminder.
   if (!created) return true;
-  return addDays(created, CHASE_GRACE_DAYS) < now;
+  return addDays(created, afterIssue) < now;
 }
 
 /**
@@ -83,9 +102,39 @@ function isChaseable({ dueOn, createdAt, today } = {}) {
  *
  * `created + grace < today` is the algebraic twin of `created < today - grace`,
  * and the second form lets MySQL keep a plain column on the left.
+ *
+ * The day counts are interpolated rather than bound, because MySQL will not
+ * accept a placeholder inside an INTERVAL. They are forced through
+ * intOrDefault first, so a non-numeric setting becomes the default instead of
+ * reaching SQL as text.
  */
-function chaseableSql(dueCol, createdCol) {
-  return `${dueCol} < ? AND DATE(${createdCol}) < DATE_SUB(?, INTERVAL ${CHASE_GRACE_DAYS} DAY)`;
+function chaseableSql(dueCol, createdCol, {
+  daysAfterDue = 0,
+  daysAfterIssue = CHASE_GRACE_DAYS,
+} = {}) {
+  const afterDue = intOrDefault(daysAfterDue, 0);
+  const afterIssue = intOrDefault(daysAfterIssue, CHASE_GRACE_DAYS);
+  return `${dueCol} < DATE_SUB(?, INTERVAL ${afterDue} DAY)`
+       + ` AND DATE(${createdCol}) < DATE_SUB(?, INTERVAL ${afterIssue} DAY)`;
 }
 
-module.exports = { isChaseable, chaseableSql, toCalendarDate, CHASE_GRACE_DAYS };
+/**
+ * Has enough time passed since this invoice was last chased?
+ *
+ * repeat_days is per invoice, which is why invoice.last_chased_at exists:
+ * email_log records lease_id but not invoice_id, and one lease can carry
+ * several overdue invoices at once.
+ */
+function repeatDueSql(lastChasedCol, repeatDays) {
+  const days = intOrDefault(repeatDays, CHASE_GRACE_DAYS);
+  return `(${lastChasedCol} IS NULL OR DATE(${lastChasedCol}) <= DATE_SUB(?, INTERVAL ${days} DAY))`;
+}
+
+module.exports = {
+  isChaseable,
+  chaseableSql,
+  repeatDueSql,
+  toCalendarDate,
+  intOrDefault,
+  CHASE_GRACE_DAYS,
+};

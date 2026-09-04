@@ -10,11 +10,16 @@
  *                                                before_date is NOT read)
  *   Checkout-Tenant  → date_first + before_date (leasing.js send window)
  *
- * Every other type is EVENT-DRIVEN — it sends the moment its trigger happens, so
- * whatever is entered here is silently ignored. Previously the fields looked
- * fully functional for all types, so staff could set "7 days" on e.g. Payment
- * Options and reasonably expect a delay that never existed. For those types we
- * disable the inputs and say what actually triggers the send.
+ * Every other type ignores these fields. Most are EVENT-DRIVEN, sending the
+ * moment their trigger happens. Previously the fields looked fully functional
+ * for all types, so staff could set "7 days" on e.g. Payment Options and
+ * reasonably expect a delay that never existed. For those types we disable the
+ * inputs and say what actually triggers the send.
+ *
+ * The Overdue types are the exception to the "event-driven" half: they ARE
+ * scheduled, but by the weekly sweep, whose timing is org-wide policy rather
+ * than a per-template lead time. FIRES_WHEN points at Settings > Payment
+ * Reminders so nobody types a number here expecting it to be read.
  */
 
 import { Card, Row, Col, Form, Radio, InputNumber, Tooltip, Alert } from 'antd';
@@ -27,6 +32,10 @@ export const TIMING_AWARE_TYPES = ['Invoice-Tenant', 'Checkin-Tenant', 'Checkout
 // listed falls back to the generic wording below.
 const FIRES_WHEN = {
   'Payment-Options': 'a lease is saved with “Send Payment Options” ticked',
+  // Overdue-Tenant IS scheduled, but its schedule is org-wide policy rather than
+  // a per-template lead time, so it lives in Settings › Payment Reminders.
+  'Overdue-Tenant': 'the weekly reminder sweep runs, on the schedule set in Settings › Payment Reminders',
+  'Overdue-Landlord': 'the weekly reminder sweep runs, on the schedule set in Settings › Payment Reminders',
   'Lease-Signature-Request': 'a lease is sent for e-signature',
   'Lease-Signed': 'all parties have signed the lease',
   'Renewal-Tenant': 'the lease’s own “renewal days” value triggers it (that setting lives on the lease, not here)',
@@ -68,9 +77,9 @@ export default function EmailTimingCard({ selectedType, withDefaults = true }) {
           message="Timing doesn’t apply to this template"
           description={
             <>
-              This email is sent immediately when {trigger || 'its triggering event happens'} — not on a schedule,
-              so these fields are ignored. Only <strong>Invoice</strong>, <strong>Check-In</strong> and{' '}
-              <strong>Check-Out</strong> templates use them.
+              This email is sent when {trigger || 'its triggering event happens'}, so these fields are ignored.
+              Only <strong>Invoice</strong>, <strong>Check-In</strong> and <strong>Check-Out</strong>{' '}
+              templates use them.
             </>
           }
         />

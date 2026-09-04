@@ -4,6 +4,8 @@ const router = express.Router();
 const crypto = require('crypto');
 const { authenticate, requireSuperAdmin } = require('../middleware/auth');
 const { getMasterPool } = require('../config/poolRegistry');
+const { logActivity } = require('../utils/activityLog');
+const { loadChaseSettings, serialiseCategories, CHASE_DEFAULTS } = require('../utils/chaseSettings');
 const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
 
@@ -155,6 +157,83 @@ router.delete('/setting/whatsapp/key', authenticate, async (req, res) => {
   } catch (err) {
     console.error('Clear WhatsApp key error:', err);
     res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Overdue chasing policy (one row per org, defaults in utils/chaseSettings.js)
+// ---------------------------------------------------------------------------
+
+// GET /api/setting/payment-reminders
+router.get('/setting/payment-reminders', authenticate, async (req, res) => {
+  try {
+    const data = await loadChaseSettings(req.pool, req.user.orgId);
+    res.json({ code: 200, data });
+  } catch (error) {
+    console.error('Get payment reminder settings error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to get payment reminder settings' });
+  }
+});
+
+// PUT /api/setting/payment-reminders
+router.put('/setting/payment-reminders', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { enabled, categories, days_after_due, days_after_issue, repeat_days } = req.body || {};
+
+    // Day counts are clamped rather than trusted. A negative window would chase
+    // invoices before they are due; repeat_days of 0 would re-send the same
+    // demand every time the job ran.
+    const clamp = (value, fallback, min, max) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.min(max, Math.max(min, Math.trunc(n)));
+    };
+
+    const row = {
+      enabled: Number(enabled) === 1 || enabled === true ? 1 : 0,
+      categories: serialiseCategories(categories),
+      days_after_due: clamp(days_after_due, CHASE_DEFAULTS.days_after_due, 0, 365),
+      days_after_issue: clamp(days_after_issue, CHASE_DEFAULTS.days_after_issue, 0, 365),
+      repeat_days: clamp(repeat_days, CHASE_DEFAULTS.repeat_days, 1, 365),
+    };
+
+    // Category ids are validated against this org before they are stored, so a
+    // stale or hand-crafted id cannot silently widen who gets chased.
+    if (row.categories) {
+      const ids = row.categories.split(',');
+      const [valid] = await req.pool.query(
+        `SELECT id FROM category_setting WHERE org_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
+        [orgId, ...ids]
+      );
+      const allowed = new Set(valid.map((r) => String(r.id)));
+      const kept = ids.filter((id) => allowed.has(id));
+      if (kept.length !== ids.length) {
+        return res.status(400).json({ code: 400, message: 'One or more categories do not belong to this organisation' });
+      }
+      row.categories = kept.join(',');
+    }
+
+    await req.pool.execute(
+      `INSERT INTO chase_setting (org_id, enabled, categories, days_after_due, days_after_issue, repeat_days)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), categories = VALUES(categories),
+         days_after_due = VALUES(days_after_due), days_after_issue = VALUES(days_after_issue),
+         repeat_days = VALUES(repeat_days)`,
+      [orgId, row.enabled, row.categories, row.days_after_due, row.days_after_issue, row.repeat_days]
+    );
+
+    // Turning this on wakes a job that mails tenants unattended, so it belongs
+    // in the audit trail rather than only in the row's updated_at.
+    await logActivity(req, 'UPDATE', 'settings', orgId, row.enabled
+      ? `Enabled automatic overdue payment reminders (every ${row.repeat_days}d, from ${row.days_after_due}d past due)`
+      : 'Disabled automatic overdue payment reminders');
+
+    const data = await loadChaseSettings(req.pool, orgId);
+    res.json({ code: 200, message: 'Saved', data });
+  } catch (error) {
+    console.error('Update payment reminder settings error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to save payment reminder settings' });
   }
 });
 

@@ -795,6 +795,11 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
       Number(inv.status) === 2 ||
       ([0, 2].includes(Number(inv.status)) && dueStr && dueStr < todayStr)
     );
+    // Category is deliberately NOT filtered here. This endpoint fires because a
+    // person opened one invoice and chose to chase it; scoping automated sweeps
+    // to certain categories is a policy about unattended sending, not a limit on
+    // what a human may do by hand.
+    //
     // The ledger being right about the date does not make a chaser fair to send.
     // A utility bill dated to the end of its meter period is past due the moment
     // it is created, and the nightly markOverdue job flips it to status=2 on the

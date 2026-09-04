@@ -426,6 +426,9 @@ export const leaseTemplate = {
 export const settings = {
   // Categories
   getCategories: () => api.get('/api/user/setting/category/list'),
+  // Overdue chasing policy. Mounted under /api/user, like every other setting.
+  getPaymentReminders: () => api.get('/api/user/setting/payment-reminders'),
+  updatePaymentReminders: (data) => api.put('/api/user/setting/payment-reminders', data),
   getCategoriesPaged: (params) => api.get('/api/user/setting/category/page/list', { params }),
   getTenantCategories: () => api.get('/api/user/setting/category/list/tenant'),
   createCategory: (data) => api.post('/api/user/setting/category/add', data),
