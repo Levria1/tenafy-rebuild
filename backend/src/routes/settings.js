@@ -169,16 +169,17 @@ router.delete('/setting/whatsapp/key', authenticate, async (req, res) => {
 // Returns the policy AND the categories it can be applied to, so the screen can
 // render every choice as a tick rather than hiding them behind a dropdown.
 //
-// `charge_count` does two jobs. It separates the two groups on that screen, and
-// it orders the first one. This org has 103 enabled categories and 73 of them
-// have never carried a charge to a tenant — Salaries, MPF, Petty Cash, the whole
-// expense side of the ledger. Offering those as "charges to chase" is noise at
-// best. There is no column marking a category as tenant-facing, so usage is the
-// honest proxy: inflow invoices (type = 0) actually addressed to a tenant.
+// `charge_count` separates the two groups on that screen. This org has 103
+// enabled categories and 73 of them have never carried a charge to a tenant —
+// Salaries, MPF, Petty Cash, the whole expense side of the ledger. Offering
+// those as "charges to chase" is noise at best. There is no column marking a
+// category as tenant-facing, so usage is the honest proxy: inflow invoices
+// (type = 0) actually addressed to a tenant.
 //
-// Ordering by count rather than name matters as much as the split. Alphabetical
-// puts " Advertising" (2 charges) at the top and Rental Income (9,436) in the
-// middle; by usage, the four anyone would realistically tick are the first four.
+// Within each group the order is alphabetical, so a name can be found where it
+// is expected rather than wherever its volume puts it. TRIM because the data is
+// not clean: " Advertising" has a leading space and would otherwise sort above
+// everything, and "Garbage disposal fee " carries a trailing one.
 router.get('/setting/payment-reminders', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
@@ -192,7 +193,7 @@ router.get('/setting/payment-reminders', authenticate, async (req, res) => {
           AND i.deleted_at IS NULL AND i.tenant_id IS NOT NULL AND i.type = 0
         WHERE cs.org_id = ? AND cs.enabled = 1
         GROUP BY cs.id, cs.name
-        ORDER BY charge_count DESC, cs.name`,
+        ORDER BY TRIM(cs.name)`,
       [orgId]
     );
     res.json({

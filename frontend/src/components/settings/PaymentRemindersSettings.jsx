@@ -93,9 +93,9 @@ export default function PaymentRemindersSettings() {
     }
   };
 
-  // The backend already orders by charge_count, so the first group arrives in
-  // the order someone would actually reach for. Empty groups are dropped rather
-  // than rendered as a bare heading over nothing.
+  // The backend orders alphabetically within each group, so a name sits where
+  // it is expected. Empty groups are dropped rather than rendered as a bare
+  // heading over nothing.
   const options = useMemo(() => {
     const label = (c) => (c.charge_count > 0 ? `${c.name} (${c.charge_count})` : c.name);
     const groups = [
