@@ -97,12 +97,12 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
 
       {/* AMENITY DETAILS */}
       <Card size="small" title="AMENITY DETAILS" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
-        <Text>{unit?.amenity_detail || '--'}</Text>
+        <Text style={{ whiteSpace: 'pre-wrap' }}>{unit?.amenity_detail || '--'}</Text>
       </Card>
 
       {/* UNIT ACCESS INFORMATION */}
       <Card size="small" title="UNIT ACCESS INFORMATION" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
-        <Text>{unit?.access_information || '--'}</Text>
+        <Text style={{ whiteSpace: 'pre-wrap' }}>{unit?.access_information || '--'}</Text>
       </Card>
 
       {/* KEY CODES */}
@@ -112,7 +112,7 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
 
       {/* WIFI INFORMATION */}
       <Card size="small" title="WIFI INFORMATION" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
-        <Text>{unit?.wifi_information || '--'}</Text>
+        <Text style={{ whiteSpace: 'pre-wrap' }}>{unit?.wifi_information || '--'}</Text>
       </Card>
 
       {/* PAYMENT INFORMATION */}
@@ -131,7 +131,7 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
 
       {/* INTERNAL NOTES */}
       <Card size="small" title="INTERNAL NOTES" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
-        <Text>{unit?.internal_note || '--'}</Text>
+        <Text style={{ whiteSpace: 'pre-wrap' }}>{unit?.internal_note || '--'}</Text>
       </Card>
 
       {/* RENT RANGE */}
