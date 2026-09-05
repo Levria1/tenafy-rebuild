@@ -338,3 +338,65 @@ test('the queue cannot starve behind its own LIMIT', () => {
   assert.match(job, /ORDER BY i\.last_chased_at IS NULL DESC, i\.last_chased_at ASC, i\.due_on ASC/,
     'never-chased first, then longest-since-chased, then oldest due');
 });
+
+// ---------------------------------------------------------------------------
+// Findings from the Grok review that survived the GPT pass.
+// ---------------------------------------------------------------------------
+
+test('the sweep never duns a tenant for an outflow invoice', () => {
+  // type = 1 is money going OUT: a deposit refund, a credit, a reimbursement.
+  // The settings picker counts inflow invoices, so ticking Deposit looks safe
+  // there while the sweep would tell a tenant they are overdue on money the
+  // landlord owes THEM. Hidden by the rent-only default until someone uses the
+  // screen as it is drawn.
+  const job = overdueJob();
+  assert.match(job, /AND i\.type = 0/,
+    'the sweep must be inflow-only, matching what the category picker counts');
+});
+
+test('a chaser sent by hand is remembered', () => {
+  // last_chased_at is the only per-invoice memory of a reminder. Without the
+  // manual button writing it, a chaser sent on Friday is invisible to Monday's
+  // sweep, which reads NULL and sends a second one.
+  const routes = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'routes', 'invoice.js'), 'utf8');
+  assert.match(routes, /if \(usedTemplate === 'Overdue-Tenant'\) \{[\s\S]*?last_chased_at = NOW\(\)/,
+    'the manual endpoint must stamp last_chased_at when it sends an overdue chaser');
+  // An ordinary invoice email is not a demand and must not suppress a reminder.
+  const stamp = routes.indexOf("if (usedTemplate === 'Overdue-Tenant') {");
+  assert.ok(stamp > -1);
+  const block = routes.slice(stamp, stamp + 600);
+  assert.ok(!/usedTemplate === 'Invoice-Tenant'/.test(block),
+    'only an actual chaser counts as a chase');
+});
+
+test('a negative day count cannot invert a SQL window', () => {
+  // Number('5; DROP TABLE ...') is NaN and was already caught. -1 is a
+  // perfectly good number, and INTERVAL -1 DAY is valid MySQL that flips the
+  // comparison: a due test becomes "due before tomorrow", a repeat test becomes
+  // always true. The HTTP route clamps, but a hand-edited row does not pass
+  // through it.
+  const sql = chaseableSql('i.due_on', 'i.created_at', { daysAfterDue: -5, daysAfterIssue: -9 });
+  assert.ok(!/INTERVAL -/.test(sql), `a negative interval reached the query: ${sql}`);
+  assert.equal((sql.match(/INTERVAL 0 DAY/g) || []).length, 2);
+  assert.equal(isChaseable({
+    dueOn: '2026-09-05', createdAt: '2026-01-01', today: '2026-09-05', daysAfterDue: -5,
+  }), false, 'a negative rope must not make a not-yet-due invoice chaseable');
+});
+
+test('repeat_days has a floor of one day, everywhere it is read', async () => {
+  // At 0 an invoice chased this morning is due again this afternoon, so one run
+  // could mail the same tenant repeatedly.
+  assert.match(repeatDueSql('i.last_chased_at', 0), /INTERVAL 1 DAY/);
+  assert.match(repeatDueSql('i.last_chased_at', -3), /INTERVAL 1 DAY/);
+  const pool = { execute: async () => [[{ enabled: 1, repeat_days: 0 }]] };
+  const policy = await loadChaseSettings(pool, '1');
+  assert.equal(policy.repeat_days, 1, 'the floor must hold on read, not only in the route');
+});
+
+test('a negative day count stored directly in the database reads as zero', async () => {
+  const pool = { execute: async () => [[{ enabled: 1, days_after_due: -30, days_after_issue: -1 }]] };
+  const policy = await loadChaseSettings(pool, '1');
+  assert.equal(policy.days_after_due, 0);
+  assert.equal(policy.days_after_issue, 0);
+});

@@ -59,9 +59,17 @@ function toCalendarDate(value) {
 // A setting that is blank, null or non-numeric becomes the default rather than
 // NaN, which would otherwise poison every date comparison downstream and, for
 // the SQL builders, reach the query as literal text.
-function intOrDefault(value, fallback) {
+//
+// The floor matters as much as the type check. `Number('5; DROP TABLE …')` is
+// NaN and is caught, but -1 is a perfectly good number that MySQL accepts:
+// `INTERVAL -1 DAY` INVERTS the window, so a due test becomes "due before
+// tomorrow" and a repeat test becomes always-true. The HTTP route clamps its
+// input, but a row edited straight in the database does not pass through it,
+// and these builders are the last thing between a stored value and the query.
+function intOrDefault(value, fallback, min = 0) {
   const n = Number(value);
-  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.trunc(n));
 }
 
 function addDays(calendarDate, days) {
@@ -139,7 +147,9 @@ function chaseableSql(dueCol, createdCol, {
  * several overdue invoices at once.
  */
 function repeatDueSql(lastChasedCol, repeatDays) {
-  const days = intOrDefault(repeatDays, CHASE_GRACE_DAYS);
+  // Floor of 1, not 0: at 0 an invoice chased this morning is due again this
+  // afternoon, so a single run could mail the same tenant repeatedly.
+  const days = intOrDefault(repeatDays, CHASE_GRACE_DAYS, 1);
   // Same TIMESTAMP-on-the-org-calendar reasoning as chaseableSql above.
   return `(${lastChasedCol} IS NULL`
        + ` OR DATE(${orgTimeSql(lastChasedCol)}) <= DATE_SUB(?, INTERVAL ${days} DAY))`;

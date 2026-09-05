@@ -596,6 +596,13 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
      JOIN property p ON u.property_id = p.id
      JOIN leasing l ON i.leasing_id = l.id
      WHERE i.status IN (0, 2)
+       -- Inflow only. type = 1 is money going OUT: a deposit refund, a credit,
+       -- a reimbursement. The category picker on the settings screen counts
+       -- inflow invoices, so ticking Deposit looks safe there while the sweep,
+       -- without this, would tell a tenant they are overdue on money the
+       -- landlord owes THEM. Invisible under the rent-only default, and waiting
+       -- for the first person to use the screen as drawn.
+       AND i.type = 0
        AND i.category IN (${categoryPlaceholders})
        AND ${chaseableSql('i.due_on', 'i.created_at', { daysAfterDue: policy.days_after_due, daysAfterIssue: policy.days_after_issue })}
        AND ${repeatDueSql('i.last_chased_at', policy.repeat_days)}

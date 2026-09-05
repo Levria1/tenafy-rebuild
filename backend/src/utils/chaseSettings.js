@@ -26,9 +26,15 @@ const DEFAULTS = {
 
 // A setting that is absent, blank or not a number falls back to the default
 // rather than to NaN, which would silently poison every date comparison.
-function intOr(value, fallback) {
+//
+// Also floored. The HTTP route clamps what it accepts, but a value edited
+// directly in the database never passes through it, and a negative day count
+// inverts the SQL window it feeds (`INTERVAL -1 DAY` is valid MySQL). Reading
+// is the right place to make that safe, since every consumer reads.
+function intOr(value, fallback, min = 0) {
   const n = Number(value);
-  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.trunc(n));
 }
 
 /**
@@ -61,7 +67,7 @@ async function loadChaseSettings(pool, orgId) {
       categories: parseCategories(row.categories),
       days_after_due: intOr(row.days_after_due, DEFAULTS.days_after_due),
       days_after_issue: intOr(row.days_after_issue, DEFAULTS.days_after_issue),
-      repeat_days: intOr(row.repeat_days, DEFAULTS.repeat_days),
+      repeat_days: intOr(row.repeat_days, DEFAULTS.repeat_days, 1),
     };
   } catch (err) {
     // A missing table (org not yet migrated) must not turn into a burst of

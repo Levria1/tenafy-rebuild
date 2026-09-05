@@ -869,6 +869,25 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
       usedTemplate = 'plain';
     }
 
+    // Record the chase. invoice.last_chased_at is the ONLY per-invoice memory of
+    // a reminder — email_log stores lease_id, not invoice_id, and one lease can
+    // carry several overdue invoices. Without this, a chaser sent by hand on
+    // Friday is invisible to Monday's sweep, which reads last_chased_at IS NULL
+    // and sends a second one. Only an actual overdue chaser counts: an ordinary
+    // invoice email is not a demand and must not suppress a later reminder.
+    if (usedTemplate === 'Overdue-Tenant') {
+      try {
+        await req.pool.execute(
+          'UPDATE invoice SET last_chased_at = NOW() WHERE id = ? AND org_id = ?',
+          [id, orgId]
+        );
+      } catch (stampErr) {
+        // The tenant already has the email; failing the request now would invite
+        // a retry and a second copy. Log and move on.
+        console.error('[email-to-tenant] could not record chase timestamp:', stampErr.message);
+      }
+    }
+
     res.json({
       code: 200,
       message: 'Invoice emailed to tenant',
