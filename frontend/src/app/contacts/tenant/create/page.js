@@ -104,7 +104,18 @@ function TenantCreatePage() {
             message.warning('Tenant created, but failed to link back to the inquiry.');
           }
         }
-        router.push('/contacts/tenants');
+        // Land on the tenant that was just created, not back on the list. The
+        // next thing anyone does after adding a contact is look at or act on
+        // that contact, and hunting for them in a list of hundreds is the
+        // slowest possible way to get there. When Smart Extract saved an ID
+        // screenshot, open on Documents so the upload is visibly confirmed
+        // rather than filed somewhere the user has to go and trust.
+        if (newTenantId) {
+          const tab = extractedFileIds.length ? '?tab=documents' : '';
+          router.push(`/contacts/tenant/${newTenantId}/detail${tab}`);
+        } else {
+          router.push('/contacts/tenants');
+        }
       } else {
         message.error(response.data.message || 'Failed to create tenant');
       }
