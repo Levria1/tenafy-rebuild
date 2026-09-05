@@ -11,7 +11,7 @@ import {
   FileTextOutlined, DollarOutlined, ProfileOutlined, FilterOutlined,
   SendOutlined, RightOutlined, EllipsisOutlined,
 } from '@ant-design/icons';
-import MainLayout from '../../../components/Layout';
+import MainLayout, { useAuth } from '../../../components/Layout';
 import useIsMobile from '../../../hooks/useIsMobile';
 import { tenant, property } from '../../../lib/api';
 
@@ -173,6 +173,11 @@ export default function TenantsPageWrapper() {
 }
 
 function TenantsPage() {
+  // The server now enforces TENANT_CREATE on the create endpoint. Hide the
+  // button to match, so a user without it never fills in a whole form only to
+  // be refused at the end.
+  const { hasPermission } = useAuth();
+  const canCreate = hasPermission ? hasPermission('LANDLORD/TENANT_CREATE') : false;
   const router = useRouter();
   const searchParams = useSearchParams();
   const propertyIdParam = searchParams.get('propertyId');
@@ -352,9 +357,11 @@ function TenantsPage() {
               Total
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => router.push('/contacts/tenant/create')}>
-                Add
-              </Button>
+              {canCreate && (
+                <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => router.push('/contacts/tenant/create')}>
+                  Add
+                </Button>
+              )}
               <Button icon={<MailOutlined />} size="small" onClick={handleEmailAll} />
             </div>
           </div>
@@ -402,9 +409,11 @@ function TenantsPage() {
             <Button icon={<MailOutlined />} onClick={handleEmailAll}>
               Email All
             </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/contacts/tenant/create')}>
-              + Add Tenant
-            </Button>
+            {canCreate && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/contacts/tenant/create')}>
+                + Add Tenant
+              </Button>
+            )}
           </div>
         </div>
       )}

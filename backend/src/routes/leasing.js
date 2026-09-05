@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const { findLastMeterReadingForUnit } = require('../utils/meterReadingLookup');
 
@@ -137,7 +137,7 @@ END`;
 }
 
 // POST /api/leasing/list - List leases with paging
-router.post('/list', authenticate, async (req, res) => {
+router.post('/list', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { search, status, startDate, endDate, type, tenantStatus, propertyId, unitId, bookingPlatformId, leaseState, signStatus, sortField, sortOrder } = req.body || {};
@@ -271,7 +271,7 @@ router.post('/list', authenticate, async (req, res) => {
 });
 
 // GET /api/leasing/calendar - Get calendar data for all units with leases in date range
-router.get('/calendar', authenticate, async (req, res) => {
+router.get('/calendar', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { startDate, endDate, propertyId, unitId, search } = req.query;
@@ -494,7 +494,7 @@ router.get('/calendar', authenticate, async (req, res) => {
 // coming, so a `from` in the past is clamped to today rather than rejected. Dates are
 // formatted in SQL, never in JS: the server runs UTC and a JS Date would shift a
 // Hong Kong calendar day by one.
-router.get('/check-in-out', authenticate, async (req, res) => {
+router.get('/check-in-out', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { from, to, propertyId } = req.query;
@@ -594,7 +594,7 @@ router.get('/check-in-out', authenticate, async (req, res) => {
 
 
 // GET /api/leasing/:id - Get lease detail
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', authenticate, requirePermission('LANDLORD/LEASING_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -694,7 +694,7 @@ router.get('/:id', authenticate, async (req, res) => {
 // It can be re-sent (no already-sent guard) and works regardless of how many
 // days before start it is. Pending leases are allowed — the staff member is
 // deliberately sending it.
-router.post('/:id/send-checkin', authenticate, async (req, res) => {
+router.post('/:id/send-checkin', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -748,7 +748,7 @@ router.post('/:id/send-checkin', authenticate, async (req, res) => {
 });
 
 // GET /api/leasing/:id/settlement - Get settlement summary for a lease
-router.get('/:id/settlement', authenticate, async (req, res) => {
+router.get('/:id/settlement', authenticate, requirePermission('LANDLORD/LEASING_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -926,7 +926,7 @@ router.get('/:id/settlement', authenticate, async (req, res) => {
 });
 
 // PUT /api/leasing/:id/settlement-notes - Save settlement notes
-router.put('/:id/settlement-notes', authenticate, async (req, res) => {
+router.put('/:id/settlement-notes', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -957,7 +957,7 @@ router.put('/:id/settlement-notes', authenticate, async (req, res) => {
 });
 
 // POST /api/leasing/check-conflict - Check for conflicting leases on a unit
-router.post('/check-conflict', authenticate, async (req, res) => {
+router.post('/check-conflict', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   try {
     const { unit_id, start_date, end_date, exclude_lease_id } = req.body;
     if (!unit_id || !start_date) {
@@ -1053,7 +1053,7 @@ async function blockIfUnreachable(req, res, tenantId, additionalTenantIds) {
   return true;
 }
 
-router.post('/', authenticate, async (req, res) => {
+router.post('/', authenticate, requirePermission('LANDLORD/LEASING_CREATE'), async (req, res) => {
   try {
     const {
       unit_id, tenant_id, start_date, end_date, type,
@@ -1427,7 +1427,7 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // PUT /api/leasing/:id - Update lease
-router.put('/:id', authenticate, async (req, res) => {
+router.put('/:id', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -1752,7 +1752,7 @@ async function effectiveOriginalEndDate(conn, orgId, leaseId, currentEndDate) {
 // GET /api/leasing/:id/move-out/preview?move_out_date=YYYY-MM-DD
 // The rent invoices that would still be billed if the lease ran its ORIGINAL
 // term — i.e. what the tenant still owes after moving out early.
-router.get('/:id/move-out/preview', authenticate, async (req, res) => {
+router.get('/:id/move-out/preview', authenticate, requirePermission('LANDLORD/LEASING_DETAIL'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [[lease]] = await req.pool.execute(
@@ -1787,7 +1787,7 @@ router.get('/:id/move-out/preview', authenticate, async (req, res) => {
 });
 
 // POST /api/leasing/:id/move-out - Record an approved tenant move-out
-router.post('/:id/move-out', authenticate, async (req, res) => {
+router.post('/:id/move-out', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   const conn = await req.pool.getConnection();
   try {
     const { id } = req.params;
@@ -1954,7 +1954,7 @@ router.post('/:id/move-out', authenticate, async (req, res) => {
 // someone undoes, one may already be paid, and deleting a paid invoice would
 // corrupt the ledger. The count is returned so the UI can say what's left behind
 // — write them off or delete them individually if they shouldn't stand.
-router.post('/:id/move-out/undo', authenticate, async (req, res) => {
+router.post('/:id/move-out/undo', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   const conn = await req.pool.getConnection();
   try {
     const { id } = req.params;
@@ -2048,7 +2048,7 @@ router.post('/:id/move-out/undo', authenticate, async (req, res) => {
 //   3. Generates the rent invoices (catching up missed periods) + deposit
 //      invoice exactly as POST / would have done if state had been 'active'
 //      from the start.
-router.post('/:id/confirm', authenticate, async (req, res) => {
+router.post('/:id/confirm', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -2207,7 +2207,7 @@ router.post('/:id/confirm', authenticate, async (req, res) => {
 });
 
 // DELETE /api/leasing/:id - Delete lease
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', authenticate, requirePermission('LANDLORD/LEASING_DELETE'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -2231,7 +2231,7 @@ router.delete('/:id', authenticate, async (req, res) => {
 });
 
 // GET /api/leasing/tenant/list - Get all tenants for leasing
-router.get('/tenant/list', authenticate, async (req, res) => {
+router.get('/tenant/list', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [tenants] = await req.pool.execute(
@@ -2246,7 +2246,7 @@ router.get('/tenant/list', authenticate, async (req, res) => {
 });
 
 // GET /api/leasing/unit/lease/:unit_id - Get lease for unit
-router.get('/unit/lease/:unit_id', authenticate, async (req, res) => {
+router.get('/unit/lease/:unit_id', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   try {
     const { unit_id } = req.params;
     const orgId = req.user.orgId;
@@ -2262,7 +2262,7 @@ router.get('/unit/lease/:unit_id', authenticate, async (req, res) => {
 });
 
 // GET /api/leasing/list/expiring - Get leases expiring within 30 days
-router.get('/list/expiring', authenticate, async (req, res) => {
+router.get('/list/expiring', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const page = parseInt(req.query.page) || 1;
@@ -2292,7 +2292,7 @@ router.get('/list/expiring', authenticate, async (req, res) => {
 });
 
 // GET /api/leasing/sum_amount/:id - Get outstanding and paid amounts for a lease
-router.get('/sum_amount/:id', authenticate, async (req, res) => {
+router.get('/sum_amount/:id', authenticate, requirePermission('LANDLORD/LEASING_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -2319,7 +2319,7 @@ router.get('/sum_amount/:id', authenticate, async (req, res) => {
 });
 
 // GET /api/leasing/invoice/schedule - Get invoice schedule options
-router.get('/invoice/schedule', authenticate, async (req, res) => {
+router.get('/invoice/schedule', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   const schedules = [
     { value: 'weekly', label: 'Weekly' },
     { value: 'bi-weekly', label: 'Bi-Weekly' },
@@ -2332,7 +2332,7 @@ router.get('/invoice/schedule', authenticate, async (req, res) => {
 });
 
 // POST /api/leasing/unit - Get all units (for calendar view)
-router.post('/unit', authenticate, async (req, res) => {
+router.post('/unit', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { propertyId } = req.body || {};
@@ -2360,7 +2360,7 @@ router.post('/unit', authenticate, async (req, res) => {
 });
 
 // POST /api/leasing/unit/available - Get available (unoccupied) units
-router.post('/unit/available', authenticate, async (req, res) => {
+router.post('/unit/available', authenticate, requirePermission('LANDLORD/LEASING_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
 
@@ -2446,7 +2446,7 @@ async function verifyLeaseOwnership(pool, leaseId, orgId) {
 }
 
 // GET /api/leasing/:id/revisions — all non-deleted revisions for a lease
-router.get('/:id/revisions', authenticate, async (req, res) => {
+router.get('/:id/revisions', authenticate, requirePermission('LANDLORD/LEASING_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -2470,7 +2470,7 @@ router.get('/:id/revisions', authenticate, async (req, res) => {
 
 // POST /api/leasing/:id/revisions — schedule a new revision
 // Body: { effective_from, price?, credits?, utility_credit?, deposit?, note? }
-router.post('/:id/revisions', authenticate, async (req, res) => {
+router.post('/:id/revisions', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -2514,7 +2514,7 @@ router.post('/:id/revisions', authenticate, async (req, res) => {
 });
 
 // PUT /api/leasing/:id/revisions/:rid — edit a not-yet-effective revision
-router.put('/:id/revisions/:rid', authenticate, async (req, res) => {
+router.put('/:id/revisions/:rid', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   try {
     const { id, rid } = req.params;
     const orgId = req.user.orgId;
@@ -2575,7 +2575,7 @@ router.put('/:id/revisions/:rid', authenticate, async (req, res) => {
 });
 
 // DELETE /api/leasing/:id/revisions/:rid — cancel a not-yet-effective revision
-router.delete('/:id/revisions/:rid', authenticate, async (req, res) => {
+router.delete('/:id/revisions/:rid', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   try {
     const { id, rid } = req.params;
     const orgId = req.user.orgId;

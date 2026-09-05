@@ -3,7 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const { v4: uuidv4 } = require('uuid');
 const visionClient = require('../services/visionClient');
@@ -81,7 +81,7 @@ function _parseFail(res, msg, s=500) { return res.status(s).json({ code: s, mess
 // A tenant = someone who has had at least one lease (active or not)
 // One contact card per tenant regardless of how many leases they have
 // Filters: tenantStatus (active/inactive), leaseFilter (active/inactive), leaseType (fixed/month-to-month), propertyId, unitId
-router.post('/contacts', authenticate, async (req, res) => {
+router.post('/contacts', authenticate, requirePermission('LANDLORD/TENANT_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { search, tenantStatus, leaseFilter, leaseType, propertyId, unitId } = req.body || {};
@@ -167,7 +167,7 @@ router.post('/contacts', authenticate, async (req, res) => {
 });
 
 // GET /api/tenant/tenants - Get all tenants
-router.get('/tenants', authenticate, async (req, res) => {
+router.get('/tenants', authenticate, requirePermission('LANDLORD/TENANT_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { status, exclude, leasingStatus } = req.query;
@@ -197,7 +197,7 @@ router.get('/tenants', authenticate, async (req, res) => {
 
 // GET /api/tenant/outstanding - Get tenants with outstanding invoices
 // NOTE: Must be defined before /:id to prevent "outstanding" being matched as a param
-router.get('/outstanding', authenticate, async (req, res) => {
+router.get('/outstanding', authenticate, requirePermission('LANDLORD/TENANT_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const [tenants] = await req.pool.execute(
@@ -232,7 +232,10 @@ router.get('/outstanding', authenticate, async (req, res) => {
 //                      id_card, sex }, raw_text }
 // Any field the LLM can't find is omitted.
 // ---------------------------------------------------------------------------
-router.post('/parse', authenticate, (req, res, next) => {
+// Smart Extract is reached from both the create and the edit form, so either
+// write permission is enough. It also now WRITES a file row, which is a
+// second reason a read-only role should not reach it.
+router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 'LANDLORD/TENANT_EDIT'), (req, res, next) => {
   parseUpload.single('image')(req, res, (err) => {
     if (!err) return next();
     if (err.code === 'LIMIT_FILE_SIZE') {
@@ -381,7 +384,7 @@ router.post('/parse', authenticate, (req, res, next) => {
 });
 
 // POST /api/tenant - Create tenant
-router.post('/', authenticate, async (req, res) => {
+router.post('/', authenticate, requirePermission('LANDLORD/TENANT_CREATE'), async (req, res) => {
   try {
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
             company_name, type, sex, id_card, profession, budget, employer, salary,
@@ -446,7 +449,7 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // GET /api/tenant/:id - Get tenant
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', authenticate, requirePermission('LANDLORD/TENANT_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const [tenants] = await req.pool.execute(
@@ -464,7 +467,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // GET /api/tenant/:id/profile - Get tenant profile
-router.get('/:id/profile', authenticate, async (req, res) => {
+router.get('/:id/profile', authenticate, requirePermission('LANDLORD/TENANT_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const [tenants] = await req.pool.execute(
@@ -526,7 +529,7 @@ router.patch('/:id/email', authenticate, async (req, res) => {
 });
 
 // PUT /api/tenant/:id/profile - Update tenant
-router.put('/:id/profile', authenticate, async (req, res) => {
+router.put('/:id/profile', authenticate, requirePermission('LANDLORD/TENANT_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
@@ -582,7 +585,7 @@ router.put('/:id/profile', authenticate, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 // GET /api/tenant/:id/files
-router.get('/:id/files', authenticate, async (req, res) => {
+router.get('/:id/files', authenticate, requirePermission('LANDLORD/TENANT_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -613,7 +616,7 @@ router.get('/:id/files', authenticate, async (req, res) => {
 // DELETE /api/tenant/:id/files/:fileId — unlink a document from the tenant.
 // Soft-deletes the LINK, not the file: the same image can be attached elsewhere,
 // and destroying the row would break those.
-router.delete('/:id/files/:fileId', authenticate, async (req, res) => {
+router.delete('/:id/files/:fileId', authenticate, requirePermission('LANDLORD/TENANT_EDIT'), async (req, res) => {
   try {
     const { id, fileId } = req.params;
     const orgId = req.user.orgId;
@@ -640,7 +643,7 @@ router.delete('/:id/files/:fileId', authenticate, async (req, res) => {
 });
 
 // DELETE /api/tenant/:id - Delete tenant
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', authenticate, requirePermission('LANDLORD/TENANT_DELETE'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -771,7 +774,7 @@ function calcNextInvoiceDate(lastDueOn, lease) {
 }
 
 // GET /api/tenant/:id/leases - Get tenant leases
-router.get('/:id/leases', authenticate, async (req, res) => {
+router.get('/:id/leases', authenticate, requirePermission('LANDLORD/TENANT_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const [leases] = await req.pool.execute(
@@ -842,7 +845,7 @@ router.get('/:id/leases', authenticate, async (req, res) => {
 });
 
 // GET /api/tenant/:id/leases/sum - Get tenant lease summary
-router.get('/:id/leases/sum', authenticate, async (req, res) => {
+router.get('/:id/leases/sum', authenticate, requirePermission('LANDLORD/TENANT_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const [[sum]] = await req.pool.execute(
@@ -863,7 +866,7 @@ router.get('/:id/leases/sum', authenticate, async (req, res) => {
 });
 
 // GET /api/tenant/:id/profile/sum - Get tenant profile summary
-router.get('/:id/profile/sum', authenticate, async (req, res) => {
+router.get('/:id/profile/sum', authenticate, requirePermission('LANDLORD/TENANT_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -946,7 +949,7 @@ router.get('/:id/profile/sum', authenticate, async (req, res) => {
 });
 
 // POST /api/tenant/:id/accounting/list - Get tenant accounting/invoice list
-router.post('/:id/accounting/list', authenticate, async (req, res) => {
+router.post('/:id/accounting/list', authenticate, requirePermission('LANDLORD/TENANT_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -1009,7 +1012,7 @@ router.post('/:id/accounting/list', authenticate, async (req, res) => {
 });
 
 // POST /api/tenant/:id/accounting/sum - Get tenant accounting summary
-router.post('/:id/accounting/sum', authenticate, async (req, res) => {
+router.post('/:id/accounting/sum', authenticate, requirePermission('LANDLORD/TENANT_DETAIL'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;

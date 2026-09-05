@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requirePermission } = require('../middleware/auth');
 
 const { sendMail } = require('../config/mailer');
 
@@ -62,7 +62,7 @@ router.get('/contacts/property-owner/all', authenticate, async (req, res) => {
 // ─── SERVICE VENDOR ROUTES ───────────────────────────────────────────────────
 
 // POST /api/contact/contacts/service-vendor - List service vendors with paging
-router.post('/contacts/service-vendor', authenticate, async (req, res) => {
+router.post('/contacts/service-vendor', authenticate, requirePermission('LANDLORD/SERVICE_VENDOR_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { search, searchFields, status } = req.body || {};
@@ -127,7 +127,7 @@ router.post('/contacts/service-vendor', authenticate, async (req, res) => {
 
 // POST /api/contact/contacts/payee - List payees with paging
 // Payees are stored in the tenant table with category = 2
-router.post('/contacts/payee', authenticate, async (req, res) => {
+router.post('/contacts/payee', authenticate, requirePermission('LANDLORD/PAYEE_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { search } = req.body || {};
@@ -173,7 +173,7 @@ router.post('/contacts/payee', authenticate, async (req, res) => {
 // ─── EMAIL GROUP ROUTES ──────────────────────────────────────────────────────
 
 // POST /api/contact/email/groups - List email groups with paging
-router.post('/email/groups', authenticate, async (req, res) => {
+router.post('/email/groups', authenticate, requirePermission('LANDLORD/EMAIL_GROUP_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { search } = req.body || {};
@@ -207,7 +207,7 @@ router.post('/email/groups', authenticate, async (req, res) => {
 });
 
 // GET /api/contact/email/groups/emails - Get all email group email addresses
-router.get('/email/groups/emails', authenticate, async (req, res) => {
+router.get('/email/groups/emails', authenticate, requirePermission('LANDLORD/EMAIL_GROUP_LIST'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { search } = req.query;
@@ -230,7 +230,7 @@ router.get('/email/groups/emails', authenticate, async (req, res) => {
 });
 
 // GET /api/contact/email/groups/emails/:id - Get email group emails by group id
-router.get('/email/groups/emails/:id', authenticate, async (req, res) => {
+router.get('/email/groups/emails/:id', authenticate, requirePermission('LANDLORD/EMAIL_GROUP_LIST'), async (req, res) => {
   try {
     const { id } = req.params;
     const [emails] = await req.pool.execute(
@@ -247,7 +247,7 @@ router.get('/email/groups/emails/:id', authenticate, async (req, res) => {
 });
 
 // GET /api/contact/email/group/:id - Get email group with members
-router.get('/email/group/:id', authenticate, async (req, res) => {
+router.get('/email/group/:id', authenticate, requirePermission('LANDLORD/EMAIL_GROUP_LIST'), async (req, res) => {
   try {
     const { id } = req.params;
     const [groups] = await req.pool.execute(
@@ -272,7 +272,7 @@ router.get('/email/group/:id', authenticate, async (req, res) => {
 });
 
 // POST /api/contact/email/group - Create email group
-router.post('/email/group', authenticate, async (req, res) => {
+router.post('/email/group', authenticate, requirePermission('LANDLORD/EMAIL_GROUP_CREATE'), async (req, res) => {
   try {
     const { name, description, member_ids } = req.body;
     const orgId = req.user.orgId;
@@ -297,7 +297,7 @@ router.post('/email/group', authenticate, async (req, res) => {
 });
 
 // PUT /api/contact/email/group/:id - Update email group
-router.put('/email/group/:id', authenticate, async (req, res) => {
+router.put('/email/group/:id', authenticate, requirePermission('LANDLORD/EMAIL_GROUP_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const { name, description, member_ids } = req.body;
@@ -323,7 +323,7 @@ router.put('/email/group/:id', authenticate, async (req, res) => {
 });
 
 // DELETE /api/contact/email/group/:id - Delete email group
-router.delete('/email/group/:id', authenticate, async (req, res) => {
+router.delete('/email/group/:id', authenticate, requirePermission('LANDLORD/EMAIL_GROUP_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
@@ -337,7 +337,7 @@ router.delete('/email/group/:id', authenticate, async (req, res) => {
 });
 
 // POST /api/contact/email/send - Send email
-router.post('/email/send', authenticate, async (req, res) => {
+router.post('/email/send', authenticate, requirePermission('LANDLORD/EMAIL_GROUP_LIST'), async (req, res) => {
   try {
     const { to, cc, subject, body, group_id } = req.body;
     const orgId = req.user.orgId;
@@ -460,7 +460,7 @@ router.post('/property-owner/tag/:id', authenticate, async (req, res) => {
 // ─── USER INVITATION ──────────────────────────────────────────────────────────
 
 // POST /api/contact/tenant/check/user - Check if tenant has portal account
-router.post('/tenant/check/user', authenticate, async (req, res) => {
+router.post('/tenant/check/user', authenticate, requirePermission('LANDLORD/USER_CREATE'), async (req, res) => {
   try {
     const { tenant_id } = req.body;
     const orgId = req.user.orgId;
@@ -478,7 +478,7 @@ router.post('/tenant/check/user', authenticate, async (req, res) => {
 });
 
 // POST /api/contact/tenant/create/user - Invite tenant to create portal account
-router.post('/tenant/create/user', authenticate, async (req, res) => {
+router.post('/tenant/create/user', authenticate, requirePermission('LANDLORD/USER_CREATE'), async (req, res) => {
   try {
     const { tenant_id, email } = req.body;
     const orgId = req.user.orgId;
@@ -517,7 +517,7 @@ router.post('/tenant/create/user', authenticate, async (req, res) => {
 });
 
 // POST /api/contact/property-owner/check/user - Check if property owner has portal account
-router.post('/property-owner/check/user', authenticate, async (req, res) => {
+router.post('/property-owner/check/user', authenticate, requirePermission('LANDLORD/USER_CREATE'), async (req, res) => {
   try {
     const { owner_id } = req.body;
     const orgId = req.user.orgId;
@@ -535,7 +535,7 @@ router.post('/property-owner/check/user', authenticate, async (req, res) => {
 });
 
 // POST /api/contact/property-owner/create/user - Invite property owner to portal
-router.post('/property-owner/create/user', authenticate, async (req, res) => {
+router.post('/property-owner/create/user', authenticate, requirePermission('LANDLORD/USER_CREATE'), async (req, res) => {
   try {
     const { owner_id, email } = req.body;
     const orgId = req.user.orgId;
