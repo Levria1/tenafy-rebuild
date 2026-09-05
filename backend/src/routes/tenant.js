@@ -5,18 +5,33 @@ const fs = require('fs');
 const path = require('path');
 const { authenticate } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
+const { v4: uuidv4 } = require('uuid');
 const visionClient = require('../services/visionClient');
 const llmClient = require('../services/llmClient');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { sanitiseNamePart, nameProblem } = require('../utils/personName');
+const { parseMrz } = require('../utils/mrz');
 const { decodeLeasingBitsAll } = require('../utils/mysqlBit');
 
-// In-memory multer for the Smart Extract /parse endpoint. Files NEVER touch
-// disk — we OCR the buffer and discard. This is deliberately stricter than
-// inquiry/parse (which persists the screenshot to the file table) because
-// HKID/passport photos are sensitive PII we don't want sitting in the DB.
+// Smart Extract keeps the screenshot. It used to be memory-only and discarded,
+// on the reasoning that HKID and passport images are PII we would rather not
+// hold; that was reversed deliberately, so the ID a tenant record was built
+// from stays attached to it and can be checked later. Two things follow from
+// that decision and are worth stating: the image lands in the same uploads
+// directory as every other attachment, and it is reachable through the normal
+// file routes, which means the usual org scoping is what protects it.
+//
+// It also makes extraction bugs diagnosable. The passport misread that prompted
+// the MRZ parser could not be reproduced from the original image, because the
+// original image no longer existed.
 const parseUpload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+      cb(null, UPLOADS_DIR);
+    },
+    filename: (req, file, cb) => cb(null, uuidv4() + path.extname(file.originalname || '.png')),
+  }),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!file.mimetype || !file.mimetype.startsWith('image/')) {
@@ -25,6 +40,38 @@ const parseUpload = multer({
     cb(null, true);
   },
 });
+
+const UPLOADS_DIR = path.join(__dirname, '../../uploads');
+
+/**
+ * Attach files to a tenant. Called on create and on update, because the Create
+ * form has no tenant id at the moment the screenshot is extracted — the id_
+ * arrives only when the record is saved, so the link is deferred until then.
+ *
+ * Ownership is re-checked here rather than trusted from the request: a file id
+ * is a client-supplied number, and without this a caller could staple another
+ * org's file onto their own tenant.
+ */
+async function linkFilesToTenant(pool, orgId, tenantId, fileIds) {
+  const ids = (Array.isArray(fileIds) ? fileIds : [])
+    .map((v) => String(v).trim()).filter((v) => /^\d+$/.test(v));
+  if (!ids.length) return 0;
+  const [owned] = await pool.query(
+    `SELECT CAST(id AS CHAR) AS id FROM file
+      WHERE org_id = ? AND deleted_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`,
+    [orgId, ...ids]
+  );
+  let linked = 0;
+  for (const row of owned) {
+    await pool.execute(
+      `INSERT INTO object_file (object_id, file_id) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE deleted_at = NULL`,
+      [String(tenantId), row.id]
+    );
+    linked++;
+  }
+  return linked;
+}
 
 function _parseOk(res, data)       { return res.json({ code: 200, data }); }
 function _parseFail(res, msg, s=500) { return res.status(s).json({ code: s, message: msg }); }
@@ -204,17 +251,42 @@ router.post('/parse', authenticate, (req, res, next) => {
     // OCR the image (in-memory) if present. Failure is non-fatal — we still
     // fall back to whatever text the user pasted.
     let ocrText = '';
+    let savedFileId = null;
     if (hasImage) {
+      // The file is on disk now rather than in a buffer, so read it back for
+      // OCR. Failure here is non-fatal: we still have whatever text was pasted,
+      // and the image is kept either way.
+      let buffer = null;
       try {
-        ocrText = await visionClient.extractText(req.file.buffer);
+        buffer = fs.readFileSync(req.file.path);
+        ocrText = await visionClient.extractText(buffer);
       } catch (visionErr) {
         console.error('[tenant/parse] Vision OCR failed:', visionErr.message);
+      }
+
+      // Record the file so it survives this request and can be linked to the
+      // tenant on save. Deliberately not fatal — losing the row would be
+      // annoying, losing the extraction would be worse.
+      try {
+        const ext = (path.extname(req.file.originalname || '') || '.png').replace('.', '').slice(0, 10);
+        savedFileId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+        await req.pool.execute(
+          `INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'local', ?, NOW())`,
+          [savedFileId, req.file.filename,
+           req.file.originalname || `id-document.${ext}`,
+           ext, (req.file.mimetype || 'image/png').toUpperCase().slice(0, 100),
+           req.file.size, req.user.orgId]
+        );
+      } catch (fileErr) {
+        console.error('[tenant/parse] could not record screenshot:', fileErr.message);
+        savedFileId = null;
       }
     }
 
     const combined = [pastedText, ocrText].filter(Boolean).join('\n\n--- OCR FROM SCREENSHOT ---\n');
     if (!combined.trim()) {
-      return _parseOk(res, { fields: {}, raw_text: '' });
+      return _parseOk(res, { fields: {}, raw_text: '', file_id: savedFileId });
     }
 
     // LLM prompt — tightly scoped. Schema must match what the tenant Add/Edit
@@ -261,7 +333,43 @@ router.post('/parse', authenticate, (req, res, next) => {
       // Partial success — raw_text is still useful for hand-filling.
     }
 
-    _parseOk(res, { fields: fields || {}, raw_text: combined });
+    // The two machine-readable lines across the bottom of a passport beat the
+    // LLM outright for the fields they carry, because they can be VERIFIED
+    // rather than believed: every field has a check digit. This is what stops a
+    // Hong Kong passport filing the holder's HKID as the passport number — the
+    // HKID is printed on the page twice, so when OCR mangles the passport
+    // number the LLM has no basis to prefer one over the other and picks the
+    // clean-looking one.
+    fields = fields || {};
+    const mrz = parseMrz(combined);
+    if (mrz) {
+      // id_card, birth date and sex come from the MRZ when it verified them.
+      // parseMrz omits anything it could not check, so a present field is a
+      // checked field.
+      if (mrz.document_number) fields.id_card = mrz.document_number;
+      if (mrz.birth_date) fields.birth_date = mrz.birth_date;
+      if (mrz.sex) fields.sex = mrz.sex;
+      // Names are the exception. The MRZ carries them stripped to A-Z, so it
+      // loses accents and any Chinese entirely, and the LLM reads the printed
+      // name better. MRZ names are the fallback, not the winner.
+      const titled = (v) => v.split(' ').filter(Boolean)
+        .map(w => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+      if (!fields.last_name && mrz.last_name) fields.last_name = titled(mrz.last_name);
+      if (!fields.first_name && mrz.first_name) fields.first_name = titled(mrz.first_name);
+      if (!fields.middle_name && mrz.middle_name) fields.middle_name = titled(mrz.middle_name);
+    }
+
+    _parseOk(res, {
+      fields,
+      raw_text: combined,
+      // The saved screenshot. The Create form holds this until the tenant is
+      // saved, because there is no tenant id to link it to yet.
+      file_id: savedFileId,
+      // What the MRZ could and could not confirm. A blank id_card with an
+      // 'unverified' check is the parser refusing to guess, not a failure to
+      // find one, and the UI can say so instead of leaving the user puzzled.
+      mrz: mrz ? { checks: mrz.checks, document_type: mrz.document_type } : null,
+    });
   } catch (err) {
     console.error('[tenant] parse error:', err);
     _parseFail(res, 'Failed to parse tenant ID');
@@ -274,7 +382,7 @@ router.post('/', authenticate, async (req, res) => {
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
             company_name, type, sex, id_card, profession, budget, employer, salary,
             emergency_contact, referral, notes, cleaning_notes, status, lead_source_id,
-            whatsapp_opt_out } = req.body;
+            whatsapp_opt_out, file_ids } = req.body;
     const orgId = req.user.orgId;
 
     // Reject duplicate primary email (case-insensitive, ignoring soft-deleted rows)
@@ -313,8 +421,20 @@ router.post('/', authenticate, async (req, res) => {
        referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null,
        whatsapp_opt_out ? 1 : 0]
     );
-    await logActivity(req, 'CREATE', 'tenant', tenantId, 'Created tenant ' + [first_name, last_name].filter(Boolean).join(' '));
-    res.json({ code: 200, message: 'Tenant created', data: { id: tenantId } });
+    // Attach any ID screenshots extracted while filling this form. Deferred to
+    // here because the tenant id does not exist while the form is open.
+    let attached = 0;
+    try {
+      attached = await linkFilesToTenant(req.pool, orgId, tenantId, file_ids);
+    } catch (linkErr) {
+      // The tenant is already saved. Failing the request now would push the user
+      // to submit again and create a duplicate, which is worse than a lost link.
+      console.error('[tenant] could not attach files on create:', linkErr.message);
+    }
+    await logActivity(req, 'CREATE', 'tenant', tenantId,
+      'Created tenant ' + [first_name, last_name].filter(Boolean).join(' ')
+      + (attached ? ` (${attached} ID document${attached === 1 ? '' : 's'} attached)` : ''));
+    res.json({ code: 200, message: 'Tenant created', data: { id: tenantId, files_attached: attached } });
   } catch (error) {
     console.error('Create tenant error:', error);
     res.status(500).json({ code: 500, message: 'Failed to create tenant' });
@@ -408,7 +528,7 @@ router.put('/:id/profile', authenticate, async (req, res) => {
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
             company_name, type, sex, id_card, profession, budget, employer, salary,
             emergency_contact, referral, notes, cleaning_notes, status, lead_source_id,
-            whatsapp_opt_out } = req.body;
+            whatsapp_opt_out, file_ids } = req.body;
 
     // Refuse rather than silently rewrite. Quietly stripping a character someone just
     // typed makes them doubt the save; naming it lets them fix it.
@@ -433,11 +553,85 @@ router.put('/:id/profile', authenticate, async (req, res) => {
        emergency_contact || null, referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null,
        whatsapp_opt_out ? 1 : 0, id]
     );
-    await logActivity(req, 'UPDATE', 'tenant', id, 'Updated tenant ' + [first_name, last_name].filter(Boolean).join(' '));
-    res.json({ code: 200, message: 'Tenant updated' });
+    // On the edit page the tenant already exists, so any screenshot extracted
+    // during this session links immediately.
+    let attached = 0;
+    try {
+      attached = await linkFilesToTenant(req.pool, req.user.orgId, id, file_ids);
+    } catch (linkErr) {
+      console.error('[tenant] could not attach files on update:', linkErr.message);
+    }
+    await logActivity(req, 'UPDATE', 'tenant', id,
+      'Updated tenant ' + [first_name, last_name].filter(Boolean).join(' ')
+      + (attached ? ` (${attached} ID document${attached === 1 ? '' : 's'} attached)` : ''));
+    res.json({ code: 200, message: 'Tenant updated', data: { files_attached: attached } });
   } catch (error) {
     console.error('Update tenant error:', error);
     res.status(500).json({ code: 500, message: 'Failed to update tenant' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Tenant documents — the ID screenshots Smart Extract saved, plus anything
+// attached later. Linked through object_file, the same junction service
+// attachments use, so the existing /api/file routes serve and secure them.
+// ---------------------------------------------------------------------------
+
+// GET /api/tenant/:id/files
+router.get('/:id/files', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+
+    // Scope by the tenant's org, not just the file's: without the tenant check
+    // any id in the URL would list that tenant's documents.
+    const [[owner]] = await req.pool.execute(
+      'SELECT id FROM tenant WHERE id = ? AND org_id = ? AND deleted_at IS NULL', [id, orgId]);
+    if (!owner) return res.status(404).json({ code: 404, message: 'Tenant not found' });
+
+    const [files] = await req.pool.execute(
+      `SELECT CAST(f.id AS CHAR) AS id, f.filename, f.item_name, f.extension,
+              f.mime_type, f.file_size, f.created_at
+         FROM object_file of2
+         JOIN file f ON of2.file_id = f.id
+        WHERE of2.object_id = ? AND of2.deleted_at IS NULL
+          AND f.deleted_at IS NULL AND f.org_id = ?
+        ORDER BY f.created_at DESC`,
+      [id, orgId]
+    );
+    res.json({ code: 200, data: files });
+  } catch (error) {
+    console.error('List tenant files error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to list documents' });
+  }
+});
+
+// DELETE /api/tenant/:id/files/:fileId — unlink a document from the tenant.
+// Soft-deletes the LINK, not the file: the same image can be attached elsewhere,
+// and destroying the row would break those.
+router.delete('/:id/files/:fileId', authenticate, async (req, res) => {
+  try {
+    const { id, fileId } = req.params;
+    const orgId = req.user.orgId;
+    const [[owner]] = await req.pool.execute(
+      'SELECT id FROM tenant WHERE id = ? AND org_id = ? AND deleted_at IS NULL', [id, orgId]);
+    if (!owner) return res.status(404).json({ code: 404, message: 'Tenant not found' });
+
+    const [result] = await req.pool.execute(
+      `UPDATE object_file of2
+         JOIN file f ON of2.file_id = f.id
+          SET of2.deleted_at = NOW()
+        WHERE of2.object_id = ? AND of2.file_id = ? AND of2.deleted_at IS NULL AND f.org_id = ?`,
+      [id, fileId, orgId]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ code: 404, message: 'Document not found on this tenant' });
+    }
+    await logActivity(req, 'DELETE', 'tenant', id, 'Removed a document from the tenant record');
+    res.json({ code: 200, message: 'Document removed' });
+  } catch (error) {
+    console.error('Unlink tenant file error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to remove document' });
   }
 });
 

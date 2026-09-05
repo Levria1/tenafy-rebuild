@@ -5,15 +5,19 @@
 // and the backend OCRs + LLM-parses it into structured fields:
 //   first_name, last_name, middle_name, birth_date, id_card, sex
 //
-// IMPORTANT: unlike the inquiry version, this does NOT persist the uploaded
-// image. The screenshot is processed in memory on the server and discarded.
-// Only the extracted text fields end up on the tenant record. This is by
-// design — HKID/passport photos are PII we don't want sitting in the DB.
+// The screenshot IS kept, and attached to the tenant's documents. It used to be
+// discarded on the reasoning that ID photos are PII best not held; that was
+// reversed deliberately, so the document a record was built from stays with the
+// record. It also makes extraction bugs diagnosable — the passport misread that
+// prompted the MRZ parser could not be reproduced, because the image was gone.
 //
 // Props:
 //   onExtracted(patch) — called with an object of fields to prefill. Keys
 //     correspond to Ant Form names (first_name, last_name, middle_name,
 //     birth_date as a dayjs, id_card, sex as 1|2).
+//   onFileSaved(fileId) — called with the id of the stored screenshot. The
+//     Create form holds this until save, because the tenant it belongs to does
+//     not exist yet; the Edit form can link it straight away.
 //   compact — render a tighter version (defaults to false).
 
 import { useState } from 'react';
@@ -22,7 +26,7 @@ import { ThunderboltOutlined, PictureOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { tenant } from '../lib/api';
 
-export default function TenantSmartExtract({ onExtracted, compact = false }) {
+export default function TenantSmartExtract({ onExtracted, onFileSaved, compact = false }) {
   const [text, setText] = useState('');
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -64,7 +68,12 @@ export default function TenantSmartExtract({ onExtracted, compact = false }) {
         message.error(r.data?.message || 'Parse failed');
         return;
       }
-      const { fields = {} } = r.data.data || {};
+      const { fields = {}, file_id: fileId, mrz } = r.data.data || {};
+
+      // The saved screenshot. Handed up so the form can attach it to the tenant
+      // on save — on the Create page there is no tenant id yet, so the link can
+      // only happen once the record exists.
+      if (fileId && typeof onFileSaved === 'function') onFileSaved(String(fileId));
 
       // Map LLM output to Ant Form field names. Dates become dayjs for the
       // DatePicker; sex normalises to 1=male / 2=female (the DB encoding).
@@ -90,7 +99,17 @@ export default function TenantSmartExtract({ onExtracted, compact = false }) {
         return;
       }
       onExtracted(patch);
-      message.success(`Extracted ${filled} field${filled === 1 ? '' : 's'}.`);
+
+      // Say when the ID number specifically could not be trusted. The parser
+      // refuses to guess a passport number it cannot verify against the check
+      // digits, and a silently blank field looks like a bug rather than a
+      // deliberate abstention.
+      const idCheck = mrz && mrz.checks && mrz.checks.document_number;
+      if (!patch.id_card && (idCheck === 'unverified' || idCheck === 'ambiguous' || idCheck === 'failed')) {
+        message.warning('Could not read the passport number reliably — please type it in.');
+      }
+      message.success(`Extracted ${filled} field${filled === 1 ? '' : 's'}.`
+        + (fileId ? ' Screenshot saved to the tenant.' : ''));
 
       // Clear inputs after success so the user isn't tempted to re-extract
       // stale data on top of the form they just edited.
@@ -146,8 +165,8 @@ export default function TenantSmartExtract({ onExtracted, compact = false }) {
         </Button>
       </div>
       <div style={{ fontSize: 11, color: '#999', marginTop: 8 }}>
-        The screenshot is OCR'd on the server then discarded — only the
-        extracted text fields are saved. Review prefilled fields before saving.
+        The screenshot is saved to this tenant's documents and the details are
+        read from it. Review the prefilled fields before saving.
       </div>
     </Card>
   );

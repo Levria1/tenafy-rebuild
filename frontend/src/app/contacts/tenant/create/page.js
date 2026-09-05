@@ -71,6 +71,12 @@ function TenantCreatePage() {
     }
   }, [searchParams, form]);
 
+  // Screenshots saved by Smart Extract during this session. They are attached
+  // to the tenant on save rather than at extract time, because on the create
+  // form the tenant does not exist yet and the edit form should not attach a
+  // document to a record the user then abandons.
+  const [extractedFileIds, setExtractedFileIds] = useState([]);
+
   const onFinish = async (values) => {
     try {
       setLoading(true);
@@ -80,6 +86,7 @@ function TenantCreatePage() {
         type: displayAsCompany ? 1 : 0,
         sex: values.sex ?? 0,
         status: values.status ?? 1,
+        file_ids: extractedFileIds,
       };
       const response = await tenant.create(payload);
       if (response.data.code === 200) {
@@ -135,7 +142,10 @@ function TenantCreatePage() {
         {/* Smart Extract — paste/upload an HKID, passport, or driver's license
             screenshot to auto-fill name + DOB + ID number + sex. The image is
             OCR'd on the server then discarded (no PII persistence). */}
-        <TenantSmartExtract onExtracted={(patch) => form.setFieldsValue(patch)} />
+        <TenantSmartExtract
+          onExtracted={(patch) => form.setFieldsValue(patch)}
+          onFileSaved={(fileId) => setExtractedFileIds((prev) => [...new Set([...prev, fileId])])}
+        />
 
         <Form form={form} onFinish={onFinish} layout="vertical" initialValues={{ sex: 1, status: 1 }}>
           <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 24 }}>

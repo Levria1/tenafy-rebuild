@@ -169,11 +169,15 @@ export const tenant = {
   getAccountingSum: (id, data) => api.post(`/api/tenant/${id}/accounting/sum`, data),
   getOutstanding: () => api.get('/api/tenant/outstanding'),
   // Smart Extract — multipart POST with optional `text` and optional `image`.
-  // Server runs OCR + LLM and returns { fields, raw_text }. The image is
-  // processed in memory and discarded; nothing persists server-side.
+  // Returns { fields, raw_text, file_id, mrz }. The image is SAVED and its id
+  // comes back as file_id, for the form to attach to the tenant on save.
   parse: (formData) => api.post('/api/tenant/parse', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),
+  // Documents attached to a tenant — chiefly the ID screenshots Smart Extract
+  // keeps. Linked through object_file, served by the shared /api/file routes.
+  listFiles: (id) => api.get(`/api/tenant/${id}/files`),
+  removeFile: (id, fileId) => api.delete(`/api/tenant/${id}/files/${fileId}`),
 };
 
 export const leasing = {

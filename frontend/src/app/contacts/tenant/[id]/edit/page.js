@@ -69,6 +69,12 @@ export default function TenantEditPage() {
     }
   };
 
+  // Screenshots saved by Smart Extract during this session. They are attached
+  // to the tenant on save rather than at extract time, because on the create
+  // form the tenant does not exist yet and the edit form should not attach a
+  // document to a record the user then abandons.
+  const [extractedFileIds, setExtractedFileIds] = useState([]);
+
   const onFinish = async (values) => {
     try {
       setLoading(true);
@@ -78,6 +84,7 @@ export default function TenantEditPage() {
         type: displayAsCompany ? 1 : 0,
         sex: values.sex ?? 0,
         status: values.status ?? 1,
+        file_ids: extractedFileIds,
       };
       const response = await tenant.update(tenantId, payload);
       if (response.data.code === 200) {
@@ -113,7 +120,10 @@ export default function TenantEditPage() {
             DOB, ID number, and sex. Useful for correcting OCR-quality records
             or filling in fields that were skipped at creation time. Image is
             OCR'd and discarded server-side (no PII persistence). */}
-        <TenantSmartExtract onExtracted={(patch) => form.setFieldsValue(patch)} />
+        <TenantSmartExtract
+          onExtracted={(patch) => form.setFieldsValue(patch)}
+          onFileSaved={(fileId) => setExtractedFileIds((prev) => [...new Set([...prev, fileId])])}
+        />
 
         <Form form={form} onFinish={onFinish} layout="vertical">
           <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 24 }}>

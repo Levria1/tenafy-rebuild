@@ -15,6 +15,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
+import TenantDocuments from '../../../../../components/TenantDocuments';
 import useIsMobile from '../../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../../components/mobile/MobileCardList';
 import { tenant, invoice, utility, settings, pdf } from '../../../../../lib/api';
@@ -256,6 +257,7 @@ function TenantDetailPage() {
     { key: 'leases', label: 'Leases' },
     { key: 'accounting', label: 'Accounting' },
     { key: 'utilities', label: 'Utilities' },
+    { key: 'documents', label: 'Documents' },
   ];
 
   // ---- Age from birth_date ----
@@ -1202,6 +1204,7 @@ function TenantDetailPage() {
             {activeTab === 'leases' && <LeasesContent />}
             {activeTab === 'accounting' && <AccountingContent />}
             {activeTab === 'utilities' && <UtilitiesContent tenantId={tenantId} />}
+            {activeTab === 'documents' && <TenantDocuments tenantId={tenantId} canDelete={canEdit} />}
           </div>
         </div>
       </div>
