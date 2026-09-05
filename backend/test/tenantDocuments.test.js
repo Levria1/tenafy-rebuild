@@ -31,7 +31,8 @@ test('the screenshot is written to disk, not held in memory', () => {
 });
 
 test('a file row is recorded and its id returned to the caller', () => {
-  assert.match(route, /INSERT INTO file \(id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at\)/,
+  // is_private sits in the column list too — see filePrivacy.test.js for why.
+  assert.match(route, /INSERT INTO file \(id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, is_private, created_at\)/,
     'the screenshot must be registered like every other attachment');
   assert.match(route, /file_id: savedFileId/,
     'the create form cannot link a file whose id it never receives');

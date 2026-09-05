@@ -270,9 +270,13 @@ router.post('/parse', authenticate, (req, res, next) => {
       try {
         const ext = (path.extname(req.file.originalname || '') || '.png').replace('.', '').slice(0, 10);
         savedFileId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
+        // is_private = 1. These are ID documents, and /api/file/preview serves
+        // images to anonymous callers by design so that listing photos work.
+        // Without the flag a passport scan would sit on the public side of that
+        // rule behind nothing but a guessable id.
         await req.pool.execute(
-          `INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'local', ?, NOW())`,
+          `INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, is_private, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'local', ?, 1, NOW())`,
           [savedFileId, req.file.filename,
            req.file.originalname || `id-document.${ext}`,
            ext, (req.file.mimetype || 'image/png').toUpperCase().slice(0, 100),

@@ -133,7 +133,7 @@ async function resolveAccessibleFile(req) {
   if (!pool) return { error: 404 };
 
   const [files] = await pool.execute(
-    'SELECT item_name, filename, mime_type, org_id FROM file WHERE id = ? AND deleted_at IS NULL',
+    'SELECT item_name, filename, mime_type, org_id, is_private FROM file WHERE id = ? AND deleted_at IS NULL',
     [identifier]
   );
   if (!files.length) return { error: 404 };
@@ -146,7 +146,14 @@ async function resolveAccessibleFile(req) {
     }
     // Any file type is allowed for the owning org.
   } else {
-    // Anonymous: images only. Documents require a login.
+    // Anonymous. The images-are-public rule exists so listing photos load
+    // without a login, and it was safe while every image here was a property
+    // photo. Smart Extract now stores HKID and passport scans, which are also
+    // images, so type alone can no longer decide this. is_private is checked
+    // FIRST and overrides the type rule: a file id is a timestamp-based
+    // Snowflake, not a secret, and one that leaks into a browser history or a
+    // referrer would otherwise stay fetchable by anyone forever.
+    if (Number(file.is_private) === 1) return { error: 403 };
     if (!isImageFile(file.mime_type, file.item_name || file.filename)) {
       return { error: 403 };
     }
