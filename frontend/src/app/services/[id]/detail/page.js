@@ -424,7 +424,15 @@ export default function ServiceDetailPage() {
                   const actStatus = STATUS_MAP[act.status];
                   const actImages = (act.files || []).filter(isImage);
                   const actNonImages = (act.files || []).filter(f => !isImage(f));
-                  const userName = [act.user_first_name, act.user_last_name].filter(Boolean).join(' ') || 'Unknown';
+                  // A tenant-written entry has no staff author by design. Naming the
+                  // tenant and marking the row is what tells whoever picks the job up
+                  // that this came from the resident, not from a colleague.
+                  const isFromTenant = act.source === 'tenant';
+                  const staffName = [act.user_first_name, act.user_last_name].filter(Boolean).join(' ');
+                  const tenantName = (act.tenant_author_name || '').trim();
+                  const userName = isFromTenant
+                    ? (tenantName ? `${tenantName} (tenant)` : 'Tenant')
+                    : (staffName || 'Unknown');
 
                   return (
                     <div key={act.id} style={{ position: 'relative', paddingLeft: 28, paddingBottom: idx < d.activities.length - 1 ? 24 : 0 }}>
@@ -460,7 +468,7 @@ export default function ServiceDetailPage() {
                               Added {formatDateTime(act.created_at)}
                             </span>
                           </div>
-                          {canEdit && (
+                          {canEdit && !isFromTenant && (
                             <Button
                               type="text"
                               size="small"

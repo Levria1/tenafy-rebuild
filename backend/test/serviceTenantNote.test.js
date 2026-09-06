@@ -73,3 +73,31 @@ test('the portal returns tenant_note and never the internal note', () => {
     assert.ok(!new RegExp(`s\\.${col}\\b`).test(query), `the portal query selects s.${col}`);
   }
 });
+
+// ── what staff see when a tenant writes ─────────────────────────────────────
+
+test('a tenant-written timeline entry is attributed to the tenant', () => {
+  // created_by is NULL for these by design, so the join to `user` finds nothing and the
+  // page showed "Unknown". Whoever picks the job up needs to know it came from the
+  // resident rather than a colleague.
+  const detailQuery = SERVICE.slice(SERVICE.indexOf('const [activities]'), SERVICE.indexOf('activity.files = actFiles'));
+  assert.match(detailQuery, /LEFT JOIN tenant t ON sa\.created_by_tenant = t\.id/);
+  assert.match(detailQuery, /AS tenant_author_name/);
+
+  const page = stripComments(read('../../frontend/src/app/services/[id]/detail/page.js'));
+  assert.match(page, /act\.source === 'tenant'/);
+  assert.ok(!/join\(' '\)\s*\|\|\s*'Unknown'/.test(page),
+    'a tenant entry still falls through to "Unknown"');
+});
+
+test('a tenant-written entry cannot be deleted by staff', () => {
+  // It is the tenant's own statement about their home and it is shown back to them.
+  // Letting it vanish with no trace turns a record into an argument about what was said.
+  const del = SERVICE.slice(SERVICE.indexOf("router.delete('/activity/:id'"));
+  assert.match(del, /activity\[0\]\.source === 'tenant'/);
+  assert.match(del, /status\(403\)/);
+  assert.match(del, /SELECT id, created_by, source FROM service_activity/);
+
+  const page = stripComments(read('../../frontend/src/app/services/[id]/detail/page.js'));
+  assert.match(page, /canEdit && !isFromTenant/);
+});

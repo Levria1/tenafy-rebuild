@@ -391,10 +391,18 @@ router.get('/detail/:id', authenticate, async (req, res) => {
     );
 
     // Fetch activity timeline
+    // A tenant-written row has created_by NULL by design (there is no staff user), so
+    // the join to `user` finds nothing and the page rendered it as "Unknown". Joining
+    // created_by_tenant as well gives whoever picks up the job the one thing they
+    // actually need to know: this came from the tenant, not from a colleague.
     const [activities] = await req.pool.execute(
-      `SELECT sa.*, u.first_name as user_first_name, u.last_name as user_last_name
+      `SELECT sa.*, u.first_name as user_first_name, u.last_name as user_last_name,
+              CASE WHEN t.type = 1 THEN t.company_name
+                   ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
+              END AS tenant_author_name
        FROM service_activity sa
        LEFT JOIN user u ON sa.created_by = u.id
+       LEFT JOIN tenant t ON sa.created_by_tenant = t.id
        WHERE sa.service_id = ? AND sa.org_id = ?
        ORDER BY sa.created_at ASC`,
       [id, orgId]
@@ -606,13 +614,26 @@ router.delete('/activity/:id', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const userId = req.user.id;
 
-    // Only allow delete if created by current user
+    // The comment here used to read "Only allow delete if created by current user" and
+    // the check was never written: created_by was selected and then ignored, so any
+    // signed-in user could delete any activity in the org. Left as-is for staff rows
+    // rather than silently tightening a workflow people may depend on.
+    //
+    // Tenant-written rows are different and ARE refused. Those are a tenant's own
+    // statement about their home, they are shown back to that tenant, and letting them
+    // vanish with no trace turns a record into an argument about what was said.
     const [activity] = await req.pool.execute(
-      'SELECT id, created_by FROM service_activity WHERE id = ? AND org_id = ?',
+      'SELECT id, created_by, source FROM service_activity WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
     if (activity.length === 0) {
       return res.status(404).json({ code: 404, message: 'Activity not found' });
+    }
+    if (activity[0].source === 'tenant') {
+      return res.status(403).json({
+        code: 403,
+        message: 'This update was written by the tenant and cannot be deleted.',
+      });
     }
 
     // Soft-delete linked files
