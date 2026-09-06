@@ -21,7 +21,7 @@ const { v4: uuidv4 } = require('uuid');
 const router = express.Router();
 const config = require('../config');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
-const { sendMail } = require('../config/mailer');
+const { sendMail, accountSender } = require('../config/mailer');
 const { orgTodaySql } = require('../utils/orgTime');
 const { generateSequenceCode } = require('../utils/sequenceCode');
 const {
@@ -218,6 +218,7 @@ router.post('/register', registerLimiter, async (req, res) => {
     // Failures are logged, never surfaced, for the same reason.
     sendMail({
       to: email,
+      from: accountSender(),
       subject: 'Set up your tenant portal password',
       text: `Use this link within ${TOKEN_TTL_MINUTES} minutes to set your password:\n\n${link}\n\nIf you did not ask for this, you can ignore this email.`,
       html: `<p>Use this link within ${TOKEN_TTL_MINUTES} minutes to set your password:</p>

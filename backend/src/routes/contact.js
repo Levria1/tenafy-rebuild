@@ -500,9 +500,10 @@ router.post('/tenant/create/user', authenticate, requirePermission('LANDLORD/USE
 
     // Send invite email
     try {
-      const { sendMail } = require('../config/mailer');
+      const { sendMail, accountSender } = require('../config/mailer');
       await sendMail({
         to: email,
+        from: accountSender(),
         subject: 'You have been invited to the tenant portal',
         html: `<p>You have been invited to access your tenant portal. Your invite code is: <strong>${inviteCode}</strong></p>`,
       });
@@ -555,9 +556,10 @@ router.post('/property-owner/create/user', authenticate, requirePermission('LAND
       [newUserId, inviteCode, inviteCode]
     );
     try {
-      const { sendMail } = require('../config/mailer');
+      const { sendMail, accountSender } = require('../config/mailer');
       await sendMail({
         to: email,
+        from: accountSender(),
         subject: 'You have been invited to the property owner portal',
         html: `<p>You have been invited to access your property owner portal. Your invite code is: <strong>${inviteCode}</strong></p>`,
       });

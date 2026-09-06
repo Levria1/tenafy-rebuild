@@ -34,6 +34,15 @@ module.exports = {
   },
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
   appUrl: process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000',
+  // Sender for account and security email: password resets, activation codes, portal
+  // registration links. Kept apart from EMAIL_FROM because that one is a billing
+  // address, and a credential link arriving from the address that asks people for
+  // money teaches exactly the habit phishing relies on.
+  //
+  // Empty means "no separate sender configured", and every one of those emails falls
+  // back to EMAIL_FROM as before. Deliberately not defaulted to a literal address:
+  // this is a multi-tenant product and no address belongs in the source.
+  emailFromAccount: process.env.EMAIL_FROM_ACCOUNT || '',
   googleServiceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '',
   // Parallel-run mode for the TaneChat cutover. 'notes' (default) = the nightly
   // inquiry re-extraction appends to inquiry.notes as it always has. 'staging' =

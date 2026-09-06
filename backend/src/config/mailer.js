@@ -15,6 +15,18 @@ const { sendWithRetry } = require('../utils/mailRetry');
  *   EMAIL_FROM      - Sender address (e.g. "Tenafy <no-reply@tenafy.com>")
  */
 
+/**
+ * The sender for account and security email.
+ *
+ * Returns undefined when unset so callers can pass it straight through as `from`:
+ * sendMail already falls back to EMAIL_FROM for an undefined sender, so an
+ * unconfigured deployment behaves exactly as it did before.
+ */
+function accountSender() {
+  const configured = require('./index').emailFromAccount;
+  return configured || undefined;
+}
+
 let transporter = null;
 
 async function getTransporter() {
@@ -149,4 +161,5 @@ async function sendMailWithAccount(account, { to, subject, html, text, from, cc,
   return { messageId: info.messageId };
 }
 
-module.exports = { sendMail, sendMailWithAccount };
+module.exports = {
+  accountSender, sendMail, sendMailWithAccount };

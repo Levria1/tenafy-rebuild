@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const config = require('../config');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 const { authenticate, isSuperAdmin } = require('../middleware/auth');
-const { sendMail, sendMailWithAccount } = require('../config/mailer');
+const { sendMail, sendMailWithAccount, accountSender } = require('../config/mailer');
 const { findSmtpAccount } = require('../services/emailService');
 
 /**
@@ -26,7 +26,9 @@ async function sendResetCodeEmail(pool, orgId, toEmail, code) {
     <p style="color:#888;font-size:12px;">— Tenafy</p>
   `;
   const text = `Your Tenafy password reset code: ${code}\nThis code expires in 1 hour.`;
-  const mailOpts = { to: toEmail, subject, html, text };
+  // Account sender, not the billing address. A password reset code arriving from the
+  // address that invoices people is the exact shape of a phishing email.
+  const mailOpts = { to: toEmail, subject, html, text, from: accountSender() };
 
   const account = await findSmtpAccount(pool, orgId, null);
   if (account) return sendMailWithAccount(account, mailOpts);
@@ -341,8 +343,12 @@ router.post('/activate/code/resend/:account', async (req, res) => {
     const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     await orgPool.execute('UPDATE user SET activation_code = ? WHERE email = ? OR username = ?', [newCode, account, account]);
     try {
-      const { sendMail } = require('../config/mailer');
-      await sendMail({ to: account, subject: 'Your activation code', html: `<p>Your new activation code is: <strong>${newCode}</strong></p>` });
+      await sendMail({
+        to: account,
+        subject: 'Your activation code',
+        html: `<p>Your new activation code is: <strong>${newCode}</strong></p>`,
+        from: accountSender(),
+      });
     } catch (e) { console.error('Send activation email error:', e); }
     res.json({ code: 200, message: 'Activation code resent' });
   } catch (error) {
