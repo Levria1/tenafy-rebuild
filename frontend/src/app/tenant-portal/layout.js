@@ -1,8 +1,8 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { Layout, Menu, Button, Typography, Space, theme } from 'antd';
+import { Layout, Menu, Button, Typography, Space, Spin, Result } from 'antd';
 import {
   DashboardOutlined,
   FileTextOutlined,
@@ -10,7 +10,7 @@ import {
   UserOutlined,
   LogoutOutlined,
 } from '@ant-design/icons';
-import Cookies from 'js-cookie';
+import { tenantPortal } from '../../lib/tenantApi';
 
 const { Header, Content, Footer } = Layout;
 const { Text } = Typography;
@@ -22,6 +22,14 @@ const navItems = [
   { key: '/tenant-portal/profile', label: 'Profile', icon: <UserOutlined /> },
 ];
 
+// Pages that must render without a session, and must never be probed. Kept in step with
+// the same list in lib/tenantApi.js, which decides where a 401 sends you.
+const AUTH_PAGES = [
+  '/tenant-portal/login',
+  '/tenant-portal/register',
+  '/tenant-portal/set-password',
+];
+
 export default function TenantPortalLayoutWrapper({ children }) {
   return <Suspense fallback={<div />}><TenantPortalLayout>{children}</TenantPortalLayout></Suspense>;
 }
@@ -29,32 +37,77 @@ export default function TenantPortalLayoutWrapper({ children }) {
 function TenantPortalLayout({ children }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [mounted, setMounted] = useState(false);
+  const isAuthPage = AUTH_PAGES.some((p) => pathname.startsWith(p));
+
+  // 'checking' | 'ok' | 'error'. There is no 'signed out' state because a rejected
+  // probe is redirected by the axios interceptor rather than rendered here.
+  const [state, setState] = useState('checking');
+  const [tenantName, setTenantName] = useState('');
 
   useEffect(() => {
-    setMounted(true);
-    const token = Cookies.get('__s_t');
-    if (!token && pathname !== '/tenant-portal/login') {
-      router.replace('/tenant-portal/login');
+    if (isAuthPage) return;
+    let cancelled = false;
+
+    // The session lives in an httpOnly cookie, so the browser cannot see whether one
+    // exists. The only honest check is to ask the server.
+    //
+    // The old gate read Cookies.get('__s_t') and redirected when it came back empty.
+    // It always came back empty: that cookie is httpOnly (and belongs to staff), so
+    // js-cookie could never read it, and every portal page bounced to login forever.
+    (async () => {
+      try {
+        const response = await tenantPortal.getProfile();
+        if (cancelled) return;
+        const p = response.data?.data || {};
+        setTenantName([p.first_name, p.last_name].filter(Boolean).join(' ').trim());
+        setState('ok');
+      } catch (error) {
+        if (cancelled) return;
+        // 401 and 403 are already on their way to the login page via the interceptor;
+        // rendering an error under a redirect just flashes a scary screen. Anything
+        // else (portal disabled, 500, network) is a real fault and is shown as one.
+        const status = error.response?.status;
+        if (status !== 401 && status !== 403) setState('error');
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [isAuthPage, pathname]);
+
+  const handleLogout = useCallback(async () => {
+    // Must be a server call. Clearing a cookie in JS cannot touch an httpOnly one, so
+    // the old logout left the session fully alive and only looked like it worked.
+    try {
+      await tenantPortal.logout();
+    } catch {
+      // Signing out must never strand someone on a page they think they left.
     }
-  }, [pathname, router]);
+    router.replace('/tenant-portal/login');
+  }, [router]);
 
-  const handleLogout = () => {
-    Cookies.remove('__s_t');
-    router.push('/tenant-portal/login');
-  };
+  const handleMenuClick = ({ key }) => router.push(key);
 
-  const handleMenuClick = ({ key }) => {
-    router.push(key);
-  };
+  if (isAuthPage) return <>{children}</>;
 
-  // Don't render the layout nav on the login page
-  if (pathname === '/tenant-portal/login') {
-    return <>{children}</>;
+  if (state === 'checking') {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f0f2f5' }}>
+        <Spin size="large" />
+      </div>
+    );
   }
 
-  if (!mounted) {
-    return null;
+  if (state === 'error') {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f0f2f5' }}>
+        <Result
+          status="warning"
+          title="The portal is unavailable"
+          subTitle="We could not load your account just now. Please try again in a moment."
+          extra={<Button type="primary" onClick={() => window.location.reload()}>Try again</Button>}
+        />
+      </div>
+    );
   }
 
   const selectedKey = navItems.find((item) => pathname.startsWith(item.key))?.key || '';
@@ -103,14 +156,14 @@ function TenantPortalLayout({ children }) {
           />
         </Space>
 
-        <Button
-          icon={<LogoutOutlined />}
-          onClick={handleLogout}
-          type="text"
-          style={{ color: '#fff' }}
-        >
-          Logout
-        </Button>
+        <Space align="center" size={12}>
+          {tenantName && (
+            <Text style={{ color: 'rgba(255,255,255,0.75)', whiteSpace: 'nowrap' }}>{tenantName}</Text>
+          )}
+          <Button icon={<LogoutOutlined />} onClick={handleLogout} type="text" style={{ color: '#fff' }}>
+            Logout
+          </Button>
+        </Space>
       </Header>
 
       <Content style={{ padding: '24px', background: '#f0f2f5' }}>

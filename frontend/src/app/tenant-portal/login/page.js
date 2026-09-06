@@ -4,7 +4,6 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Form, Input, Button, Card, message } from 'antd';
 import { MailOutlined, LockOutlined } from '@ant-design/icons';
-import Cookies from 'js-cookie';
 import { tenantPortal } from '../../../lib/tenantApi';
 
 export default function TenantLoginPage() {
@@ -16,9 +15,15 @@ export default function TenantLoginPage() {
     try {
       const response = await tenantPortal.login(values);
       if (response.data.code === 200) {
-        Cookies.set('__s_t', response.data.data.token, { expires: 1 });
+        // No token is handled here on purpose. The server sets the session as an
+        // httpOnly __t_p cookie, which this file cannot read and must not try to.
+        // The previous version read response.data.data.token (which the login
+        // endpoint no longer returns) and wrote it into __s_t, the STAFF cookie
+        // name, so a correct login threw on undefined and nobody could get in.
         message.success('Login successful');
-        router.push('/tenant-portal/dashboard');
+        // replace(), not push(): the login page must not sit in history behind the
+        // portal, or Back lands a signed-in tenant on a sign-in form.
+        router.replace('/tenant-portal/dashboard');
       } else {
         message.error(response.data.message || 'Login failed');
       }
