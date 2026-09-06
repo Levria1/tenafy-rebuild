@@ -584,9 +584,14 @@ router.get('/service', authenticateTenant, async (req, res) => {
       // the assignee); returning every linked file would undo the rule that a tenant
       // never sees vendor or internal material. Org is re-checked on the file itself.
       const [files] = await req.pool.execute(
-        `SELECT of.object_id, f.id AS file_id, f.item_name
-           FROM object_file of JOIN file f ON f.id = of.file_id
-          WHERE of.object_id IN (${fph}) AND of.source = 'tenant' AND f.org_id = ?`,
+        // Aliased `objf`, never `of`: OF is a reserved word in MySQL 8 and
+        // `object_file of` is a syntax error. This query only runs once the tenant has
+        // at least one repair, so with an empty list it never executed and the fault
+        // stayed invisible until the first real submission. service.js aliases `of2`
+        // for the same reason.
+        `SELECT objf.object_id, f.id AS file_id, f.item_name
+           FROM object_file objf JOIN file f ON f.id = objf.file_id
+          WHERE objf.object_id IN (${fph}) AND objf.source = 'tenant' AND f.org_id = ?`,
         [...ids, orgId]
       );
       for (const f of files) {
@@ -786,10 +791,10 @@ router.get('/service/:id/photo/:fileId', authenticateTenant, async (req, res) =>
     const [[row]] = await req.pool.execute(
       `SELECT f.item_name, f.mime_type, f.filename
          FROM service s
-         JOIN object_file of ON of.object_id = s.id AND of.source = 'tenant'
-         JOIN file f ON f.id = of.file_id AND f.org_id = ?
+         JOIN object_file objf ON objf.object_id = s.id AND objf.source = 'tenant'
+         JOIN file f ON f.id = objf.file_id AND f.org_id = ?
         WHERE s.id = ? AND s.org_id = ? AND s.reported_by IN (${idsIn(req)})
-          AND s.deleted_at IS NULL AND of.file_id = ?
+          AND s.deleted_at IS NULL AND objf.file_id = ?
         LIMIT 1`,
       [orgId, serviceId, orgId, ...tenantIds, fileId]
     );

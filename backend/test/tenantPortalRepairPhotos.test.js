@@ -58,15 +58,15 @@ test('the photo route proves ownership in SQL, not from the URL', () => {
   // ...not deleted...
   assert.match(code, /s\.deleted_at IS NULL/);
   // ...and the file must be linked to THAT request rather than merely existing.
-  assert.match(code, /of\.object_id = s\.id/);
-  assert.match(code, /of\.file_id = \?/);
+  assert.match(code, /objf\.object_id = s\.id/);
+  assert.match(code, /objf\.file_id = \?/);
 });
 
 test('the photo route serves only files the tenant uploaded', () => {
   // object_file is a shared junction: a service request also accumulates vendor quotes
   // and inspection photos. source = 'tenant' is the only thing separating them, and
   // dropping it would hand tenants staff material through a route that looks fine.
-  assert.match(photoRoute(), /of\.source = 'tenant'/);
+  assert.match(photoRoute(), /objf\.source = 'tenant'/);
 });
 
 test('a missing, foreign or staff-owned photo all answer the same way', () => {
