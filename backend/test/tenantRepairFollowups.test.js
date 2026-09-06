@@ -130,6 +130,17 @@ test('the migration is guarded and makes created_by nullable', () => {
   }
 });
 
+test('the migration skips an org that has no service_activity table', () => {
+  // The TaneChat test org carries `service` but not `service_activity`. Unguarded, 079
+  // fails there on every migration run forever, and a permanently red line is how a real
+  // failure goes unnoticed.
+  assert.match(MIGRATION, /@has_table := \(SELECT COUNT\(\*\) FROM information_schema\.TABLES/);
+  const guards = MIGRATION.match(/@has_table = 1/g) || [];
+  const statements = MIGRATION.match(/PREPARE st FROM @s;/g) || [];
+  assert.equal(guards.length, statements.length,
+    'not every generated statement checks that the table exists');
+});
+
 // ── the screen ──────────────────────────────────────────────────────────────
 
 test('the page only offers what the server said is allowed', () => {
