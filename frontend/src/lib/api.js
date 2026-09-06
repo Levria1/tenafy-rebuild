@@ -269,7 +269,9 @@ export const service = {
   getUnitById: (unitId) => api.get(`/api/service/property/unit/${unitId}`),
   getInvoiceList: (id, params) => api.get('/api/service/invoice/list', { params: { id, ...params } }),
   addActivity: (data) => api.post('/api/service/activity', data),
+  // Deleting marks the entry rather than destroying it, so this has a counterpart.
   deleteActivity: (id) => api.delete(`/api/service/activity/${id}`),
+  restoreActivity: (id) => api.post(`/api/service/activity/${id}/restore`),
 };
 
 export const contact = {

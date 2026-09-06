@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Card, Button, Space, Tag, Image, message, Modal, Row, Col, Select, Input, Upload, Divider, DatePicker } from 'antd';
 import dayjs from 'dayjs';
-import { EditOutlined, ArrowLeftOutlined, DeleteOutlined, FileOutlined, FilePdfOutlined, FileImageOutlined, FileWordOutlined, FileExcelOutlined, DownloadOutlined, PlusOutlined, CloudUploadOutlined, ClockCircleOutlined, UserOutlined } from '@ant-design/icons';
+import { EditOutlined, ArrowLeftOutlined, DeleteOutlined, FileOutlined, FilePdfOutlined, FileImageOutlined, FileWordOutlined, FileExcelOutlined, DownloadOutlined, PlusOutlined, CloudUploadOutlined, ClockCircleOutlined, UserOutlined, UndoOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../../../components/Layout';
 import { service, file as fileApi } from '../../../../lib/api';
 
@@ -139,7 +139,7 @@ export default function ServiceDetailPage() {
   const handleDeleteActivity = (activityId) => {
     Modal.confirm({
       title: 'Delete this update?',
-      content: 'This will remove the update and its attached files.',
+      content: 'It will be hidden from the timeline and can be restored afterwards.',
       okText: 'Delete',
       okType: 'danger',
       onOk: async () => {
@@ -152,6 +152,16 @@ export default function ServiceDetailPage() {
         }
       },
     });
+  };
+
+  const handleRestoreActivity = async (activityId) => {
+    try {
+      await service.restoreActivity(activityId);
+      message.success('Update restored');
+      loadService();
+    } catch (error) {
+      message.error('Failed to restore update');
+    }
   };
 
   const d = serviceData;
@@ -428,6 +438,7 @@ export default function ServiceDetailPage() {
                   // tenant and marking the row is what tells whoever picks the job up
                   // that this came from the resident, not from a colleague.
                   const isFromTenant = act.source === 'tenant';
+                  const isDeleted = Boolean(act.deleted_at);
                   const staffName = [act.user_first_name, act.user_last_name].filter(Boolean).join(' ');
                   const tenantName = (act.tenant_author_name || '').trim();
                   const userName = isFromTenant
@@ -435,7 +446,7 @@ export default function ServiceDetailPage() {
                     : (staffName || 'Unknown');
 
                   return (
-                    <div key={act.id} style={{ position: 'relative', paddingLeft: 28, paddingBottom: idx < d.activities.length - 1 ? 24 : 0 }}>
+                    <div key={act.id} style={{ position: 'relative', paddingLeft: 28, paddingBottom: idx < d.activities.length - 1 ? 24 : 0, opacity: isDeleted ? 0.55 : 1 }}>
                       {/* Timeline dot and line */}
                       <div style={{
                         position: 'absolute', left: 0, top: 4,
@@ -468,7 +479,17 @@ export default function ServiceDetailPage() {
                               Added {formatDateTime(act.created_at)}
                             </span>
                           </div>
-                          {canEdit && !isFromTenant && (
+                          {canEdit && isDeleted && (
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<UndoOutlined />}
+                              onClick={() => handleRestoreActivity(act.id)}
+                            >
+                              Restore
+                            </Button>
+                          )}
+                          {canEdit && !isFromTenant && !isDeleted && (
                             <Button
                               type="text"
                               size="small"
@@ -478,6 +499,12 @@ export default function ServiceDetailPage() {
                             />
                           )}
                         </div>
+
+                        {isDeleted && (
+                          <Tag color="default" style={{ marginBottom: 6 }}>
+                            Deleted{act.deleted_by_name?.trim() ? ` by ${act.deleted_by_name.trim()}` : ''}
+                          </Tag>
+                        )}
 
                         {act.note && (
                           <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginBottom: actImages.length > 0 || actNonImages.length > 0 ? 8 : 0 }}>

@@ -628,6 +628,7 @@ router.get('/service', authenticateTenant, async (req, res) => {
         `SELECT sa.id, sa.service_id, sa.note, sa.created_at
            FROM service_activity sa
           WHERE sa.service_id IN (${nph}) AND sa.org_id = ? AND sa.source = 'tenant'
+            AND sa.deleted_at IS NULL
           ORDER BY sa.created_at ASC`,
         [...ids, orgId]
       );

@@ -96,7 +96,7 @@ test('a tenant-written entry cannot be deleted by staff', () => {
   const del = SERVICE.slice(SERVICE.indexOf("router.delete('/activity/:id'"));
   assert.match(del, /activity\[0\]\.source === 'tenant'/);
   assert.match(del, /status\(403\)/);
-  assert.match(del, /SELECT id, created_by, source FROM service_activity/);
+  assert.match(del, /SELECT id, created_by, source, deleted_at FROM service_activity/);
 
   const page = stripComments(read('../../frontend/src/app/services/[id]/detail/page.js'));
   assert.match(page, /canEdit && !isFromTenant/);

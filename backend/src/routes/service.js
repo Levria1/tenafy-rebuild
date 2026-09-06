@@ -411,10 +411,14 @@ router.get('/detail/:id', authenticate, async (req, res) => {
       `SELECT sa.*, u.first_name as user_first_name, u.last_name as user_last_name,
               CASE WHEN t.type = 1 THEN t.company_name
                    ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))
-              END AS tenant_author_name
+              END AS tenant_author_name,
+              -- Deleted rows are RETURNED, marked. Hiding them here would leave no way
+              -- to restore one from the screen where it was deleted.
+              CONCAT(COALESCE(du.first_name,''), ' ', COALESCE(du.last_name,'')) AS deleted_by_name
        FROM service_activity sa
        LEFT JOIN user u ON sa.created_by = u.id
        LEFT JOIN tenant t ON sa.created_by_tenant = t.id
+       LEFT JOIN user du ON sa.deleted_by = du.id
        WHERE sa.service_id = ? AND sa.org_id = ?
        ORDER BY sa.created_at ASC`,
       [id, orgId]
@@ -569,6 +573,39 @@ router.delete('/delete/:id', authenticate, async (req, res) => {
 
 // ─── SERVICE ACTIVITY TIMELINE ──────────────────────────────────────────────
 
+// POST /api/service/activity/:id/restore - Put a deleted timeline entry back
+router.post('/activity/:id/restore', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+
+    const [[activity]] = await req.pool.execute(
+      'SELECT id, service_id, deleted_at FROM service_activity WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+    if (!activity) return res.status(404).json({ code: 404, message: 'Activity not found' });
+    if (!activity.deleted_at) return res.json({ code: 200, message: 'Activity is not deleted' });
+
+    await req.pool.execute(
+      'UPDATE service_activity SET deleted_at = NULL, deleted_by = NULL WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+    // Its attachments were soft-deleted alongside it and have to come back too, or the
+    // entry returns without the photographs that were the point of it.
+    await req.pool.execute(
+      'UPDATE object_file SET deleted_at = NULL WHERE object_id = ?', [id]
+    );
+
+    await logActivity(req, 'RESTORE', 'service_activity', id,
+      `Restored a timeline entry on service ${activity.service_id}`);
+
+    res.json({ code: 200, message: 'Activity restored' });
+  } catch (error) {
+    console.error('Restore activity error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to restore activity' });
+  }
+});
+
 // POST /api/service/activity - Add activity update
 router.post('/activity', authenticate, async (req, res) => {
   try {
@@ -635,7 +672,7 @@ router.delete('/activity/:id', authenticate, async (req, res) => {
     // statement about their home, they are shown back to that tenant, and letting them
     // vanish with no trace turns a record into an argument about what was said.
     const [activity] = await req.pool.execute(
-      'SELECT id, created_by, source FROM service_activity WHERE id = ? AND org_id = ?',
+      'SELECT id, created_by, source, deleted_at FROM service_activity WHERE id = ? AND org_id = ?',
       [id, orgId]
     );
     if (activity.length === 0) {
@@ -647,6 +684,16 @@ router.delete('/activity/:id', authenticate, async (req, res) => {
         message: 'This update was written by the tenant and cannot be deleted.',
       });
     }
+    if (activity[0].deleted_at) {
+      return res.json({ code: 200, message: 'Activity already deleted' });
+    }
+
+    // Copied BEFORE anything changes. activity_log keeps the text even if this table is
+    // ever purged for real, which is the difference between "we can prove what it said"
+    // and "it is gone".
+    const [[full]] = await req.pool.execute(
+      'SELECT * FROM service_activity WHERE id = ? AND org_id = ?', [id, orgId]
+    );
 
     // Soft-delete linked files
     await req.pool.execute(
@@ -654,11 +701,17 @@ router.delete('/activity/:id', authenticate, async (req, res) => {
       [id]
     );
 
-    // Delete activity
+    // Marked, not removed. It used to be a real DELETE, so a mis-click destroyed the
+    // entry with nothing to restore from and no record it had existed.
     await req.pool.execute(
-      'DELETE FROM service_activity WHERE id = ? AND org_id = ?',
-      [id, orgId]
+      'UPDATE service_activity SET deleted_at = NOW(), deleted_by = ? WHERE id = ? AND org_id = ?',
+      [userId, id, orgId]
     );
+
+    await logActivity(req, 'DELETE', 'service_activity', id,
+      `Deleted a timeline entry on service ${full?.service_id || ''}`,
+      { note: full?.note || null, status: full?.status ?? null,
+        activity_date: full?.activity_date || null, source: full?.source || null });
 
     res.json({ code: 200, message: 'Activity deleted' });
   } catch (error) {
