@@ -21,7 +21,12 @@ const stripComments = (src) =>
 test('an unset sender falls back rather than breaking the send', () => {
   // A deployment that has not set EMAIL_FROM_ACCOUNT must keep sending exactly as
   // before. Returning '' instead of undefined would put an empty From on the message.
-  delete process.env.EMAIL_FROM_ACCOUNT;
+  //
+  // Set to empty rather than deleted. Re-requiring config re-runs dotenv, which reads a
+  // deleted variable straight back out of .env, so `delete` tested nothing on any
+  // machine that actually has the variable configured. It passed locally only because
+  // this developer's .env does not set it.
+  process.env.EMAIL_FROM_ACCOUNT = '';
   delete require.cache[require.resolve('../src/config')];
   delete require.cache[require.resolve('../src/config/mailer')];
   const { accountSender } = require('../src/config/mailer');
@@ -34,7 +39,7 @@ test('a configured sender is used verbatim', () => {
   delete require.cache[require.resolve('../src/config/mailer')];
   const { accountSender } = require('../src/config/mailer');
   assert.equal(accountSender(), 'Example <no-reply@example.com>');
-  delete process.env.EMAIL_FROM_ACCOUNT;
+  process.env.EMAIL_FROM_ACCOUNT = '';
 });
 
 test('no address is hardcoded as the default', () => {
