@@ -34,6 +34,7 @@ const {
   TOKEN_TTL_MINUTES, sha256, createRegistrationToken, parseRegistrationToken,
   passwordProblem, normaliseEmail,
 } = require('../utils/tenantPortalRegistration');
+const { registrationEmail } = require('../utils/registrationEmail');
 
 const newId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
@@ -126,14 +127,14 @@ async function orgForLogin(email) {
  */
 async function orgForRegistration(email) {
   const [orgs] = await getMasterPool().execute(
-    'SELECT id FROM organizations WHERE status = 1 ORDER BY created_at'
+    'SELECT id, display_name FROM organizations WHERE status = 1 ORDER BY created_at'
   );
   const matches = [];
   for (const org of orgs) {
     try {
       const pool = await getOrgPool(String(org.id));
       if (await isEligibleToRegister(pool, String(org.id), email)) {
-        matches.push({ orgId: String(org.id), pool });
+        matches.push({ orgId: String(org.id), pool, orgName: org.display_name || '' });
       }
     } catch (e) {
       // One unreachable org database must not stop the others being checked.
@@ -170,7 +171,7 @@ router.post('/register', registerLimiter, async (req, res) => {
   try {
     const found = await orgForRegistration(email);
     if (!found || found.ambiguous) return res.json(REGISTER_ACK);
-    const { orgId, pool } = found;
+    const { orgId, pool, orgName } = found;
 
     const { token, secretHash } = createRegistrationToken(orgId);
     const expires = new Date(Date.now() + TOKEN_TTL_MINUTES * 60 * 1000);
@@ -212,6 +213,10 @@ router.post('/register', registerLimiter, async (req, res) => {
     }
 
     const link = `${config.appUrl}/tenant-portal/set-password?token=${encodeURIComponent(token)}`;
+    // The org's own name, from master. NOT a literal: three orgs share this codebase and
+    // hardcoding one customer's name would sign every other customer's email as them.
+    const { subject, text: bodyText, html: bodyHtml } =
+      registrationEmail({ brand: orgName, link });
     // NOT awaited. Sending mail takes far longer than the "no such tenant" path, and an
     // identical response body does not hide a second of difference from anyone timing
     // the endpoint. Returning before the send makes the two outcomes look alike.
@@ -219,11 +224,9 @@ router.post('/register', registerLimiter, async (req, res) => {
     sendMail({
       to: email,
       from: accountSender(),
-      subject: 'Set up your tenant portal password',
-      text: `Use this link within ${TOKEN_TTL_MINUTES} minutes to set your password:\n\n${link}\n\nIf you did not ask for this, you can ignore this email.`,
-      html: `<p>Use this link within ${TOKEN_TTL_MINUTES} minutes to set your password:</p>
-             <p><a href="${link}">Set my password</a></p>
-             <p>If you did not ask for this, you can ignore this email.</p>`,
+      subject,
+      text: bodyText,
+      html: bodyHtml,
     }).catch(err => console.error('[tenant-portal] registration email failed:', err));
 
     return res.json(REGISTER_ACK);
