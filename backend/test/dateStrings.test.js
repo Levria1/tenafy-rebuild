@@ -23,13 +23,19 @@ const stripComments = (src) =>
 const POOLS = ['../src/config/database.js', '../src/config/poolRegistry.js'];
 
 for (const rel of POOLS) {
-  test(`${path.basename(rel)} returns DATE and DATETIME as strings`, () => {
+  test(`${path.basename(rel)} returns DATE as a string and DATETIME as a Date`, () => {
+    // DATETIME deliberately excluded. It means two different things here: appointment
+    // times hold a Hong Kong wall clock, but 24 audit columns hold UTC because NOW()
+    // writes them and NOW() on this server is UTC. Stringifying both fixes the first and
+    // renders the second eight hours early. The wall-clock columns are pulled out with
+    // DATE_FORMAT in the queries that know which kind they are.
     const code = stripComments(read(rel));
-    assert.match(code, /dateStrings:\s*\['DATE',\s*'DATETIME'\]/,
-      'the pool no longer pins dateStrings, so wall-clock columns will shift again');
+    assert.match(code, /dateStrings:\s*\['DATE'\]/,
+      'the pool no longer pins dateStrings, so DATE columns can shift a day again');
+    assert.ok(!/'DATETIME'/.test(code), 'DATETIME is being stringified again');
   });
 
-  test(`${path.basename(rel)} does NOT stringify TIMESTAMP`, () => {
+  test(`${path.basename(rel)} does NOT stringify TIMESTAMP either`, () => {
     // A blanket `dateStrings: true` would sweep TIMESTAMP in too. Those are real
     // instants; as a bare string they lose their zone and created_at would render eight
     // hours early for a Hong Kong reader.
@@ -90,4 +96,35 @@ test('the tenant portal and the staff forms agree on the stored format', () => {
   for (const [rel] of FORMS) {
     assert.match(stripComments(read(rel)), /format\('YYYY-MM-DD HH:mm:ss'\)/);
   }
+});
+
+// ── the wall-clock columns are formatted where their meaning is known ────────
+
+test('the service queries pull wall-clock columns as formatted strings', () => {
+  // The pool cannot tell an appointment time from an audit stamp; the query can. Without
+  // DATE_FORMAT these come back as Dates, are read as UTC and drawn eight hours late.
+  const WALL_CLOCK = [
+    'preferred_date_first_start', 'preferred_date_first_end',
+    'preferred_date_second_start', 'preferred_date_second_end',
+    'service_date_start', 'service_date_end',
+  ];
+  const staff = read('../src/routes/service.js');
+  const detail = staff.slice(staff.indexOf('const [services] = await req.pool.execute'), staff.indexOf('// Fetch linked files'));
+  for (const col of WALL_CLOCK) {
+    assert.ok(detail.includes(`DATE_FORMAT(s.${col},`), `staff detail does not format ${col}`);
+  }
+
+  const portal = read('../src/routes/tenantPortal.js');
+  const list = portal.slice(portal.indexOf("router.get('/service'"), portal.indexOf('ORDER BY s.created_at DESC'));
+  for (const col of WALL_CLOCK) {
+    assert.ok(list.includes(`DATE_FORMAT(s.${col},`), `the portal list does not format ${col}`);
+  }
+});
+
+test('created_at is NOT formatted as a wall clock', () => {
+  // It is DATETIME but holds UTC, written by NOW(). Formatting it would render it eight
+  // hours early — the exact mistake, in the opposite direction.
+  const portal = read('../src/routes/tenantPortal.js');
+  const list = portal.slice(portal.indexOf("router.get('/service'"), portal.indexOf('ORDER BY s.created_at DESC'));
+  assert.ok(!/DATE_FORMAT\(s\.created_at/.test(list), 'created_at is being treated as a wall clock');
 });

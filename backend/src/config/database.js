@@ -10,32 +10,31 @@ const pool = mysql.createPool({
   waitForConnections: config.database.waitForConnections,
   connectionLimit: config.database.connectionLimit,
   queueLimit: config.database.queueLimit,
-  // DATE and DATETIME come back as STRINGS. TIMESTAMP deliberately does not.
+  // DATE comes back as a STRING. DATETIME deliberately does NOT.
   //
-  // These three column types mean different things in this schema and only one of them
-  // is an absolute instant:
+  // A first attempt stringified both, and that was wrong, because DATETIME means two
+  // different things in this schema:
   //
-  //   DATE      a calendar date, no zone at all (invoice.due_on, leasing.start_date)
-  //   DATETIME  a HONG KONG wall clock (service.preferred_date_*, viewing times)
-  //   TIMESTAMP a real instant (created_at, updated_at)
+  //   appointment times (service.preferred_date_*, service_date_*, viewing times) hold a
+  //     HONG KONG WALL CLOCK, written from a form
+  //   audit stamps (24 columns: created_at, updated_at, deleted_at, activity_date...) hold
+  //     UTC, because they are written with NOW() and NOW() on this server IS UTC
   //
-  // Without this, mysql2 turns the first two into JavaScript Dates by reading them
-  // against the process timezone, which is UTC on the droplet. A DATETIME meaning
-  // "6am in Hong Kong" is then serialised to the browser as 06:00Z, and a browser in
-  // Hong Kong draws 2pm. Measured on service S3293, whose stored 06:00-16:00 window
-  // was displayed as 2pm to midnight the following day.
+  // Returning every DATETIME as a string fixes the first group and breaks the second: an
+  // audit stamp was being read as an instant and correctly redrawn in Hong Kong, and as a
+  // bare string it renders eight hours early instead.
   //
-  // That was not only a display fault. The staff edit form loaded the shifted value and
-  // saved it back, so every open-and-save pushed the window eight hours later, and it
-  // composed the end from the start date. 141 of 1,702 requests had ended up with an end
-  // BEFORE their start, all reading 08:00:00 -> 07:59:59.
+  // So DATETIME keeps arriving as a Date, and the wall-clock columns are pulled out with
+  // DATE_FORMAT in the queries that need them, which is the only place the distinction is
+  // actually known.
   //
-  // Returning them as strings keeps the stored wall clock intact end to end. TIMESTAMP
-  // stays a Date because it IS an instant and must be rendered in the reader's zone.
+  // DATE is unambiguous and safe: no time, no zone. As a Date it was built at local
+  // midnight and toISOString() on it lands a day early anywhere east of UTC, which is a
+  // latent off-by-one this removes.
   //
-  // NOT process.env.TZ, which looks like the one-line version of this and would
-  // reinterpret every DATETIME already stored. See utils/orgTime.js.
-  dateStrings: ['DATE', 'DATETIME'],
+  // NOT process.env.TZ, which would reinterpret every DATETIME already stored.
+  // See utils/orgTime.js.
+  dateStrings: ['DATE'],
   supportBigNumbers: true,
   bigNumberStrings: true
 });

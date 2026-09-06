@@ -148,3 +148,51 @@ test('a rejected withdrawal reloads instead of leaving a stale button', () => {
   const code = PAGE.slice(PAGE.indexOf('const cancelRequest'), PAGE.indexOf('if (loading)'));
   assert.match(code, /catch[\s\S]{0,200}load\(\)/);
 });
+
+// ── found by external review, after the first pass shipped ──────────────────
+
+test('the filer is recorded, not the lease\'s named tenant', () => {
+  // On a couple's lease the spouse is an additional tenant with their own portal login.
+  // Recording the named tenant meant a repair the spouse filed was attributed to their
+  // partner: the spouse could not see or withdraw it, the partner could withdraw one they
+  // never made, and staff rang the wrong person back.
+  const submit = ROUTES.slice(ROUTES.indexOf("router.post('/service'"), ROUTES.indexOf("router.post('/service/:id/note'"));
+  assert.match(submit, /reporterId,\s*contactPhone/);
+  assert.ok(!/unit\.lease_tenant_id \|\| req\.tenantPortal\.tenantIds\[0\], contactPhone/.test(submit),
+    'the lease tenant is still being recorded as the reporter');
+});
+
+test('visibility covers every home the tenant holds a lease on', () => {
+  // Recording the filer accurately is not enough on its own: both people on a lease
+  // should see repairs for their own home, and every request filed BEFORE this change
+  // carries the named tenant as reporter.
+  assert.match(ROUTES, /async function visibleUnitIds\(req\)/);
+  const fn = ROUTES.slice(ROUTES.indexOf('async function visibleUnitIds'), ROUTES.indexOf('async function loadOwnRequest'));
+  assert.match(fn, /leaseIsTheirs\(ph\)/, 'additional tenants are excluded from visibility');
+  assert.ok(!/l\.status = 1/.test(fn), 'reading is restricted to current leases');
+
+  // All three read paths must agree, or a spouse sees a request they cannot open.
+  for (const marker of ['loadOwnRequest', "router.get('/service'", 'photo/:fileId']) {
+    const idx = ROUTES.indexOf(marker);
+    assert.ok(idx > -1, `${marker} is missing`);
+    assert.match(ROUTES.slice(idx, idx + 1600), /s\.unit_id IN \(/, `${marker} does not honour lease-based visibility`);
+  }
+});
+
+test('cancelling is one transaction', () => {
+  // As two autocommit statements a failed INSERT left the request cancelled with nothing
+  // explaining why, a 500 for the tenant, and a 409 on their retry.
+  const code = handler('cancel');
+  assert.match(code, /beginTransaction\(\)/);
+  assert.match(code, /await conn\.commit\(\)/);
+  assert.match(code, /rollback\(\)/);
+});
+
+test('a note cannot land on a request cancelled mid-flight', () => {
+  // Checked only on the earlier SELECT, a note submitted while a withdrawal was in flight
+  // still landed. The rule now lives in the writing statement.
+  const code = handler('note');
+  assert.match(code, /INSERT INTO service_activity[\s\S]{0,400}?SELECT \?/);
+  assert.match(code, /s\.status <> 3/);
+  assert.match(code, /written\.affectedRows !== 1/);
+});

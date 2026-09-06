@@ -354,8 +354,20 @@ router.get('/detail/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
+    // The four preferred-window columns and the two service-date columns are DATETIME
+    // holding a HONG KONG WALL CLOCK, not an instant. Pulled out with DATE_FORMAT so they
+    // arrive as the digits that are stored: as Date objects they were read as UTC and
+    // redrawn eight hours later, which is how a 06:00-16:00 window came to display as 2pm
+    // to midnight the next day. These aliases shadow the same names from s.*.
     const [services] = await req.pool.execute(
-      `SELECT s.*, u.name as unit_name, p.display_name as property_name, p.id as property_id,
+      `SELECT s.*,
+              DATE_FORMAT(s.preferred_date_first_start,  '%Y-%m-%d %H:%i:%s') AS preferred_date_first_start,
+              DATE_FORMAT(s.preferred_date_first_end,    '%Y-%m-%d %H:%i:%s') AS preferred_date_first_end,
+              DATE_FORMAT(s.preferred_date_second_start, '%Y-%m-%d %H:%i:%s') AS preferred_date_second_start,
+              DATE_FORMAT(s.preferred_date_second_end,   '%Y-%m-%d %H:%i:%s') AS preferred_date_second_end,
+              DATE_FORMAT(s.service_date_start,          '%Y-%m-%d %H:%i:%s') AS service_date_start,
+              DATE_FORMAT(s.service_date_end,            '%Y-%m-%d %H:%i:%s') AS service_date_end,
+              u.name as unit_name, p.display_name as property_name, p.id as property_id,
               sv.first_name as assignee_first_name, sv.last_name as assignee_last_name,
               sv2.first_name as assignee_2_first_name, sv2.last_name as assignee_2_last_name,
               CASE WHEN rb.type = 1 THEN rb.company_name

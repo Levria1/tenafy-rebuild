@@ -560,23 +560,35 @@ router.get('/service', authenticateTenant, async (req, res) => {
   try {
     const { orgId, tenantIds } = req.tenantPortal;
     const ph = idsIn(req);
+    // Same rule as loadOwnRequest: what you filed, plus anything on a home you hold a
+    // lease for. Without the second half a spouse on the lease sees an empty list.
+    const visibleUnits = await visibleUnitIds(req);
+    const unitClause = visibleUnits.length ? ` OR s.unit_id IN (${visibleUnits.map(() => '?').join(',')})` : '';
     // Column list is an allow-list, not a `SELECT *`. `note` (staff internal), assignee,
     // vendor and priority must never be selected here; tenant_note is the one field
     // staff write FOR the tenant.
     const [rows] = await req.pool.execute(
+      // The window columns are DATETIME holding a Hong Kong wall clock. Read as Date
+      // objects they are treated as UTC and drawn eight hours late; DATE_FORMAT returns
+      // the digits as stored. created_at is also DATETIME but holds UTC (NOW() writes it),
+      // so it is deliberately left as an instant.
       `SELECT s.id, s.code, s.category, s.additional_info, s.status,
               s.tenant_note, s.created_at,
-              s.preferred_date_first_start, s.preferred_date_first_end,
-              s.preferred_date_second_start, s.preferred_date_second_end,
-              s.service_date_start, s.service_date_end,
+              DATE_FORMAT(s.preferred_date_first_start,  '%Y-%m-%d %H:%i:%s') AS preferred_date_first_start,
+              DATE_FORMAT(s.preferred_date_first_end,    '%Y-%m-%d %H:%i:%s') AS preferred_date_first_end,
+              DATE_FORMAT(s.preferred_date_second_start, '%Y-%m-%d %H:%i:%s') AS preferred_date_second_start,
+              DATE_FORMAT(s.preferred_date_second_end,   '%Y-%m-%d %H:%i:%s') AS preferred_date_second_end,
+              DATE_FORMAT(s.service_date_start,          '%Y-%m-%d %H:%i:%s') AS service_date_start,
+              DATE_FORMAT(s.service_date_end,            '%Y-%m-%d %H:%i:%s') AS service_date_end,
               u.name AS unit_name, p.display_name AS property_name
          FROM service s
          JOIN unit u ON s.unit_id = u.id
          JOIN property p ON u.property_id = p.id
-        WHERE s.org_id = ? AND s.reported_by IN (${ph}) AND s.deleted_at IS NULL
+        WHERE s.org_id = ? AND s.deleted_at IS NULL
+          AND (s.reported_by IN (${ph})${unitClause})
         ORDER BY s.created_at DESC
         LIMIT 200`,
-      [orgId, ...tenantIds]
+      [orgId, ...tenantIds, ...visibleUnits]
     );
 
     const ids = rows.map(r => String(r.id));
@@ -723,6 +735,13 @@ router.post('/service', authenticateTenant, requireCurrentLease, photos('photos'
       return /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/.test(s) ? s.replace('T', ' ') : null;
     };
 
+    // Which of this person's tenant rows holds the lease on THIS unit, falling back to
+    // their primary row. A person can carry several rows across tenancies, so this picks
+    // the one that belongs to the flat the repair is about.
+    const reporterId = req.tenantPortal.tenantIds.includes(String(unit.lease_tenant_id))
+      ? String(unit.lease_tenant_id)
+      : String(req.tenantPortal.tenantIds[0]);
+
     const serviceId = newId();
     let code;
     try {
@@ -740,9 +759,13 @@ router.post('/service', authenticateTenant, requireCurrentLease, photos('photos'
     try {
       await conn.beginTransaction();
 
-      // `reported_by` is the tenant row that actually holds THIS lease, not whichever id
-      // sorted first: a person can have an old row and a newer one, and filing a repair
-      // against the wrong tenancy misleads whoever picks the job up.
+      // `reported_by` is the person who FILED it, not the lease's named tenant.
+      //
+      // It used to be the named tenant, which broke an ordinary case: on a couple's lease
+      // the spouse is an additional tenant with their own portal login, and a repair they
+      // filed was recorded under their partner. They then could not see it, add to it or
+      // withdraw it, while their partner could withdraw a request they never made. Staff
+      // also read "Reported By" as who to call back, and it named the wrong person.
       // `created_by` is NULL because there is no staff user. Status 0 puts it in the
       // Pending queue staff already work, with no separate inbox to remember.
       await conn.execute(
@@ -752,7 +775,7 @@ router.post('/service', authenticateTenant, requireCurrentLease, photos('photos'
            preferred_date_second_start, preferred_date_second_end, created_at)
          VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, NOW())`,
         [serviceId, orgId, code, unit.unit_id, category, description,
-         unit.lease_tenant_id || req.tenantPortal.tenantIds[0], contactPhone,
+         reporterId, contactPhone,
          dateOrNull(req.body?.preferred_date_first_start), dateOrNull(req.body?.preferred_date_first_end),
          dateOrNull(req.body?.preferred_date_second_start), dateOrNull(req.body?.preferred_date_second_end)]
       );
@@ -809,6 +832,27 @@ router.post('/service', authenticateTenant, requireCurrentLease, photos('photos'
 });
 
 /**
+ * The units this person may see repairs for: every unit on a lease they are named on or
+ * are an additional tenant of, at any point in time.
+ *
+ * NOT currentLeaseUnits, which is the WRITE rule. Reading is broader on purpose: a repair
+ * raised during a tenancy stays visible after it ends, and a lease where the person is
+ * only an additional tenant is still their home.
+ */
+async function visibleUnitIds(req) {
+  const { orgId, tenantIds } = req.tenantPortal;
+  const ph = idsIn(req);
+  const [rows] = await req.pool.execute(
+    `SELECT DISTINCT l.unit_id
+       FROM leasing l
+       JOIN unit u ON u.id = l.unit_id
+       JOIN property p ON p.id = u.property_id
+      WHERE p.org_id = ? AND l.deleted_at IS NULL AND ${leaseIsTheirs(ph)}`,
+    [orgId, ...tenantIds, ...tenantIds]
+  );
+  return rows.map(r => String(r.unit_id));
+}
+/**
  * Resolve one of the tenant's OWN repair requests, or answer 404.
  *
  * Shared by the follow-up and cancel routes so the ownership rule is written once. A
@@ -818,12 +862,18 @@ router.post('/service', authenticateTenant, requireCurrentLease, photos('photos'
 async function loadOwnRequest(req, serviceId) {
   if (!/^\d+$/.test(String(serviceId || ''))) return null;
   const { orgId, tenantIds } = req.tenantPortal;
+  const units = await visibleUnitIds(req);
+  // Matching on reported_by ALONE excluded a spouse from a request filed by their
+  // partner on their shared home, and excludes everyone from requests filed before this
+  // change, which recorded the lease's named tenant rather than the filer.
+  const unitClause = units.length ? ` OR s.unit_id IN (${units.map(() => '?').join(',')})` : '';
   const [[row]] = await req.pool.execute(
     `SELECT s.id, s.code, s.status, s.unit_id, s.reported_by
        FROM service s
-      WHERE s.id = ? AND s.org_id = ? AND s.reported_by IN (${idsIn(req)}) AND s.deleted_at IS NULL
+      WHERE s.id = ? AND s.org_id = ? AND s.deleted_at IS NULL
+        AND (s.reported_by IN (${idsIn(req)})${unitClause})
       LIMIT 1`,
-    [String(serviceId), orgId, ...tenantIds]
+    [String(serviceId), orgId, ...tenantIds, ...units]
   );
   return row || null;
 }
@@ -861,13 +911,26 @@ router.post('/service/:id/note', authenticateTenant, async (req, res) => {
     // created_by is NULL because there is no staff user, and status is NULL because a
     // tenant note is not a status change. `source` is what keeps it out of nothing and
     // makes it visible to them; see 079.
+    // INSERT ... SELECT so the not-cancelled rule is enforced by the same statement that
+    // writes. Checked only on the earlier SELECT, a note submitted while a withdrawal was
+    // in flight still landed, leaving a follow-up on a request the handler says it will
+    // not accept one for.
     const noteId = newId();
-    await req.pool.execute(
+    const [written] = await req.pool.execute(
       `INSERT INTO service_activity
          (id, org_id, service_id, status, activity_date, note, created_by, source, created_by_tenant, created_at)
-       VALUES (?, ?, ?, NULL, NOW(), ?, NULL, 'tenant', ?, NOW())`,
-      [noteId, orgId, String(request.id), note, String(request.reported_by)]
+       SELECT ?, ?, ?, NULL, NOW(), ?, NULL, 'tenant', ?, NOW()
+         FROM service s
+        WHERE s.id = ? AND s.org_id = ? AND s.status <> 3 AND s.deleted_at IS NULL`,
+      [noteId, orgId, String(request.id), note, String(request.reported_by),
+       String(request.id), orgId]
     );
+    if (written.affectedRows !== 1) {
+      return res.status(409).json({
+        code: 409,
+        message: 'This request was cancelled. Please report a new one if the problem is still there.',
+      });
+    }
 
     await createNotification(req.pool, {
       orgId,
@@ -904,31 +967,47 @@ router.post('/service/:id/cancel', authenticateTenant, async (req, res) => {
 
     const reason = String(req.body?.reason || '').trim().slice(0, MAX_NOTE_LENGTH);
 
-    // status = 0 is restated in the UPDATE rather than trusted from the SELECT above. A
-    // staff member can pick the job up in the moment between the two, and affectedRows is
-    // the proof that this request won.
-    const [result] = await req.pool.execute(
-      `UPDATE service SET status = 3, updated_at = NOW()
-        WHERE id = ? AND org_id = ? AND status = 0 AND deleted_at IS NULL`,
-      [String(request.id), orgId]
-    );
-    if (result.affectedRows !== 1) {
-      return res.status(409).json({
-        code: 409,
-        message: 'This request is already being dealt with. Please contact us to withdraw it.',
-      });
-    }
+    // One transaction. As two autocommit statements, a failure on the INSERT left the
+    // request cancelled with nothing on the timeline saying why, the tenant seeing a 500,
+    // and their retry answering 409 "already being dealt with" — the worst of both.
+    const conn = await req.pool.getConnection();
+    try {
+      await conn.beginTransaction();
 
-    // The withdrawal is recorded on the timeline, with the reason if one was given, so
-    // the request does not simply change colour with no explanation attached.
-    await req.pool.execute(
-      `INSERT INTO service_activity
-         (id, org_id, service_id, status, activity_date, note, created_by, source, created_by_tenant, created_at)
-       VALUES (?, ?, ?, 3, NOW(), ?, NULL, 'tenant', ?, NOW())`,
-      [newId(), orgId, String(request.id),
-       reason ? `Withdrawn by tenant: ${reason}` : 'Withdrawn by tenant.',
-       String(request.reported_by)]
-    );
+      // status = 0 is restated here rather than trusted from the SELECT above. A staff
+      // member can pick the job up in the moment between the two, and affectedRows is the
+      // proof that this request won.
+      const [result] = await conn.execute(
+        `UPDATE service SET status = 3, updated_at = NOW()
+          WHERE id = ? AND org_id = ? AND status = 0 AND deleted_at IS NULL`,
+        [String(request.id), orgId]
+      );
+      if (result.affectedRows !== 1) {
+        await conn.rollback();
+        return res.status(409).json({
+          code: 409,
+          message: 'This request is already being dealt with. Please contact us to withdraw it.',
+        });
+      }
+
+      // The withdrawal is recorded on the timeline, with the reason if one was given, so
+      // the request does not simply change colour with no explanation attached.
+      await conn.execute(
+        `INSERT INTO service_activity
+           (id, org_id, service_id, status, activity_date, note, created_by, source, created_by_tenant, created_at)
+         VALUES (?, ?, ?, 3, NOW(), ?, NULL, 'tenant', ?, NOW())`,
+        [newId(), orgId, String(request.id),
+         reason ? `Withdrawn by tenant: ${reason}` : 'Withdrawn by tenant.',
+         String(request.reported_by)]
+      );
+
+      await conn.commit();
+    } catch (txErr) {
+      await conn.rollback().catch(() => {});
+      throw txErr;
+    } finally {
+      conn.release();
+    }
 
     await createNotification(req.pool, {
       orgId,
@@ -969,15 +1048,18 @@ router.get('/service/:id/photo/:fileId', authenticateTenant, async (req, res) =>
       return res.status(404).json({ code: 404, message: 'Photo not found' });
     }
 
+    const photoUnits = await visibleUnitIds(req);
+    const photoUnitClause = photoUnits.length ? ` OR s.unit_id IN (${photoUnits.map(() => '?').join(',')})` : '';
     const [[row]] = await req.pool.execute(
       `SELECT f.item_name, f.mime_type, f.filename
          FROM service s
          JOIN object_file objf ON objf.object_id = s.id AND objf.source = 'tenant'
          JOIN file f ON f.id = objf.file_id AND f.org_id = ?
-        WHERE s.id = ? AND s.org_id = ? AND s.reported_by IN (${idsIn(req)})
-          AND s.deleted_at IS NULL AND objf.file_id = ?
+        WHERE s.id = ? AND s.org_id = ? AND s.deleted_at IS NULL
+          AND (s.reported_by IN (${idsIn(req)})${photoUnitClause})
+          AND objf.file_id = ?
         LIMIT 1`,
-      [orgId, serviceId, orgId, ...tenantIds, fileId]
+      [orgId, serviceId, orgId, ...tenantIds, ...photoUnits, fileId]
     );
     // One answer for "no such file", "not yours" and "staff attachment". Distinguishing
     // them would confirm that a given id exists on someone else's request.
