@@ -46,6 +46,13 @@ export const tenantPortal = {
   createRepair: (formData) => tenantApi.post('/api/tenant-portal/service', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),
+
+  // A URL rather than a fetch: it goes straight into an <img src>, and the browser
+  // attaches the session cookie itself because the API and the portal are the same
+  // origin in production. Repair photos are stored is_private, so this dedicated route
+  // is the only way to see them; /api/file/preview refuses them, which is the point.
+  repairPhotoUrl: (serviceId, fileId) =>
+    `${API_URL}/api/tenant-portal/service/${serviceId}/photo/${fileId}`,
 };
 
 export default tenantApi;

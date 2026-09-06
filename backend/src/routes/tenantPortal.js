@@ -720,9 +720,17 @@ router.post('/service', authenticateTenant, requireCurrentLease, photos('photos'
 
       for (const f of uploaded) {
         const fileId = newId();
+        // is_private = 1, not the column default.
+        //
+        // /api/file/preview serves ANY image to an anonymous caller by design, because
+        // it backs the public listings site. These are photos of the inside of
+        // someone's home, sent to report a fault, and a file id is a timestamp-based
+        // Snowflake rather than a secret. Without this flag every repair photo any
+        // tenant ever uploads is fetchable by anyone who can guess an id. The flag is
+        // checked before the is-it-an-image rule, so it wins.
         await conn.execute(
-          `INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'local', ?, NOW())`,
+          `INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, is_private, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'local', ?, 1, NOW())`,
           [fileId, f.filename, f.originalname || f.filename, path.extname(f.originalname || '').replace('.', ''),
            f.mimetype, f.size, orgId]
         );
@@ -747,6 +755,66 @@ router.post('/service', authenticateTenant, requireCurrentLease, photos('photos'
     console.error('[tenant-portal] service create error:', error);
     discard(uploaded);
     res.status(500).json({ code: 500, message: 'Failed to submit repair request' });
+  }
+});
+
+/**
+ * GET /service/:id/photo/:fileId — a tenant's own repair photo.
+ *
+ * Exists because the upload above marks these private, which correctly locks them out
+ * of /api/file/preview. That route authenticates staff or nobody; there is no third
+ * case for a tenant session, and adding one to a route the listings site depends on
+ * would widen a surface we have twice had to narrow. A small dedicated route here can
+ * state the whole rule in one query instead.
+ *
+ * Three conditions, all in SQL, none of them trusting the URL: the service request is
+ * this tenant's, the file is linked to THAT request, and the link is `source = 'tenant'`
+ * so a staff attachment (vendor quote, inspection shot) can never be served through it.
+ */
+router.get('/service/:id/photo/:fileId', authenticateTenant, async (req, res) => {
+  try {
+    const { orgId, tenantIds } = req.tenantPortal;
+    const serviceId = String(req.params.id || '');
+    const fileId = String(req.params.fileId || '');
+    // Both ids go into the query as strings and both must be digits: a Snowflake is a
+    // bigint, and anything else is someone probing.
+    if (!/^\d+$/.test(serviceId) || !/^\d+$/.test(fileId)) {
+      return res.status(404).json({ code: 404, message: 'Photo not found' });
+    }
+
+    const [[row]] = await req.pool.execute(
+      `SELECT f.item_name, f.mime_type, f.filename
+         FROM service s
+         JOIN object_file of ON of.object_id = s.id AND of.source = 'tenant'
+         JOIN file f ON f.id = of.file_id AND f.org_id = ?
+        WHERE s.id = ? AND s.org_id = ? AND s.reported_by IN (${idsIn(req)})
+          AND s.deleted_at IS NULL AND of.file_id = ?
+        LIMIT 1`,
+      [orgId, serviceId, orgId, ...tenantIds, fileId]
+    );
+    // One answer for "no such file", "not yours" and "staff attachment". Distinguishing
+    // them would confirm that a given id exists on someone else's request.
+    if (!row) return res.status(404).json({ code: 404, message: 'Photo not found' });
+
+    // Resolved from the stored item_name, never from anything in the URL.
+    const onDisk = path.join(UPLOADS_DIR, row.item_name || '');
+    if (!row.item_name || !onDisk.startsWith(UPLOADS_DIR + path.sep) || !fs.existsSync(onDisk)) {
+      return res.status(404).json({ code: 404, message: 'Photo not found' });
+    }
+
+    const mime = PHOTO_MIME.has(row.mime_type) ? row.mime_type : 'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    // private, so no shared or CDN cache ever holds a photo of a tenant's home.
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Content-Disposition', 'inline');
+    // Nothing here is markup, but the file is attacker-supplied and served from our
+    // origin; these cost nothing and close the door on that being interesting.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    fs.createReadStream(onDisk).pipe(res);
+  } catch (error) {
+    console.error('[tenant-portal] service photo error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load photo' });
   }
 });
 

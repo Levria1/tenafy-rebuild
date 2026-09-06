@@ -119,6 +119,7 @@ export default function ServiceEditPage() {
           status: data.status != null ? Number(data.status) : 0,
           additional_info: data.additional_info || '',
           note: data.note || '',
+          tenant_note: data.tenant_note || '',
           vendor_id: data.assignee || undefined,
           vendor_id_2: data.assignee_2 || undefined,
           reported_by: data.reported_by || undefined,
@@ -179,6 +180,10 @@ export default function ServiceEditPage() {
         status: values.status,
         additional_info: values.additional_info || null,
         note: values.note || null,
+        // Always sent, even when empty. PUT /update/:id writes every column it is given
+        // and nulls the ones it is not, so leaving this out of the payload would erase
+        // the tenant's message each time someone saved anything else on this form.
+        tenant_note: values.tenant_note || null,
       };
 
       // Reported By
@@ -506,6 +511,14 @@ export default function ServiceEditPage() {
             </Form.Item>
 
             {/* ── Note ─────────────────────────────────────────────── */}
+            <Form.Item
+              name="tenant_note"
+              label="Message to tenant"
+              extra="Shown to the tenant in their portal. Anything you write here, they read."
+            >
+              <TextArea rows={3} placeholder="e.g. Plumber booked for Tuesday morning." />
+            </Form.Item>
+
             <Form.Item name="note" label="Note">
               <TextArea rows={3} placeholder="Internal notes..." />
             </Form.Item>

@@ -266,9 +266,20 @@ export default function ServiceDetailPage() {
                 </Field>
               </Row>
 
-              {/* ── Note ─────────────────────────────────────────────── */}
+              {/* ── Message to tenant ────────────────────────────────── */}
+              {/* Above the internal note, and labelled as visible, so the difference
+                  between the two boxes is obvious at a glance rather than remembered. */}
               <Row gutter={16}>
-                <Field label="Note" span={24}>
+                <Field label="Message to tenant" span={24}>
+                  {d.tenant_note ? (
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{d.tenant_note}</div>
+                  ) : null}
+                </Field>
+              </Row>
+
+              {/* ── Note (internal) ──────────────────────────────────── */}
+              <Row gutter={16}>
+                <Field label="Note (internal)" span={24}>
                   {d.note ? (
                     <div style={{ whiteSpace: 'pre-wrap' }}>{d.note}</div>
                   ) : null}

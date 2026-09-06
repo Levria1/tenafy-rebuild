@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Form, Input, Button, Card, message } from 'antd';
 import { MailOutlined, LockOutlined } from '@ant-design/icons';
 import { tenantPortal } from '../../../lib/tenantApi';
@@ -87,12 +88,21 @@ export default function TenantLoginPage() {
             />
           </Form.Item>
 
-          <Form.Item style={{ marginBottom: 0 }}>
+          <Form.Item style={{ marginBottom: 12 }}>
             <Button type="primary" htmlType="submit" loading={loading} block>
               Sign In
             </Button>
           </Form.Item>
         </Form>
+
+        {/* One link, not two. Registering an address that already has an account simply
+            re-sends the link, so "first time" and "forgotten" are the same journey and
+            offering them separately would be two doors into one room. */}
+        <div style={{ textAlign: 'center' }}>
+          <Link href="/tenant-portal/register" style={{ fontSize: 13 }}>
+            First time here, or forgotten your password?
+          </Link>
+        </div>
       </Card>
     </div>
   );

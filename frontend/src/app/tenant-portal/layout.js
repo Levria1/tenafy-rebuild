@@ -8,6 +8,7 @@ import {
   FileTextOutlined,
   ContainerOutlined,
   UserOutlined,
+  ToolOutlined,
   LogoutOutlined,
 } from '@ant-design/icons';
 import { tenantPortal } from '../../lib/tenantApi';
@@ -19,6 +20,7 @@ const navItems = [
   { key: '/tenant-portal/dashboard', label: 'Dashboard', icon: <DashboardOutlined /> },
   { key: '/tenant-portal/leases', label: 'Leases', icon: <FileTextOutlined /> },
   { key: '/tenant-portal/invoices', label: 'Invoices', icon: <ContainerOutlined /> },
+  { key: '/tenant-portal/repairs', label: 'Repairs', icon: <ToolOutlined /> },
   { key: '/tenant-portal/profile', label: 'Profile', icon: <UserOutlined /> },
 ];
 

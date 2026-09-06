@@ -169,7 +169,7 @@ router.post('/list/status', authenticate, async (req, res) => {
 router.post('/create', authenticate, async (req, res) => {
   try {
     const {
-      unit_id, category, sub_category, note, additional_info,
+      unit_id, category, sub_category, note, tenant_note, additional_info,
       status, assignee, assignee_2, priority, reported_by, contact_phone,
       preferred_date_first_start, preferred_date_first_end,
       preferred_date_second_start, preferred_date_second_end,
@@ -426,7 +426,7 @@ router.put('/update/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const orgId = req.user.orgId;
     const {
-      unit_id, category, sub_category, note, additional_info,
+      unit_id, category, sub_category, note, tenant_note, additional_info,
       status, assignee, assignee_2, priority, reported_by, contact_phone,
       preferred_date_first_start, preferred_date_first_end,
       preferred_date_second_start, preferred_date_second_end,
@@ -446,7 +446,7 @@ router.put('/update/:id', authenticate, async (req, res) => {
 
     await req.pool.execute(
       `UPDATE service SET
-        unit_id = ?, category = ?, sub_category = ?, note = ?, additional_info = ?,
+        unit_id = ?, category = ?, sub_category = ?, note = ?, tenant_note = ?, additional_info = ?,
         status = ?, assignee = ?, assignee_2 = ?, priority = ?,
         reported_by = ?, contact_phone = ?,
         preferred_date_first_start = ?, preferred_date_first_end = ?,
@@ -454,7 +454,7 @@ router.put('/update/:id', authenticate, async (req, res) => {
         service_date_start = ?, service_date_end = ?,
         updated_at = NOW()
        WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
-      [unit_id || null, category || null, sub_category || null, note || null, additional_info || null,
+      [unit_id || null, category || null, sub_category || null, note || null, tenant_note || null, additional_info || null,
        status ?? 0, assignee || null, assignee_2 || null, priority ?? null,
        reported_by || null, contact_phone || null,
        preferred_date_first_start || null, preferred_date_first_end || null,
@@ -495,7 +495,10 @@ router.patch('/patch/:id', authenticate, async (req, res) => {
     const allowedFields = [
       'status', 'service_date_start', 'service_date_end',
       'assignee', 'assignee_2', 'priority', 'category', 'sub_category',
-      'reported_by', 'contact_phone', 'note', 'additional_info',
+      // tenant_note is the ONE field here the tenant portal shows back to the tenant.
+      // `note` sits beside it and is internal; they are two columns rather than one
+      // column with a visibility flag precisely so this distinction cannot be lost.
+      'reported_by', 'contact_phone', 'note', 'tenant_note', 'additional_info',
     ];
 
     const setClauses = [];
