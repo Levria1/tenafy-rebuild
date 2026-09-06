@@ -41,21 +41,10 @@ async function getAllActiveOrgs() {
   return orgs;
 }
 
+const { createNotification } = require('../utils/notify');
+
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
-}
-
-async function createNotification(pool, { orgId, type, title, message, link }) {
-  try {
-    const id = BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000));
-    await pool.execute(
-      `INSERT INTO notification (id, org_id, type, title, message, link, is_read, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, NOW())`,
-      [id.toString(), orgId, type || 'info', title, message || null, link || null]
-    );
-  } catch (err) {
-    console.error('[Scheduler] Failed to create notification:', err.message);
-  }
 }
 
 async function sendAdminAlert(pool, { orgId, subject, html }) {

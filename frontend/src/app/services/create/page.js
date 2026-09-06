@@ -138,22 +138,17 @@ export default function ServiceCreatePage() {
         payload.service_date_end = values.service_date_end.format('YYYY-MM-DD HH:mm:ss');
       }
 
-      // Preferred Date and Time - Option 1
-      if (values.pref1_date) {
-        const dateStr = values.pref1_date.format('YYYY-MM-DD');
-        const startTime = values.pref1_start ? values.pref1_start.format('HH:mm:ss') : '00:00:00';
-        const endTime = values.pref1_end ? values.pref1_end.format('HH:mm:ss') : '23:59:59';
-        payload.preferred_date_first_start = `${dateStr} ${startTime}`;
-        payload.preferred_date_first_end = `${dateStr} ${endTime}`;
-      }
-
-      // Preferred Date and Time - Option 2
-      if (values.pref2_date) {
-        const dateStr = values.pref2_date.format('YYYY-MM-DD');
-        const startTime = values.pref2_start ? values.pref2_start.format('HH:mm:ss') : '00:00:00';
-        const endTime = values.pref2_end ? values.pref2_end.format('HH:mm:ss') : '23:59:59';
-        payload.preferred_date_second_start = `${dateStr} ${startTime}`;
-        payload.preferred_date_second_end = `${dateStr} ${endTime}`;
+      // Preferred Date and Time — each end carries its own date, so an overnight window
+      // is recordable. Matches the edit form and the tenant portal; the old shape wrote
+      // both ends from the START date and could not express one.
+      const windowFields = [
+        ['pref1_range', 'preferred_date_first_start', 'preferred_date_first_end'],
+        ['pref2_range', 'preferred_date_second_start', 'preferred_date_second_end'],
+      ];
+      for (const [field, startKey, endKey] of windowFields) {
+        const range = values[field];
+        if (range?.[0]) payload[startKey] = range[0].format('YYYY-MM-DD HH:mm:ss');
+        if (range?.[1]) payload[endKey] = range[1].format('YYYY-MM-DD HH:mm:ss');
       }
 
       // Upload files first, collect their IDs
@@ -289,36 +284,30 @@ export default function ServiceCreatePage() {
               <div style={{ marginBottom: 12 }}>
                 <span style={{ marginRight: 4, visibility: 'hidden' }}>*</span>
                 <span style={{ fontWeight: 500, marginRight: 12 }}>Option 1:</span>
-                <Space>
-                  <Form.Item name="pref1_date" noStyle>
-                    <DatePicker placeholder="Select date" disabledDate={disabledDate} style={{ width: 150 }} />
-                  </Form.Item>
-                  <Form.Item name="pref1_start" noStyle>
-                    <TimePicker placeholder="Start Time" format="HH:mm" minuteStep={15} style={{ width: 120 }} />
-                  </Form.Item>
-                  <span style={{ color: '#999' }}>-</span>
-                  <Form.Item name="pref1_end" noStyle>
-                    <TimePicker placeholder="End Time" format="HH:mm" minuteStep={15} style={{ width: 120 }} />
-                  </Form.Item>
-                </Space>
+                <Form.Item name="pref1_range" noStyle>
+                  <DatePicker.RangePicker
+                    showTime={{ format: 'HH:mm', minuteStep: 15 }}
+                    format="D MMM YYYY HH:mm"
+                    disabledDate={disabledDate}
+                    style={{ width: 420 }}
+                    placeholder={['From', 'Until']}
+                  />
+                </Form.Item>
               </div>
 
               {/* Option 2 */}
               <div style={{ marginBottom: 16 }}>
                 <span style={{ marginRight: 4, visibility: 'hidden' }}>*</span>
                 <span style={{ fontWeight: 500, marginRight: 12 }}>Option 2:</span>
-                <Space>
-                  <Form.Item name="pref2_date" noStyle>
-                    <DatePicker placeholder="Select date" disabledDate={disabledDate} style={{ width: 150 }} />
-                  </Form.Item>
-                  <Form.Item name="pref2_start" noStyle>
-                    <TimePicker placeholder="Start Time" format="HH:mm" minuteStep={15} style={{ width: 120 }} />
-                  </Form.Item>
-                  <span style={{ color: '#999' }}>-</span>
-                  <Form.Item name="pref2_end" noStyle>
-                    <TimePicker placeholder="End Time" format="HH:mm" minuteStep={15} style={{ width: 120 }} />
-                  </Form.Item>
-                </Space>
+                <Form.Item name="pref2_range" noStyle>
+                  <DatePicker.RangePicker
+                    showTime={{ format: 'HH:mm', minuteStep: 15 }}
+                    format="D MMM YYYY HH:mm"
+                    disabledDate={disabledDate}
+                    style={{ width: 420 }}
+                    placeholder={['From', 'Until']}
+                  />
+                </Form.Item>
               </div>
             </div>
 

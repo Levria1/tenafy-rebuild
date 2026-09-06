@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Card, Button, Modal, Form, Select, Input, DatePicker, Upload, Image,
-  Tag, Empty, Spin, Alert, Typography, Space, Descriptions, message,
+  Tag, Empty, Spin, Alert, Typography, Space, Descriptions, Popconfirm, Timeline, message,
 } from 'antd';
-import { PlusOutlined, PictureOutlined, ToolOutlined } from '@ant-design/icons';
+import { PlusOutlined, PictureOutlined, ToolOutlined, MessageOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { tenantPortal } from '../../../lib/tenantApi';
 
@@ -64,6 +64,9 @@ export default function TenantRepairsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [fileList, setFileList] = useState([]);
   const [form] = Form.useForm();
+  // Keyed by request id so two open composers cannot share one buffer.
+  const [noteDrafts, setNoteDrafts] = useState({});
+  const [busyId, setBusyId] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -132,6 +135,41 @@ export default function TenantRepairsPage() {
       message.error(error.response?.data?.message || 'Could not submit your request. Please try again.');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const submitNote = async (id) => {
+    const note = (noteDrafts[id] || '').trim();
+    if (note.length < 2) {
+      message.warning('Please write your update first.');
+      return;
+    }
+    setBusyId(id);
+    try {
+      await tenantPortal.addRepairNote(id, note);
+      setNoteDrafts((d) => ({ ...d, [id]: '' }));
+      message.success('Update added.');
+      load();
+    } catch (error) {
+      message.error(error.response?.data?.message || 'Could not add your update.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const cancelRequest = async (id) => {
+    setBusyId(id);
+    try {
+      await tenantPortal.cancelRepair(id, (noteDrafts[id] || '').trim());
+      message.success('Request withdrawn.');
+      load();
+    } catch (error) {
+      // 409 is the honest case: staff picked it up between the page loading and the
+      // click. Reload so the button disappears rather than lying about being available.
+      message.error(error.response?.data?.message || 'Could not withdraw the request.');
+      load();
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -208,6 +246,25 @@ export default function TenantRepairsPage() {
                   </Descriptions>
                 )}
 
+                {r.notes?.length > 0 && (
+                  // The tenant's own additions, in order, under what they first wrote.
+                  // Never mixed into the description: the original stays exactly as filed.
+                  <Timeline
+                    style={{ marginTop: 4 }}
+                    items={r.notes.map((n) => ({
+                      color: 'blue',
+                      children: (
+                        <>
+                          <div style={{ whiteSpace: 'pre-wrap' }}>{n.note}</div>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            You, {dayjs(n.created_at).format('D MMM YYYY, HH:mm')}
+                          </Text>
+                        </>
+                      ),
+                    }))}
+                  />
+                )}
+
                 {r.photos?.length > 0 && (
                   <Image.PreviewGroup>
                     <Space size={8} wrap>
@@ -224,6 +281,53 @@ export default function TenantRepairsPage() {
                       ))}
                     </Space>
                   </Image.PreviewGroup>
+                )}
+
+                {(r.can_comment || r.can_cancel) && (
+                  <div style={{ marginTop: 12, borderTop: '1px solid #f0f0f0', paddingTop: 12 }}>
+                    {r.can_comment && (
+                      <>
+                        <TextArea
+                          rows={2}
+                          maxLength={2000}
+                          showCount
+                          placeholder={r.can_cancel
+                            ? 'Add an update, or give a reason before withdrawing'
+                            : 'Add an update, for example if the problem has changed'}
+                          value={noteDrafts[r.id] || ''}
+                          onChange={(e) => setNoteDrafts((d) => ({ ...d, [r.id]: e.target.value }))}
+                        />
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Updates are added to the request. What you first wrote is never changed.
+                        </Text>
+                      </>
+                    )}
+                    <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {r.can_comment && (
+                        <Button
+                          size="small"
+                          icon={<MessageOutlined />}
+                          loading={busyId === r.id}
+                          onClick={() => submitNote(r.id)}
+                        >
+                          Add update
+                        </Button>
+                      )}
+                      {r.can_cancel && (
+                        <Popconfirm
+                          title="Withdraw this request?"
+                          description="We will stop work on it. You can always report it again."
+                          okText="Withdraw"
+                          cancelText="Keep it"
+                          onConfirm={() => cancelRequest(r.id)}
+                        >
+                          <Button size="small" danger icon={<StopOutlined />} loading={busyId === r.id}>
+                            Withdraw
+                          </Button>
+                        </Popconfirm>
+                      )}
+                    </div>
+                  </div>
                 )}
               </Card>
             );

@@ -47,6 +47,11 @@ export const tenantPortal = {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),
 
+  // Append, never replace. There is no update or delete here on purpose: rewriting a
+  // description a vendor has already been booked against sends them to the wrong job.
+  addRepairNote: (id, note) => tenantApi.post(`/api/tenant-portal/service/${id}/note`, { note }),
+  cancelRepair: (id, reason) => tenantApi.post(`/api/tenant-portal/service/${id}/cancel`, { reason }),
+
   // A URL rather than a fetch: it goes straight into an <img src>, and the browser
   // attaches the session cookie itself because the API and the portal are the same
   // origin in production. Repair photos are stored is_private, so this dedicated route

@@ -35,6 +35,7 @@ const {
   passwordProblem, normaliseEmail,
 } = require('../utils/tenantPortalRegistration');
 const { registrationEmail } = require('../utils/registrationEmail');
+const { createNotification } = require('../utils/notify');
 
 const newId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
@@ -604,12 +605,41 @@ router.get('/service', authenticateTenant, async (req, res) => {
       }
     }
 
+    // The tenant's own follow-ups, and ONLY theirs. service_activity is the staff
+    // timeline: it carries vendor quotes, pricing and assignee chatter. `source` is what
+    // separates the two, and NULL (every pre-existing row, and every staff row) stays on
+    // the staff side of it.
+    let notesByService = new Map();
+    if (ids.length) {
+      const nph = ids.map(() => '?').join(',');
+      const [notes] = await req.pool.execute(
+        `SELECT sa.id, sa.service_id, sa.note, sa.created_at
+           FROM service_activity sa
+          WHERE sa.service_id IN (${nph}) AND sa.org_id = ? AND sa.source = 'tenant'
+          ORDER BY sa.created_at ASC`,
+        [...ids, orgId]
+      );
+      for (const n of notes) {
+        const key = String(n.service_id);
+        if (!notesByService.has(key)) notesByService.set(key, []);
+        notesByService.get(key).push({ id: String(n.id), note: n.note, created_at: n.created_at });
+      }
+    }
+
     res.json({
       code: 200,
       data: rows.map(r => ({
         ...r,
         id: String(r.id),
         photos: filesByService.get(String(r.id)) || [],
+        notes: notesByService.get(String(r.id)) || [],
+        // Computed server-side so the two sides cannot disagree about what is allowed.
+        // Withdrawing work that is already underway is a conversation, not a button.
+        can_cancel: Number(r.status) === 0,
+        // Still open to a follow-up unless it has been withdrawn. Deliberately allowed on
+        // a completed request: "it is still leaking" is the most useful thing a tenant
+        // can tell you, and the alternative is them filing a duplicate.
+        can_comment: Number(r.status) !== 3,
       })),
     });
   } catch (error) {
@@ -759,11 +789,159 @@ router.post('/service', authenticateTenant, requireCurrentLease, photos('photos'
       conn.release();
     }
 
+    // Raised AFTER the commit, never inside it. A notification is a courtesy; failing to
+    // record one must not roll back a repair the tenant has been told was submitted.
+    // createNotification swallows its own errors for the same reason.
+    await createNotification(req.pool, {
+      orgId,
+      type: 'info',
+      title: `New repair request ${code}`,
+      message: `${unit.property_name || ''} ${unit.unit_name || ''}`.trim() + ` - ${category}`,
+      link: `/services/${serviceId}/detail`,
+    });
+
     res.status(201).json({ code: 200, message: 'Repair request submitted', data: { id: serviceId, code } });
   } catch (error) {
     console.error('[tenant-portal] service create error:', error);
     discard(uploaded);
     res.status(500).json({ code: 500, message: 'Failed to submit repair request' });
+  }
+});
+
+/**
+ * Resolve one of the tenant's OWN repair requests, or answer 404.
+ *
+ * Shared by the follow-up and cancel routes so the ownership rule is written once. A
+ * request that is not theirs, is deleted, or does not exist all produce the same answer:
+ * anything else confirms that a given id belongs to somebody.
+ */
+async function loadOwnRequest(req, serviceId) {
+  if (!/^\d+$/.test(String(serviceId || ''))) return null;
+  const { orgId, tenantIds } = req.tenantPortal;
+  const [[row]] = await req.pool.execute(
+    `SELECT s.id, s.code, s.status, s.unit_id, s.reported_by
+       FROM service s
+      WHERE s.id = ? AND s.org_id = ? AND s.reported_by IN (${idsIn(req)}) AND s.deleted_at IS NULL
+      LIMIT 1`,
+    [String(serviceId), orgId, ...tenantIds]
+  );
+  return row || null;
+}
+
+const MAX_NOTE_LENGTH = 2000;
+
+/**
+ * POST /service/:id/note — the tenant adds to a request without rewriting it.
+ *
+ * Append-only on purpose. See migrations-org/079 for why there is no edit: once a vendor
+ * is booked against a description, silently changing that description sends them to the
+ * wrong job.
+ */
+router.post('/service/:id/note', authenticateTenant, async (req, res) => {
+  try {
+    const { orgId } = req.tenantPortal;
+    const request = await loadOwnRequest(req, req.params.id);
+    if (!request) return res.status(404).json({ code: 404, message: 'Repair request not found' });
+
+    // 3 = Cancelled. Adding to a withdrawn request would put a note somewhere nobody is
+    // looking; a new request is the right move and the frontend says so.
+    if (Number(request.status) === 3) {
+      return res.status(409).json({
+        code: 409,
+        message: 'This request was cancelled. Please report a new one if the problem is still there.',
+      });
+    }
+
+    const note = String(req.body?.note || '').trim();
+    if (note.length < 2) return res.status(400).json({ code: 400, message: 'Please write your update first.' });
+    if (note.length > MAX_NOTE_LENGTH) {
+      return res.status(400).json({ code: 400, message: `Updates must be ${MAX_NOTE_LENGTH} characters or fewer.` });
+    }
+
+    // created_by is NULL because there is no staff user, and status is NULL because a
+    // tenant note is not a status change. `source` is what keeps it out of nothing and
+    // makes it visible to them; see 079.
+    const noteId = newId();
+    await req.pool.execute(
+      `INSERT INTO service_activity
+         (id, org_id, service_id, status, activity_date, note, created_by, source, created_by_tenant, created_at)
+       VALUES (?, ?, ?, NULL, NOW(), ?, NULL, 'tenant', ?, NOW())`,
+      [noteId, orgId, String(request.id), note, String(request.reported_by)]
+    );
+
+    await createNotification(req.pool, {
+      orgId,
+      type: 'info',
+      title: `Tenant update on repair ${request.code}`,
+      message: note.length > 140 ? note.slice(0, 140) + '...' : note,
+      link: `/services/${String(request.id)}/detail`,
+    });
+
+    res.status(201).json({ code: 200, message: 'Update added', data: { id: noteId } });
+  } catch (error) {
+    console.error('[tenant-portal] service note error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to add your update' });
+  }
+});
+
+/**
+ * POST /service/:id/cancel — withdraw a request nobody has started.
+ *
+ * Only from Received. Anything further along means someone has scheduled work, and
+ * unpicking that is a phone call.
+ */
+router.post('/service/:id/cancel', authenticateTenant, async (req, res) => {
+  try {
+    const { orgId } = req.tenantPortal;
+    const request = await loadOwnRequest(req, req.params.id);
+    if (!request) return res.status(404).json({ code: 404, message: 'Repair request not found' });
+    if (Number(request.status) !== 0) {
+      return res.status(409).json({
+        code: 409,
+        message: 'This request is already being dealt with. Please contact us to withdraw it.',
+      });
+    }
+
+    const reason = String(req.body?.reason || '').trim().slice(0, MAX_NOTE_LENGTH);
+
+    // status = 0 is restated in the UPDATE rather than trusted from the SELECT above. A
+    // staff member can pick the job up in the moment between the two, and affectedRows is
+    // the proof that this request won.
+    const [result] = await req.pool.execute(
+      `UPDATE service SET status = 3, updated_at = NOW()
+        WHERE id = ? AND org_id = ? AND status = 0 AND deleted_at IS NULL`,
+      [String(request.id), orgId]
+    );
+    if (result.affectedRows !== 1) {
+      return res.status(409).json({
+        code: 409,
+        message: 'This request is already being dealt with. Please contact us to withdraw it.',
+      });
+    }
+
+    // The withdrawal is recorded on the timeline, with the reason if one was given, so
+    // the request does not simply change colour with no explanation attached.
+    await req.pool.execute(
+      `INSERT INTO service_activity
+         (id, org_id, service_id, status, activity_date, note, created_by, source, created_by_tenant, created_at)
+       VALUES (?, ?, ?, 3, NOW(), ?, NULL, 'tenant', ?, NOW())`,
+      [newId(), orgId, String(request.id),
+       reason ? `Withdrawn by tenant: ${reason}` : 'Withdrawn by tenant.',
+       String(request.reported_by)]
+    );
+
+    await createNotification(req.pool, {
+      orgId,
+      type: 'warning',
+      title: `Repair ${request.code} withdrawn by tenant`,
+      message: reason || 'No reason given.',
+      link: `/services/${String(request.id)}/detail`,
+    });
+
+    res.json({ code: 200, message: 'Request withdrawn' });
+  } catch (error) {
+    console.error('[tenant-portal] service cancel error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to withdraw your request' });
   }
 });
 
