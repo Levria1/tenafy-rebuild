@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Contact | Tenafy</title>
+<meta name="description" content="Talk to the Tenafy team. Book a demo, ask about pricing, or get help moving your portfolio over." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sora:wght@600;700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a href="index.html" class="logo"><span class="mark"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></svg></span>Tenafy</a>
+    <nav class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="features.html">Features</a>
+      <a href="pricing.html">Pricing</a>
+      <a href="about.html">About</a>
+      <a href="contact.html" class="active">Contact</a>
+    </nav>
+    <div class="nav-cta">
+      <a href="https://platform.tenafy.com/tenant-portal/login" class="btn btn-ghost">Sign in</a>
+      <a href="pricing.html" class="btn btn-primary">Start free</a>
+      <button class="menu-btn" id="menuBtn" aria-label="Menu"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    </div>
+  </div>
+</header>
+<div class="mobile-menu" id="mobileMenu">
+  <a href="index.html">Home</a><a href="features.html">Features</a><a href="pricing.html">Pricing</a><a href="about.html">About</a><a href="contact.html">Contact</a><a href="pricing.html">Start free</a>
+</div>
+
+<!-- PAGE HERO -->
+<section class="page-hero" style="padding-bottom:20px">
+  <div class="mesh"><div class="blob b1"></div><div class="blob b2"></div><div class="grid-overlay"></div></div>
+  <div class="wrap">
+    <span class="eyebrow">Contact</span>
+    <h1>Let's get your portfolio <span class="grad">running on Tenafy</span></h1>
+    <p class="sub">Book a demo, ask about pricing, or get a hand migrating your data. We usually reply within one business day.</p>
+  </div>
+</section>
+
+<!-- CONTACT -->
+<section style="padding-top:40px">
+  <div class="wrap contact-grid">
+    <div class="contact-info reveal">
+      <h2>Talk to a human</h2>
+      <p class="lead">Tell us a bit about your portfolio and what you're trying to fix. We'll show you exactly how Tenafy fits, with no pushy sales script.</p>
+      <div class="contact-points">
+        <div class="cpoint"><span class="ico-wrap"><svg class="ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M4 7l8 6 8-6"/></svg></span><div><h4>Email us</h4><p>hello@tenafy.com</p></div></div>
+        <div class="cpoint"><span class="ico-wrap"><svg class="ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 4h5l2 5-3 2a12 12 0 0 0 5 5l2-3 5 2v5a2 2 0 0 1-2 2A16 16 0 0 1 2 6a2 2 0 0 1 2-2z"/></svg></span><div><h4>WhatsApp</h4><p>Message the team directly on the same number your tenants can use</p></div></div>
+        <div class="cpoint"><span class="ico-wrap"><svg class="ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 21s-7-5.5-7-11a7 7 0 0 1 14 0c0 5.5-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg></span><div><h4>Wherever you are</h4><p>Supporting landlords &amp; agencies around the world</p></div></div>
+        <div class="cpoint"><span class="ico-wrap"><svg class="ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><div><h4>Response time</h4><p>Within one business day, usually much sooner</p></div></div>
+      </div>
+    </div>
+
+    <div class="form-card reveal">
+      <form id="contactForm" novalidate>
+        <div class="row-2">
+          <div class="field"><label for="fname">First name</label><input id="fname" name="fname" type="text" placeholder="Jane" required /></div>
+          <div class="field"><label for="lname">Last name</label><input id="lname" name="lname" type="text" placeholder="Chan" required /></div>
+        </div>
+        <div class="field"><label for="email">Work email</label><input id="email" name="email" type="email" placeholder="jane@example.com" required /></div>
+        <div class="row-2">
+          <div class="field"><label for="company">Company (optional)</label><input id="company" name="company" type="text" placeholder="Chan Property Co." /></div>
+          <div class="field"><label for="units">Portfolio size</label>
+            <select id="units" name="units">
+              <option>1–3 units</option>
+              <option>4–10 units</option>
+              <option>11–50 units</option>
+              <option>50+ units</option>
+            </select>
+          </div>
+        </div>
+        <div class="field"><label for="topic">What can we help with?</label>
+          <select id="topic" name="topic">
+            <option>Book a demo</option>
+            <option>Pricing question</option>
+            <option>Migrating my data</option>
+            <option>Something else</option>
+          </select>
+        </div>
+        <div class="field"><label for="message">Message</label><textarea id="message" name="message" placeholder="Tell us a little about your portfolio and what you'd like to sort out..."></textarea></div>
+        <button type="submit" class="btn btn-primary" style="width:100%">Send message
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+        <p class="form-note">By submitting, you agree to be contacted about Tenafy. We'll never share your details.</p>
+      </form>
+      <div class="form-success" id="formSuccess">
+        <div class="ico-wrap"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></div>
+        <h3 style="font-family:'Sora';font-size:22px">Thanks, message received!</h3>
+        <p style="color:var(--muted);margin-top:10px">We've got your details and someone from the team will be in touch within one business day.</p>
+        <a href="index.html" class="btn btn-ghost" style="margin-top:22px">Back to home</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-col"><a href="index.html" class="logo" style="margin-bottom:16px"><span class="mark"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></svg></span>Tenafy</a><p class="foot-about">All-in-one property management for landlords and agencies who want enterprise capability without the enterprise price. Built to work anywhere, in any currency and any language.</p></div>
+      <div class="foot-col"><h5>Product</h5><a href="features.html">Features</a><a href="pricing.html">Pricing</a><a href="features.html#tanechat">TaneChat AI</a><a href="https://platform.tenafy.com/tenant-portal/login">Sign in</a></div>
+      <div class="foot-col"><h5>Company</h5><a href="about.html">About</a><a href="contact.html">Contact</a><a href="#">Blog</a><a href="#">Careers</a></div>
+      <div class="foot-col"><h5>Legal</h5><a href="#">Privacy</a><a href="#">Terms</a><a href="#">Security</a><a href="#">Status</a></div>
+    </div>
+    <div class="foot-bottom"><span>© 2026 Tenafy. All rights reserved.</span><span>Built for landlords and agencies around the world 🌏</span></div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
