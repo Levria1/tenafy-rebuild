@@ -63,7 +63,11 @@ export default function InquiryCreatePage() {
         message.error(r.data?.message || 'Parse failed');
         return;
       }
-      const { fields = {}, screenshot_url } = r.data.data || {};
+      const {
+        fields = {}, screenshot_url,
+        // Set when OCR is down for everyone rather than failing on this image.
+        ocr_unavailable: ocrUnavailable, ocr_message: ocrMessage,
+      } = r.data.data || {};
 
       // Prefill any field the LLM returned. Dates need to become dayjs to
       // satisfy Ant DatePicker. Numeric budget passed straight through.
@@ -83,7 +87,16 @@ export default function InquiryCreatePage() {
       if (screenshot_url) setScreenshotUrl(screenshot_url);
 
       const filledCount = Object.keys(patch).length;
-      message.success(`Extracted ${filledCount} field${filledCount === 1 ? '' : 's'}.`);
+      // "Extracted 0 fields" as a success is how a dead OCR account reads as a
+      // bad screenshot. Say which of the two actually happened.
+      if (ocrUnavailable) {
+        message.error(ocrMessage
+          || 'Screenshot reading is unavailable — the Google Cloud Vision account needs updating.', 8);
+      } else if (filledCount === 0) {
+        message.warning('Could not extract any fields. Try a clearer image or paste text.');
+      } else {
+        message.success(`Extracted ${filledCount} field${filledCount === 1 ? '' : 's'}.`);
+      }
     } catch (e) {
       message.error(e.response?.data?.message || 'Parse failed');
     } finally {

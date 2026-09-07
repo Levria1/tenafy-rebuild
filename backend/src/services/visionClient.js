@@ -18,6 +18,45 @@
 const https = require('https');
 const { URL } = require('url');
 
+// A missing key, a 401/403, a disabled API or a project with billing switched off
+// is an ACCOUNT problem: no image will ever succeed until someone fixes it in the
+// GCP console. A malformed image or a timeout is a problem with that one request.
+//
+// Callers must be able to tell these apart. On 7 Sep 2026 billing lapsed on the
+// Vision project and every extraction returned no fields, so the tenant form told
+// people their screenshot was unclear and to try a clearer one. The screenshots
+// were fine; OCR had never run. Blaming the user for an unpaid invoice wastes
+// their time and hides the one thing an admin needed to see.
+const OCR_UNAVAILABLE = 'OCR_UNAVAILABLE';
+const OCR_UNAVAILABLE_MESSAGE =
+  'Screenshot reading is unavailable — the Google Cloud Vision account needs updating. ' +
+  'Type the details in, or paste them as text, until it is restored.';
+
+const ACCOUNT_PROBLEM = /billing|permission_denied|has not been used|is disabled|api key|not configured|quota|exceeded/i;
+
+// PERMISSION_DENIED is 7 and RESOURCE_EXHAUSTED is 8 in the google.rpc.Code enum
+// that the per-image `error` object uses, rather than an HTTP status.
+const ACCOUNT_RPC_CODES = new Set([7, 8, 16]);
+
+function markUnavailable(err) {
+  err.code = OCR_UNAVAILABLE;
+  err.unavailable = true;
+  err.userMessage = OCR_UNAVAILABLE_MESSAGE;
+  return err;
+}
+
+function classify(err) {
+  if (err.status === 401 || err.status === 403 || err.status === 429) return markUnavailable(err);
+  if (ACCOUNT_RPC_CODES.has(err.status)) return markUnavailable(err);
+  if (ACCOUNT_PROBLEM.test(err.message || '')) return markUnavailable(err);
+  return err;
+}
+
+// True when OCR is down for everyone, not just for this image.
+function isUnavailable(err) {
+  return !!(err && (err.unavailable || err.code === OCR_UNAVAILABLE));
+}
+
 function postJson(urlStr, body) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
@@ -61,7 +100,7 @@ function postJson(urlStr, body) {
  */
 async function extractText(imageBuffer) {
   const apiKey = process.env.GOOGLE_VISION_API_KEY;
-  if (!apiKey) throw new Error('GOOGLE_VISION_API_KEY not configured');
+  if (!apiKey) throw markUnavailable(new Error('GOOGLE_VISION_API_KEY not configured'));
   if (!imageBuffer || !imageBuffer.length) throw new Error('Empty image buffer');
 
   const url = `https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(apiKey)}`;
@@ -73,15 +112,20 @@ async function extractText(imageBuffer) {
     }],
   };
 
-  const resp = await postJson(url, body);
+  let resp;
+  try {
+    resp = await postJson(url, body);
+  } catch (err) {
+    throw classify(err);
+  }
   const r = resp.responses && resp.responses[0];
   if (!r) return '';
   if (r.error) {
     const err = new Error(`Vision API error: ${r.error.message}`);
     err.status = r.error.code;
-    throw err;
+    throw classify(err);
   }
   return (r.fullTextAnnotation && r.fullTextAnnotation.text) || '';
 }
 
-module.exports = { extractText };
+module.exports = { extractText, isUnavailable, OCR_UNAVAILABLE, OCR_UNAVAILABLE_MESSAGE };

@@ -255,6 +255,10 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
     // fall back to whatever text the user pasted.
     let ocrText = '';
     let savedFileId = null;
+    // Set when OCR is down for everyone (billing, permissions, missing key) rather
+    // than failing on this one image. The form uses it to say so instead of telling
+    // the user their screenshot was unclear.
+    let ocrUnavailable = false;
     if (hasImage) {
       // The file is on disk now rather than in a buffer, so read it back for
       // OCR. Failure here is non-fatal: we still have whatever text was pasted,
@@ -264,6 +268,7 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
         buffer = fs.readFileSync(req.file.path);
         ocrText = await visionClient.extractText(buffer);
       } catch (visionErr) {
+        ocrUnavailable = visionClient.isUnavailable(visionErr);
         console.error('[tenant/parse] Vision OCR failed:', visionErr.message);
       }
 
@@ -293,7 +298,11 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
 
     const combined = [pastedText, ocrText].filter(Boolean).join('\n\n--- OCR FROM SCREENSHOT ---\n');
     if (!combined.trim()) {
-      return _parseOk(res, { fields: {}, raw_text: '', file_id: savedFileId });
+      return _parseOk(res, {
+        fields: {}, raw_text: '', file_id: savedFileId,
+        ocr_unavailable: ocrUnavailable,
+        ocr_message: ocrUnavailable ? visionClient.OCR_UNAVAILABLE_MESSAGE : null,
+      });
     }
 
     // LLM prompt — tightly scoped. Schema must match what the tenant Add/Edit
@@ -376,6 +385,10 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
       // 'unverified' check is the parser refusing to guess, not a failure to
       // find one, and the UI can say so instead of leaving the user puzzled.
       mrz: mrz ? { checks: mrz.checks, document_type: mrz.document_type } : null,
+      // Reported even when pasted text carried the extraction through, so nobody
+      // concludes from a good result that the screenshot was read.
+      ocr_unavailable: ocrUnavailable,
+      ocr_message: ocrUnavailable ? visionClient.OCR_UNAVAILABLE_MESSAGE : null,
     });
   } catch (err) {
     console.error('[tenant] parse error:', err);

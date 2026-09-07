@@ -21,15 +21,24 @@
 //   compact — render a tighter version (defaults to false).
 
 import { useState } from 'react';
-import { Input, Button, Card, Upload, message } from 'antd';
+import { Input, Button, Card, Upload, message, Alert } from 'antd';
 import { ThunderboltOutlined, PictureOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { tenant } from '../lib/api';
+
+// Shown if the server reports OCR is down but sends no message of its own.
+const OCR_DOWN_FALLBACK =
+  'Screenshot reading is unavailable — the Google Cloud Vision account needs updating. '
+  + 'Type the details in, or paste them as text, until it is restored.';
 
 export default function TenantSmartExtract({ onExtracted, onFileSaved, compact = false }) {
   const [text, setText] = useState('');
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
+  // Holds the reason OCR is unavailable, once the server has reported it. A
+  // toast disappears; this keeps the real cause on screen so the next person to
+  // try does not read it as their screenshot being unclear.
+  const [ocrDown, setOcrDown] = useState('');
 
   // Pasting a screenshot anywhere inside the card picks it up from the
   // clipboard automatically (Ctrl+V). The file input still works for cases
@@ -68,7 +77,14 @@ export default function TenantSmartExtract({ onExtracted, onFileSaved, compact =
         message.error(r.data?.message || 'Parse failed');
         return;
       }
-      const { fields = {}, file_id: fileId, mrz } = r.data.data || {};
+      const {
+        fields = {}, file_id: fileId, mrz,
+        // Set when OCR is down for everyone rather than failing on this image —
+        // a lapsed Google Cloud Vision account, most often. Kept in state so the
+        // reason stays on screen instead of vanishing with a toast.
+        ocr_unavailable: ocrUnavailable, ocr_message: ocrMessage,
+      } = r.data.data || {};
+      setOcrDown(ocrUnavailable ? (ocrMessage || OCR_DOWN_FALLBACK) : '');
 
       // The saved screenshot. Handed up so the form can attach it to the tenant
       // on save — on the Create page there is no tenant id yet, so the link can
@@ -95,7 +111,12 @@ export default function TenantSmartExtract({ onExtracted, onFileSaved, compact =
 
       const filled = Object.keys(patch).length;
       if (filled === 0) {
-        message.warning('Could not extract any fields. Try a clearer image or paste text.');
+        // Never blame the image when OCR never ran. Someone sent off to
+        // rephotograph a perfectly good HKID will keep failing until an admin
+        // sees the real reason.
+        message.error(ocrUnavailable
+          ? (ocrMessage || OCR_DOWN_FALLBACK)
+          : 'Could not extract any fields. Try a clearer image or paste text.', 8);
         return;
       }
       onExtracted(patch);
@@ -104,6 +125,12 @@ export default function TenantSmartExtract({ onExtracted, onFileSaved, compact =
       // refuses to guess a passport number it cannot verify against the check
       // digits, and a silently blank field looks like a bug rather than a
       // deliberate abstention.
+      // Fields came from the pasted text, not the screenshot — say so, or a
+      // good-looking result reads as proof the screenshot was read.
+      if (ocrUnavailable && hasImage) {
+        message.warning('The screenshot was not read — those fields came from your pasted text.', 8);
+      }
+
       const idCheck = mrz && mrz.checks && mrz.checks.document_number;
       if (!patch.id_card && (idCheck === 'unverified' || idCheck === 'ambiguous' || idCheck === 'failed')) {
         message.warning('Could not read the passport number reliably — please type it in.');
@@ -137,6 +164,15 @@ export default function TenantSmartExtract({ onExtracted, onFileSaved, compact =
         </span>
       }
     >
+      {ocrDown && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 8 }}
+          message="Screenshot reading is offline"
+          description={ocrDown}
+        />
+      )}
       <div style={{ marginBottom: 8 }}>
         <Input.TextArea
           rows={compact ? 2 : 3}

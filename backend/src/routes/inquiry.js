@@ -241,6 +241,9 @@ router.post('/parse', (req, res, next) => {
     // --- 1. If image: save to file table and OCR it ------------------------
     let screenshotUrl = null;
     let ocrText = '';
+    // True when OCR is down for everyone (billing, permissions, missing key)
+    // rather than failing on this one image — see services/visionClient.js.
+    let ocrUnavailable = false;
     if (hasImage) {
       const savedFilename = req.file.filename;
       const originalName  = req.file.originalname;
@@ -259,6 +262,7 @@ router.post('/parse', (req, res, next) => {
         const bytes = fs.readFileSync(req.file.path);
         ocrText = await visionClient.extractText(bytes);
       } catch (visionErr) {
+        ocrUnavailable = visionClient.isUnavailable(visionErr);
         console.error('[inquiry/parse] Vision OCR failed:', visionErr.message);
         // Don't fail the whole request — return what we have. If there's no
         // pasted text either, the LLM step will yield empty fields, and we
@@ -269,7 +273,11 @@ router.post('/parse', (req, res, next) => {
     // --- 2. Build the combined source text ----------------------------------
     const combined = [pastedText, ocrText].filter(Boolean).join('\n\n--- OCR FROM SCREENSHOT ---\n');
     if (!combined.trim()) {
-      return ok(res, { fields: {}, screenshot_url: screenshotUrl, raw_text: '' });
+      return ok(res, {
+        fields: {}, screenshot_url: screenshotUrl, raw_text: '',
+        ocr_unavailable: ocrUnavailable,
+        ocr_message: ocrUnavailable ? visionClient.OCR_UNAVAILABLE_MESSAGE : null,
+      });
     }
 
     // --- 3. Ask the LLM to extract structured fields ------------------------
@@ -318,6 +326,8 @@ router.post('/parse', (req, res, next) => {
       fields: fields || {},
       screenshot_url: screenshotUrl,
       raw_text: combined,
+      ocr_unavailable: ocrUnavailable,
+      ocr_message: ocrUnavailable ? visionClient.OCR_UNAVAILABLE_MESSAGE : null,
     });
   } catch (err) {
     console.error('[inquiry] parse error:', err);

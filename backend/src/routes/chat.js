@@ -236,12 +236,13 @@ router.post('/ocr', ocrSingle, async (req, res) => {
       text = await visionClient.extractText(req.file.buffer);
     } catch (err) {
       console.error('[chat/ocr] Vision OCR failed:', err.message);
-      const configured = !!config.googleVision?.apiKey || !!process.env.GOOGLE_VISION_API_KEY;
-      return fail(
-        res,
-        configured ? 'OCR failed. Please try another image.' : 'OCR is not configured on the server.',
-        configured ? 500 : 400
-      );
+      // "Try another image" is only honest when the image is the problem. A
+      // billing or permission failure means no image will work, and saying so
+      // is the difference between a fixable report and a puzzled user.
+      if (visionClient.isUnavailable(err)) {
+        return fail(res, visionClient.OCR_UNAVAILABLE_MESSAGE, 503);
+      }
+      return fail(res, 'OCR failed. Please try another image.', 500);
     }
 
     text = String(text || '').trim();

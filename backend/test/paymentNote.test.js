@@ -19,8 +19,11 @@ const path = require('path');
 const { collapseDuplicateNote, NOTE_JOIN } = require('../src/utils/paymentNote');
 
 const read = (rel) => fs.readFileSync(path.join(__dirname, rel), 'utf8');
+// Line comments FIRST: a // comment containing "/*" otherwise opens a phantom
+// block comment that swallows real code, and a doesNotMatch assertion then
+// passes against source it never saw.
 const stripComments = (src) =>
-  src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  src.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
 
 // ── what must collapse ──────────────────────────────────────────────────────
 
