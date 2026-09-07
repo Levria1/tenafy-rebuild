@@ -63,6 +63,15 @@ test('the default template is chosen deterministically', () => {
   const at = EMAIL_SERVICE.indexOf('async function loadTemplate');
   const fn = EMAIL_SERVICE.slice(at, at + 1200);
   const defaultQuery = fn.slice(fn.indexOf('is_default_template = 1'));
-  assert.match(defaultQuery, /ORDER BY created_at DESC, id DESC/,
+  assert.match(defaultQuery, /ORDER BY id DESC/,
     'the default template is picked with no tie-breaker');
+  // email_template has created_time/updated_time and NO created_at. Naming a column
+  // that does not exist made every template load throw, and a source assertion cannot
+  // catch that, so the column list is checked against the schema file here.
+  const schema = fs.readFileSync(path.join(__dirname, '../src/migrations/org_schema_template.sql'), 'utf8');
+  const table = schema.slice(schema.indexOf('CREATE TABLE'), schema.length);
+  const ddl = table.slice(table.indexOf('`email_template`'), table.indexOf('`email_template`') + 2000);
+  assert.ok(!/ORDER BY created_at/.test(defaultQuery), 'ordering by a column this table lacks');
+  assert.ok(ddl.includes('created_time') || !ddl.includes('created_at'),
+    'email_template schema changed — re-check the ORDER BY column');
 });

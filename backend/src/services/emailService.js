@@ -313,10 +313,16 @@ async function loadTemplate(pool, orgId, templateType, templateId = null) {
   // several have an empty subject, so which one wins decides both when the email goes and
   // what it says. Newest-first at least makes the choice stable and predictable while the
   // duplicates are sorted out.
+  //
+  // Ordered by id, NOT created_at: this table has created_time/updated_time, and no
+  // created_at at all. The first version of this ORDER BY named a column that does not
+  // exist, which made every template load throw — caught on deploy, because the tests
+  // that cover this read the SQL as text and cannot know what the server will accept.
+  // ids are Snowflakes, so id DESC is newest-first anyway.
   const [rows] = await pool.execute(
     `SELECT * FROM email_template
      WHERE org_id = ? AND template_type = ? AND is_default_template = 1 AND status = 1
-     ORDER BY created_at DESC, id DESC
+     ORDER BY id DESC
      LIMIT 1`,
     [orgId, templateType]
   );
