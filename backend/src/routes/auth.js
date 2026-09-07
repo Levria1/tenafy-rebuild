@@ -79,11 +79,30 @@ router.post('/login', async (req, res) => {
 
     const orgPool = orgInfo.pool;
 
-    // 2. Look up user in org database — match on either username OR email.
+    // 2. Look up user in org database — match on either username OR email, WITHIN the
+    //    org that master routing just resolved.
+    //
+    // The org_id filter is not decoration. This database carries user rows for eleven
+    // organisations that no longer exist, left over from the original multi-tenant
+    // system, and one address matches TWO of them: the owner has a row on Tane and a
+    // row on a phantom org. With a bare `LIMIT 1` and no ordering, which row logged you
+    // in was whichever MySQL felt like returning.
+    //
+    // That mattered because the session's org comes from the ROW (`orgId: user.org_id`
+    // below), not from the routing table. Picking the phantom row issues a token for an
+    // org that cannot be opened, so every subsequent request fails with "Organization
+    // not found" — and the same ambiguity would compare the password against the wrong
+    // row's hash.
+    //
+    // status DESC then id DESC so an active row always wins over a disabled duplicate,
+    // and the result is stable rather than arbitrary.
     const [users] = await orgPool.execute(
       `SELECT id, username, password, email, org_id, first_name, last_name, status
-       FROM user WHERE username = ? OR email = ? LIMIT 1`,
-      [username, username]
+       FROM user
+       WHERE (username = ? OR email = ?) AND org_id = ?
+       ORDER BY status DESC, id DESC
+       LIMIT 1`,
+      [username, username, orgInfo.orgId]
     );
 
     if (users.length === 0) {
@@ -191,9 +210,14 @@ router.post('/forget-password/initialize', async (req, res) => {
     }
 
     const orgPool = orgInfo.pool;
+    // Org-scoped and ordered for the same reason as login: one address matches a row on
+    // Tane AND a row on a defunct org, so an unscoped lookup could send the reset code
+    // for one row and then set the password on the other.
     const [users] = await orgPool.execute(
-      'SELECT id, email, status FROM user WHERE email = ? OR username = ? LIMIT 1',
-      [email, email]
+      `SELECT id, email, status FROM user
+        WHERE (email = ? OR username = ?) AND org_id = ?
+        ORDER BY status DESC, id DESC LIMIT 1`,
+      [email, email, orgInfo.orgId]
     );
 
     if (users.length === 0) {
@@ -341,7 +365,13 @@ router.post('/activate/code/resend/:account', async (req, res) => {
 
     const orgPool = orgInfo.pool;
     const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    await orgPool.execute('UPDATE user SET activation_code = ? WHERE email = ? OR username = ?', [newCode, account, account]);
+    // Scoped to the resolved org. Unscoped, this UPDATE had no LIMIT either, so it wrote
+    // the new activation code onto EVERY row in the database matching that address —
+    // including rows belonging to other organisations that happen to share it.
+    await orgPool.execute(
+      `UPDATE user SET activation_code = ?
+        WHERE (email = ? OR username = ?) AND org_id = ?`,
+      [newCode, account, account, orgInfo.orgId]);
     try {
       await sendMail({
         to: account,
