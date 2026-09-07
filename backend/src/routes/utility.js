@@ -4,10 +4,9 @@ const { authenticate, requirePermission } = require('../middleware/auth');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { logActivity } = require('../utils/activityLog');
-
-// utility_meter_reading.reading_type — 0 Move-In, 1 Move-Out, 2 Billing, 3 Monthly.
-// 4 is a correction made from the Edit Meter form. tinyint, so no migration needed.
-const READING_TYPE_CORRECTION = 4;
+const {
+  READING_TYPE_CORRECTION, normaliseReadingDate, parseReadingValue, isCorrection,
+} = require('../utils/meterReading');
 
 const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
@@ -360,15 +359,33 @@ router.post('/meter', authenticate, async (req, res) => {
 // that silently contradicted it would be a number with no evidence behind it, and
 // a wrong correction could never be seen or undone.
 router.put('/meter/:id', authenticate, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { group_id, unit_id, meter_number, meter_type, meter_category, current_reading } = req.body;
-    const orgId = req.user.orgId;
+  const { id } = req.params;
+  const { group_id, unit_id, meter_number, meter_type, meter_category, current_reading } = req.body;
+  const orgId = req.user.orgId;
 
-    const [[meter]] = await req.pool.execute(
-      'SELECT id, current_reading FROM utility_meter WHERE id = ? AND org_id = ?', [id, orgId]
+  // Reject a bad value before it reaches a DECIMAL(12,2). 'abc' used to become
+  // NaN, compare unequal to everything, and go to the database as a correction.
+  const submitted = parseReadingValue(current_reading);
+  if (current_reading !== undefined && current_reading !== null && current_reading !== '' && submitted === null) {
+    return res.status(400).json({ code: 400, message: 'Meter reading must be a number of zero or more' });
+  }
+
+  let conn;
+  try {
+    conn = await req.pool.getConnection();
+    await conn.beginTransaction();
+
+    // FOR UPDATE: the reading we compare against and the column we then write must
+    // not move underneath us. Without it a second correction landing mid-request
+    // could leave the log saying one thing and current_reading another — which is
+    // the exact inconsistency this endpoint exists to end.
+    const [[meter]] = await conn.execute(
+      'SELECT id, current_reading FROM utility_meter WHERE id = ? AND org_id = ? FOR UPDATE', [id, orgId]
     );
-    if (!meter) return res.status(404).json({ code: 404, message: 'Meter not found' });
+    if (!meter) {
+      await conn.rollback();
+      return res.status(404).json({ code: 404, message: 'Meter not found' });
+    }
 
     const fields = [];
     const params = [];
@@ -382,46 +399,63 @@ router.put('/meter/:id', authenticate, async (req, res) => {
     // not the meter column. Those two can disagree, and comparing against the
     // column would log a correction nobody asked for every time an unrelated field
     // was edited on one of the meters where they differ.
-    const [[lastReading]] = await req.pool.execute(
-      'SELECT reading_value FROM utility_meter_reading WHERE meter_id = ? ORDER BY reading_date DESC, created_at DESC LIMIT 1',
-      [id]
+    const [[lastReading]] = await conn.execute(
+      `SELECT reading_value FROM utility_meter_reading
+        WHERE meter_id = ? AND org_id = ?
+        ORDER BY reading_date DESC, created_at DESC, id DESC LIMIT 1`,
+      [id, orgId]
     );
     const shown = lastReading ? Number(lastReading.reading_value) : Number(meter.current_reading);
-    const wantsCorrection = current_reading !== undefined && current_reading !== null
-      && current_reading !== '' && Number(current_reading) !== shown;
+    const wantsCorrection = isCorrection(shown, submitted);
 
     if (fields.length === 0 && !wantsCorrection) {
+      await conn.rollback();
       return res.status(400).json({ code: 400, message: 'Nothing to update' });
     }
 
     if (fields.length > 0) {
       params.push(id, orgId);
-      await req.pool.execute(`UPDATE utility_meter SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`, params);
+      await conn.execute(`UPDATE utility_meter SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`, params);
     }
 
     let correction = null;
     if (wantsCorrection) {
       const readingId = genId();
       const today = orgToday();
-      await req.pool.execute(
+      await conn.execute(
         `INSERT INTO utility_meter_reading (id, org_id, meter_id, reading_value, reading_date, reading_type, notes)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [readingId, orgId, id, current_reading, today, READING_TYPE_CORRECTION,
-         `Corrected from ${shown} to ${Number(current_reading)} by ${req.user.username || 'a staff user'}`]
+        [readingId, orgId, id, submitted, today, READING_TYPE_CORRECTION,
+         `Corrected from ${shown} to ${submitted} by ${req.user.username || 'a staff user'}`]
       );
       // Dated today, so it is the newest by date and does move the meter — the same
       // rule the reading endpoint applies.
-      await req.pool.execute('UPDATE utility_meter SET current_reading = ? WHERE id = ?', [current_reading, id]);
-      correction = { reading_id: String(readingId), from: shown, to: Number(current_reading), date: today };
-
-      await logActivity(req, 'UPDATE', 'utility_meter', id,
-        `Corrected meter reading from ${shown} to ${Number(current_reading)}`);
+      await conn.execute(
+        'UPDATE utility_meter SET current_reading = ? WHERE id = ? AND org_id = ?', [submitted, id, orgId]
+      );
+      correction = { reading_id: String(readingId), from: shown, to: submitted, date: today };
     }
 
-    res.json({ code: 200, message: correction ? 'Meter updated and reading corrected' : 'Meter updated', data: { correction } });
+    await conn.commit();
+
+    // After the commit. A failed audit row must not roll back a correction that
+    // succeeded, and logActivity never throws anyway.
+    if (correction) {
+      await logActivity(req, 'UPDATE', 'utility_meter', id,
+        `Corrected meter reading from ${shown} to ${submitted}`);
+    }
+
+    res.json({
+      code: 200,
+      message: correction ? 'Meter updated and reading corrected' : 'Meter updated',
+      data: { correction },
+    });
   } catch (error) {
+    if (conn) { try { await conn.rollback(); } catch { /* the commit already failed */ } }
     console.error('Update utility meter error:', error);
     res.status(500).json({ code: 500, message: 'Failed to update meter' });
+  } finally {
+    if (conn) conn.release();
   }
 });
 
@@ -480,11 +514,19 @@ router.post('/meter-reading', authenticate, async (req, res) => {
       ? `Warning: new reading (${reading_value}) is less than last reading (${lastReading.reading_value})`
       : null;
 
+    // One normalised date for both the row and the newest-by-date comparison.
+    // reading_date is a DATE column; a full ISO timestamp would be rejected in
+    // strict mode, and its UTC day can differ from the org's day.
+    const readingDate = normaliseReadingDate(reading_date, orgToday());
+    if (readingDate === null) {
+      return res.status(400).json({ code: 400, message: 'Reading date must be a valid date (YYYY-MM-DD)' });
+    }
+
     const id = genId();
     await req.pool.execute(
       `INSERT INTO utility_meter_reading (id, org_id, meter_id, reading_value, reading_date, reading_type, tenant_id, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, orgId, meter_id, reading_value, reading_date || orgToday(), reading_type ?? 0, tenant_id || null, notes || null]
+      [id, orgId, meter_id, reading_value, readingDate, reading_type ?? 0, tenant_id || null, notes || null]
     );
 
     // Also update current_reading on meter for backward compat — but ONLY when this
@@ -500,14 +542,29 @@ router.post('/meter-reading', authenticate, async (req, res) => {
     //
     // A back-dated entry is a correction to history. It belongs in the log, and it
     // must not claim to be where the meter stands today.
+    // The condition lives INSIDE the UPDATE, not in a separate SELECT. A newer
+    // reading landing between a check and a write would otherwise let this older
+    // one overwrite the column anyway.
+    const [upd] = await req.pool.execute(
+      `UPDATE utility_meter m SET m.current_reading = ?
+        WHERE m.id = ? AND m.org_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM utility_meter_reading r
+             WHERE r.meter_id = m.id AND r.reading_date > ?
+          )`,
+      [reading_value, meter_id, orgId, readingDate]
+    );
+    // affectedRows counts rows CHANGED, so re-logging the same value reports 0 even
+    // though the reading is the newest. Ask the log separately for the flag the UI
+    // shows, and let the UPDATE above be the thing that enforces the rule.
     const [[{ newerCount }]] = await req.pool.execute(
       'SELECT COUNT(*) AS newerCount FROM utility_meter_reading WHERE meter_id = ? AND reading_date > ?',
-      [meter_id, reading_date || orgToday()]
+      [meter_id, readingDate]
     );
     // COUNT(*) arrives as a STRING (the pool sets bigNumberStrings), and '0' is truthy.
     const isNewest = Number(newerCount) === 0;
-    if (isNewest) {
-      await req.pool.execute('UPDATE utility_meter SET current_reading = ? WHERE id = ?', [reading_value, meter_id]);
+    if (!isNewest && upd.affectedRows > 0) {
+      console.error('[utility/reading] guard disagreed with the UPDATE on meter', meter_id);
     }
 
     // Auto-sync lease meter values when the reading is a Move-In/Move-Out type.
@@ -524,9 +581,13 @@ router.post('/meter-reading', authenticate, async (req, res) => {
     let autoSync = null;
     const readingTypeNum = Number(reading_type ?? 0);
     if (readingTypeNum === 0 || readingTypeNum === 1) {
-      const [[meterUnit]] = await req.pool.execute('SELECT unit_id FROM utility_meter WHERE id = ?', [meter_id]);
+      const [[meterUnit]] = await req.pool.execute(
+        'SELECT unit_id FROM utility_meter WHERE id = ? AND org_id = ?', [meter_id, orgId]
+      );
       const unitId = meterUnit?.unit_id;
-      const readingDate = reading_date || orgToday();
+      // Uses the normalised readingDate from above. This block used to redeclare it
+      // from the raw body, so the lease lookup and the stored row could be matching
+      // on two different dates.
       const updates = []; // collect { leaseId, column, role } for response/logs
 
       if (!unitId) {

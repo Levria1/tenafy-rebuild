@@ -34,8 +34,11 @@
  *
  * REVERSAL
  * --------
- * Every changed row is snapshotted into `utility_meter_reading_repair_backup`
- * before anything is written. The script prints the exact revert statement.
+ * Every changed row is snapshotted into `utility_meter_reading_repair_backup`,
+ * keyed by (run_id, meter_id). A single key of meter_id with INSERT IGNORE looked
+ * tidier and was wrong: a second run on a meter that had drifted again would skip
+ * the insert, and the printed revert would restore the FIRST run's value or miss
+ * the row entirely. Each run is its own recoverable unit.
  */
 
 require('dotenv').config();
@@ -100,16 +103,20 @@ async function main() {
 
     await conn.query(
       `CREATE TABLE IF NOT EXISTS utility_meter_reading_repair_backup (
-         meter_id              BIGINT        NOT NULL,
+         run_id                 VARCHAR(32)   NOT NULL,
+         meter_id               BIGINT        NOT NULL,
          current_reading_before DECIMAL(12,2) NULL,
-         backed_up_at          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-         PRIMARY KEY (meter_id)
+         backed_up_at           TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+         PRIMARY KEY (run_id, meter_id)
        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
     );
 
     const [[{ started_at: startedAt }]] = await conn.query(
       `SELECT DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:%s') AS started_at`
     );
+    // The run's own identity, so a later run cannot collide with this one's
+    // snapshot and a revert can name exactly one run.
+    const runId = startedAt.replace(/[^0-9]/g, '');
 
     const applied = [];
     const skipped = [];
@@ -125,9 +132,9 @@ async function main() {
         );
         if (res.affectedRows !== 1) { skipped.push(c); continue; }
         await conn.execute(
-          `INSERT IGNORE INTO utility_meter_reading_repair_backup (meter_id, current_reading_before)
-           VALUES (?, ?)`,
-          [c.id, c.current_reading]
+          `INSERT INTO utility_meter_reading_repair_backup (run_id, meter_id, current_reading_before)
+           VALUES (?, ?, ?)`,
+          [runId, c.id, c.current_reading]
         );
         applied.push(c);
       }
@@ -148,7 +155,7 @@ async function main() {
     console.log('  UPDATE utility_meter m');
     console.log('    JOIN utility_meter_reading_repair_backup b ON b.meter_id = m.id');
     console.log('     SET m.current_reading = b.current_reading_before');
-    console.log(`   WHERE b.backed_up_at >= '${startedAt}';`);
+    console.log(`   WHERE b.run_id = '${runId}';`);
   } finally {
     await conn.end();
   }

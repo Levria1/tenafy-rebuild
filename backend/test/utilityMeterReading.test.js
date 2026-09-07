@@ -36,6 +36,39 @@ test('the meter update reads current_reading off the body', () => {
     'the field the form sends must not be silently dropped');
 });
 
+test('a bad reading is refused before it reaches the column', () => {
+  const src = route();
+  assert.match(src, /const submitted = parseReadingValue\(current_reading\)/);
+  assert.match(src, /submitted === null[\s\S]{0,160}status\(400\)/,
+    "'abc' became NaN, read as a correction, and went to a DECIMAL(12,2)");
+});
+
+test('the correction and the column move in ONE transaction', () => {
+  // Without this the log could record a correction the column never took, and bill
+  // creation takes the highest of the two — so a downward correction would be
+  // logged and then ignored.
+  const src = route();
+  assert.match(src, /conn = await req\.pool\.getConnection\(\)/);
+  assert.match(src, /await conn\.beginTransaction\(\)/);
+  assert.match(src, /FOR UPDATE/, 'the row must be locked while it is read and rewritten');
+  assert.match(src, /await conn\.commit\(\)/);
+  assert.match(src, /try \{ await conn\.rollback\(\); \} catch/,
+    'a rollback that throws must not mask the original error');
+  assert.match(src, /finally \{\s*\n\s*if \(conn\) conn\.release\(\)/,
+    'the connection must be released on every path');
+  // The audit row is written after the commit, deliberately.
+  const commitAt = src.indexOf('await conn.commit()');
+  const auditAt = src.indexOf("logActivity(req, 'UPDATE', 'utility_meter'");
+  assert.ok(commitAt > -1 && auditAt > commitAt, 'a failed audit must not roll back a real correction');
+});
+
+test('org scoping is on every statement the correction touches', () => {
+  const src = route();
+  assert.match(src, /FROM utility_meter WHERE id = \? AND org_id = \? FOR UPDATE/);
+  assert.match(src, /FROM utility_meter_reading\s*\n?\s*WHERE meter_id = \? AND org_id = \?/);
+  assert.match(src, /UPDATE utility_meter SET current_reading = \? WHERE id = \? AND org_id = \?/);
+});
+
 test('a correction is written into the reading log, not just the column', () => {
   const src = route();
   assert.match(src, /READING_TYPE_CORRECTION/, 'corrections need their own reading type');
@@ -45,7 +78,7 @@ test('a correction is written into the reading log, not just the column', () => 
 
 test('the correction records what it changed and who changed it', () => {
   const src = route();
-  assert.match(src, /Corrected from \$\{shown\} to \$\{Number\(current_reading\)\} by \$\{req\.user\.username/,
+  assert.match(src, /Corrected from \$\{shown\} to \$\{submitted\} by \$\{req\.user\.username/,
     'an unattributed correction cannot be judged later');
 });
 
@@ -60,7 +93,8 @@ test('the comparison is against the reading the form displayed, not the column',
   // three meters this work exists to fix.
   const src = route();
   assert.match(src, /const shown = lastReading \? Number\(lastReading\.reading_value\) : Number\(meter\.current_reading\)/);
-  assert.match(src, /Number\(current_reading\) !== shown/);
+  assert.match(src, /const wantsCorrection = isCorrection\(shown, submitted\)/,
+    'the rule itself lives in utils/meterReading.js and is tested for behaviour there');
 });
 
 test('editing only the details still works, and still rejects an empty request', () => {
@@ -73,20 +107,43 @@ test('editing only the details still works, and still rejects an empty request',
 
 // ── a back-dated reading stays history ──────────────────────────────────────
 
-test('current_reading only advances when the reading is newest by date', () => {
+test('the newest-by-date rule is enforced inside the UPDATE, not around it', () => {
+  // A separate SELECT then UPDATE loses to a newer reading landing in between.
+  // The condition has to be part of the write.
   const src = route();
-  assert.match(src, /SELECT COUNT\(\*\) AS newerCount FROM utility_meter_reading WHERE meter_id = \? AND reading_date > \?/);
+  assert.match(src, /UPDATE utility_meter m SET m\.current_reading = \?[\s\S]{0,400}NOT EXISTS \([\s\S]{0,200}r\.reading_date > \?/,
+    'the guard must be a predicate on the UPDATE');
   assert.match(src, /const isNewest = Number\(newerCount\) === 0/,
     "COUNT(*) arrives as a string — '0' is truthy, so it must be compared as a number");
-  assert.match(src, /if \(isNewest\) \{[\s\S]{0,200}UPDATE utility_meter SET current_reading/,
-    'the update must be conditional');
 });
 
-test('the unconditional update is gone', () => {
+test('the reading date is normalised once, before the row and the comparison', () => {
   const src = route();
-  // The old line ran straight after the INSERT with nothing guarding it.
-  assert.doesNotMatch(src, /\[id, orgId, meter_id, reading_value[\s\S]{0,200}\n\s*await req\.pool\.execute\('UPDATE utility_meter SET current_reading = \? WHERE id = \?', \[reading_value, meter_id\]\);/,
-    'a back-dated entry must not rewind the meter');
+  assert.match(src, /const readingDate = normaliseReadingDate\(reading_date, orgToday\(\)\)/);
+  assert.match(src, /readingDate === null[\s\S]{0,160}status\(400\)/);
+  // It used to be redeclared inside the auto-sync block from the raw body, so the
+  // lease lookup and the stored row could match on two different dates.
+  assert.strictEqual((src.match(/const readingDate/g) || []).length, 1,
+    'exactly one declaration — no shadow with different semantics');
+});
+
+test('the two writes this change owns are both guarded', () => {
+  // The earlier version of this test matched the old line's exact formatting and
+  // proximity, so moving the same mistake a few lines away would have passed it.
+  // This checks the predicates instead. Scoped to these two writes on purpose:
+  // finalize, checkout and settlement-undo also write current_reading and are
+  // deliberately unconditional — they are asserting a value, not logging a reading.
+  const src = route();
+  const writes = (src.match(/UPDATE utility_meter[^;]*SET[^;]*current_reading[^;]*/g) || []);
+
+  const correction = writes.find(w => /\[submitted, id, orgId\]/.test(w));
+  assert.ok(correction, 'the correction write must be present');
+  assert.match(correction, /WHERE id = \? AND org_id = \?/, 'and org-scoped');
+
+  const fromReading = writes.find(w => /NOT EXISTS/.test(w));
+  assert.ok(fromReading, 'the reading write must carry the newest-by-date predicate');
+  assert.match(fromReading, /r\.reading_date > \?/);
+  assert.match(fromReading, /m\.org_id = \?/);
 });
 
 test('the response says whether the meter actually moved', () => {
@@ -128,7 +185,17 @@ test('the repair aligns the column to the log, not the other way round', () => {
     'it must re-check the value it replaces, in case a reading landed mid-run');
   assert.match(src, /affectedRows !== 1/);
   assert.match(src, /utility_meter_reading_repair_backup/, 'changes must be snapshotted');
-  assert.match(src, /b\.backed_up_at >=/, 'and the revert scoped to this run');
+});
+
+test('each repair run is separately recoverable', () => {
+  // Keyed on meter_id alone with INSERT IGNORE, a second run on a meter that had
+  // drifted again would skip its snapshot, and the printed revert would restore
+  // the FIRST run's value or miss the row entirely.
+  const src = stripComments(read('../scripts/repairMeterCurrentReading.js'));
+  assert.match(src, /PRIMARY KEY \(run_id, meter_id\)/);
+  assert.doesNotMatch(src, /INSERT IGNORE INTO utility_meter_reading_repair_backup/,
+    'a skipped snapshot is an unrecoverable run');
+  assert.match(src, /b\.run_id = /, 'the revert must name exactly one run');
 });
 
 test('the repair writes nothing without --apply', () => {
