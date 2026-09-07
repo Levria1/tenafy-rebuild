@@ -23,7 +23,7 @@ const METER_CATEGORY_OPTIONS = [
   { label: 'Master Meter', value: 0 },
   { label: 'Tenant Sub-meter', value: 1 },
 ];
-const READING_TYPE_LABELS = { 0: 'Move-In', 1: 'Move-Out', 2: 'Billing', 3: 'Monthly' };
+const READING_TYPE_LABELS = { 0: 'Move-In', 1: 'Move-Out', 2: 'Billing', 3: 'Monthly', 4: 'Correction' };
 const READING_TYPE_OPTIONS = [
   { label: 'Monthly', value: 3 },
   { label: 'Move-In', value: 0 },
@@ -567,8 +567,13 @@ function SettingsTab() {
     try {
       const values = await meterForm.validateFields();
       if (editingMeter) {
-        await utility.updateMeter(editingMeter.id, values);
-        message.success('Meter updated');
+        const r = await utility.updateMeter(editingMeter.id, values);
+        const correction = r?.data?.data?.correction;
+        // Name the correction. "Meter updated" was reported even when the reading
+        // was silently discarded, which is how a no-op passed for a save.
+        message.success(correction
+          ? `Reading corrected from ${Number(correction.from).toLocaleString()} to ${Number(correction.to).toLocaleString()}, logged in the reading history.`
+          : 'Meter updated');
       } else {
         await utility.createMeter({ ...values, group_id: selectedGroupForMeter });
         message.success('Meter added');
@@ -846,7 +851,14 @@ function SettingsTab() {
               />
             </Form.Item>
           )}
-          <Form.Item name="current_reading" label="Initial Meter Reading" initialValue={0}>
+          <Form.Item
+            name="current_reading"
+            label={editingMeter ? 'Meter Reading' : 'Initial Meter Reading'}
+            initialValue={0}
+            extra={editingMeter
+              ? 'Changing this logs a dated correction in the reading history. Leave it alone if you only meant to edit the details above.'
+              : undefined}
+          >
             <InputNumber style={{ width: '100%' }} min={0} precision={2} />
           </Form.Item>
         </Form>
@@ -920,7 +932,14 @@ function MetersTab() {
       if (res.data?.data?.warning) {
         message.warning(res.data.data.warning);
       }
-      message.success('Reading logged');
+      // A back-dated entry is filed as history and does not become the meter's
+      // current value. Saying so is the difference between a deliberate correction
+      // and quietly rewinding the meter, which is what used to happen.
+      if (res.data?.data?.meter_advanced === false) {
+        message.warning('Logged as history. A newer reading already exists for this meter, so its current value is unchanged.', 8);
+      } else {
+        message.success('Reading logged');
+      }
       setReadingModal(false);
       readingForm.resetFields();
       loadData();

@@ -3,6 +3,11 @@ const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
+const { logActivity } = require('../utils/activityLog');
+
+// utility_meter_reading.reading_type — 0 Move-In, 1 Move-Out, 2 Billing, 3 Monthly.
+// 4 is a correction made from the Edit Meter form. tinyint, so no migration needed.
+const READING_TYPE_CORRECTION = 4;
 
 const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
@@ -343,11 +348,27 @@ router.post('/meter', authenticate, async (req, res) => {
 });
 
 // PUT /api/utility/meter/:id
+//
+// A reading correction is NOT a settings change. The Edit Meter form has always
+// shown a reading field, and this endpoint used to destructure everything except
+// current_reading — so the value was discarded, the request returned 200 and the
+// UI said "Meter updated". You could correct a reading, be told it worked, and
+// change nothing.
+//
+// It is accepted now, and it writes a dated CORRECTION entry into the reading log
+// rather than only moving the column. Bills are built from that log, so a reading
+// that silently contradicted it would be a number with no evidence behind it, and
+// a wrong correction could never be seen or undone.
 router.put('/meter/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { group_id, unit_id, meter_number, meter_type, meter_category } = req.body;
+    const { group_id, unit_id, meter_number, meter_type, meter_category, current_reading } = req.body;
     const orgId = req.user.orgId;
+
+    const [[meter]] = await req.pool.execute(
+      'SELECT id, current_reading FROM utility_meter WHERE id = ? AND org_id = ?', [id, orgId]
+    );
+    if (!meter) return res.status(404).json({ code: 404, message: 'Meter not found' });
 
     const fields = [];
     const params = [];
@@ -356,11 +377,48 @@ router.put('/meter/:id', authenticate, async (req, res) => {
     if (meter_number !== undefined) { fields.push('meter_number = ?'); params.push(meter_number); }
     if (meter_type !== undefined) { fields.push('meter_type = ?'); params.push(meter_type); }
     if (meter_category !== undefined) { fields.push('meter_category = ?'); params.push(meter_category); }
-    if (fields.length === 0) return res.status(400).json({ code: 400, message: 'Nothing to update' });
 
-    params.push(id, orgId);
-    await req.pool.execute(`UPDATE utility_meter SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`, params);
-    res.json({ code: 200, message: 'Meter updated' });
+    // Compare against what the form SHOWED, which is the latest reading by date,
+    // not the meter column. Those two can disagree, and comparing against the
+    // column would log a correction nobody asked for every time an unrelated field
+    // was edited on one of the meters where they differ.
+    const [[lastReading]] = await req.pool.execute(
+      'SELECT reading_value FROM utility_meter_reading WHERE meter_id = ? ORDER BY reading_date DESC, created_at DESC LIMIT 1',
+      [id]
+    );
+    const shown = lastReading ? Number(lastReading.reading_value) : Number(meter.current_reading);
+    const wantsCorrection = current_reading !== undefined && current_reading !== null
+      && current_reading !== '' && Number(current_reading) !== shown;
+
+    if (fields.length === 0 && !wantsCorrection) {
+      return res.status(400).json({ code: 400, message: 'Nothing to update' });
+    }
+
+    if (fields.length > 0) {
+      params.push(id, orgId);
+      await req.pool.execute(`UPDATE utility_meter SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`, params);
+    }
+
+    let correction = null;
+    if (wantsCorrection) {
+      const readingId = genId();
+      const today = orgToday();
+      await req.pool.execute(
+        `INSERT INTO utility_meter_reading (id, org_id, meter_id, reading_value, reading_date, reading_type, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [readingId, orgId, id, current_reading, today, READING_TYPE_CORRECTION,
+         `Corrected from ${shown} to ${Number(current_reading)} by ${req.user.username || 'a staff user'}`]
+      );
+      // Dated today, so it is the newest by date and does move the meter — the same
+      // rule the reading endpoint applies.
+      await req.pool.execute('UPDATE utility_meter SET current_reading = ? WHERE id = ?', [current_reading, id]);
+      correction = { reading_id: String(readingId), from: shown, to: Number(current_reading), date: today };
+
+      await logActivity(req, 'UPDATE', 'utility_meter', id,
+        `Corrected meter reading from ${shown} to ${Number(current_reading)}`);
+    }
+
+    res.json({ code: 200, message: correction ? 'Meter updated and reading corrected' : 'Meter updated', data: { correction } });
   } catch (error) {
     console.error('Update utility meter error:', error);
     res.status(500).json({ code: 500, message: 'Failed to update meter' });
@@ -429,8 +487,28 @@ router.post('/meter-reading', authenticate, async (req, res) => {
       [id, orgId, meter_id, reading_value, reading_date || orgToday(), reading_type ?? 0, tenant_id || null, notes || null]
     );
 
-    // Also update current_reading on meter for backward compat
-    await req.pool.execute('UPDATE utility_meter SET current_reading = ? WHERE id = ?', [reading_value, meter_id]);
+    // Also update current_reading on meter for backward compat — but ONLY when this
+    // entry is the newest by DATE.
+    //
+    // This used to run unconditionally, on whatever was typed last. Entering a
+    // back-dated reading therefore rewound the meter to a figure from an earlier
+    // month while the screen carried on showing the latest one, because the screen
+    // reads the log and orders by date. It happened to Mercer 4B on 2 Sep 2026: an
+    // August reading of 23,241 was entered at 06:49 and a July reading of 23,134 at
+    // 07:44, leaving the meter on the July value. 127 readings across the system
+    // were entered after a newer-dated one already existed.
+    //
+    // A back-dated entry is a correction to history. It belongs in the log, and it
+    // must not claim to be where the meter stands today.
+    const [[{ newerCount }]] = await req.pool.execute(
+      'SELECT COUNT(*) AS newerCount FROM utility_meter_reading WHERE meter_id = ? AND reading_date > ?',
+      [meter_id, reading_date || orgToday()]
+    );
+    // COUNT(*) arrives as a STRING (the pool sets bigNumberStrings), and '0' is truthy.
+    const isNewest = Number(newerCount) === 0;
+    if (isNewest) {
+      await req.pool.execute('UPDATE utility_meter SET current_reading = ? WHERE id = ?', [reading_value, meter_id]);
+    }
 
     // Auto-sync lease meter values when the reading is a Move-In/Move-Out type.
     //
@@ -533,7 +611,12 @@ router.post('/meter-reading', authenticate, async (req, res) => {
       }
     }
 
-    res.json({ code: 200, message: 'Reading logged', data: { id, warning, autoSync } });
+    res.json({
+      code: 200, message: 'Reading logged',
+      // meter_advanced tells the caller whether this became the meter's current
+      // value or was filed as history behind a newer reading.
+      data: { id, warning, autoSync, meter_advanced: isNewest },
+    });
   } catch (error) {
     console.error('Log meter reading error:', error);
     res.status(500).json({ code: 500, message: 'Failed to log reading' });
