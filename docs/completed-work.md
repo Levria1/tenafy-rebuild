@@ -804,3 +804,68 @@ SQL, so there is no `activity_log` attribution for it.
 recommended as a safety net but skipped, because `renewal_ask_enabled` is 1 in production
 and the change would make real tenants messageable without a separate decision. With the
 write guard in place no new 0 can be created, so it is belt-and-braces rather than urgent.
+
+---
+
+## 2026-09-06/07 — Tenant portal live, and the timezone drift behind a bug report
+
+### Tenant portal switched on
+`TENANT_JWT_SECRET` set; every portal endpoint had been answering 503. Built the parts
+that made it usable: registration (`/tenant-portal/register`, `/set-password` — the path
+the emailed link already pointed at, so that email had been a 404), the repairs screen,
+follow-up notes and withdrawal, and staff notifications on submit/update/withdraw.
+
+Three shipped-but-broken pieces were blocking sign-in entirely: the login page read a
+token the rewritten endpoint no longer returns, the layout gated every page on an httpOnly
+cookie JavaScript cannot read, and logout deleted a cookie client-side. See
+`f460adf`, `4a90cc0`.
+
+**No edit endpoint, deliberately.** Once a vendor is booked against a description,
+rewriting it sends them to a job that no longer exists. Append-only thread instead, and
+withdrawal only while still Received.
+
+**Repair photos are stored `is_private = 1`.** `/api/file/preview` serves any image
+anonymously by design (the listings site depends on it), so shipping the repairs screen
+without that flag would have made every photo of the inside of a tenant's home fetchable
+by guessing a Snowflake id.
+
+### The timezone drift (`d12cd10`, `1661ebf`)
+A question about a missing end time on the service edit form turned out to be a read-side
+bug: DATETIME columns holding a Hong Kong wall clock were being read as UTC and drawn
+eight hours later. The edit form loaded the inflated value and saved it back, so each
+open-and-save pushed the window further, composing the end from the START date.
+**141 of 1,702 requests already end before they begin.** Left unrepaired by decision.
+
+First fix was half wrong — `dateStrings: ['DATE','DATETIME']` renders the 24 `NOW()`-written
+audit columns eight hours EARLY. Now `['DATE']` only, with `DATE_FORMAT` on the six
+wall-clock columns in the queries that know which kind they are.
+
+### Check-in email investigation
+A tenant received move-in instructions for a lease that fell through. The server log
+settled it: **someone pressed Confirm Lease**, which sends the email — and the dialog said
+only "generate invoices and mark active". The dialog now names the email and its
+recipient first. The manual send button separately never checked lease state at all.
+
+### Audit logging
+Audited every write endpoint: 39 recorded who acted, **208 did not**, including confirming
+a lease. Added to 18 where "who did this" is the first question. `move-out` was silent
+while its own UNDO was logged.
+
+### Phantom organisations
+`tena_prod_v2` carries rows for eleven organisations absent from master. Deactivated
+63 templates, 441 user rows and 17 roles (backed up, reversible); kept "Super Admin",
+which the owner's account depends on. Found and fixed en route: **login matched on
+username/email across every org with no ORDER BY**, so the owner's session worked by luck
+of row order.
+
+### Also
+- Account and security email now sends from `no-reply@taneresidence.com`, not the billing
+  address (`EMAIL_FROM_ACCOUNT`).
+- The registration email rewritten with substance; org name read from master, never a
+  literal.
+- tenafy.com brought into version control at `website/tenafy-site` — it existed only on
+  the droplet with no history. Sign in pointed at `href="#"`.
+- Timeline entries: tenant-written ones are attributed and undeletable; deleting is now
+  reversible with the full text copied to `activity_log`.
+
+Suite 1315 → **1464**. Migrations 079, 080.
