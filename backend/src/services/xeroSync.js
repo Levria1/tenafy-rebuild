@@ -38,6 +38,7 @@
 const xeroClient = require('./xeroClient');
 const llmClient = require('./llmClient');
 const { orgToday, orgTodayDate } = require('../utils/orgTime');
+const { collapseDuplicateNote, NOTE_JOIN } = require('../utils/paymentNote');
 
 function newId() {
   return (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -457,7 +458,12 @@ async function stageTransaction(pool, orgId, tx, accountMap, xeroAccountNames = 
     .filter(Boolean)
     .join(' | ');
   const reference = tx.Reference || null;
-  const description = [reference, lineDescriptions].filter(Boolean).join(' — ');
+  // Xero often carries the same sentence in Reference and in the line-item
+  // Description. Joining them then stored it twice, and a single-invoice receipt
+  // printed it twice. Collapse an exact repeat; a genuine pair still joins.
+  const description = collapseDuplicateNote(
+    [reference, lineDescriptions].filter(Boolean).join(NOTE_JOIN)
+  );
   const currencyCode = tx.CurrencyCode || null;
   const tenafyAccountId = accountMap[xeroAccountId] || null;
 

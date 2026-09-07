@@ -5,6 +5,7 @@ const { authenticate } = require('../middleware/auth');
 const { renderFromTemplate } = require('../services/leasePdfRenderer');
 const { resolveLeaseTemplateId } = require('../services/leaseTemplateResolver');
 const { orgToday, ORG_TIME_ZONE } = require('../utils/orgTime');
+const { collapseDuplicateNote } = require('../utils/paymentNote');
 
 
 // Org-level info for document headers.
@@ -615,9 +616,12 @@ router.get('/receipt/:paymentId', authenticate, async (req, res) => {
       // Per-line description: prefer THIS line's invoice note. Only a single-line
       // receipt falls back to the payment's (combined) note — using pmt.payment_note
       // for every line duplicated the whole combined note on each row.
+      // collapseDuplicateNote covers notes already stored as "X — X" by an earlier
+      // Xero import; the backfill script clears those, this keeps a stale one from
+      // reaching a tenant's receipt in the meantime.
       const desc = (displayLines.length > 1
         ? (line.invoice_note || line.invoice_category || 'Payment')
-        : (pmt.payment_note || line.invoice_note || line.invoice_category || 'Payment'));
+        : (collapseDuplicateNote(pmt.payment_note) || line.invoice_note || line.invoice_category || 'Payment'));
       // Row height must fit the WRAPPED description — a long note overflowed the
       // fixed 28px row and overlapped the next row / the totals block.
       const descH = doc.fontSize(9).font('Helvetica').heightOfString(desc, { width: descW });
@@ -817,10 +821,11 @@ async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
     const descW = CW * 0.5 - 10;
     displayLines.forEach((line, idx) => {
       // Per-line description (see /receipt route): each line uses its OWN invoice
-      // note; only single-line receipts fall back to the payment's combined note.
+      // note; only single-line receipts fall back to the payment's combined note,
+      // collapsed if an earlier Xero import stored it as "X — X".
       const desc = (displayLines.length > 1
         ? (line.invoice_note || line.invoice_category || 'Payment')
-        : (pmt.payment_note || line.invoice_note || line.invoice_category || 'Payment'));
+        : (collapseDuplicateNote(pmt.payment_note) || line.invoice_note || line.invoice_category || 'Payment'));
       // Dynamic row height so a long wrapped note doesn't overlap the next row.
       const descH = doc.fontSize(9).font('Helvetica').heightOfString(desc, { width: descW });
       const rowH = Math.max(28, descH + 14);
