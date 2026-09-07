@@ -435,6 +435,10 @@ router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE
        platformId, agentId]
     );
 
+    // Publishing creates ONE invoice, despite the endpoint's name.
+    await logActivity(req, 'PUBLISH', 'invoice', invoiceId,
+      `Published invoice ${code || invoiceId}`);
+
     res.json({
       code: 200,
       message: 'Invoice published',
@@ -703,6 +707,8 @@ router.post('/write-off-bulk', authenticate, requirePermission('LANDLORD/INVOICE
         WHERE id IN (${placeholders}) AND org_id = ? AND deleted_at IS NULL AND status IN (0, 2)`,
       [reason ? String(reason).slice(0, 255) : null, ...ids, orgId]
     );
+    await logActivity(req, 'WRITE_OFF', 'invoice', null,
+      `Wrote off ${result.affectedRows} of ${ids.length} requested invoice(s)`, { ids });
     res.json({ code: 200, data: { written_off: result.affectedRows, requested: ids.length } });
   } catch (error) {
     console.error('Bulk write-off error:', error);
@@ -723,6 +729,8 @@ router.post('/:id/write-off', authenticate, requirePermission('LANDLORD/INVOICE_
     if (result.affectedRows === 0) {
       return res.status(400).json({ code: 400, message: 'Invoice not found, or it is already paid or written off' });
     }
+    await logActivity(req, 'WRITE_OFF', 'invoice', req.params.id,
+      `Wrote off invoice ${req.params.id}`);
     res.json({ code: 200, data: { id: String(req.params.id), status: 3 } });
   } catch (error) {
     console.error('Write-off error:', error);
@@ -887,6 +895,11 @@ router.post('/:id/email-to-tenant', authenticate, async (req, res) => {
         console.error('[email-to-tenant] could not record chase timestamp:', stampErr.message);
       }
     }
+
+    // An email to a tenant about money owed. Who sent it and when is the first
+    // question asked when a tenant disputes having been chased.
+    await logActivity(req, 'EMAIL', 'invoice', id,
+      `Sent ${usedTemplate || 'invoice'} email for invoice ${id}`);
 
     res.json({
       code: 200,

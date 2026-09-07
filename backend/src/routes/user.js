@@ -1,4 +1,5 @@
 const express = require('express');
+const { logActivity } = require('../utils/activityLog');
 const router = express.Router();
 const { authenticate, isSuperAdmin } = require('../middleware/auth');
 const { getMasterPool } = require('../config/poolRegistry');
@@ -303,6 +304,9 @@ router.put('/status/update', authenticate, async (req, res) => {
     const userId = req.user.id;
     const { status } = req.query;
     await req.pool.execute('UPDATE user SET status = ?, updated_at = NOW() WHERE id = ?', [status, userId]);
+    await logActivity(req, 'UPDATE', 'user', String(userId),
+      `Changed own user status to ${status}`);
+
     res.json({ code: 200, message: 'Status updated' });
   } catch (error) {
     console.error('Update status error:', error);
@@ -387,6 +391,10 @@ router.post('/', authenticate, async (req, res) => {
       }
     } catch (e) { console.error('org_user_map sync error:', e); }
 
+    // Staff accounts are the keys to the building. Every change to who holds one is recorded.
+    await logActivity(req, 'CREATE', 'user', userId.toString(),
+      `Created user ${username || email || userId}`);
+
     res.json({ code: 200, message: 'User created', data: { id: userId.toString() } });
   } catch (error) {
     console.error('Create user error:', error);
@@ -414,6 +422,9 @@ router.put('/:id', authenticate, async (req, res) => {
       }
     }
 
+    await logActivity(req, 'UPDATE', 'user', id,
+      `Updated user ${id}`);
+
     res.json({ code: 200, message: 'User updated' });
   } catch (error) {
     console.error('Update user error:', error);
@@ -434,6 +445,9 @@ router.delete('/:id', authenticate, async (req, res) => {
     if (delUser) {
       try { await getMasterPool().execute('DELETE FROM org_user_map WHERE username = ?', [delUser.username]); } catch (e) {}
     }
+    await logActivity(req, 'DELETE', 'user', id,
+      `Deleted user ${id}`);
+
     res.json({ code: 200, message: 'User deleted' });
   } catch (error) {
     console.error('Delete user error:', error);

@@ -580,6 +580,9 @@ router.post('/request/:id/cancel', authenticate, async (req, res) => {
       `UPDATE leasing SET signature_status = ? WHERE id = ?`,
       [nextSignatureStatus(siblings), r.lease_id]
     );
+    await logActivity(req, 'CANCEL', 'signature_request', req.params.id,
+      `Cancelled signature request ${req.params.id} on lease ${r.lease_id}`);
+
     ok(res, { cancelled: true });
   } catch (err) {
     console.error('[signature] cancel error:', err);
@@ -628,6 +631,9 @@ router.post('/request/:id/resend', authenticate, async (req, res) => {
       `INSERT INTO signature_event (id, request_id, event_type, metadata) VALUES (?, ?, 'resent', ?)`,
       [newId(), req.params.id, JSON.stringify({ new_expires_at: newExpiry, parties: parties.length })]
     );
+    await logActivity(req, 'RESEND', 'signature_request', req.params.id,
+      `Resent signature request ${req.params.id} to ${parties.length} part${parties.length === 1 ? 'y' : 'ies'}`);
+
     ok(res, { resent: parties.length, expires_at: newExpiry });
   } catch (err) {
     console.error('[signature] resend error:', err);

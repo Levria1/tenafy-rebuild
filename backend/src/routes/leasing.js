@@ -971,6 +971,9 @@ router.put('/:id/settlement-notes', authenticate, requirePermission('LANDLORD/LE
       [notes || null, id]
     );
 
+    await logActivity(req, 'UPDATE', 'lease', id,
+      `Updated settlement notes on lease ${id}`);
+
     res.json({ code: 200, message: 'Settlement notes saved' });
   } catch (error) {
     console.error('Save settlement notes error:', error);
@@ -1943,6 +1946,9 @@ router.post('/:id/move-out', authenticate, requirePermission('LANDLORD/LEASING_E
     );
 
     await conn.commit();
+    await logActivity(req, 'MOVE_OUT', 'lease', id,
+      `Moved out lease ${id} on ${moveOutDate || 'the stored end date'}`);
+
     res.json({
       code: 200,
       data: {

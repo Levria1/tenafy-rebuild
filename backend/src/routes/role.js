@@ -1,4 +1,5 @@
 const express = require('express');
+const { logActivity } = require('../utils/activityLog');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 
@@ -226,6 +227,10 @@ router.post('/', authenticate, async (req, res) => {
       );
     }
 
+    // A role change silently widens or narrows what a colleague can reach.
+    await logActivity(req, 'CREATE', 'role', roleId,
+      `Created role ${display_name || roleId}`);
+
     res.json({ code: 200, message: 'Role created', data: { id: roleId.toString() } });
   } catch (error) {
     console.error('Create role error:', error);
@@ -256,6 +261,9 @@ router.put('/:id', authenticate, async (req, res) => {
       }
     }
 
+    await logActivity(req, 'UPDATE', 'role', id,
+      `Updated role ${id}`);
+
     res.json({ code: 200, message: 'Role updated' });
   } catch (error) {
     console.error('Update role error:', error);
@@ -271,6 +279,9 @@ router.delete('/:id', authenticate, async (req, res) => {
 
     await req.pool.execute('DELETE FROM role_permission WHERE role_id = ?', [id]);
     await req.pool.execute('UPDATE role SET status = 0 WHERE id = ? AND org_id = ?', [id, orgId]);
+
+    await logActivity(req, 'DELETE', 'role', id,
+      `Deleted role ${id}`);
 
     res.json({ code: 200, message: 'Role deleted' });
   } catch (error) {

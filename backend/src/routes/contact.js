@@ -1,4 +1,5 @@
 const express = require('express');
+const { logActivity } = require('../utils/activityLog');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 
@@ -510,6 +511,10 @@ router.post('/tenant/create/user', authenticate, requirePermission('LANDLORD/USE
     } catch (emailError) {
       console.error('Failed to send invite email:', emailError);
     }
+    // This writes a row into the STAFF user table for a tenant. Whatever else is decided
+    await logActivity(req, 'CREATE', 'user', String(newUserId),
+      `Created a portal user row for tenant ${tenant_id}`);
+
     res.json({ code: 200, message: 'Invitation sent successfully', data: { inviteCode } });
   } catch (error) {
     console.error('Create tenant user error:', error);
@@ -566,6 +571,9 @@ router.post('/property-owner/create/user', authenticate, requirePermission('LAND
     } catch (emailError) {
       console.error('Failed to send owner invite email:', emailError);
     }
+    await logActivity(req, 'CREATE', 'user', String(newUserId),
+      `Created a portal user row for owner ${owner_id || ''}`);
+
     res.json({ code: 200, message: 'Invitation sent successfully', data: { inviteCode } });
   } catch (error) {
     console.error('Create owner user error:', error);
