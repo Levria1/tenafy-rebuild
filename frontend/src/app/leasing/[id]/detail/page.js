@@ -480,6 +480,14 @@ function LeasingDetailPageInner() {
     return `$${Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
+  // tenant_checkin is a MySQL bit(1); over JSON it arrives as a number, a boolean, or a
+  // Buffer-shaped object. Anything other than an explicit off counts as on, because
+  // warning about an email that does not send is harmless and the reverse is not.
+  const checkinToggle = lease?.tenant_checkin;
+  const checkinEnabled = !(checkinToggle === 0 || checkinToggle === false
+    || checkinToggle === '0' || checkinToggle == null);
+  const willEmailCheckin = checkinEnabled && Boolean(lease?.tenant_email);
+
   const leaseStatus = lease?.lease_status ?? (lease?.status === 1 ? 1 : 0);
   const isPending = lease?.lease_state === 'pending';
   const statusLabel = isPending ? 'PENDING' : leaseStatus === 2 ? 'Upcoming' : leaseStatus === 1 ? 'Active' : 'Inactive';
@@ -1395,12 +1403,37 @@ function LeasingDetailPageInner() {
               <div>
                 <Tag color="gold" style={{ fontWeight: 600, marginRight: 8 }}>PENDING</Tag>
                 <span style={{ color: '#874d00' }}>
-                  This lease is a draft. Invoices haven't been generated yet. Click <strong>Confirm Lease</strong> once the deposit is received and the agreement is signed.
+                  This lease is a draft. Invoices haven't been generated yet. Click <strong>Confirm Lease</strong> once the deposit is received and the agreement is signed
+                  {willEmailCheckin ? ' — confirming also emails check-in details to the tenant.' : '.'}
                 </span>
               </div>
               <Popconfirm
                 title="Confirm this lease?"
-                description="This will generate rent + deposit invoices and mark the lease active. Cannot be undone (you'd need to delete invoices manually)."
+                description={
+                  // Confirming does three things and the dialog used to name only two.
+                  // The third one leaves the building: a lease confirmed before the
+                  // tenant had signed sent them move-in instructions for a flat that
+                  // was still being negotiated, and nobody who clicked this knew that
+                  // would happen. An email cannot be recalled, so it is listed first.
+                  <div style={{ maxWidth: 340 }}>
+                    <div style={{ marginBottom: 8 }}>This will:</div>
+                    <ul style={{ paddingLeft: 18, margin: '0 0 8px' }}>
+                      {willEmailCheckin && (
+                        <li style={{ marginBottom: 4 }}>
+                          <strong>Email check-in details to the tenant</strong>
+                          {lease?.tenant_email ? <> at {lease.tenant_email}</> : null}
+                        </li>
+                      )}
+                      <li style={{ marginBottom: 4 }}>Generate the rent and deposit invoices</li>
+                      <li>Mark the lease active</li>
+                    </ul>
+                    <div style={{ color: '#874d00' }}>
+                      {willEmailCheckin
+                        ? 'The email cannot be unsent. Confirm only once the agreement is signed.'
+                        : 'Cannot be undone — you would need to delete the invoices manually.'}
+                    </div>
+                  </div>
+                }
                 okText="Confirm Lease"
                 okType="primary"
                 onConfirm={onConfirmLease}
