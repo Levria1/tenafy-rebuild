@@ -701,7 +701,7 @@ router.post('/:id/send-checkin', authenticate, requirePermission('LANDLORD/LEASI
 
     // Confirm the lease belongs to this org and grab the tenant email.
     const [[lease]] = await req.pool.execute(
-      `SELECT l.id, t.email AS tenant_email,
+      `SELECT l.id, l.lease_state, t.email AS tenant_email,
               CASE WHEN t.type = 1 THEN t.company_name
                    ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) END AS tenant_name
          FROM leasing l
@@ -713,6 +713,22 @@ router.post('/:id/send-checkin', authenticate, requirePermission('LANDLORD/LEASI
     );
     if (!lease) {
       return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+
+    // The lease state IS checked here, unlike the toggle and the date window below.
+    //
+    // This button deliberately overrides timing: staff need to resend, or send early,
+    // and that is the point of it. It must not override WHETHER the tenancy exists.
+    // Check-in instructions for a lease nobody has confirmed tell someone to move into
+    // a flat that may still go to another applicant, and that cannot be unsent.
+    //
+    // Every automatic path already refused this (utils/checkinWindow.js). This one did
+    // not, which made it the only way a check-in email could reach an unconfirmed lease.
+    if (lease.lease_state !== 'active') {
+      return res.status(400).json({
+        code: 400,
+        message: 'This lease is not active yet. Confirm the lease first, then send the check-in email.',
+      });
     }
     if (!lease.tenant_email) {
       return res.status(400).json({ code: 400, message: 'This tenant has no email address on file.' });
@@ -735,6 +751,12 @@ router.post('/:id/send-checkin', authenticate, requirePermission('LANDLORD/LEASI
     if (!result) {
       return res.status(500).json({ code: 500, message: 'Failed to send check-in email.' });
     }
+
+    // Logged because it could not be traced. Working out how one tenant received a
+    // check-in email meant reading email_log timestamps and inferring the cause: neither
+    // this button nor the confirm endpoint left any record of who acted.
+    await logActivity(req, 'EMAIL', 'lease', id,
+      `Sent check-in email to ${lease.tenant_email} (manual)`);
 
     return res.json({
       code: 200,
@@ -2198,6 +2220,9 @@ router.post('/:id/confirm', authenticate, requirePermission('LANDLORD/LEASING_ED
       tenantCheckin: lease.tenant_checkin,
       leaseState: 'active',
     });
+
+    await logActivity(req, 'CONFIRM', 'lease', id,
+      `Confirmed lease ${lease.lease_no || id} — pending to active`);
 
     res.json({ code: 200, message: 'Lease confirmed', data: { id } });
   } catch (err) {

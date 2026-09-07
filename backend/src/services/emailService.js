@@ -305,10 +305,18 @@ async function loadTemplate(pool, orgId, templateType, templateId = null) {
     return rows[0] || null;
   }
 
-  // Load the default template for this type
+  // Load the default template for this type.
+  //
+  // ORDER BY is not decoration. Tane has EIGHT active Checkin-Tenant templates and all
+  // eight are flagged default; with a bare LIMIT 1 the row MySQL hands back is arbitrary
+  // and can change after any write. Seven of those eight carry a lead time of 0 and
+  // several have an empty subject, so which one wins decides both when the email goes and
+  // what it says. Newest-first at least makes the choice stable and predictable while the
+  // duplicates are sorted out.
   const [rows] = await pool.execute(
     `SELECT * FROM email_template
      WHERE org_id = ? AND template_type = ? AND is_default_template = 1 AND status = 1
+     ORDER BY created_at DESC, id DESC
      LIMIT 1`,
     [orgId, templateType]
   );
