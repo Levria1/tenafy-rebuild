@@ -3,9 +3,11 @@
 --
 -- WHAT WAS HAPPENING
 --
--- `action` is ENUM('CREATE','UPDATE','DELETE'). The code passes ten more values —
--- CONFIRM, MOVE_OUT, EMAIL, CANCEL, RESTORE, RESEND, PUBLISH, WRITE_OFF,
--- LINK_CONTACT, DUPLICATE. MySQL rejects each insert with "Data truncated for
+-- `action` is ENUM('CREATE','UPDATE','DELETE'). The code passes eleven more
+-- values — CONFIRM, MOVE_OUT, EMAIL, CANCEL, RESTORE, RESEND, PUBLISH,
+-- WRITE_OFF, LINK_CONTACT, DUPLICATE, MERGE (that last one reached by a call
+-- whose first argument is a multi-line shim object, which is exactly the shape a
+-- naive scan for call sites misses). MySQL rejects each insert with "Data truncated for
 -- column 'action'", and logActivity catches the error so the request succeeds
 -- anyway. All 4,020 rows on the live database are CREATE, UPDATE or DELETE.
 -- Nothing else has ever been written.
@@ -30,14 +32,16 @@
 SET @has_table := (SELECT COUNT(*) FROM information_schema.TABLES
                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'activity_log');
 
--- Existing rows all hold CREATE/UPDATE/DELETE, which keep their positions at the
--- head of the list, so no stored value is reinterpreted by the widening.
+-- ORDER MATTERS. MySQL stores an enum as the ordinal of its value, so CREATE,
+-- UPDATE and DELETE must stay first, second and third or all 4,020 existing rows
+-- silently change meaning. New values are appended only, never inserted, and a
+-- test asserts that first-three ordering rather than mere set membership.
 SET @s := IF(@has_table = 1,
   'ALTER TABLE activity_log MODIFY action ENUM(
      ''CREATE'',''UPDATE'',''DELETE'',
      ''CONFIRM'',''CANCEL'',''MOVE_OUT'',
      ''EMAIL'',''RESEND'',''PUBLISH'',
-     ''RESTORE'',''WRITE_OFF'',''LINK_CONTACT'',''DUPLICATE''
+     ''RESTORE'',''WRITE_OFF'',''LINK_CONTACT'',''DUPLICATE'',''MERGE''
    ) COLLATE utf8mb4_unicode_ci NOT NULL',
   'SELECT 1');
 PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;

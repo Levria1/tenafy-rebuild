@@ -31,7 +31,7 @@ const ACTIONS = [
   'CREATE', 'UPDATE', 'DELETE',
   'CONFIRM', 'CANCEL', 'MOVE_OUT',
   'EMAIL', 'RESEND', 'PUBLISH',
-  'RESTORE', 'WRITE_OFF', 'LINK_CONTACT', 'DUPLICATE',
+  'RESTORE', 'WRITE_OFF', 'LINK_CONTACT', 'DUPLICATE', 'MERGE',
 ];
 
 // Column widths from the activity_log schema. A description longer than the column
@@ -41,6 +41,23 @@ const ACTIONS = [
 const MAX_DESCRIPTION = 500;
 const MAX_ENTITY_TYPE = 50;
 const MAX_ENTITY_ID = 50;
+
+// VARCHAR(50) counts CHARACTERS, while String.slice counts UTF-16 code units.
+// Slicing is therefore never too long, but it can cut an emoji in half and store
+// a lone surrogate. Array.from iterates code points, so a trim lands on a
+// character boundary.
+function trim(value, limit) {
+  if (value == null) return null;
+  const s = String(value);
+  if (s.length <= limit) return s;
+  return Array.from(s).slice(0, limit).join('');
+}
+
+// The error path must not throw. `details` can be circular, and a caller can put
+// anything in `action`.
+function safeJson(obj) {
+  try { return JSON.stringify(obj); } catch { return '[unserialisable]'; }
+}
 
 async function logActivity(req, action, entityType, entityId, description, details = null) {
   let opts = null;
@@ -65,10 +82,19 @@ async function logActivity(req, action, entityType, entityId, description, detai
     // fill the log with lines nobody can act on.
     if (!pool || !orgId || !userId) return;
 
+    // entity_type is NOT NULL. Passing null would fail the insert inside the catch
+    // below, which is the same silent loss this rewrite exists to end.
+    if (entityType == null || String(entityType) === '') {
+      console.error('AUDIT ROW LOST — missing entityType', safeJson({
+        action, entityId: entityId ? String(entityId) : null,
+      }));
+      return;
+    }
+
     if (!ACTIONS.includes(action)) {
       // The insert would be rejected by the enum. Say which value and which record,
       // because "Data truncated for column 'action'" identifies neither.
-      console.error('AUDIT ROW LOST — unknown action', JSON.stringify({
+      console.error('AUDIT ROW LOST — unknown action', safeJson({
         action, entityType, entityId: entityId ? String(entityId) : null,
       }), '— add it to ACTIONS and to the activity_log enum');
       return;
@@ -78,15 +104,15 @@ async function logActivity(req, action, entityType, entityId, description, detai
       `INSERT INTO activity_log (org_id, user_id, username, action, entity_type, entity_id, description, details, ip_address)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [orgId, userId, username, action,
-       entityType == null ? null : String(entityType).slice(0, MAX_ENTITY_TYPE),
-       entityId ? String(entityId).slice(0, MAX_ENTITY_ID) : null,
-       description ? String(description).slice(0, MAX_DESCRIPTION) : null,
-       details ? JSON.stringify(details) : null, ip]
+       trim(entityType, MAX_ENTITY_TYPE),
+       entityId == null ? null : trim(entityId, MAX_ENTITY_ID),
+       description == null ? null : trim(description, MAX_DESCRIPTION),
+       details == null ? null : JSON.stringify(details), ip]
     );
   } catch (err) {
     // Never let logging errors break the actual request — but never let one pass
     // as an anonymous line either.
-    console.error('AUDIT ROW LOST — activity_log insert failed', JSON.stringify({
+    console.error('AUDIT ROW LOST — activity_log insert failed', safeJson({
       action, entityType, entityId: entityId ? String(entityId) : null, error: err.message,
     }));
   }

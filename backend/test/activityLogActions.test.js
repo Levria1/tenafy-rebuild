@@ -50,38 +50,106 @@ const captured = (calls) => {
 
 // ── the two lists must agree ────────────────────────────────────────────────
 
-test('ACTIONS matches the activity_log enum exactly', () => {
+function enumValues() {
   const sql = readSrc('../migrations-org/081_activity_log_action_values.sql');
   const block = sql.match(/MODIFY action ENUM\(([\s\S]*?)\)\s*COLLATE/);
   assert.ok(block, 'the migration must widen the enum');
-  const inEnum = [...block[1].matchAll(/''([A-Z_]+)''/g)].map(m => m[1]);
-  assert.deepStrictEqual([...inEnum].sort(), [...ACTIONS].sort(),
+  return [...block[1].matchAll(/''([A-Z_]+)''/g)].map(m => m[1]);
+}
+
+test('ACTIONS matches the activity_log enum exactly', () => {
+  assert.deepStrictEqual([...enumValues()].sort(), [...ACTIONS].sort(),
     'a value in one and not the other is a row the log will silently refuse');
 });
 
-test('every action the code passes is in ACTIONS', () => {
-  const dir = path.join(__dirname, '../src');
+test('the three original values keep their positions in the enum', () => {
+  // MySQL stores an enum as the ordinal of its value. Reordering the first three
+  // would silently change the meaning of all 4,020 existing rows: a row written
+  // as CREATE would read back as whatever now sits first. Membership alone does
+  // not catch that, so assert the positions.
+  assert.deepStrictEqual(enumValues().slice(0, 3), ['CREATE', 'UPDATE', 'DELETE']);
+  assert.deepStrictEqual(ACTIONS.slice(0, 3), ['CREATE', 'UPDATE', 'DELETE']);
+});
+
+// Extract the action from every logActivity call by walking the argument list
+// with a brace/paren/quote counter.
+//
+// The first attempt matched /logActivity\(\s*[^,]+,\s*'([A-Z_]+)'/ and MISSED
+// inquiry.js:523, whose first argument is a multi-line shim object full of commas.
+// That call passes 'MERGE', which was therefore absent from both ACTIONS and the
+// enum — the exact defect this test exists to catch, waved through by a scanner
+// too weak to see it. A floor of `used.size >= 13` then let the suite pass.
+function actionsUsedInSource() {
   const files = [];
   (function walk(d) {
     for (const f of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, f.name);
       if (f.isDirectory()) walk(p); else if (f.name.endsWith('.js')) files.push(p);
     }
-  })(dir);
+  })(path.join(__dirname, '../src'));
 
   const used = new Set();
-  for (const f of files) {
-    const src = fs.readFileSync(f, 'utf8');
-    // positional: logActivity(req, 'ACTION', ...
-    for (const m of src.matchAll(/logActivity\s*\(\s*[^,]+,\s*'([A-Z_]+)'/g)) used.add(m[1]);
-    // object: logActivity(req, { action: 'ACTION', ...
-    for (const m of src.matchAll(/logActivity\s*\(\s*[^,]+,\s*\{\s*action:\s*'([A-Z_]+)'/g)) used.add(m[1]);
+  for (const file of files) {
+    const src = fs.readFileSync(file, 'utf8');
+    let at = src.indexOf('logActivity(');
+    while (at !== -1) {
+      const args = splitArgs(src, at + 'logActivity('.length);
+      if (args.length >= 2) {
+        const second = args[1].trim();
+        const positional = second.match(/^'([A-Z_]+)'$/);
+        const objectForm = second.match(/action:\s*'([A-Z_]+)'/);
+        if (positional) used.add(positional[1]);
+        else if (objectForm) used.add(objectForm[1]);
+      }
+      at = src.indexOf('logActivity(', at + 1);
+    }
   }
+  return used;
+}
 
-  assert.ok(used.size >= 13, `expected the real call sites, found ${used.size}`);
+// Split the argument list starting just after the opening paren, respecting
+// nesting and quotes. Returns raw argument text.
+function splitArgs(src, from) {
+  const args = [];
+  let depth = 0, quote = null, current = '';
+  for (let i = from; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      current += ch;
+      if (ch === '\\') { current += src[++i] || ''; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { quote = ch; current += ch; continue; }
+    if ('([{'.includes(ch)) { depth++; current += ch; continue; }
+    if (ch === ')' && depth === 0) { args.push(current); return args; }
+    if (')]}'.includes(ch)) { depth--; current += ch; continue; }
+    if (ch === ',' && depth === 0) { args.push(current); current = ''; continue; }
+    current += ch;
+  }
+  return args;
+}
+
+test('the scanner sees a call whose first argument is a multi-line object', () => {
+  // The canary for the miss described above. inquiry.js passes a shim object
+  // spanning lines, and 'MERGE' must still be found.
+  assert.ok(actionsUsedInSource().has('MERGE'),
+    'the scanner must not be defeated by commas inside the first argument');
+});
+
+test('every action the code passes is in ACTIONS', () => {
+  const used = actionsUsedInSource();
   const unknown = [...used].filter(a => !ACTIONS.includes(a));
   assert.deepStrictEqual(unknown, [],
     'these would be rejected by the enum and lost: ' + unknown.join(', '));
+});
+
+test('ACTIONS carries no value the code never passes', () => {
+  // A stale entry is a smaller problem than a missing one, but it means the list
+  // and the code have drifted, and drift in this direction hides drift in the other.
+  const used = actionsUsedInSource();
+  const unused = ACTIONS.filter(a => !used.has(a));
+  assert.deepStrictEqual(unused, [], 'in ACTIONS but never used: ' + unused.join(', '));
 });
 
 // ── both call shapes ────────────────────────────────────────────────────────
@@ -197,4 +265,62 @@ test('the util no longer prints an anonymous "Activity log error"', () => {
   const src = stripComments(readSrc('../src/utils/activityLog.js'));
   assert.doesNotMatch(src, /console\.error\('Activity log error:'/,
     'that line is what let an enum rejecting ten values go unnoticed');
+});
+
+// ── the remaining silent row-losers ─────────────────────────────────────────
+
+test('a missing entityType is refused loudly, not sent to a NOT NULL column', async () => {
+  // Passing null here would fail the insert and land in the catch — the same
+  // silent loss, one layer down.
+  const { req, calls } = fakeReq();
+  const said = [];
+  const real = console.error;
+  console.error = (...a) => said.push(a.join(' '));
+  try { await logActivity(req, 'CREATE', null, '5', 'x'); } finally { console.error = real; }
+  assert.strictEqual(calls.length, 0);
+  assert.match(said.join(' '), /AUDIT ROW LOST — missing entityType/);
+});
+
+test('trimming lands on a character boundary, not mid-emoji', () => {
+  // VARCHAR(50) counts characters; String.slice counts UTF-16 code units, so a
+  // naive slice can cut a surrogate pair in half and store a lone surrogate.
+  // 600 emoji is 600 CHARACTERS (1200 UTF-16 units), so it genuinely overflows
+  // VARCHAR(500). 400 would not: it is 800 code units but only 400 characters,
+  // and trimming it at all would be the bug.
+  const { req, calls } = fakeReq();
+  return logActivity(req, 'UPDATE', 'lease', '1', '😀'.repeat(600)).then(() => {
+    const d = captured(calls).description;
+    assert.strictEqual(Array.from(d).length, 500, 'trimmed by characters');
+    assert.ok(!/[\uD800-\uDBFF]$/.test(d), 'must not end on a lone high surrogate');
+  });
+});
+
+test('text shorter than the limit is passed through untouched', async () => {
+  const { req, calls } = fakeReq();
+  await logActivity(req, 'UPDATE', 'lease', '1', 'Renewed to 2027');
+  assert.strictEqual(captured(calls).description, 'Renewed to 2027');
+});
+
+test('circular details lose the row but never throw into the request', async () => {
+  const circular = { a: 1 };
+  circular.self = circular;
+  const { req } = fakeReq();
+  const real = console.error;
+  console.error = () => {};
+  try {
+    await assert.doesNotReject(logActivity(req, 'UPDATE', 'lease', '1', 'x', circular));
+  } finally { console.error = real; }
+});
+
+test('a circular action cannot make the error logger itself throw', async () => {
+  // The catch stringifies what it was given. If that throws, the failure escapes
+  // into the request — the one thing logging must never do.
+  const weird = { toString() { throw new Error('nope'); } };
+  weird.self = weird;
+  const { req } = fakeReq();
+  const real = console.error;
+  console.error = () => {};
+  try {
+    await assert.doesNotReject(logActivity(req, weird, 'lease', '1', 'x'));
+  } finally { console.error = real; }
 });
