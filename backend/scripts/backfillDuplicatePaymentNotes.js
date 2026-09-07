@@ -100,18 +100,33 @@ async function main() {
        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
     );
 
+    // Rows are read before the transaction opens, so a note edited in between would
+    // otherwise be overwritten by the value this script read. Each UPDATE therefore
+    // re-checks the note it is replacing and skips the row if someone changed it.
+    // The comparison uses the column collation, which is enough: a real correction
+    // differs by more than case.
+    const [[{ started_at: startedAt }]] = await conn.query(
+      `SELECT DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:%s') AS started_at`
+    );
+
+    const applied = [];
+    const skipped = [];
     await conn.beginTransaction();
     try {
       for (const c of changes) {
-        // INSERT IGNORE so a re-run cannot overwrite the ORIGINAL snapshot with an
-        // already-collapsed one — the first backup is the one that can restore.
+        const [res] = await conn.execute(
+          `UPDATE accounting SET note = ? WHERE id = ? AND note = ?`,
+          [c.after, c.id, c.before]
+        );
+        if (res.affectedRows !== 1) { skipped.push(c); continue; }
+        // Snapshot only what actually changed, and INSERT IGNORE so a re-run cannot
+        // overwrite the ORIGINAL snapshot with an already-collapsed one — the first
+        // backup is the one that can restore.
         await conn.execute(
           `INSERT IGNORE INTO accounting_note_backfill_backup (accounting_id, note_before) VALUES (?, ?)`,
           [c.id, c.before]
         );
-      }
-      for (const c of changes) {
-        await conn.execute(`UPDATE accounting SET note = ? WHERE id = ?`, [c.after, c.id]);
+        applied.push(c);
       }
       await conn.commit();
     } catch (e) {
@@ -120,13 +135,19 @@ async function main() {
     }
 
     console.log('');
-    console.log(`APPLIED. ${changes.length} note(s) collapsed.`);
-    console.log(`Snapshot: ${changes.length} row(s) in accounting_note_backfill_backup.`);
+    console.log(`APPLIED. ${applied.length} note(s) collapsed.`);
+    if (skipped.length) {
+      console.log(`SKIPPED ${skipped.length} row(s) — the note changed after this script read it:`);
+      skipped.forEach(c => console.log(`  ${c.id}`));
+    }
+    console.log(`Snapshot: ${applied.length} row(s) in accounting_note_backfill_backup.`);
     console.log('');
-    console.log('To revert everything this script did:');
+    console.log('To revert what THIS run did (the table also holds earlier runs, and a');
+    console.log('blanket restore would undo any legitimate edit made since):');
     console.log('  UPDATE accounting a');
     console.log('    JOIN accounting_note_backfill_backup b ON b.accounting_id = a.id');
-    console.log('     SET a.note = b.note_before;');
+    console.log('     SET a.note = b.note_before');
+    console.log(`   WHERE b.backed_up_at >= '${startedAt}';`);
   } finally {
     await conn.end();
   }

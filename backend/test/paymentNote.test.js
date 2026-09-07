@@ -130,3 +130,28 @@ test('the backfill writes nothing without --apply', () => {
   assert.ok(dryRunGuard > -1 && firstUpdate > dryRunGuard,
     'the UPDATE must sit after the dry-run return');
 });
+
+test('the backfill refuses to overwrite a note edited after it read it', () => {
+  // Rows are read before the transaction opens. Without the re-check, a correction
+  // made in that window would be replaced by the stale value the script had read.
+  const src = stripComments(read('../scripts/backfillDuplicatePaymentNotes.js'));
+  assert.match(src, /UPDATE accounting SET note = \? WHERE id = \? AND note = \?/,
+    'the UPDATE must re-check the note it is replacing');
+  assert.match(src, /affectedRows !== 1/, 'a row that moved on must be skipped, not forced');
+  assert.match(src, /skipped/, 'skipped rows must be reported, not swallowed');
+});
+
+test('only rows that actually changed are snapshotted', () => {
+  // A snapshot for a row the UPDATE skipped would make the revert statement
+  // overwrite that row's current, correct note.
+  const src = stripComments(read('../scripts/backfillDuplicatePaymentNotes.js'));
+  const update = src.indexOf('UPDATE accounting SET note');
+  const snapshot = src.indexOf('INSERT IGNORE INTO accounting_note_backfill_backup');
+  assert.ok(update > -1 && snapshot > update, 'the snapshot must follow the guarded UPDATE');
+});
+
+test('the printed revert is scoped to this run', () => {
+  const src = stripComments(read('../scripts/backfillDuplicatePaymentNotes.js'));
+  assert.match(src, /b\.backed_up_at >=/,
+    'a blanket revert would undo legitimate edits made since an earlier run');
+});
