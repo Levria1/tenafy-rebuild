@@ -152,10 +152,11 @@ See `docs/completed-work.md` for detailed progress tracking.
 - Next Invoice Publish Date calculation
 - Email system (Nodemailer with Ethereal dev/SMTP prod)
 - In-app notifications
+- Tenant portal (LIVE): own auth domain (cookie `__t_p`, `TENANT_JWT_SECRET`), registration,
+  leases, invoices, and repairs with photos, follow-up notes and withdrawal
 
 ### Known Missing
 - Public listings module (entire tenafy-listing microservice)
-- Tenant portal (separate product)
 - PDF generation for leases/invoices
 - Admin storage/email usage monitoring
 - `unit_maintenance` table migration
@@ -171,6 +172,12 @@ See `docs/completed-work.md` for detailed progress tracking.
 5. **Deleted invoices**: Always filter `WHERE deleted_at IS NULL` on invoice queries
 6. **February overdue bug**: Invoices past due aren't auto-updated to Overdue status (scheduler gap)
 7. **backend/nul file**: Artifact file, can be ignored/deleted
+8. **Phantom orgs**: `tena_prod_v2` holds rows for 11 organisations that are NOT in master
+   `organizations`. Any diagnostic query must be scoped by `org_id` or the answer is wrong
+9. **DATETIME means two things**: appointment columns hold a HONG KONG wall clock; the 24
+   `NOW()`-written audit columns hold UTC. Pools set `dateStrings: ['DATE']` only, and
+   wall-clock columns are pulled with `DATE_FORMAT` where their meaning is known
+10. **Confirming a lease emails the tenant** check-in details. It also creates the invoices
 
 ## Reference Docs
 - `docs/migration-plan.md` — Page-by-page migration status from original
