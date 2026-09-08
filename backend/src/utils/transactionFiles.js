@@ -35,6 +35,12 @@
 // own transaction and then read it back through the preview route.
 async function linkTransactionFiles(pool, orgId, accountingId, fileIds) {
   const ids = [...new Set((Array.isArray(fileIds) ? fileIds : [])
+    // A Snowflake is Date.now() * 1e6 + random, comfortably past
+    // Number.MAX_SAFE_INTEGER. A client that sends one as a JSON NUMBER has
+    // already had it rounded by the parser, and the rounded value is a plausible
+    // id belonging to some other row. Drop it rather than attach the wrong file:
+    // ids travel as strings everywhere else in this codebase.
+    .filter(v => !(typeof v === 'number' && !Number.isSafeInteger(v)))
     .map(v => (v == null ? '' : String(v).trim()))
     .filter(v => /^\d+$/.test(v)))];
   if (!ids.length) return [];
@@ -57,13 +63,29 @@ async function linkTransactionFiles(pool, orgId, accountingId, fileIds) {
     // COUNT(*) arrives as a STRING (the pools set bigNumberStrings) and '0' is truthy.
     if (Number(existing.n) > 0) continue;
 
+    // Whether this file is attached to anything ELSE. Checked BEFORE the insert,
+    // or the row we are about to write would count as another attachment.
+    const [[shared]] = await pool.execute(
+      `SELECT COUNT(*) AS n FROM object_file
+        WHERE file_id = ? AND object_id <> ? AND deleted_at IS NULL`,
+      [row.id, accountingId]
+    );
+
     await pool.execute(
       `INSERT INTO object_file (object_id, file_id, created_at) VALUES (?, ?, NOW())`,
       [accountingId, row.id]
     );
-    await pool.execute(
-      'UPDATE file SET is_private = 1 WHERE id = ? AND org_id = ?', [row.id, orgId]
-    );
+
+    // is_private lives on the file ROW, so flipping it affects every place that
+    // file appears. A picture already attached elsewhere may be a listing photo
+    // that logged-out visitors need to load, and privatising it would 403 them
+    // with no clue why. Leaving a shared file's privacy alone is not a regression
+    // either: until this change every receipt was public.
+    if (Number(shared.n) === 0) {
+      await pool.execute(
+        'UPDATE file SET is_private = 1 WHERE id = ? AND org_id = ?', [row.id, orgId]
+      );
+    }
   }
   return owned.map(r => r.id);
 }
@@ -91,13 +113,21 @@ const IMAGE_MIME = /^IMAGE\//i;
 async function listTransactionFiles(pool, orgId, accountingId) {
   // `of` is a RESERVED WORD in MySQL 8 — `FROM object_file of` is a syntax error
   // that only shows up at runtime. Aliased objf here and everywhere else.
+  // GROUP BY the file, not the link. The duplicate check in linkTransactionFiles
+  // is not atomic, so two concurrent submits of the same payment can both see no
+  // link and both insert one. A unique index would be the real fix, but
+  // object_file already holds 7,357 rows whose duplicates have not been audited,
+  // and a migration that fails on live data is worse than a double row. The
+  // consequence of a duplicate is now nothing: the receipt is listed once, and
+  // detaching clears every matching link in one statement.
   const [rows] = await pool.execute(
     `SELECT CAST(f.id AS CHAR) AS id, f.filename, f.item_name, f.mime_type, f.file_size,
-            DATE_FORMAT(objf.created_at, '%Y-%m-%d %H:%i:%s') AS attached_at
+            DATE_FORMAT(MIN(objf.created_at), '%Y-%m-%d %H:%i:%s') AS attached_at
        FROM object_file objf
        JOIN file f ON f.id = objf.file_id AND f.deleted_at IS NULL
       WHERE objf.object_id = ? AND objf.deleted_at IS NULL AND f.org_id = ?
-      ORDER BY objf.created_at ASC, f.id ASC`,
+      GROUP BY f.id, f.filename, f.item_name, f.mime_type, f.file_size
+      ORDER BY attached_at ASC, f.id ASC`,
     [accountingId, orgId]
   );
   return rows.map(r => ({

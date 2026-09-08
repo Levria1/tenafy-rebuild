@@ -42,6 +42,12 @@ function fakePool({ ownedFileIds = [], existingLinks = [], rows = null } = {}) {
         if (org !== ORG) return [[]];
         return [ids.filter(i => ownedFileIds.includes(i)).map(id => ({ id }))];
       }
+      // "is this file attached to anything ELSE" — file_id first, object_id second.
+      if (/WHERE file_id = \? AND object_id <> \?/i.test(sql)) {
+        const [fileId, objectId] = params.map(String);
+        const n = existingLinks.some(l => l[1] === fileId && l[0] !== objectId) ? '1' : '0';
+        return [[{ n }]];
+      }
       if (/COUNT\(\*\) AS n FROM object_file/i.test(sql)) {
         const [objectId, fileId] = params.map(String);
         const n = existingLinks.some(l => l[0] === objectId && l[1] === fileId) ? '1' : '0';
@@ -242,4 +248,64 @@ test('a failed file load does not take the transaction detail with it', () => {
   const block = src.slice(at, at + 700);
   assert.match(block, /catch \(error\)/);
   assert.doesNotMatch(block, /message\.error/, 'the detail is still worth showing');
+});
+
+
+// ── findings from the review of e20c4fa ─────────────────────────────────────
+
+test('a file already attached elsewhere is NOT privatised', async () => {
+  // is_private lives on the file row, so flipping it affects every place that
+  // file appears. A picture already attached to something else may be a listing
+  // photo that logged-out visitors load, and privatising it would 403 them.
+  const pool = fakePool({ ownedFileIds: ['5'], existingLinks: [['9999', '5']] });
+  await linkTransactionFiles(pool, ORG, TXN, ['5']);
+  assert.strictEqual(inserts(pool).length, 1, 'it is still attached to the payment');
+  assert.strictEqual(privacyWrites(pool).length, 0, 'but its privacy is left alone');
+});
+
+test('the shared check runs BEFORE the insert', async () => {
+  // Checked afterwards, the row just written would count as another attachment
+  // and no receipt would ever be privatised.
+  const pool = fakePool({ ownedFileIds: ['5'] });
+  await linkTransactionFiles(pool, ORG, TXN, ['5']);
+  const probeAt = pool.calls.findIndex(c => /file_id = \? AND object_id <> \?/i.test(c.sql));
+  const insertAt = pool.calls.findIndex(c => /^INSERT INTO object_file/i.test(c.sql));
+  assert.ok(probeAt > -1 && insertAt > probeAt);
+  assert.strictEqual(privacyWrites(pool).length, 1, 'a receipt attached nowhere else is privatised');
+});
+
+test('a Snowflake sent as a rounded JSON number is dropped, not guessed at', async () => {
+  // Date.now() * 1e6 exceeds Number.MAX_SAFE_INTEGER, so a client sending an id
+  // as a number has already had it rounded by the parser. The rounded value is a
+  // plausible id belonging to some other row.
+  const rounded = 1788254852155585152; // as a NUMBER, already lossy
+  assert.ok(!Number.isSafeInteger(rounded), 'precondition: this cannot survive as a number');
+  const pool = fakePool({ ownedFileIds: [String(rounded)] });
+  const linked = await linkTransactionFiles(pool, ORG, TXN, [rounded]);
+  assert.deepStrictEqual(linked, []);
+  assert.strictEqual(pool.calls.length, 0, 'it must not reach a query at all');
+});
+
+test('a small id sent as a number is still accepted', async () => {
+  // Only unsafe integers are suspect. Rejecting every number would be overreach.
+  const pool = fakePool({ ownedFileIds: ['5'] });
+  assert.deepStrictEqual(await linkTransactionFiles(pool, ORG, TXN, [5]), ['5']);
+});
+
+test('duplicate links cannot show the same receipt twice', async () => {
+  // linkTransactionFiles' check-then-insert is not atomic, so two concurrent
+  // submits of the same payment can both insert. The listing groups by file so
+  // the duplicate is invisible.
+  const pool = fakePool({ rows: [] });
+  await listTransactionFiles(pool, ORG, TXN);
+  assert.match(pool.calls[0].sql, /GROUP BY f\.id/);
+  assert.match(pool.calls[0].sql, /MIN\(objf\.created_at\)/,
+    'with a deterministic attached_at once the rows are collapsed');
+});
+
+test('detaching clears every matching link, not just one', async () => {
+  const pool = fakePool();
+  await unlinkTransactionFiles(pool, TXN, '5');
+  const upd = pool.calls.find(c => /^UPDATE object_file SET deleted_at/i.test(c.sql));
+  assert.doesNotMatch(upd.sql, /LIMIT/, 'a duplicated link must not survive a detach');
 });
