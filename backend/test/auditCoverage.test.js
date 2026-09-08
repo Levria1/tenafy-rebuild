@@ -45,7 +45,7 @@ const MUST_LOG = [
   ['role.js',      "router.post('/'",                         'creating a role'],
   ['role.js',      "router.put('/:id'",                       'editing a role'],
   ['role.js',      "router.delete('/:id'",                    'deleting a role'],
-  ['contact.js',   "router.post('/tenant/create/user'",       'creating a user row for a tenant'],
+  ['tenant.js',    "router.post('/:id/portal-invite'",       'inviting a tenant to the portal'],
   ['contact.js',   "router.post('/property-owner/create/user'", 'creating a user row for an owner'],
   ['signature.js', "router.post('/request/:id/cancel'",       'cancelling a signature request'],
   ['signature.js', "router.post('/request/:id/resend'",       'resending a signature request'],

@@ -62,7 +62,10 @@ const CASES = [
   // the Invite button on the Tenants list, and lease confirmation. The message is
   // built there and sent by the caller, so the sender is asserted where it is set.
   ['../src/utils/tenantPortalInvite.js', 'portal registration link', /message: \{ to: address, from: accountSender\(\), subject, text, html \}/],
-  ['../src/routes/contact.js', 'tenant portal invite', /from: accountSender\(\)[\s\S]{0,120}?invited to the tenant portal/],
+  // The contact.js tenant invite was REMOVED: its code went into
+  // user_verification_token against a STAFF user row, which the portal cannot
+  // redeem. The working invitation is covered by the 'portal registration link'
+  // case above, shared by all three triggers.
   ['../src/routes/contact.js', 'owner portal invite', /from: accountSender\(\)[\s\S]{0,120}?invited to the property owner portal/],
 ];
 

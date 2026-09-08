@@ -183,3 +183,38 @@ test('the Confirm Lease dialog says a portal invitation goes out', () => {
   assert.match(src, /Invite the tenant to the portal/);
   assert.match(src, /a separate email with a link to set a password/);
 });
+
+// ── the legacy invite is gone ────────────────────────────────────────────────
+
+test('the old contact.js tenant invite endpoints no longer exist', () => {
+  // They mailed an invite code that went into user_verification_token, against a row
+  // in the STAFF `user` table. The portal authenticates on
+  // tenant_portal_account.verify_token_hash and has no idea either table exists, so
+  // the code could never be redeemed and each attempt left a passwordless staff row.
+  const src = stripComments(read('../src/routes/contact.js'));
+  assert.doesNotMatch(src, /router\.post\('\/tenant\/check\/user'/);
+  assert.doesNotMatch(src, /router\.post\('\/tenant\/create\/user'/);
+  assert.doesNotMatch(src, /You have been invited to the tenant portal/);
+  // NOT a blanket check on user_verification_token: the property-owner invite is a
+  // separate feature that still writes to it. Scoped to the tenant path only.
+  assert.doesNotMatch(src, /UPDATE tenant SET user_id = \?/);
+});
+
+test('the property-owner portal routes were left alone', () => {
+  // A different feature that happens to sit in the same section of the file.
+  const src = stripComments(read('../src/routes/contact.js'));
+  assert.match(src, /router\.post\('\/property-owner\/check\/user'/);
+  assert.match(src, /router\.post\('\/property-owner\/create\/user'/);
+});
+
+test('the api client no longer offers the removed endpoints', () => {
+  const src = stripComments(read('../../frontend/src/lib/api.js'));
+  assert.doesNotMatch(src, /checkTenantUser|createTenantUser/);
+  assert.match(src, /sendPortalInvite: \(id\) =>/, 'the working one is there instead');
+});
+
+test('a tombstone explains why, so nobody puts it back', () => {
+  const src = read('../src/routes/contact.js');
+  assert.match(src, /has been REMOVED/);
+  assert.match(src, /POST \/api\/tenant\/:id\/portal-invite/, 'and points at the replacement');
+});

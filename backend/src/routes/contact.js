@@ -460,67 +460,25 @@ router.post('/property-owner/tag/:id', authenticate, async (req, res) => {
 
 // ─── USER INVITATION ──────────────────────────────────────────────────────────
 
-// POST /api/contact/tenant/check/user - Check if tenant has portal account
-router.post('/tenant/check/user', authenticate, requirePermission('LANDLORD/USER_CREATE'), async (req, res) => {
-  try {
-    const { tenant_id } = req.body;
-    const orgId = req.user.orgId;
-    const [tenants] = await req.pool.execute(
-      'SELECT t.id, t.first_name, t.last_name, t.email, t.user_id FROM tenant t WHERE t.id = ? AND t.org_id = ?',
-      [tenant_id, orgId]
-    );
-    if (tenants.length === 0) return res.status(404).json({ code: 404, message: 'Tenant not found' });
-    const hasAccount = tenants[0].user_id ? true : false;
-    res.json({ code: 200, data: { ...tenants[0], has_account: hasAccount } });
-  } catch (error) {
-    console.error('Check tenant user error:', error);
-    res.status(500).json({ code: 500, message: 'Failed to check tenant user' });
-  }
-});
-
-// POST /api/contact/tenant/create/user - Invite tenant to create portal account
-router.post('/tenant/create/user', authenticate, requirePermission('LANDLORD/USER_CREATE'), async (req, res) => {
-  try {
-    const { tenant_id, email } = req.body;
-    const orgId = req.user.orgId;
-    const inviteCode = Math.random().toString(36).substring(2, 10).toUpperCase();
-
-    // Create a user record for the tenant
-    const [userResult] = await req.pool.execute(
-      'INSERT INTO user (username, email, password, org_id, status, created_at) VALUES (?, ?, ?, ?, 0, NOW())',
-      [email, email, '', orgId]
-    );
-    const newUserId = userResult.insertId;
-
-    // Link tenant to user and store verification token
-    await req.pool.execute('UPDATE tenant SET user_id = ? WHERE id = ? AND org_id = ?', [newUserId, tenant_id, orgId]);
-    await req.pool.execute(
-      'INSERT INTO user_verification_token (user_id, token, created_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE token = ?, created_at = NOW()',
-      [newUserId, inviteCode, inviteCode]
-    );
-
-    // Send invite email
-    try {
-      const { sendMail, accountSender } = require('../config/mailer');
-      await sendMail({
-        to: email,
-        from: accountSender(),
-        subject: 'You have been invited to the tenant portal',
-        html: `<p>You have been invited to access your tenant portal. Your invite code is: <strong>${inviteCode}</strong></p>`,
-      });
-    } catch (emailError) {
-      console.error('Failed to send invite email:', emailError);
-    }
-    // This writes a row into the STAFF user table for a tenant. Whatever else is decided
-    await logActivity(req, 'CREATE', 'user', String(newUserId),
-      `Created a portal user row for tenant ${tenant_id}`);
-
-    res.json({ code: 200, message: 'Invitation sent successfully', data: { inviteCode } });
-  } catch (error) {
-    console.error('Create tenant user error:', error);
-    res.status(500).json({ code: 500, message: 'Failed to create tenant user invite' });
-  }
-});
+// The tenant portal invite used to live here and has been REMOVED.
+//
+// `POST /tenant/check/user` and `POST /tenant/create/user` sent an email titled
+// "You have been invited to the tenant portal" carrying an invite code. That code
+// went into `user_verification_token`, and the row it belonged to went into the
+// STAFF `user` table. The tenant portal authenticates against
+// `tenant_portal_account.verify_token_hash` and has no idea either table exists,
+// so the code could never be redeemed. Anyone who followed that email was stuck,
+// and each attempt left a passwordless row in the staff user table.
+//
+// No page ever called them: `user_verification_token` holds zero rows, so this was
+// dead on arrival in the rebuild rather than something that broke. The 230 tenants
+// carrying a `user_id` are inherited from the original Java system.
+//
+// The working invitation is `POST /api/tenant/:id/portal-invite`, which issues a
+// real `tenant_portal_account` token, and the same email goes out automatically
+// when a lease is confirmed. See utils/tenantPortalInvite.js.
+//
+// The property-owner routes below are a DIFFERENT feature and are left alone.
 
 // POST /api/contact/property-owner/check/user - Check if property owner has portal account
 router.post('/property-owner/check/user', authenticate, requirePermission('LANDLORD/USER_CREATE'), async (req, res) => {

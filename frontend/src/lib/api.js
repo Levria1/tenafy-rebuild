@@ -314,8 +314,6 @@ export const contact = {
   getOwnerTags: (ownerId) => api.get(`/api/contact/property-owner/tag/${ownerId}`),
   addOwnerTag: (ownerId, data) => api.post(`/api/contact/property-owner/tag/${ownerId}`, data),
   // User invitations
-  checkTenantUser: (data) => api.post('/api/contact/tenant/check/user', data),
-  createTenantUser: (data) => api.post('/api/contact/tenant/create/user', data),
   checkOwnerUser: (data) => api.post('/api/contact/property-owner/check/user', data),
   createOwnerUser: (data) => api.post('/api/contact/property-owner/create/user', data),
 };
