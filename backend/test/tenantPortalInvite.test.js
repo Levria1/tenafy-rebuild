@@ -123,7 +123,7 @@ test('the email is signed by the org, never a hardcoded name', () => {
 
 test('confirming a lease sends the invite SEPARATELY from the check-in email', () => {
   const src = stripComments(read('../src/routes/leasing.js'));
-  assert.match(src, /async function invitePortal\(pool, orgId, leaseId, tenantEmail\)/);
+  assert.match(src, /async function invitePortal\(pool, orgId, leaseId, tenantEmail, tenantName\)/);
   const at = src.indexOf("router.post('/:id/confirm'");
   const block = src.slice(at);
   const checkinAt = block.indexOf('maybeSendCheckin(req.pool');

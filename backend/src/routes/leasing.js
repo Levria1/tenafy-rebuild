@@ -2093,7 +2093,7 @@ router.post('/:id/move-out/undo', authenticate, requirePermission('LANDLORD/LEAS
  * server having a bad minute must not undo any of that, and the Invite button on
  * the Tenants list is the retry.
  */
-async function invitePortal(pool, orgId, leaseId, tenantEmail) {
+async function invitePortal(pool, orgId, leaseId, tenantEmail, tenantName) {
   if (!tenantPortalEnabled()) return;
   if (!tenantEmail) return;
   try {
@@ -2101,7 +2101,7 @@ async function invitePortal(pool, orgId, leaseId, tenantEmail) {
       'SELECT display_name FROM organizations WHERE id = ?', [orgId]
     );
     const prepared = await prepareInvite({
-      pool, orgId, orgName: org?.display_name || '', email: tenantEmail,
+      pool, orgId, orgName: org?.display_name || '', email: tenantEmail, tenantName,
     });
     if (!prepared.ok) {
       console.log(`[leasing] portal invite skipped for lease ${leaseId}: ${prepared.reason}`);
@@ -2269,10 +2269,13 @@ router.post('/:id/confirm', authenticate, requirePermission('LANDLORD/LEASING_ED
     // for a tenant to find the portal themselves and ask for a link, which is why
     // 114 tenants held a live lease and exactly one account existed.
     const [[tenantRow]] = await req.pool.execute(
-      'SELECT email FROM tenant WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
+      `SELECT email, first_name, last_name, company_name
+         FROM tenant WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
       [lease.tenant_id, orgId]
     );
-    invitePortal(req.pool, orgId, id, tenantRow?.email);
+    invitePortal(req.pool, orgId, id, tenantRow?.email,
+      [tenantRow?.first_name, tenantRow?.last_name].filter(Boolean).join(' ').trim()
+        || tenantRow?.company_name || '');
 
     await logActivity(req, 'CONFIRM', 'lease', id,
       `Confirmed lease ${lease.lease_no || id} — pending to active`);

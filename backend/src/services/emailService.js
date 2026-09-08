@@ -61,6 +61,12 @@ const TEMPLATE_TYPES = [
   { value: 'Receipt-Tenant', label: 'Payment Receipt (Tenant)' },
   { value: 'Payment-Options', label: 'Payment Options (Tenant)' },
   { value: 'Inventory-Tenant', label: 'Inventory (Tenant)' },
+  // The tenant portal sign-up email. Sent when a lease is confirmed and by the
+  // Invite button on the Tenants list. If no template exists, or the customised
+  // one loses the sign-up link, utils/tenantPortalInvite.js falls back to the
+  // built-in wording in utils/registrationEmail.js — an invitation with no link
+  // in it is worse than an unstyled one.
+  { value: 'Portal-Invite-Tenant', label: 'Tenant Portal Invitation (Tenant)' },
   // Lease e-signature templates (sent from routes/signature.js; if no template
   // exists the route falls back to a built-in plain email so signing still works)
   { value: 'Lease-Signature-Request', label: 'Lease Signature Request (Signer)' },
@@ -145,6 +151,11 @@ function tenantCategoryLabel(name) {
 
 const TEMPLATE_VARIABLES = [
   { key: '%Name - Lease%', description: 'Tenant full name (or company name)' },
+  // Portal invitation only. The link is single-use and time-limited, so it cannot
+  // be pre-baked into the body: it has to be substituted at send time.
+  { key: '%Portal Signup Link%', description: 'Tenant portal sign-up link (portal invitation only — the email is useless without it)' },
+  { key: '%Link Expiry Minutes%', description: 'How many minutes the sign-up link lasts (portal invitation only)' },
+  { key: '%Company Name%', description: 'Your organisation name, as it appears on your account' },
   { key: '%Unit # - Property%', description: 'Unit name/number' },
   { key: '%Name - Property%', description: 'Property name' },
   { key: '%Building / Unit Address - Property%', description: 'Property full address' },

@@ -432,6 +432,7 @@ router.post('/:id/portal-invite', authenticate, requirePermission('LANDLORD/TENA
 
     const prepared = await prepareInvite({
       pool: req.pool, orgId, orgName: org?.display_name || '', email: tenant.email,
+      tenantName: [tenant.first_name, tenant.last_name].filter(Boolean).join(' ').trim(),
     });
     if (!prepared.ok) {
       return res.status(400).json({ code: 400, message: prepared.detail });

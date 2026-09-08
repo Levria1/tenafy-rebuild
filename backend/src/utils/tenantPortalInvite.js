@@ -34,6 +34,70 @@ const { registrationEmail } = require('./registrationEmail');
 const { accountSender } = require('../config/mailer');
 const config = require('../config');
 
+// Required lazily. emailService pulls in a good deal of the mail stack, and this
+// module is required by three routes.
+const templateApi = () => require('../services/emailService');
+
+const TEMPLATE_TYPE = 'Portal-Invite-Tenant';
+
+// Strip tags for the plain-text alternative. Crude on purpose: the built-in email
+// carries a hand-written text part, and a customised template only has a body, so
+// something readable beats nothing.
+function htmlToText(html) {
+  return String(html || '')
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\s*\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n')
+    .replace(/<\s*li\s*>/gi, '  - ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Render the org's customised invitation, or return null to use the built-in one.
+ *
+ * Returns null rather than throwing on ANY doubt. This email is how a tenant gets
+ * into the portal at all; a template that is missing, inactive, empty, or has lost
+ * the sign-up link must not stop the invitation going out.
+ */
+async function renderFromTemplate({ pool, orgId, orgName, link, tenantName }) {
+  const { loadTemplate, substituteVariables } = templateApi();
+  let template = null;
+  try {
+    template = await loadTemplate(pool, orgId, TEMPLATE_TYPE);
+  } catch (err) {
+    console.error('[portal-invite] template load failed, using the built-in email:', err.message);
+    return null;
+  }
+  if (!template || !template.template_content) return null;
+
+  const vars = {
+    '%Portal Signup Link%': link,
+    '%Link Expiry Minutes%': String(TOKEN_TTL_MINUTES),
+    '%Company Name%': orgName || '',
+    '%Name - Lease%': tenantName || 'Tenant',
+  };
+
+  const subject = substituteVariables(template.subject || '', vars).trim();
+  const html = substituteVariables(template.template_content, vars, true);
+
+  // The one thing a customised template cannot be allowed to drop. Someone editing
+  // in a rich-text box can easily delete the variable, and the result would be a
+  // polite email that gives the reader no way in.
+  if (!html || !html.includes(link)) {
+    console.error(`[portal-invite] template ${template.id} does not include %Portal Signup Link%; using the built-in email instead`);
+    return null;
+  }
+  if (!subject) {
+    console.error(`[portal-invite] template ${template.id} has an empty subject; using the built-in email instead`);
+    return null;
+  }
+
+  return { subject, html, text: htmlToText(html) };
+}
+
 const newId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
 // Why each refusal exists, in words a staff user can act on.
@@ -46,7 +110,7 @@ const REASONS = {
 /**
  * @returns {Promise<{ok: true, email: string, message: object} | {ok: false, reason: string, detail: string}>}
  */
-async function prepareInvite({ pool, orgId, orgName, email }) {
+async function prepareInvite({ pool, orgId, orgName, email, tenantName }) {
   const address = normaliseEmail(email);
   if (!address) return { ok: false, reason: 'no_email', detail: REASONS.no_email };
 
@@ -91,9 +155,13 @@ async function prepareInvite({ pool, orgId, orgName, email }) {
   }
 
   const link = `${config.appUrl}/tenant-portal/set-password?token=${encodeURIComponent(token)}`;
-  // The org's own name, from master. NOT a literal: three orgs share this codebase
-  // and hardcoding one customer's name would sign every other customer's email as them.
-  const { subject, text, html } = registrationEmail({ brand: orgName, link });
+
+  // The org's own wording if they have written one in Settings > Email Templates,
+  // otherwise the built-in. The org's own name either way, from master: three orgs
+  // share this codebase and hardcoding one customer's name would sign every other
+  // customer's email as them.
+  const customised = await renderFromTemplate({ pool, orgId, orgName, link, tenantName });
+  const { subject, text, html } = customised || registrationEmail({ brand: orgName, link });
 
   return {
     ok: true,
@@ -102,4 +170,4 @@ async function prepareInvite({ pool, orgId, orgName, email }) {
   };
 }
 
-module.exports = { prepareInvite, REASONS };
+module.exports = { prepareInvite, REASONS, TEMPLATE_TYPE, htmlToText };
