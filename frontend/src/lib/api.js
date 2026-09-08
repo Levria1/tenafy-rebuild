@@ -158,6 +158,7 @@ export const tenant = {
   getProfile: (id) => api.get(`/api/tenant/${id}/profile`),
   getProfileSum: (id) => api.get(`/api/tenant/${id}/profile/sum`),
   create: (data) => api.post('/api/tenant', data),
+  sendPortalInvite: (id) => api.post(`/api/tenant/${id}/portal-invite`),
   update: (id, data) => api.put(`/api/tenant/${id}/profile`, data),
   // Email-only update. Do NOT use `update` for this — that endpoint overwrites
   // every column, so a partial body would null out the contact's name/phone.

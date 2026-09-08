@@ -29,7 +29,8 @@ test('both registration pages exist at the paths the emailed link and the client
   // The link mailed to a tenant is built server-side as
   // `${appUrl}/tenant-portal/set-password?token=...`. If that route does not exist, the
   // email is a 404 and there is no second chance to send it.
-  const linkPath = read('../src/routes/tenantPortal.js').match(/\/tenant-portal\/set-password\?token=/);
+  // The link is built in utils/tenantPortalInvite.js, shared by all three triggers.
+  const linkPath = read('../src/utils/tenantPortalInvite.js').match(/\/tenant-portal\/set-password\?token=/);
   assert.ok(linkPath, 'the register email no longer points at /tenant-portal/set-password');
   assert.ok(fs.existsSync(path.join(__dirname, SET_PASSWORD)), 'set-password page is missing');
   assert.ok(fs.existsSync(path.join(__dirname, REGISTER)), 'register page is missing');

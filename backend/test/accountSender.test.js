@@ -58,7 +58,10 @@ const CASES = [
   ['../src/routes/auth.js', 'activation code', /subject: 'Your activation code'[\s\S]{0,200}?from: accountSender\(\)/],
   // The subject now lives in utils/registrationEmail.js, so this anchors on the send
   // itself rather than on wording that is free to change.
-  ['../src/routes/tenantPortal.js', 'portal registration link', /sendMail\(\{[\s\S]{0,120}?from: accountSender\(\),[\s\S]{0,120}?subject,/],
+  // Moved to utils/tenantPortalInvite.js, now shared by self-service registration,
+  // the Invite button on the Tenants list, and lease confirmation. The message is
+  // built there and sent by the caller, so the sender is asserted where it is set.
+  ['../src/utils/tenantPortalInvite.js', 'portal registration link', /message: \{ to: address, from: accountSender\(\), subject, text, html \}/],
   ['../src/routes/contact.js', 'tenant portal invite', /from: accountSender\(\)[\s\S]{0,120}?invited to the tenant portal/],
   ['../src/routes/contact.js', 'owner portal invite', /from: accountSender\(\)[\s\S]{0,120}?invited to the property owner portal/],
 ];

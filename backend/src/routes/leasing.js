@@ -26,6 +26,10 @@ const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCale
 const { loadResolutionData, resolveWithData, resolveLeaseTemplateId, derivePdfStatus, hasTemplateSql } = require('../services/leaseTemplateResolver');
 const { orgToday, orgTodaySql, orgTimeSql } = require('../utils/orgTime');
 const { shouldSendCheckinNow } = require('../utils/checkinWindow');
+const { prepareInvite } = require('../utils/tenantPortalInvite');
+const { tenantPortalEnabled } = require('../middleware/tenantAuth');
+const { sendMail } = require('../config/mailer');
+const { getMasterPool } = require('../config/poolRegistry');
 const { checkTermination } = require('../utils/leaseTermination');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
@@ -2076,6 +2080,40 @@ router.post('/:id/move-out/undo', authenticate, requirePermission('LANDLORD/LEAS
 //   3. Generates the rent invoices (catching up missed periods) + deposit
 //      invoice exactly as POST / would have done if state had been 'active'
 //      from the start.
+/**
+ * Invite the lease's tenant onto the portal. Fire-and-forget.
+ *
+ * A SEPARATE email from the check-in details, deliberately. The two say different
+ * things and are acted on at different times: check-in is read once on the way in,
+ * a set-password link is followed when the person is at a computer. Folding a
+ * credential link into a long logistics email is also how people learn to click
+ * credential links inside long logistics emails.
+ *
+ * Never fatal. Confirming a lease creates invoices and blocks the calendar; a mail
+ * server having a bad minute must not undo any of that, and the Invite button on
+ * the Tenants list is the retry.
+ */
+async function invitePortal(pool, orgId, leaseId, tenantEmail) {
+  if (!tenantPortalEnabled()) return;
+  if (!tenantEmail) return;
+  try {
+    const [[org]] = await getMasterPool().execute(
+      'SELECT display_name FROM organizations WHERE id = ?', [orgId]
+    );
+    const prepared = await prepareInvite({
+      pool, orgId, orgName: org?.display_name || '', email: tenantEmail,
+    });
+    if (!prepared.ok) {
+      console.log(`[leasing] portal invite skipped for lease ${leaseId}: ${prepared.reason}`);
+      return;
+    }
+    await sendMail(prepared.message);
+    console.log(`[leasing] portal invite sent for lease ${leaseId} to ${prepared.email}`);
+  } catch (err) {
+    console.error(`[leasing] portal invite failed for lease ${leaseId}:`, err.message);
+  }
+}
+
 router.post('/:id/confirm', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
@@ -2226,6 +2264,15 @@ router.post('/:id/confirm', authenticate, requirePermission('LANDLORD/LEASING_ED
       tenantCheckin: lease.tenant_checkin,
       leaseState: 'active',
     });
+
+    // And a separate invitation to the tenant portal. Until now the only way in was
+    // for a tenant to find the portal themselves and ask for a link, which is why
+    // 114 tenants held a live lease and exactly one account existed.
+    const [[tenantRow]] = await req.pool.execute(
+      'SELECT email FROM tenant WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
+      [lease.tenant_id, orgId]
+    );
+    invitePortal(req.pool, orgId, id, tenantRow?.email);
 
     await logActivity(req, 'CONFIRM', 'lease', id,
       `Confirmed lease ${lease.lease_no || id} — pending to active`);

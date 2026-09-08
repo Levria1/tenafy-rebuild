@@ -12,6 +12,10 @@ const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { sanitiseNamePart, nameProblem } = require('../utils/personName');
 const { parseMrz } = require('../utils/mrz');
 const { decodeLeasingBitsAll } = require('../utils/mysqlBit');
+const { prepareInvite } = require('../utils/tenantPortalInvite');
+const { tenantPortalEnabled } = require('../middleware/tenantAuth');
+const { sendMail } = require('../config/mailer');
+const { getMasterPool } = require('../config/poolRegistry');
 
 // Smart Extract keeps the screenshot. It used to be memory-only and discarded,
 // on the reasoning that HKID and passport images are PII we would rather not
@@ -397,6 +401,59 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
 });
 
 // POST /api/tenant - Create tenant
+// POST /api/tenant/:id/portal-invite — email this tenant a link to set up the portal
+//
+// The Invite button on the Tenants list called message.info('Invite feature coming
+// soon') and did nothing. Until now the ONLY way onto the portal was for a tenant to
+// find it themselves and ask for a link, which is why 114 tenants hold a live lease
+// and exactly one portal account exists.
+//
+// Unlike self-service registration, this one answers honestly. Registration must not
+// reveal which addresses belong to tenants, so it returns the same body whatever
+// happened. Here a member of staff clicked a button and needs to be told that the
+// contact has no email on file, or that the message went.
+router.post('/:id/portal-invite', authenticate, requirePermission('LANDLORD/TENANT_EDIT'), async (req, res) => {
+  try {
+    if (!tenantPortalEnabled()) {
+      return res.status(503).json({ code: 503, message: 'The tenant portal is not configured on this server.' });
+    }
+    const orgId = req.user.orgId;
+    const [[tenant]] = await req.pool.execute(
+      `SELECT CAST(id AS CHAR) AS id, first_name, last_name, email, category
+         FROM tenant WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+      [req.params.id, orgId]
+    );
+    if (!tenant) return res.status(404).json({ code: 404, message: 'Tenant not found' });
+
+    // The org's own name, from master, so the email is signed by the right company.
+    const [[org]] = await getMasterPool().execute(
+      'SELECT display_name FROM organizations WHERE id = ?', [orgId]
+    );
+
+    const prepared = await prepareInvite({
+      pool: req.pool, orgId, orgName: org?.display_name || '', email: tenant.email,
+    });
+    if (!prepared.ok) {
+      return res.status(400).json({ code: 400, message: prepared.detail });
+    }
+
+    // Awaited, unlike registration: the answer is the point of pressing the button.
+    await sendMail(prepared.message);
+
+    await logActivity(req, 'EMAIL', 'tenant', tenant.id,
+      `Sent tenant portal invitation to ${prepared.email}`);
+
+    res.json({
+      code: 200,
+      message: `Invitation sent to ${prepared.email}`,
+      data: { email: prepared.email },
+    });
+  } catch (error) {
+    console.error('Send portal invite error:', error);
+    res.status(500).json({ code: 500, message: 'Could not send the invitation. Please try again.' });
+  }
+});
+
 router.post('/', authenticate, requirePermission('LANDLORD/TENANT_CREATE'), async (req, res) => {
   try {
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,

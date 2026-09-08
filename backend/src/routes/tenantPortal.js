@@ -34,7 +34,7 @@ const {
   TOKEN_TTL_MINUTES, sha256, createRegistrationToken, parseRegistrationToken,
   passwordProblem, normaliseEmail,
 } = require('../utils/tenantPortalRegistration');
-const { registrationEmail } = require('../utils/registrationEmail');
+const { prepareInvite } = require('../utils/tenantPortalInvite');
 const { createNotification } = require('../utils/notify');
 
 const newId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -174,61 +174,19 @@ router.post('/register', registerLimiter, async (req, res) => {
     if (!found || found.ambiguous) return res.json(REGISTER_ACK);
     const { orgId, pool, orgName } = found;
 
-    const { token, secretHash } = createRegistrationToken(orgId);
-    const expires = new Date(Date.now() + TOKEN_TTL_MINUTES * 60 * 1000);
+    // The token work, the link and the wording live in utils/tenantPortalInvite.js,
+    // shared with the staff Invite button and with lease confirmation. Three routes
+    // starting the same journey must not drift into three different emails, and a
+    // fix applied to one must not quietly miss the others.
+    const prepared = await prepareInvite({ pool, orgId, orgName, email });
+    if (!prepared.ok) return res.json(REGISTER_ACK);
 
-    // Update-then-insert, NOT `INSERT ... ON DUPLICATE KEY UPDATE`.
-    //
-    // ODKU fires on ANY unique clash, including the PRIMARY KEY. This insert supplies a
-    // fresh Snowflake id, and two ids generated in the same millisecond collide with
-    // probability 1e-6. On such a collision ODKU would have written this registration's
-    // token onto SOMEONE ELSE'S account row, and the link mailed to whoever asked would
-    // then set that stranger's password. Rare, and an account takeover, so it is worth
-    // the extra statement to make the match explicitly on (org_id, email).
-    //
-    // Re-registering an already-active account is how "I forgot my password" is served,
-    // so an existing row must be updated rather than refused.
-    const [upd] = await pool.execute(
-      `UPDATE tenant_portal_account
-          SET verify_token_hash = ?, verify_expires_at = ?
-        WHERE org_id = ? AND email = ?`,
-      [secretHash, expires, orgId, email]
-    );
-    if (upd.affectedRows === 0) {
-      try {
-        await pool.execute(
-          `INSERT INTO tenant_portal_account (id, org_id, email, status, verify_token_hash, verify_expires_at)
-           VALUES (?, ?, ?, 0, ?, ?)`,
-          [newId(), orgId, email, secretHash, expires]
-        );
-      } catch (insertErr) {
-        // Another request created the row between the UPDATE and the INSERT. The unique
-        // key on (org_id, email) is what caught it; apply the token to that row instead.
-        if (insertErr.code !== 'ER_DUP_ENTRY') throw insertErr;
-        await pool.execute(
-          `UPDATE tenant_portal_account SET verify_token_hash = ?, verify_expires_at = ?
-            WHERE org_id = ? AND email = ?`,
-          [secretHash, expires, orgId, email]
-        );
-      }
-    }
-
-    const link = `${config.appUrl}/tenant-portal/set-password?token=${encodeURIComponent(token)}`;
-    // The org's own name, from master. NOT a literal: three orgs share this codebase and
-    // hardcoding one customer's name would sign every other customer's email as them.
-    const { subject, text: bodyText, html: bodyHtml } =
-      registrationEmail({ brand: orgName, link });
     // NOT awaited. Sending mail takes far longer than the "no such tenant" path, and an
     // identical response body does not hide a second of difference from anyone timing
     // the endpoint. Returning before the send makes the two outcomes look alike.
     // Failures are logged, never surfaced, for the same reason.
-    sendMail({
-      to: email,
-      from: accountSender(),
-      subject,
-      text: bodyText,
-      html: bodyHtml,
-    }).catch(err => console.error('[tenant-portal] registration email failed:', err));
+    sendMail(prepared.message)
+      .catch(err => console.error('[tenant-portal] registration email failed:', err));
 
     return res.json(REGISTER_ACK);
   } catch (error) {

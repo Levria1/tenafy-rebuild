@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Input, Button, Space, Avatar, Empty, Spin, Pagination, Badge,
-  Typography, Tooltip, Popover, Radio, Select, message, Card, Tag,
+  Typography, Tooltip, Popover, Radio, Select, message, Card, Tag, Popconfirm,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, UserOutlined, MailOutlined,
@@ -13,14 +13,42 @@ import {
 } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../../components/Layout';
 import useIsMobile from '../../../hooks/useIsMobile';
-import { tenant, property } from '../../../lib/api';
+import { tenant, tenant as tenantApi, property } from '../../../lib/api';
 
 const { Text, Title } = Typography;
 
 // ---------------------------------------------------------------------------
 // Tenant row component matching the original Tenafy layout
 // ---------------------------------------------------------------------------
-function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
+/**
+ * The portal invitation. Named the address it will go to, because this email
+ * carries a set-password link and sending one to a stale address is not something
+ * to discover afterwards. Disabled outright when there is no address: 2,933 of the
+ * 4,785 contact rows have none.
+ */
+function InviteButton({ data, onInvite, busy, icon = null }) {
+  const email = data?.email;
+  if (!email) {
+    return (
+      <Tooltip title="No email address on file for this contact">
+        <Button size="small" icon={icon} disabled>Invite</Button>
+      </Tooltip>
+    );
+  }
+  return (
+    <Popconfirm
+      title="Send a tenant portal invitation?"
+      description={<span>They will get a link to set a password, sent to <strong>{email}</strong>.</span>}
+      okText="Send"
+      cancelText="Cancel"
+      onConfirm={onInvite}
+    >
+      <Button size="small" icon={icon} loading={busy}>Invite</Button>
+    </Popconfirm>
+  );
+}
+
+function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile, inviting }) {
   const hasLease = data.has_active_lease === 1 || data.has_active_lease === true;
 
   return (
@@ -92,7 +120,7 @@ function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
       <Space size={6} style={{ flexShrink: 0 }}>
         <Button size="small" onClick={onEmail}>Email</Button>
         <Button size="small" onClick={onInvoice}>+ Invoice</Button>
-        <Button size="small" onClick={onInvite}>Invite</Button>
+        <InviteButton data={data} onInvite={onInvite} busy={inviting === String(data.id)} />
       </Space>
 
       {/* Profile arrow */}
@@ -107,7 +135,7 @@ function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
 // ---------------------------------------------------------------------------
 // Mobile tenant card component
 // ---------------------------------------------------------------------------
-function MobileTenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
+function MobileTenantRow({ data, onEmail, onInvoice, onInvite, onProfile, inviting }) {
   const [expanded, setExpanded] = useState(false);
   const hasLease = data.has_active_lease === 1 || data.has_active_lease === true;
 
@@ -155,9 +183,14 @@ function MobileTenantRow({ data, onEmail, onInvoice, onInvite, onProfile }) {
             <Button size="small" icon={<DollarOutlined />} onClick={(e) => { e.stopPropagation(); onInvoice(); }}>
               + Invoice
             </Button>
-            <Button size="small" icon={<SendOutlined />} onClick={(e) => { e.stopPropagation(); onInvite(); }}>
-              Invite
-            </Button>
+            <span onClick={(e) => e.stopPropagation()}>
+              <InviteButton
+                data={data}
+                onInvite={onInvite}
+                busy={inviting === String(data.id)}
+                icon={<SendOutlined />}
+              />
+            </span>
           </div>
         </div>
       )}
@@ -254,8 +287,23 @@ function TenantsPage() {
     router.push(`/invoices/create?tenantId=${t.id}&tenantName=${encodeURIComponent(t.first_name + ' ' + t.last_name)}`);
   };
 
-  const handleInvite = (t) => {
-    message.info('Invite feature coming soon');
+  // Was message.info('Invite feature coming soon'). The portal has been live with
+  // one account on it against 114 tenants holding a live lease, because the only
+  // way in was for a tenant to find it themselves and ask for a link.
+  const [inviting, setInviting] = useState(null);
+  const handleInvite = async (t) => {
+    if (!t?.id) return;
+    setInviting(String(t.id));
+    try {
+      const res = await tenantApi.sendPortalInvite(t.id);
+      message.success(res.data?.message || 'Invitation sent');
+    } catch (err) {
+      // The endpoint answers honestly here, unlike self-service registration:
+      // "no email address on file" is the whole point of pressing the button.
+      message.error(err.response?.data?.message || 'Could not send the invitation');
+    } finally {
+      setInviting(null);
+    }
   };
 
   const handleProfile = (t) => {
@@ -434,6 +482,7 @@ function TenantsPage() {
                   onEmail={() => handleEmail(t)}
                   onInvoice={() => handleInvoice(t)}
                   onInvite={() => handleInvite(t)}
+                  inviting={inviting}
                   onProfile={() => handleProfile(t)}
                 />
               ))}
@@ -468,6 +517,7 @@ function TenantsPage() {
                   onEmail={() => handleEmail(t)}
                   onInvoice={() => handleInvoice(t)}
                   onInvite={() => handleInvite(t)}
+                  inviting={inviting}
                   onProfile={() => handleProfile(t)}
                 />
               ))}

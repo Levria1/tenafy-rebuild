@@ -1424,6 +1424,12 @@ function LeasingDetailPageInner() {
                           {lease?.tenant_email ? <> at {lease.tenant_email}</> : null}
                         </li>
                       )}
+                      {lease?.tenant_email && (
+                        <li style={{ marginBottom: 4 }}>
+                          <strong>Invite the tenant to the portal</strong> at {lease.tenant_email},
+                          a separate email with a link to set a password
+                        </li>
+                      )}
                       <li style={{ marginBottom: 4 }}>Generate the rent and deposit invoices</li>
                       <li>Mark the lease active</li>
                     </ul>
