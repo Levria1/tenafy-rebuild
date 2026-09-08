@@ -8,6 +8,9 @@ const { sendReceiptToTenant } = require('../services/emailService');
 const { generateReceiptPdfBuffer } = require('./pdf');
 const { recalcInvoiceStatuses } = require('../utils/invoiceStatus');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
+const {
+  linkTransactionFiles, unlinkTransactionFiles, listTransactionFiles,
+} = require('../utils/transactionFiles');
 
 // POST /api/accounting/accounts - List transactions with paging
 router.post('/accounts', authenticate, async (req, res) => {
@@ -145,7 +148,7 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
       category, account_setting_id, payment_setting_id,
       currency_id, currency_type,
       amount, note, type, payment_date, invoice_code: rawInvoiceCode, tag_id,
-      lines
+      lines, file_ids
     } = req.body;
     const orgId = req.user.orgId;
     const invoice_code = rawInvoiceCode ? rawInvoiceCode.trim() : null;
@@ -230,6 +233,14 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
        invoice_code || null, transaction_code, tag_id || null]
     );
 
+    // Receipts uploaded on the form. Deliberately not fatal: losing the link to a
+    // receipt is bad, losing the payment record would be worse.
+    try {
+      await linkTransactionFiles(req.pool, orgId, accountingId.toString(), file_ids);
+    } catch (fileErr) {
+      console.error('Attach receipt to transaction error:', fileErr.message);
+    }
+
     // Insert accounting_line entries:
     // If explicit lines provided, only insert those (no header line to avoid double-counting)
     // If no lines, insert header as the single line entry
@@ -298,6 +309,64 @@ router.post('/account', authenticate, requirePermission('LANDLORD/ACCOUNTING_CRE
 });
 
 // GET /api/accounting/account/:id - Get transaction detail
+// GET /api/accounting/account/:id/files — receipts attached to a transaction
+//
+// Registered BEFORE the dynamic /account/:id below. Express matches on segment
+// count so there is no real conflict here, but this file's convention is static
+// and longer paths first, and the next person should not have to check.
+//
+// Fetched when the drawer opens rather than joined into the list query: the list
+// returns up to a page of transactions and almost none of them have a receipt.
+router.get('/account/:id/files', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[owned]] = await req.pool.execute(
+      'SELECT id FROM accounting WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
+      [req.params.id, orgId]
+    );
+    if (!owned) return res.status(404).json({ code: 404, message: 'Transaction not found' });
+
+    const files = await listTransactionFiles(req.pool, orgId, req.params.id);
+    res.json({ code: 200, data: { files } });
+  } catch (error) {
+    console.error('List transaction files error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load files' });
+  }
+});
+
+// DELETE /api/accounting/account/:id/file/:fileId — detach one receipt
+//
+// Soft delete on the link only. The file row and the bytes stay, so a receipt
+// detached by mistake can be put back, and nothing else pointing at that file is
+// affected.
+router.delete('/account/:id/file/:fileId', authenticate, requirePermission('LANDLORD/ACCOUNTING_EDIT'), async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { id, fileId } = req.params;
+    const [[owned]] = await req.pool.execute(
+      'SELECT id FROM accounting WHERE id = ? AND org_id = ? AND deleted_at IS NULL',
+      [id, orgId]
+    );
+    if (!owned) return res.status(404).json({ code: 404, message: 'Transaction not found' });
+
+    // Prove the file is this org's before touching the link, so a guessed id
+    // cannot be used to detach a file from another org's transaction.
+    const [[file]] = await req.pool.execute(
+      'SELECT id FROM file WHERE id = ? AND org_id = ?', [fileId, orgId]
+    );
+    if (!file) return res.status(404).json({ code: 404, message: 'File not found' });
+
+    const removed = await unlinkTransactionFiles(req.pool, id, fileId);
+    if (!removed) return res.status(404).json({ code: 404, message: 'That file is not attached to this transaction' });
+
+    await logActivity(req, 'DELETE', 'accounting_file', id, `Detached receipt ${fileId} from transaction`);
+    res.json({ code: 200, message: 'Receipt detached' });
+  } catch (error) {
+    console.error('Detach transaction file error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to detach file' });
+  }
+});
+
 router.get('/account/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -365,7 +434,7 @@ router.put('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTING_
     const {
       category, account_setting_id, payment_setting_id,
       amount, note, type, payment_date, invoice_code: rawInvoiceCode, tag_id,
-      tenant_id: rawTenantId, tenant_name, property_id, unit_id, lease_id, lines
+      tenant_id: rawTenantId, tenant_name, property_id, unit_id, lease_id, lines, file_ids
     } = req.body;
     const orgId = req.user.orgId;
     const invoice_code = rawInvoiceCode ? rawInvoiceCode.trim() : null;
@@ -433,6 +502,15 @@ router.put('/account/:id', authenticate, requirePermission('LANDLORD/ACCOUNTING_
        property_id || null, unit_id || null, lease_id || null,
        id, orgId]
     );
+
+    // Newly uploaded receipts are ADDED. The edit form does not know about files
+    // already attached, so treating the payload as the complete set would silently
+    // detach every existing receipt whenever someone edited an amount.
+    try {
+      await linkTransactionFiles(req.pool, orgId, id, file_ids);
+    } catch (fileErr) {
+      console.error('Attach receipt to transaction error:', fileErr.message);
+    }
 
     // Replace accounting lines: delete old, insert new
     await req.pool.execute(

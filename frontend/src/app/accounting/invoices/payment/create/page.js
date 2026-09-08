@@ -6,7 +6,7 @@ import { Form, Input, InputNumber, Select, DatePicker, Button, message, Row, Col
 import { UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../../components/Layout';
-import { invoice as invoiceApi, accounting, accountingApi, tenant as tenantApi } from '../../../../../lib/api';
+import { invoice as invoiceApi, accounting, accountingApi, tenant as tenantApi, file as fileApi } from '../../../../../lib/api';
 
 const currencySymbolMap = { HKD: 'HK$', USD: '$', EUR: '€', GBP: '£', JPY: '¥', CNY: '¥', CAD: 'C$', AUD: 'A$', SGD: 'S$', TWD: 'NT$' };
 const getCurSymbol = (code) => currencySymbolMap[code] || code || 'HK$';
@@ -28,6 +28,10 @@ function CreatePaymentPage() {
   const invoiceId = searchParams.get('invoiceId');
 
   const [loading, setLoading] = useState(false);
+  // Ids of receipts already uploaded and waiting to be attached on submit. The
+  // Upload used to post the file and throw the response away, so the receipt was
+  // stored and then linked to nothing.
+  const [receipts, setReceipts] = useState([]);
   const [pageLoading, setPageLoading] = useState(!!invoiceId);
   const [invoiceData, setInvoiceData] = useState(null);
   const [tenants, setTenants] = useState([]);
@@ -107,6 +111,8 @@ function CreatePaymentPage() {
         lease_id: invoiceData?.leasing_id || null,
         due_date: invoiceData?.due_on ? dayjs(invoiceData.due_on).format('YYYY-MM-DD') : null,
         note: values.note || null,
+        // Attached after the transaction exists, keyed on its id.
+        file_ids: receipts.map(r => r.id),
         lines: [{
           amount: values.amount || 0,
           category: invoiceData?.category || values.category || null,
@@ -270,12 +276,30 @@ function CreatePaymentPage() {
                 <Upload.Dragger
                   name="file"
                   multiple
-                  action="/api/file/upload"
+                  fileList={receipts.map(r => ({ uid: r.id, name: r.name, status: 'done' }))}
+                  // customRequest, not `action`: the response carries the file id,
+                  // and going through the api client keeps the auth cookie and the
+                  // base URL consistent with every other call on this page.
+                  customRequest={async ({ file, onSuccess, onError }) => {
+                    try {
+                      const fd = new FormData();
+                      fd.append('file', file);
+                      const r = await fileApi.upload(fd);
+                      const id = r?.data?.data?.id;
+                      if (!id) throw new Error('Upload did not return a file id');
+                      setReceipts(prev => [...prev, { id: String(id), name: file.name }]);
+                      onSuccess(r.data, file);
+                    } catch (err) {
+                      message.error(`Could not upload ${file.name}`);
+                      onError(err);
+                    }
+                  }}
+                  onRemove={(f) => { setReceipts(prev => prev.filter(r => r.id !== f.uid)); return true; }}
                   style={{ padding: '20px 0' }}
                 >
                   <p className="ant-upload-drag-icon"><UploadOutlined style={{ fontSize: 32, color: '#1890ff' }} /></p>
                   <p className="ant-upload-text" style={{ fontWeight: 600 }}>Upload</p>
-                  <p className="ant-upload-hint">Store documents and templates</p>
+                  <p className="ant-upload-hint">Receipts and supporting documents. Attached to this payment on submit.</p>
                 </Upload.Dragger>
               </div>
             </Col>

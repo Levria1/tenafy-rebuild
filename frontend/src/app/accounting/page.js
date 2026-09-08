@@ -2,13 +2,25 @@
 
 import { Suspense, useEffect, useState, useCallback } from 'react';
 import { Table, Button, Space, Tag, Card, Input, Select, DatePicker, Row, Col, Tabs, message, Drawer, Descriptions, Divider, Popover, Popconfirm, Radio, Checkbox, Spin, Tooltip } from 'antd';
-import { PlusOutlined, FilterOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, CloseOutlined } from '@ant-design/icons';
+import { PlusOutlined, FilterOutlined, PrinterOutlined, EditOutlined, DeleteOutlined, CloseOutlined, PaperClipOutlined } from '@ant-design/icons';
 import { useRouter, useSearchParams } from 'next/navigation';
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../components/Layout';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
 import { accounting, accountingApi, property as propertyApi } from '../../lib/api';
+
+// Files are served by the API, which is a different origin in development. The
+// preview and download paths come back relative, so they need the same base the
+// api client uses or they resolve against the Next server and 404.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
+function formatFileSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const { RangePicker } = DatePicker;
 
@@ -48,6 +60,10 @@ function AccountingPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
+  // Receipts attached to the open transaction. Loaded when the drawer opens
+  // rather than joined into the list query, because almost no row has one.
+  const [drawerFiles, setDrawerFiles] = useState([]);
+  const [filesLoading, setFilesLoading] = useState(false);
 
   // Filter popover state
   const [filterOpen, setFilterOpen] = useState(false);
@@ -184,14 +200,30 @@ function AccountingPage() {
   };
 
   // === Drawer functions ===
+  const loadDrawerFiles = async (id) => {
+    setFilesLoading(true);
+    setDrawerFiles([]);
+    try {
+      const res = await accounting.getFiles(id);
+      setDrawerFiles(res.data?.data?.files || []);
+    } catch (error) {
+      // A failed file load must not take the transaction detail with it.
+      console.error('Failed to load transaction files:', error);
+    } finally {
+      setFilesLoading(false);
+    }
+  };
+
   const openDrawer = async (record) => {
     setDrawerOpen(true);
     setDrawerLoading(true);
     setSelectedTransaction(null);
+    setDrawerFiles([]);
     try {
       const res = await accounting.get(record.id);
       if (res.data.code === 200) {
         setSelectedTransaction(res.data.data);
+        loadDrawerFiles(record.id);
       } else {
         message.error('Failed to load transaction details');
       }
@@ -203,9 +235,21 @@ function AccountingPage() {
     }
   };
 
+  const detachReceipt = async (fileId) => {
+    if (!selectedTransaction?.id) return;
+    try {
+      await accounting.detachFile(selectedTransaction.id, fileId);
+      message.success('Receipt detached. The file itself is kept.');
+      loadDrawerFiles(selectedTransaction.id);
+    } catch (error) {
+      message.error(error.response?.data?.message || 'Failed to detach the receipt');
+    }
+  };
+
   const closeDrawer = () => {
     setDrawerOpen(false);
     setSelectedTransaction(null);
+    setDrawerFiles([]);
   };
 
   const handleDeleteTransaction = async () => {
@@ -967,9 +1011,77 @@ function AccountingPage() {
               </>
             )}
 
-            {/* Files section placeholder */}
+            {/* Receipts. This was a hard-coded "No files attached" placeholder, so a
+                receipt uploaded on the payment form had nowhere to be seen even
+                once it was stored. */}
             <Divider orientation="left" style={{ marginTop: 24 }}>Files</Divider>
-            <div style={{ color: '#999', fontSize: 13 }}>No files attached</div>
+            {filesLoading ? (
+              <Spin size="small" />
+            ) : drawerFiles.length === 0 ? (
+              <div style={{ color: '#999', fontSize: 13 }}>No files attached</div>
+            ) : (
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                {drawerFiles.map(f => (
+                  <div
+                    key={f.id}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 12,
+                      border: '1px solid #f0f0f0', borderRadius: 6, padding: 8,
+                    }}
+                  >
+                    {f.is_image ? (
+                      // Receipts are marked private, so this only loads for a
+                      // signed-in user of the owning org.
+                      <a href={`${API_BASE}${f.preview_url}`} target="_blank" rel="noreferrer">
+                        <img
+                          src={`${API_BASE}${f.preview_url}`}
+                          alt={f.filename}
+                          style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 4, display: 'block' }}
+                        />
+                      </a>
+                    ) : (
+                      <PaperClipOutlined style={{ fontSize: 22, color: '#8c8c8c' }} />
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, wordBreak: 'break-all' }}>{f.filename}</div>
+                      <div style={{ fontSize: 11, color: '#999' }}>
+                        {formatFileSize(f.file_size)}
+                        {f.attached_at ? ` · attached ${f.attached_at}` : ''}
+                      </div>
+                    </div>
+                    <Space size={4}>
+                      <Button
+                        size="small"
+                        type="link"
+                        href={`${API_BASE}${f.preview_url}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        View
+                      </Button>
+                      <Button
+                        size="small"
+                        type="link"
+                        href={`${API_BASE}${f.download_url}`}
+                      >
+                        Download
+                      </Button>
+                      {canEdit && (
+                        <Popconfirm
+                          title="Detach this receipt?"
+                          description="The link is removed. The file itself is kept and can be re-attached."
+                          onConfirm={() => detachReceipt(f.id)}
+                          okText="Detach"
+                          cancelText="Cancel"
+                        >
+                          <Button size="small" type="link" danger>Detach</Button>
+                        </Popconfirm>
+                      )}
+                    </Space>
+                  </div>
+                ))}
+              </Space>
+            )}
           </>
         ) : (
           <div style={{ textAlign: 'center', color: '#999', padding: 60 }}>

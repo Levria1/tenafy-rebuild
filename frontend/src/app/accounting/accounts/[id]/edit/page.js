@@ -6,11 +6,14 @@ import { Form, Input, InputNumber, Select, DatePicker, Button, message, Row, Col
 import { PlusOutlined, DeleteOutlined, UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import MainLayout from '../../../../../components/Layout';
-import { accounting, accountingApi, property, tenant, contact, leasing } from '../../../../../lib/api';
+import { accounting, accountingApi, property, tenant, contact, leasing, file as fileApi } from '../../../../../lib/api';
 
 export default function AccountEditPage() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  // Receipts uploaded during this edit. Sent as additions, never as the complete
+  // set, so editing an amount cannot detach what is already attached.
+  const [receipts, setReceipts] = useState([]);
   const [initialLoading, setInitialLoading] = useState(true);
   const [properties, setProperties] = useState([]);
   const [units, setUnits] = useState([]);
@@ -221,6 +224,7 @@ export default function AccountEditPage() {
         lease_id: values.lease_id || null,
         tag_id: values.tag_id || null,
         note: values.note || null,
+        file_ids: receipts.map(r => r.id),
         lines: accountLines
           .filter(l => l.amount || l.category)
           .map(l => ({
@@ -442,12 +446,29 @@ export default function AccountEditPage() {
               <Upload.Dragger
                 name="file"
                 multiple
-                action="/api/file/upload"
+                fileList={receipts.map(r => ({ uid: r.id, name: r.name, status: 'done' }))}
+                // customRequest, not `action`: the response carries the file id,
+                // which the old wiring discarded.
+                customRequest={async ({ file, onSuccess, onError }) => {
+                  try {
+                    const fd = new FormData();
+                    fd.append('file', file);
+                    const r = await fileApi.upload(fd);
+                    const id = r?.data?.data?.id;
+                    if (!id) throw new Error('Upload did not return a file id');
+                    setReceipts(prev => [...prev, { id: String(id), name: file.name }]);
+                    onSuccess(r.data, file);
+                  } catch (err) {
+                    message.error(`Could not upload ${file.name}`);
+                    onError(err);
+                  }
+                }}
+                onRemove={(f) => { setReceipts(prev => prev.filter(r => r.id !== f.uid)); return true; }}
                 style={{ padding: '20px 0' }}
               >
                 <p className="ant-upload-drag-icon"><UploadOutlined style={{ fontSize: 32, color: '#1890ff' }} /></p>
                 <p className="ant-upload-text" style={{ fontWeight: 600 }}>Upload</p>
-                <p className="ant-upload-hint">Store documents and templates</p>
+                <p className="ant-upload-hint">Receipts and supporting documents. Added to this transaction on save.</p>
               </Upload.Dragger>
             </Col>
           </Row>
