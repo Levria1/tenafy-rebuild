@@ -869,3 +869,111 @@ of row order.
   reversible with the full text copied to `activity_log`.
 
 Suite 1315 → **1464**. Migrations 079, 080.
+
+---
+
+## Session 2026-09-07 → 09 — things that reported success and did nothing
+
+A run of defects with one shape in common: the code ran, the UI said it worked, and
+nothing was recorded. None of them threw, so none of them showed up as a bug.
+
+### Receipt descriptions printed twice
+Xero staging joined the bank transaction's `Reference` and its line-item `Description`
+with an em dash. Tane's Xero data holds the same sentence in both, so **567 accounting
+notes stored their text twice over** — and every one is a single-line payment, which is
+exactly the case where the receipt falls back to the payment note. Multi-invoice receipts
+were never affected, which is why the earlier per-line fix looked complete.
+
+Collapsed on read and in `xeroSync`; **580 notes backfilled** (more than 567 because the
+script deliberately includes soft-deleted payments — a restored one would come back
+duplicated). `utils/paymentNote.js` owns the rule so the backfill writes exactly what the
+renderer would show; a SQL-only version would have drifted, since MySQL `TRIM()` does not
+strip the newlines four of those rows carry.
+
+### Google Vision OCR had stopped, and the form blamed the user
+Every Smart Extract call returned **403: billing not enabled on GCP project
+610536915782**. OCR failure is non-fatal by design, so with no pasted text the endpoint
+returned zero fields and the form said *"Try a clearer image"*. The screenshots were
+fine. The key is unchanged since 16 July and `visionClient.js` since 9 June, so nothing
+on our side moved.
+
+Account failures (401/403/429, disabled API, missing key) are now distinguished from a
+bad image. The tenant form shows a persistent amber panel naming the account instead of a
+toast, chat OCR answers 503, and a result built only from pasted text says the screenshot
+was not read. **Fixing it needs billing re-enabled in the GCP console** — two different
+projects are in play, and the broken one is not the project the calendar service account
+lives in.
+
+### The audit log was refusing most of what it recorded
+`activity_log.action` was `ENUM('CREATE','UPDATE','DELETE')` while the code passed
+**eleven more** values. MySQL rejected each insert, `logActivity` swallowed it, and the
+request succeeded. **All 4,020 rows are one of those three.** This landed on the previous
+session's work: confirming a lease, emailing check-in details, moving a tenant out and
+restoring a deleted timeline entry were all being written and all being dropped.
+
+Separately, twelve call sites passed an options object the function never accepted, so
+`entity_type` bound to `undefined` — **no INQUIRY, LEASE_TEMPLATE or SIGNATURE_REQUEST
+row has ever existed.** Migration `081` widened the enum to fourteen values; `logActivity`
+takes both call shapes; failures print `AUDIT ROW LOST` with the action and record.
+Over-long descriptions are trimmed rather than costing the whole row.
+
+### Meter readings could not be corrected
+The Edit Meter form has always shown a reading field. `PUT /meter/:id` destructured
+everything except `current_reading`, returned 200, and the UI said "Meter updated". A
+no-op that announces success.
+
+It now writes a dated **Correction** into the reading log rather than only moving the
+column, because bills are built from that log. Second defect behind it: logging a reading
+set `current_reading` unconditionally, so a **back-dated entry rewound the meter** while
+the screen kept showing the newest reading. Mercer 4B, 2 Sep: August's 23,241 entered at
+06:49, July's 23,134 at 07:44. **127 readings system-wide were entered after a
+newer-dated one already existed**; three meters were still out of step and were realigned.
+
+Worth a look: Jervois 4A and Mercer 5B each hold a bill closing reading **2 units higher
+than a checkout reading taken the next day**. Same shape both times, and both bills were
+entered 5–10 days after their period end, so the closing figure was most likely read on
+the day of entry. Cost about HK$3.60 each, charged to the departing tenant.
+
+### Receipts attached to a payment could not be seen
+Three gaps, each fatal alone: the form posted the file and **threw the returned id away**;
+`accounting` had no column for it; and the drawer rendered the literal string *"No files
+attached"* behind a comment reading `{/* Files section placeholder */}`. **549 uploads sit
+within five minutes of a payment being created, attached to nothing.**
+
+Wired through `object_file`. Attaching marks the file private, but **only if it is attached
+nowhere else** — `is_private` is global to the file, and a shared listing photo would 403
+for logged-out visitors. An editing save ADDS receipts rather than replacing the set,
+since the edit form does not know what is already attached.
+
+### Nobody could get into the tenant portal
+Three days after launch: **one account, against 114 tenants on a live lease.** The only
+way in was to find the portal yourself and ask for a link; the Invite button said
+"coming soon".
+
+Confirming a lease now sends a separate invitation, and the Invite button sends the same
+email on demand. All three paths — including self-service registration — share one
+helper, because three routes issuing a credential link is three places for a fix to miss
+one. Eligibility is unchanged: a tenant on a lease, not a payee (2,945 of 4,785 rows are
+payees, 3,060 have no lease).
+
+The email is now the editable template **`Portal-Invite-Tenant`**, seeded per org. The
+render checks the finished html for the actual link and falls back to the built-in wording
+if an edit lost it. **The link lasts 7 days**, up from 60 minutes — chosen for both
+sign-up and reset, knowing one token serves both.
+
+Removed: `POST /api/contact/tenant/{check,create}/user`, which mailed a code stored
+against a **staff `user` row** that the portal cannot redeem. Dead rather than broken, but
+a trap.
+
+### Notes
+- A seed written as migration `082` was **deleted after a rolled-back production dry run
+  showed it creating twelve templates for eleven organisations that do not exist**.
+  `migrate-orgs.js` never tells a file which org its database belongs to. Seed data now
+  comes from `scripts/seedPortalInviteTemplate.js`, reading master.
+- Codex needed three attempts on the receipts review: twice it spent its whole budget
+  echoing the files it was asked to read and returned no analysis, which reads exactly
+  like a clean review. Only inline code with nothing to read worked. It then found three
+  real defects, including one in a test of mine.
+
+Suite 1464 → **1621**. Migration 081. Scripts:
+`backfillDuplicatePaymentNotes`, `repairMeterCurrentReading`, `seedPortalInviteTemplate`.

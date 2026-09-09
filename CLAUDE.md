@@ -153,7 +153,12 @@ See `docs/completed-work.md` for detailed progress tracking.
 - Email system (Nodemailer with Ethereal dev/SMTP prod)
 - In-app notifications
 - Tenant portal (LIVE): own auth domain (cookie `__t_p`, `TENANT_JWT_SECRET`), registration,
-  leases, invoices, and repairs with photos, follow-up notes and withdrawal
+  leases, invoices, and repairs with photos, follow-up notes and withdrawal.
+  Staff invite via the Tenants list; confirming a lease invites automatically.
+  The email is the editable template `Portal-Invite-Tenant`; the link lasts 7 days
+- Payment receipts: files attached on Create Payment are linked and previewable in the
+  transaction drawer (via `object_file`, marked private)
+- Meter readings can be corrected from Settings, logged as a dated Correction
 
 ### Known Missing
 - Public listings module (entire tenafy-listing microservice)
@@ -177,7 +182,21 @@ See `docs/completed-work.md` for detailed progress tracking.
 9. **DATETIME means two things**: appointment columns hold a HONG KONG wall clock; the 24
    `NOW()`-written audit columns hold UTC. Pools set `dateStrings: ['DATE']` only, and
    wall-clock columns are pulled with `DATE_FORMAT` where their meaning is known
-10. **Confirming a lease emails the tenant** check-in details. It also creates the invoices
+10. **Confirming a lease emails the tenant** check-in details, and separately a tenant
+    portal invitation. It also creates the invoices
+11. **`activity_log.action` is an ENUM.** A value not in it is rejected and `logActivity`
+    swallows the error, so the row vanishes silently. Add to BOTH the enum (migration 081)
+    and `ACTIONS` in `utils/activityLog.js` — a test enforces the pair. Everything logged
+    before 2026-09-09 is CREATE/UPDATE/DELETE only, because the enum refused the rest
+12. **A per-org SQL migration is never told which org its database belongs to**, and
+    `email_template` holds a dozen legacy org_ids. Seed DATA belongs in a script that
+    reads `organizations` from master; schema changes are fine as per-org SQL
+13. **`file.is_private` is the only thing keeping a document off an anonymous URL**
+    (`/api/file/preview` serves non-private images to anyone, so listing photos load).
+    It is global to the file row, so never privatise a file attached elsewhere
+14. **`of` is a reserved word in MySQL 8** — alias `object_file` as `objf`, never `of`
+15. **Google Vision OCR is DOWN**: billing disabled on GCP project 610536915782, so
+    Smart Extract extracts nothing. Needs re-enabling in the console, not a code fix
 
 ## Reference Docs
 - `docs/migration-plan.md` — Page-by-page migration status from original
