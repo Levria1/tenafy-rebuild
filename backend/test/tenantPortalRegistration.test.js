@@ -65,9 +65,26 @@ test('an org id is required to create a token', () => {
   assert.throws(() => createRegistrationToken(null), /must name an org/i);
 });
 
-test('the link is short-lived', () => {
-  assert.ok(TOKEN_TTL_MINUTES > 0 && TOKEN_TTL_MINUTES <= 120,
-    'a set-password link should last minutes, not days');
+test('the link lasts a week — deliberately, not by drift', () => {
+  // It was 60 minutes, and this test used to insist on "minutes, not days".
+  //
+  // 60 minutes is a sensible password-RESET window and far too short for an
+  // INVITATION: a tenant reading their email that evening finds a dead link. One
+  // token serves both jobs here, because asking for a link again on an active
+  // account IS the reset, so raising it raises both. That was raised explicitly and
+  // the week was chosen with the trade-off understood: an old invitation sitting in
+  // a mailbox someone else later reads can set that tenant's password for up to
+  // seven days.
+  //
+  // What limits it: the link is single-use, requesting a new one invalidates the
+  // previous immediately, and completing it bumps token_version, ending every
+  // existing session for that account.
+  //
+  // The bound is here so the value cannot creep further without someone choosing to.
+  const { TOKEN_TTL_DAYS } = require('../src/utils/tenantPortalRegistration');
+  assert.strictEqual(TOKEN_TTL_DAYS, 7);
+  assert.strictEqual(TOKEN_TTL_MINUTES, 7 * 24 * 60);
+  assert.ok(TOKEN_TTL_MINUTES <= 30 * 24 * 60, 'a month would be indefensible');
 });
 
 // ── passwords ───────────────────────────────────────────────────────────────

@@ -154,7 +154,8 @@ const TEMPLATE_VARIABLES = [
   // Portal invitation only. The link is single-use and time-limited, so it cannot
   // be pre-baked into the body: it has to be substituted at send time.
   { key: '%Portal Signup Link%', description: 'Tenant portal sign-up link (portal invitation only — the email is useless without it)' },
-  { key: '%Link Expiry Minutes%', description: 'How many minutes the sign-up link lasts (portal invitation only)' },
+  { key: '%Link Expiry%', description: 'How long the sign-up link lasts, in words, e.g. "7 days" (portal invitation only)' },
+  { key: '%Link Expiry Minutes%', description: 'The same lifetime as a raw number of minutes — currently 10080. Prefer %Link Expiry%' },
   { key: '%Company Name%', description: 'Your organisation name, as it appears on your account' },
   { key: '%Unit # - Property%', description: 'Unit name/number' },
   { key: '%Name - Property%', description: 'Property name' },

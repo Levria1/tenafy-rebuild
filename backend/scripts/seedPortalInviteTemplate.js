@@ -3,8 +3,10 @@
  * Create the editable "Tenant Portal Invitation" email template for each org.
  *
  * Usage:
- *   node scripts/seedPortalInviteTemplate.js            # dry run, all active orgs
- *   node scripts/seedPortalInviteTemplate.js --apply
+ *   node scripts/seedPortalInviteTemplate.js                      # dry run
+ *   node scripts/seedPortalInviteTemplate.js --apply              # create missing
+ *   node scripts/seedPortalInviteTemplate.js --refresh            # dry run, incl. updates
+ *   node scripts/seedPortalInviteTemplate.js --refresh --apply    # also update UNEDITED rows
  *
  * WHY A SCRIPT AND NOT A MIGRATION
  * --------------------------------
@@ -49,7 +51,7 @@ const BODY = [
   '<p>Dear %Name - Lease%,</p>',
   '<p>%Company Name% uses Tenafy to manage its tenancies. Your tenant portal account is ready, and this email is the last step: choosing your password.</p>',
   '<p>Set your password here:<br>%Portal Signup Link%</p>',
-  '<p>This link expires in %Link Expiry Minutes% minutes and can only be used once. If it expires, you can request another from the sign-in page.</p>',
+  '<p>This link expires in %Link Expiry% and can only be used once. If it expires, you can request another from the sign-in page.</p>',
   '<p>Once you are signed in you will be able to:</p>',
   '<ul>',
   '<li>View your tenancy details, including start and end dates</li>',
@@ -62,10 +64,30 @@ const BODY = [
   '<p>Kind regards,<br>%Company Name%</p>',
 ].join('');
 
+/**
+ * Bodies this script has seeded in the past, newest last.
+ *
+ * --refresh rewrites a row ONLY if its content still matches one of these exactly.
+ * That is the test for "nobody has edited it": a template someone has reworded must
+ * never be silently overwritten by a script.
+ *
+ * The first seed said "expires in %Link Expiry Minutes% minutes", written while the
+ * link lasted 60 minutes. The lifetime is now 7 days, so that copy would read
+ * "expires in 10080 minutes".
+ */
+const LEGACY_BODIES = [
+  BODY.replace(
+    '<p>This link expires in %Link Expiry% and can only be used once. If it expires, you can request another from the sign-in page.</p>',
+    '<p>This link expires in %Link Expiry Minutes% minutes and can only be used once. If it expires, you can request another from the sign-in page.</p>'
+  ),
+];
+
 const newId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
 async function main() {
   const apply = process.argv.includes('--apply');
+  // --refresh also brings an UNEDITED existing template up to the current copy.
+  const refresh = process.argv.includes('--refresh');
 
   const [orgs] = await getMasterPool().execute(
     'SELECT CAST(id AS CHAR) AS id, display_name, db_name, db_host, db_port, db_user, db_password FROM organizations WHERE status = 1 ORDER BY id'
@@ -92,8 +114,43 @@ async function main() {
       );
       // COUNT(*) arrives as a STRING (bigNumberStrings) and '0' is truthy.
       if (Number(has.n) > 0) {
-        console.log(`  ${org.display_name} (${org.db_name}): already has one, left alone`);
-        skipped++;
+        if (!refresh) {
+          console.log(`  ${org.display_name} (${org.db_name}): already has one, left alone`);
+          skipped++;
+          continue;
+        }
+        // Only rows still carrying a body this script wrote. Anything reworded is
+        // the customer's own text and is left exactly as it is.
+        const [rows] = await conn.execute(
+          `SELECT CAST(id AS CHAR) AS id, subject, template_content
+             FROM email_template WHERE org_id = ? AND template_type = ?`,
+          [org.id, TEMPLATE_TYPE]
+        );
+        for (const row of rows) {
+          const untouched = LEGACY_BODIES.includes(row.template_content) || row.template_content === BODY;
+          if (!untouched) {
+            console.log(`  ${org.display_name}: template ${row.id} has been edited, left alone`);
+            skipped++;
+            continue;
+          }
+          if (row.template_content === BODY && row.subject === SUBJECT) {
+            console.log(`  ${org.display_name}: template ${row.id} already current`);
+            skipped++;
+            continue;
+          }
+          if (!apply) {
+            console.log(`  ${org.display_name}: would refresh template ${row.id} to the current copy`);
+            created++;
+            continue;
+          }
+          await conn.execute(
+            `UPDATE email_template SET subject = ?, template_content = ?, updated_time = NOW()
+              WHERE id = ? AND org_id = ?`,
+            [SUBJECT, BODY, row.id, org.id]
+          );
+          console.log(`  ${org.display_name}: refreshed template ${row.id}`);
+          created++;
+        }
         continue;
       }
 

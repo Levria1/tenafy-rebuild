@@ -134,6 +134,78 @@ test('the seeded body carries every variable it references', () => {
   assert.match(body, /%Portal Signup Link%/, 'without this the seeded email is useless');
   assert.match(body, /%Company Name%/);
   assert.match(body, /%Name - Lease%/);
-  assert.match(body, /%Link Expiry Minutes%/);
+  assert.match(body, /%Link Expiry%/, 'the readable form; see the expiry tests below');
   assert.doesNotMatch(body, /Tane Residence/, 'three orgs share this codebase');
+});
+
+// ── the link now lasts a week ───────────────────────────────────────────────
+
+test('the emailed link lasts 7 days', () => {
+  const { TOKEN_TTL_DAYS, TOKEN_TTL_MINUTES, TOKEN_TTL_LABEL } =
+    require('../src/utils/tenantPortalRegistration');
+  assert.strictEqual(TOKEN_TTL_DAYS, 7);
+  assert.strictEqual(TOKEN_TTL_MINUTES, 10080, 'derived, not typed twice');
+  assert.strictEqual(TOKEN_TTL_LABEL, '7 days');
+});
+
+test('the wording says "7 days", never "10080 minutes"', () => {
+  // The number is correct and useless to a reader.
+  const { registrationEmail } = require('../src/utils/registrationEmail');
+  const email = registrationEmail({ brand: 'Example Ltd', link: 'https://x.test/set?token=abc' });
+  for (const part of [email.text, email.html]) {
+    assert.match(part, /expires in 7 days/);
+    assert.doesNotMatch(part, /10080/);
+    assert.doesNotMatch(part, /minutes/);
+  }
+});
+
+test('both expiry variables are offered, and the readable one is preferred', () => {
+  const keys = TEMPLATE_VARIABLES.map(v => v.key);
+  assert.ok(keys.includes('%Link Expiry%'));
+  assert.ok(keys.includes('%Link Expiry Minutes%'),
+    'a template written before the change may still use it');
+  const numeric = TEMPLATE_VARIABLES.find(v => v.key === '%Link Expiry Minutes%');
+  assert.match(numeric.description, /Prefer %Link Expiry%/);
+});
+
+test('the render substitutes both, so an older template still reads correctly', () => {
+  const src = stripComments(read('../src/utils/tenantPortalInvite.js'));
+  assert.match(src, /'%Link Expiry%': TOKEN_TTL_LABEL/);
+  assert.match(src, /'%Link Expiry Minutes%': String\(TOKEN_TTL_MINUTES\)/);
+});
+
+test('the seeded copy uses the readable variable', () => {
+  const src = read('../scripts/seedPortalInviteTemplate.js');
+  const at = src.indexOf('const BODY = [');
+  const body = src.slice(at, src.indexOf("].join('');", at));
+  assert.match(body, /expires in %Link Expiry% and/);
+  assert.doesNotMatch(body, /%Link Expiry Minutes% minutes/,
+    'that copy would now render as "expires in 10080 minutes"');
+});
+
+// ── refreshing what was already seeded ──────────────────────────────────────
+
+test('--refresh updates only rows nobody has edited', () => {
+  const src = stripComments(read('../scripts/seedPortalInviteTemplate.js'));
+  assert.match(src, /const untouched = LEGACY_BODIES\.includes\(row\.template_content\) \|\| row\.template_content === BODY/);
+  assert.match(src, /if \(!untouched\)[\s\S]{0,220}left alone/,
+    "a reworded template is the customer's own text");
+  assert.match(src, /LEGACY_BODIES/, 'the previous seed is recorded so it can be recognised');
+});
+
+test('--refresh writes nothing without --apply', () => {
+  const src = stripComments(read('../scripts/seedPortalInviteTemplate.js'));
+  const dryAt = src.indexOf('would refresh template');
+  const updateAt = src.indexOf('UPDATE email_template SET subject');
+  assert.ok(dryAt > -1 && updateAt > dryAt, 'the UPDATE must sit after the dry-run branch');
+});
+
+test('the recorded legacy body really differs from the current one', () => {
+  // If they were identical, --refresh could never fire and the stale copy would
+  // stay in production reading "expires in 10080 minutes".
+  const src = read('../scripts/seedPortalInviteTemplate.js');
+  const at = src.indexOf('const LEGACY_BODIES = [');
+  const block = src.slice(at, src.indexOf('];', at));
+  assert.match(block, /%Link Expiry Minutes% minutes/);
+  assert.match(block, /BODY\.replace\(/, 'derived from BODY, so the two cannot drift apart');
 });

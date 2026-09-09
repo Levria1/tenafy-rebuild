@@ -11,7 +11,7 @@
  * customer: three organisations share this deployment.
  */
 
-const { TOKEN_TTL_MINUTES } = require('./tenantPortalRegistration');
+const { TOKEN_TTL_LABEL } = require('./tenantPortalRegistration');
 
 // The portal's actual features, in the order a tenant cares about them. Kept honest on
 // purpose: promising anything not built teaches people the emails are not accurate.
@@ -44,7 +44,7 @@ function registrationEmail({ brand, link }) {
     `Set your password here:`,
     link,
     ``,
-    `This link expires in ${TOKEN_TTL_MINUTES} minutes and can only be used once. If it expires, you can request another from the sign-in page.`,
+    `This link expires in ${TOKEN_TTL_LABEL} and can only be used once. If it expires, you can request another from the sign-in page.`,
     ``,
     `Once you are signed in you will be able to:`,
     ...WHAT_YOU_CAN_DO.map((item) => `  - ${item}`),
@@ -77,7 +77,7 @@ function registrationEmail({ brand, link }) {
   </p>
 
   <p style="margin:0 0 24px;color:#595959;font-size:13px;">
-    This link expires in ${TOKEN_TTL_MINUTES} minutes and can only be used once.
+    This link expires in ${TOKEN_TTL_LABEL} and can only be used once.
     If it expires, you can request another from the sign-in page.
   </p>
 

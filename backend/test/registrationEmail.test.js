@@ -55,11 +55,17 @@ test('both versions carry the link', () => {
 });
 
 test('the expiry is stated, and matches the token the server actually issues', () => {
-  // "This link expires shortly" is not actionable. The number also has to be true: it is
-  // read from the same constant the token is minted with.
+  // "This link expires shortly" is not actionable. It also has to be TRUE: the wording
+  // reads the same constant the token is minted with.
+  //
+  // Stated in words rather than minutes since the lifetime became 7 days. The raw
+  // number is still correct and completely useless to a reader: "this link expires
+  // in 10080 minutes".
+  const { TOKEN_TTL_LABEL } = require('../src/utils/tenantPortalRegistration');
   const { text, html } = build();
-  assert.ok(text.includes(`${TOKEN_TTL_MINUTES} minutes`));
-  assert.ok(html.includes(`${TOKEN_TTL_MINUTES} minutes`));
+  assert.ok(text.includes(`expires in ${TOKEN_TTL_LABEL}`));
+  assert.ok(html.includes(`expires in ${TOKEN_TTL_LABEL}`));
+  assert.ok(!text.includes(String(TOKEN_TTL_MINUTES)), 'not the raw minute count');
 });
 
 test('it tells a reader who did not request it what to do', () => {

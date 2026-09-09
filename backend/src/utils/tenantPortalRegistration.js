@@ -18,7 +18,31 @@
 const crypto = require('crypto');
 
 const TOKEN_BYTES = 32;
-const TOKEN_TTL_MINUTES = 60;
+
+/**
+ * How long an emailed link stays usable.
+ *
+ * Was 60 minutes, which is a sensible password-reset window and far too short for
+ * an INVITATION: a tenant who reads their email that evening finds a dead link and
+ * has to work out how to ask for another.
+ *
+ * One token serves both jobs. There is no separate forgot-password flow for
+ * tenants — asking for a link again on an active account IS the reset, and
+ * /register/complete sets the password either way. So this number is now also how
+ * long a reset link lives. That was raised and the week was chosen deliberately,
+ * with the trade-off understood: an old invitation email in a mailbox someone else
+ * later reads can set that tenant's password for up to seven days.
+ *
+ * What limits the damage: the link is single-use, requesting a new one immediately
+ * invalidates the previous, and completing it bumps token_version, which ends every
+ * existing portal session for that account.
+ */
+const TOKEN_TTL_DAYS = 7;
+const TOKEN_TTL_MINUTES = TOKEN_TTL_DAYS * 24 * 60;
+
+// For the emails. "expires in 10080 minutes" is technically true and no use to a
+// reader, so the wording carries this instead of the raw number.
+const TOKEN_TTL_LABEL = TOKEN_TTL_DAYS === 1 ? '1 day' : `${TOKEN_TTL_DAYS} days`;
 
 function sha256(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
@@ -85,6 +109,8 @@ function normaliseEmail(value) {
 
 module.exports = {
   TOKEN_TTL_MINUTES,
+  TOKEN_TTL_DAYS,
+  TOKEN_TTL_LABEL,
   MIN_PASSWORD_LENGTH,
   sha256,
   createRegistrationToken,

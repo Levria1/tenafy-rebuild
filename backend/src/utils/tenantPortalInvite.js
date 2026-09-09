@@ -27,7 +27,7 @@
  */
 
 const {
-  TOKEN_TTL_MINUTES, createRegistrationToken, normaliseEmail,
+  TOKEN_TTL_MINUTES, TOKEN_TTL_LABEL, createRegistrationToken, normaliseEmail,
 } = require('./tenantPortalRegistration');
 const { isEligibleToRegister } = require('./tenantPortalAccess');
 const { registrationEmail } = require('./registrationEmail');
@@ -75,6 +75,10 @@ async function renderFromTemplate({ pool, orgId, orgName, link, tenantName }) {
 
   const vars = {
     '%Portal Signup Link%': link,
+    // Both offered. A template written before the lifetime went from 60 minutes to
+    // 7 days may still use the numeric one, and "expires in 10080 minutes" reads as
+    // a bug, so %Link Expiry% is the one the seeded copy uses.
+    '%Link Expiry%': TOKEN_TTL_LABEL,
     '%Link Expiry Minutes%': String(TOKEN_TTL_MINUTES),
     '%Company Name%': orgName || '',
     '%Name - Lease%': tenantName || 'Tenant',
