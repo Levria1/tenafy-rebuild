@@ -159,6 +159,9 @@ See `docs/completed-work.md` for detailed progress tracking.
 - Payment receipts: files attached on Create Payment are linked and previewable in the
   transaction drawer (via `object_file`, marked private)
 - Meter readings can be corrected from Settings, logged as a dated Correction
+- Tenant portal: electricity billing history (read-only, full breakdown; tab hidden for
+  tenants with no utility history) and invoice + receipt PDF downloads. Portal receipts
+  are tenant-scoped — see gotcha 16
 
 ### Known Missing
 - Public listings module (entire tenafy-listing microservice)
@@ -197,6 +200,14 @@ See `docs/completed-work.md` for detailed progress tracking.
 14. **`of` is a reserved word in MySQL 8** — alias `object_file` as `objf`, never `of`
 15. **Google Vision OCR is DOWN**: billing disabled on GCP project 610536915782, so
     Smart Extract extracts nothing. Needs re-enabling in the console, not a code fix
+16. **One `accounting` row can settle several tenants' invoices.** Airbnb payouts arrive
+    via Xero as a single bank deposit split one `accounting_line` per guest invoice, with
+    `accounting.tenant_id` NULL (17 rows since 2026-07-20, 4 spanning tenants). So a
+    receipt must NEVER be scoped by `accounting.tenant_id`: use `buildVisibleLines` in
+    `routes/pdf.js`, and never print the raw `payment_note` to a tenant — on those rows
+    it names every other guest, with confirmation codes and Airbnb's fee
+17. **`utility_bill_line` has no `org_id`.** Scope it through `JOIN utility_bill ... AND
+    b.org_id = ?`; that join is the tenancy boundary, not a convenience
 
 ## Reference Docs
 - `docs/migration-plan.md` — Page-by-page migration status from original

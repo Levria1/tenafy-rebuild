@@ -106,11 +106,14 @@ test('xeroSync collapses the note it builds instead of joining blindly', () => {
     'the raw join must be gone, or Xero will keep storing duplicated notes');
 });
 
-test('both receipt builders collapse the payment note before printing it', () => {
+test('the receipt renderer collapses the payment note before printing it', () => {
+  // This asserted TWO collapsing call sites, because the /receipt route and the email
+  // buffer each drew the receipt themselves. They have since been folded into one
+  // renderReceiptPdf, so one call site is now the correct count — and the only way to
+  // reintroduce a second unguarded path is to reintroduce the duplication.
   const src = stripComments(read('../src/routes/pdf.js'));
   const guarded = src.match(/collapseDuplicateNote\(pmt\.payment_note\)/g) || [];
-  assert.strictEqual(guarded.length, 2,
-    'the /receipt route and the email buffer copy must both collapse it');
+  assert.strictEqual(guarded.length, 1, 'the shared receipt renderer must collapse it');
   const raw = src.match(/\(pmt\.payment_note \|\|/g) || [];
   assert.strictEqual(raw.length, 0, 'no receipt path may print pmt.payment_note unguarded');
 });

@@ -977,3 +977,84 @@ a trap.
 
 Suite 1464 → **1621**. Migration 081. Scripts:
 `backfillDuplicatePaymentNotes`, `repairMeterCurrentReading`, `seedPortalInviteTemplate`.
+
+---
+
+## Session 2026-09-09 — the portal gets the utilities tab, and its own receipts
+
+Two requests: let the tenant portal see the electricity billing history staff see on a
+tenant's Utilities tab, and let tenants download the invoice and receipt for anything
+accounting-related.
+
+### Utilities (read-only)
+
+`GET /api/tenant-portal/utilities` is a scoped copy of the staff history query, with the
+full breakdown: period, meter, start and end reading, kW, rate, gross, credit, net, and
+the linked invoice. Header block carries the monthly utility credit, the lease dates and
+the check-in/check-out meters. No edit, no undo — the staff settlement controls are not
+on it.
+
+Two scoping details that are not optional:
+- **`utility_bill_line` has no `org_id`**, so `JOIN utility_bill b ... AND b.org_id = ?`
+  IS the tenancy boundary. Drop the join and a line id reads straight through.
+- The lease block uses `leaseIsTheirs`, not `tenant_id`, so a spouse listed only in
+  `leasing_additional_tenant` sees the same figures as the named tenant.
+
+The nav item appears only for tenants who have utility history, via `features.utilities`
+on the `/profile` probe the layout already calls on every page. Most orgs do not bill
+metered electricity, and a permanently empty tab is worse than no tab.
+
+### Receipts — the Airbnb payout problem
+
+The receipt PDF was keyed on the payment, and that is not safe here. **Tane receives
+Airbnb payouts through Xero: one bank deposit covering several guests' stays, split into
+one `accounting_line` per guest invoice, with the payment's own `tenant_id` left NULL.**
+Seventeen such rows landed between 20 Jul and 4 Sep 2026; four of them span tenants:
+
+| Transaction | Date | Amount | Guests |
+|---|---|---|---|
+| TANE41799 | 2026-07-24 | 22,829.11 | 2 |
+| TANE41918 | 2026-08-03 | 31,399.56 | 3 |
+| TANE42218 | 2026-08-24 | 27,248.70 | 3 |
+| TANE42354 | 2026-09-02 | 16,455.02 | 2 |
+
+Nine tenants are on those four, and seven invoices have no other payment row — so an
+ownership check on `accounting.tenant_id` fails twice over. It refuses receipts those
+nine are entitled to, and admitting them would hand over the others' invoice codes and
+amounts. The `note` on those rows is worse than the line list: a transcript of every
+stay on the deposit, with names, confirmation codes, nightly rates and Airbnb's service
+fee — and the receipt printed it as the description.
+
+So portal receipts are **tenant-scoped**: `buildVisibleLines` keeps the lines whose
+invoice is theirs, and the raw `payment_note` is never printed — each line is described
+by its own invoice note instead. Orphan lines (a Xero reference matching no surviving
+invoice, which is 14,787 of them) carry no tenant to check, so they ride along only on a
+payment that is unambiguously one tenant's and are dropped otherwise. Staff receipts are
+unchanged.
+
+Verified against the real rows read-only: each of the nine gets exactly their own line
+and their own total, a stranger is refused, and staff still get all lines at the header
+amount. That rehearsal caught one thing the fixtures did not — Luke Willis's own invoice
+note contains `Host service fee (15.5%)`, which is his data on his invoice, already on
+the invoice PDF he is emailed. Not a leak, but the detector had to learn the difference.
+
+### The receipt renderer was written twice
+
+`pdf.js` drew the receipt once inline in the route and again in
+`generateReceiptPdfBuffer` for email, and the copies **had already drifted**: 16 currency
+symbols against 8, so an INR receipt read `INR 500` by email and `₹500` on screen, and
+the rule under the totals block sat 10pt out. Now one `loadReceiptPdfData` +
+`renderReceiptPdf`, called by staff, email and the portal. The emailed receipt gains the
+missing symbols and matches the downloaded one.
+
+### Also fixed
+
+The portal invoices table asked for `description` and `due_date`. The API sends `note`
+and `due_on`, so **both columns had rendered `-` and `N/A` for every invoice since the
+portal went live**.
+
+`receipt_available` is computed by one subquery rather than by loading each receipt in
+turn — one invoice in Tane's data carries 18 payments, which would have been 54 queries
+to decide whether to draw a button.
+
+Suite 1621 → **1650**. No migration.

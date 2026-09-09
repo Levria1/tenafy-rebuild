@@ -451,238 +451,316 @@ router.get('/lease/:id', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Receipt PDF — shared loader + renderer
+//
+// There used to be two copies of this: one inline in the /receipt route, one in
+// generateReceiptPdfBuffer for email. They had already drifted — the route knew
+// 16 currency symbols and the email copy only 8, so an INR receipt read "INR 500"
+// by email and "₹500" on screen, and the rule under the totals block sat 10pt
+// apart between them. The route's version is the canonical one kept here.
+//
+// `opts.tenantIds` makes the receipt TENANT-SCOPED, for the portal. See
+// buildVisibleLines below for why that is not the same as an ownership check.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CURRENCY_SYMBOLS = {
+  USD: '$', HKD: 'HK$', GBP: '£', EUR: '€', SGD: 'S$', AUD: 'A$',
+  CAD: 'C$', NZD: 'NZ$', MYR: 'RM', PHP: '₱', THB: '฿', JPY: '¥',
+  CNY: '¥', KRW: '₩', INR: '₹', AED: 'AED ',
+};
+const currencySymbol = (code) => CURRENCY_SYMBOLS[code] || (code + ' ');
+
+const RECEIPT_PAYMENT_SQL =
+  `SELECT a.*, a.transaction_code, a.payment_date, a.note AS payment_note, a.amount AS header_amount,
+          t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
+          t.email AS tenant_email, t.phone AS tenant_phone,
+          t.company_name AS tenant_company_name, t.type AS tenant_type,
+          pms.payment_method AS payment_method_name
+     FROM accounting a
+     LEFT JOIN tenant t ON a.tenant_id = t.id
+     LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
+    WHERE a.id = ? AND a.org_id = ? AND a.deleted_at IS NULL`;
+
+// `i.tenant_id` is selected purely so the portal can tell whose line this is.
+const RECEIPT_LINES_SQL =
+  `SELECT al.amount, al.invoice_code,
+          i.id AS invoice_id, i.tenant_id AS invoice_tenant_id,
+          i.amount AS invoice_amount, i.status AS invoice_status, i.note AS invoice_note,
+          cs.name AS invoice_category,
+          u.name AS unit_name, u.account_name AS unit_account_name,
+          p.display_name AS property_name, p.street_address AS property_address,
+          p.city AS property_city, p.state AS property_state,
+          p.currency AS property_currency, p.landlord_name AS property_landlord_name
+     FROM accounting_line al
+     LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
+     LEFT JOIN category_setting cs ON cs.id = i.category
+     LEFT JOIN unit u ON i.unit_id = u.id
+     LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
+    WHERE al.accounting_id = ? AND al.deleted_at IS NULL
+    ORDER BY al.id ASC`;
+
+/**
+ * Decide which lines of a payment a given tenant may see.
+ *
+ * A plain ownership check on `accounting.tenant_id` is NOT enough. Tane receives
+ * Airbnb payouts through Xero: one bank deposit covering several guests' stays,
+ * split into one accounting_line per guest invoice, with the payment's own
+ * tenant_id left NULL. Four such rows landed between 20 Jul and 4 Sep 2026
+ * (TANE41799, TANE41918, TANE42218, TANE42354), covering nine tenants. A receipt
+ * built from the whole payment would show each of them the others' invoice codes
+ * and amounts, and the payment note on those rows carries the other guests'
+ * names, confirmation codes, nightly rates and Airbnb's service fee.
+ *
+ * So: keep the lines that are theirs, drop the rest.
+ *
+ * Orphan lines — an invoice_code matching no surviving invoice, which is most of
+ * the pre-migration Xero data — carry no tenant identity, so they cannot be
+ * attributed. They ride along only on a payment that is unambiguously this
+ * tenant's (their header id, no other tenant's line on it) and are dropped from
+ * a scoped receipt otherwise.
+ */
+function buildVisibleLines(pmt, lines, tenantIds) {
+  if (!tenantIds) return lines;               // staff: whole payment, unchanged
+  const ids = new Set(tenantIds.map(String));
+  const foreign = lines.filter(l => l.invoice_tenant_id && !ids.has(String(l.invoice_tenant_id)));
+  const own = lines.filter(l => l.invoice_tenant_id && ids.has(String(l.invoice_tenant_id)));
+  const headerTheirs = pmt.tenant_id && ids.has(String(pmt.tenant_id));
+  if (foreign.length === 0 && headerTheirs) return lines;
+  return own;
+}
+
+/**
+ * @param {object} [opts]
+ * @param {string[]} [opts.tenantIds] Scope to these tenants (tenant portal). The
+ *        raw payment note is never printed when set — on a combined payout it is
+ *        the note, not the line list, that names other people.
+ * @returns {object|null} null when the payment does not exist, or when nothing on
+ *        it belongs to the given tenants.
+ */
+async function loadReceiptPdfData(pool, paymentId, orgId, opts = {}) {
+  const tenantIds = opts.tenantIds && opts.tenantIds.length ? opts.tenantIds : null;
+
+  const [paymentRows] = await pool.execute(RECEIPT_PAYMENT_SQL, [paymentId, orgId]);
+  if (paymentRows.length === 0) return null;
+  const pmt = paymentRows[0];
+
+  const [allLines] = await pool.execute(RECEIPT_LINES_SQL, [orgId, paymentId]);
+
+  // A payment with no lines at all (20 of them in Tane's data) still gets a
+  // receipt, synthesised from the header amount — but only for whoever it is
+  // actually booked against.
+  if (allLines.length === 0 && tenantIds) {
+    const ids = new Set(tenantIds.map(String));
+    if (!pmt.tenant_id || !ids.has(String(pmt.tenant_id))) return null;
+  }
+
+  const lines = buildVisibleLines(pmt, allLines, tenantIds);
+  if (tenantIds && allLines.length > 0 && lines.length === 0) return null;
+
+  const [orgRows] = await pool.execute(ORG_INFO_SQL, [orgId]).catch(() => [[]]);
+  const org = orgRows?.[0] || {};
+
+  // Company name and the property block come from the VISIBLE lines, so a scoped
+  // receipt is headed with the tenant's own property rather than whichever one
+  // happened to sort first on the payout.
+  const companyName = (lines.length > 0 && (lines[0].unit_account_name || lines[0].property_landlord_name)) || '';
+  const firstLine = lines[0] || {};
+  const currencyCode = firstLine.property_currency || org.default_currency || 'USD';
+
+  // Receipt number: REC + transaction_code digits
+  const receiptNo = `REC${(pmt.transaction_code || '').replace(/^[A-Za-z-]+/, '')}`;
+
+  let paymentAmount = 0;
+  lines.forEach(l => { paymentAmount += parseFloat(l.amount) || 0; });
+  // The header amount is the whole deposit, so it can only stand in when there
+  // were no lines to add up. Falling back to it on a scoped receipt would print
+  // the full payout total under the tenant's single line.
+  if (paymentAmount === 0 && lines.length === 0) paymentAmount = parseFloat(pmt.header_amount) || 0;
+
+  return {
+    pmt, lines, org, companyName, firstLine, receiptNo, paymentAmount,
+    currSymbol: currencySymbol(currencyCode),
+    allowPaymentNote: !tenantIds,
+  };
+}
+
+function renderReceiptPdf(doc, data) {
+  const { pmt, lines, org, companyName, firstLine, receiptNo, paymentAmount, currSymbol, allowPaymentNote } = data;
+  const fmtCurr = (v) => `${currSymbol}${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';
+
+  const W = doc.page.width;   // 595
+  const M = 40;               // margin
+  const CW = W - M * 2;       // content width
+
+  // ── Company Logo ─────────────────────────────────────────────────────────
+  let y = 25;
+  if (org.logo) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const logoPath = path.join(__dirname, '../../uploads', org.logo);
+      if (fs.existsSync(logoPath)) {
+        doc.image(logoPath, M, y, { height: 45 });
+      }
+    } catch (e) { /* skip logo on error */ }
+    y += 55;
+  } else {
+    y += 10;
+  }
+
+  // ── Header bar (light grey) ──────────────────────────────────────────────
+  doc.rect(0, y, W, 65).fill('#f0f0f0');
+
+  // Left side: Bank account name (from unit.account_name) as title, fallback to RECEIPT
+  const titleText = companyName || 'RECEIPT';
+  doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text(titleText, M, y + 12);
+  if (companyName) {
+    doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
+  }
+
+  // Right side: date on top (larger), receipt number below (smaller)
+  doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold')
+     .text(`Date: ${(pmt.payment_date ? fmtDate(pmt.payment_date) : fmtInstantHk(new Date()))}`, W - M - 200, y + 15, { width: 200, align: 'right' });
+  doc.fillColor('#666666').fontSize(9).font('Helvetica')
+     .text(`Receipt: #${receiptNo}`, W - M - 200, y + 36, { width: 200, align: 'right' });
+
+  y += 80;
+
+  // ── Status badge ─────────────────────────────────────────────────────────
+  doc.rect(M, y, 50, 18).fill('#52c41a');
+  doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold')
+     .text('PAID', M + 2, y + 4, { width: 46, align: 'center' });
+  y += 30;
+
+  // ── Info grid: Received From / Property ──────────────────────────────────
+  const halfW = CW / 2;
+  doc.rect(M, y, halfW - 2, 80).fill('#f8f9fb');
+  doc.rect(M + halfW + 2, y, halfW - 2, 80).fill('#f8f9fb');
+
+  // Left: Received From
+  doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('RECEIVED FROM', M + 12, y + 8);
+  const tenantName = pmt.tenant_type === 1
+    ? (pmt.tenant_company_name || `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim())
+    : `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim();
+  doc.fillColor('#333333').fontSize(9).font('Helvetica')
+     .text(tenantName || '-', M + 12, y + 22)
+     .text(pmt.tenant_email || '', M + 12, y + 35)
+     .text(pmt.tenant_phone || '', M + 12, y + 48);
+
+  // Right: Property / Unit
+  doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('PROPERTY / UNIT', M + halfW + 14, y + 8);
+  const addressParts = [firstLine.property_address, firstLine.property_city, firstLine.property_state].filter(Boolean).join(', ');
+  doc.fillColor('#333333').fontSize(9).font('Helvetica')
+     .text(firstLine.property_name || '-', M + halfW + 14, y + 22)
+     .text(firstLine.unit_name ? `Unit ${firstLine.unit_name}` : '', M + halfW + 14, y + 35)
+     .text(addressParts || '', M + halfW + 14, y + 48, { width: halfW - 30 });
+
+  y += 95;
+
+  // ── Items table ──────────────────────────────────────────────────────────
+  doc.rect(M, y, CW, 22).fill('#f0f0f0');
+  doc.fillColor('#333333').fontSize(9).font('Helvetica-Bold')
+     .text('DESCRIPTION', M + 10, y + 6)
+     .text('INVOICE #', M + CW * 0.55, y + 6)
+     .text('AMOUNT', M + CW - 80, y + 6, { width: 70, align: 'right' });
+  y += 22;
+
+  // One row per line item (usually 1, but could be multiple if payment covers multiple invoices)
+  const displayLines = lines.length > 0 ? lines : [{ amount: paymentAmount, invoice_code: pmt.invoice_code, invoice_note: null }];
+  const descW = CW * 0.5 - 10;
+  displayLines.forEach((line, idx) => {
+    // Per-line description: prefer THIS line's invoice note. Only a single-line
+    // receipt falls back to the payment's (combined) note — using pmt.payment_note
+    // for every line duplicated the whole combined note on each row.
+    // collapseDuplicateNote covers notes already stored as "X — X" by an earlier
+    // Xero import; the backfill script clears those, this keeps a stale one from
+    // reaching a tenant's receipt in the meantime.
+    //
+    // allowPaymentNote is false for the tenant portal. On a combined Airbnb payout
+    // the note is a transcript of every guest's stay on that deposit, so a scoped
+    // receipt describes each line from its own invoice or nothing at all.
+    const ownNote = line.invoice_note || line.invoice_category || 'Payment';
+    const desc = (allowPaymentNote && displayLines.length === 1)
+      ? (collapseDuplicateNote(pmt.payment_note) || ownNote)
+      : ownNote;
+    // Row height must fit the WRAPPED description — a long note overflowed the
+    // fixed 28px row and overlapped the next row / the totals block.
+    const descH = doc.fontSize(9).font('Helvetica').heightOfString(desc, { width: descW });
+    const rowH = Math.max(28, descH + 14);
+    const bg = idx % 2 === 0 ? '#ffffff' : '#fafafa';
+    doc.rect(M, y, CW, rowH).fill(bg);
+    doc.fillColor('#333333').fontSize(9).font('Helvetica')
+       .text(desc, M + 10, y + 8, { width: descW })
+       .text(line.invoice_code || '-', M + CW * 0.55, y + 8)
+       .font('Helvetica-Bold')
+       .text(fmtCurr(line.amount), M + CW - 80, y + 8, { width: 70, align: 'right' });
+    y += rowH;
+  });
+
+  doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
+  y += 15;
+
+  // ── Totals (right-aligned) ───────────────────────────────────────────────
+  const totalsX = M + CW - 220;
+  const totalsW = 220;
+
+  const totalsRow = (label, value, bold) => {
+    const f = bold ? 'Helvetica-Bold' : 'Helvetica';
+    const sz = bold ? 12 : 10;
+    doc.fillColor(bold ? '#333333' : '#555555').fontSize(sz).font(f)
+       .text(label, totalsX, y, { width: totalsW / 2 })
+       .text(value, totalsX + totalsW / 2, y, { width: totalsW / 2, align: 'right' });
+    y += bold ? 22 : 16;
+  };
+
+  // Divider before total
+  doc.moveTo(totalsX, y).lineTo(totalsX + totalsW, y).strokeColor('#333333').lineWidth(1.5).stroke();
+  y += 8;
+  totalsRow('Total Received:', fmtCurr(paymentAmount), true);
+
+  y += 10;
+
+  // ── Payment details ──────────────────────────────────────────────────────
+  doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
+  y += 15;
+
+  const detailCols = [];
+  if (pmt.payment_method_name) {
+    detailCols.push({ label: 'PAYMENT METHOD', value: pmt.payment_method_name });
+  }
+  if (pmt.payment_date) {
+    detailCols.push({ label: 'PAYMENT DATE', value: fmtDate(pmt.payment_date) });
+  }
+  if (pmt.transaction_code) {
+    detailCols.push({ label: 'TRANSACTION CODE', value: pmt.transaction_code });
+  }
+
+  if (detailCols.length > 0) {
+    const colWidth = CW / detailCols.length;
+    detailCols.forEach((col, i) => {
+      const x = M + (i * colWidth);
+      doc.fillColor('#999999').fontSize(8).font('Helvetica-Bold').text(col.label, x, y);
+      doc.fillColor('#333333').fontSize(10).font('Helvetica').text(col.value, x, y + 12);
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/pdf/receipt/:paymentId  —  Generate receipt PDF for a single payment
 // Each payment (accounting record) gets its own receipt
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/receipt/:paymentId', authenticate, async (req, res) => {
   try {
     const { paymentId } = req.params;
-    const orgId = req.user.orgId;
+    const data = await loadReceiptPdfData(req.pool, paymentId, req.user.orgId);
+    if (!data) return res.status(404).json({ code: 404, message: 'Payment not found' });
 
-    // 1. Fetch the payment (accounting record) with its line items
-    const [paymentRows] = await req.pool.execute(
-      `SELECT a.*, a.transaction_code, a.payment_date, a.note AS payment_note, a.amount AS header_amount,
-              t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
-              t.email AS tenant_email, t.phone AS tenant_phone,
-              t.company_name AS tenant_company_name, t.type AS tenant_type,
-              pms.payment_method AS payment_method_name
-       FROM accounting a
-       LEFT JOIN tenant t ON a.tenant_id = t.id
-       LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
-       WHERE a.id = ? AND a.org_id = ? AND a.deleted_at IS NULL`,
-      [paymentId, orgId]
-    );
-
-    if (paymentRows.length === 0) {
-      return res.status(404).json({ code: 404, message: 'Payment not found' });
-    }
-
-    const pmt = paymentRows[0];
-
-    // 2. Fetch all line items for this payment (each may link to a different invoice)
-    const [lines] = await req.pool.execute(
-      `SELECT al.amount, al.invoice_code,
-              i.id AS invoice_id, i.amount AS invoice_amount, i.status AS invoice_status, i.note AS invoice_note,
-              cs.name AS invoice_category,
-              u.name AS unit_name, u.account_name AS unit_account_name,
-              p.display_name AS property_name, p.street_address AS property_address,
-              p.city AS property_city, p.state AS property_state,
-              p.currency AS property_currency, p.landlord_name AS property_landlord_name
-       FROM accounting_line al
-       LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
-       LEFT JOIN category_setting cs ON cs.id = i.category
-       LEFT JOIN unit u ON i.unit_id = u.id
-       LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
-       WHERE al.accounting_id = ? AND al.deleted_at IS NULL
-       ORDER BY al.id ASC`,
-      [orgId, paymentId]
-    );
-
-    // 3. Fetch org settings
-    const [orgRows] = await req.pool.execute(
-      ORG_INFO_SQL, [orgId]
-    ).catch(() => [[]]);
-    const org = orgRows?.[0] || {};
-
-    // Use first line's unit account_name as company name, then the property's
-    // landlord entity (see migration 032 — `org.company_name` was always empty).
-    const companyName = (lines.length > 0 && (lines[0].unit_account_name || lines[0].property_landlord_name)) || '';
-
-    // Use first line's property info for display
-    const firstLine = lines[0] || {};
-
-    // Currency
-    const currencyCode = firstLine.property_currency || org.default_currency || 'USD';
-    const currSymbol = { USD: '$', HKD: 'HK$', GBP: '\u00a3', EUR: '\u20ac', SGD: 'S$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$', MYR: 'RM', PHP: '\u20b1', THB: '\u0e3f', JPY: '\u00a5', CNY: '\u00a5', KRW: '\u20a9', INR: '\u20b9', AED: 'AED ' }[currencyCode] || (currencyCode + ' ');
-    const fmtCurr = (v) => `${currSymbol}${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';
-
-    // Receipt number: REC + transaction_code digits
-    const codeDigits = (pmt.transaction_code || '').replace(/^[A-Za-z-]+/, '');
-    const receiptNo = `REC${codeDigits}`;
-
-    // Payment amount (sum of lines, or header amount)
-    let paymentAmount = 0;
-    lines.forEach(l => { paymentAmount += parseFloat(l.amount) || 0; });
-    if (paymentAmount === 0) paymentAmount = parseFloat(pmt.header_amount) || 0;
-
-    // ── Build PDF ────────────────────────────────────────────────────────────
     const doc = new PDFDocument({ margin: 0, size: 'A4' });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="receipt-${receiptNo}.pdf"`);
+    res.setHeader('Content-Disposition', `inline; filename="receipt-${data.receiptNo}.pdf"`);
     doc.pipe(res);
-
-    const W = doc.page.width;   // 595
-    const M = 40;               // margin
-    const CW = W - M * 2;      // content width
-
-    // ── Company Logo ─────────────────────────────────────────────────────────
-    let y = 25;
-    if (org.logo) {
-      try {
-        const fs = require('fs');
-        const path = require('path');
-        const logoPath = path.join(__dirname, '../../uploads', org.logo);
-        if (fs.existsSync(logoPath)) {
-          doc.image(logoPath, M, y, { height: 45 });
-        }
-      } catch (e) { /* skip logo on error */ }
-      y += 55;
-    } else {
-      y += 10;
-    }
-
-    // ── Header bar (light grey) ──────────────────────────────────────────────
-    doc.rect(0, y, W, 65).fill('#f0f0f0');
-
-    // Left side: Bank account name (from unit.account_name) as title, fallback to RECEIPT
-    const titleText = companyName || 'RECEIPT';
-    doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text(titleText, M, y + 12);
-    if (companyName) {
-      doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
-    }
-
-    // Right side: date on top (larger), receipt number below (smaller)
-    doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold')
-       .text(`Date: ${(pmt.payment_date ? fmtDate(pmt.payment_date) : fmtInstantHk(new Date()))}`, W - M - 200, y + 15, { width: 200, align: 'right' });
-    doc.fillColor('#666666').fontSize(9).font('Helvetica')
-       .text(`Receipt: #${receiptNo}`, W - M - 200, y + 36, { width: 200, align: 'right' });
-
-    y += 80;
-
-    // ── Status badge ─────────────────────────────────────────────────────────
-    doc.rect(M, y, 50, 18).fill('#52c41a');
-    doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold')
-       .text('PAID', M + 2, y + 4, { width: 46, align: 'center' });
-    y += 30;
-
-    // ── Info grid: Received From / Property ──────────────────────────────────
-    const halfW = CW / 2;
-    doc.rect(M, y, halfW - 2, 80).fill('#f8f9fb');
-    doc.rect(M + halfW + 2, y, halfW - 2, 80).fill('#f8f9fb');
-
-    // Left: Received From
-    doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('RECEIVED FROM', M + 12, y + 8);
-    const tenantName = pmt.tenant_type === 1
-      ? (pmt.tenant_company_name || `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim())
-      : `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim();
-    doc.fillColor('#333333').fontSize(9).font('Helvetica')
-       .text(tenantName || '-', M + 12, y + 22)
-       .text(pmt.tenant_email || '', M + 12, y + 35)
-       .text(pmt.tenant_phone || '', M + 12, y + 48);
-
-    // Right: Property / Unit
-    doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('PROPERTY / UNIT', M + halfW + 14, y + 8);
-    const addressParts = [firstLine.property_address, firstLine.property_city, firstLine.property_state].filter(Boolean).join(', ');
-    doc.fillColor('#333333').fontSize(9).font('Helvetica')
-       .text(firstLine.property_name || '-', M + halfW + 14, y + 22)
-       .text(firstLine.unit_name ? `Unit ${firstLine.unit_name}` : '', M + halfW + 14, y + 35)
-       .text(addressParts || '', M + halfW + 14, y + 48, { width: halfW - 30 });
-
-    y += 95;
-
-    // ── Items table ──────────────────────────────────────────────────────────
-    doc.rect(M, y, CW, 22).fill('#f0f0f0');
-    doc.fillColor('#333333').fontSize(9).font('Helvetica-Bold')
-       .text('DESCRIPTION', M + 10, y + 6)
-       .text('INVOICE #', M + CW * 0.55, y + 6)
-       .text('AMOUNT', M + CW - 80, y + 6, { width: 70, align: 'right' });
-    y += 22;
-
-    // One row per line item (usually 1, but could be multiple if payment covers multiple invoices)
-    const displayLines = lines.length > 0 ? lines : [{ amount: paymentAmount, invoice_code: pmt.invoice_code, invoice_note: null }];
-    const descW = CW * 0.5 - 10;
-    displayLines.forEach((line, idx) => {
-      // Per-line description: prefer THIS line's invoice note. Only a single-line
-      // receipt falls back to the payment's (combined) note — using pmt.payment_note
-      // for every line duplicated the whole combined note on each row.
-      // collapseDuplicateNote covers notes already stored as "X — X" by an earlier
-      // Xero import; the backfill script clears those, this keeps a stale one from
-      // reaching a tenant's receipt in the meantime.
-      const desc = (displayLines.length > 1
-        ? (line.invoice_note || line.invoice_category || 'Payment')
-        : (collapseDuplicateNote(pmt.payment_note) || line.invoice_note || line.invoice_category || 'Payment'));
-      // Row height must fit the WRAPPED description — a long note overflowed the
-      // fixed 28px row and overlapped the next row / the totals block.
-      const descH = doc.fontSize(9).font('Helvetica').heightOfString(desc, { width: descW });
-      const rowH = Math.max(28, descH + 14);
-      const bg = idx % 2 === 0 ? '#ffffff' : '#fafafa';
-      doc.rect(M, y, CW, rowH).fill(bg);
-      doc.fillColor('#333333').fontSize(9).font('Helvetica')
-         .text(desc, M + 10, y + 8, { width: descW })
-         .text(line.invoice_code || '-', M + CW * 0.55, y + 8)
-         .font('Helvetica-Bold')
-         .text(fmtCurr(line.amount), M + CW - 80, y + 8, { width: 70, align: 'right' });
-      y += rowH;
-    });
-
-    doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
-    y += 15;
-
-    // ── Totals (right-aligned) ───────────────────────────────────────────────
-    const totalsX = M + CW - 220;
-    const totalsW = 220;
-
-    const totalsRow = (label, value, bold) => {
-      const f = bold ? 'Helvetica-Bold' : 'Helvetica';
-      const sz = bold ? 12 : 10;
-      doc.fillColor(bold ? '#333333' : '#555555').fontSize(sz).font(f)
-         .text(label, totalsX, y, { width: totalsW / 2 })
-         .text(value, totalsX + totalsW / 2, y, { width: totalsW / 2, align: 'right' });
-      y += bold ? 22 : 16;
-    };
-
-    // Divider before total
-    doc.moveTo(totalsX, y).lineTo(totalsX + totalsW, y).strokeColor('#333333').lineWidth(1.5).stroke();
-    y += 8;
-    totalsRow('Total Received:', fmtCurr(paymentAmount), true);
-
-    y += 10;
-
-    // ── Payment details ──────────────────────────────────────────────────────
-    doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
-    y += 15;
-
-    const detailCols = [];
-    if (pmt.payment_method_name) {
-      detailCols.push({ label: 'PAYMENT METHOD', value: pmt.payment_method_name });
-    }
-    if (pmt.payment_date) {
-      detailCols.push({ label: 'PAYMENT DATE', value: fmtDate(pmt.payment_date) });
-    }
-    if (pmt.transaction_code) {
-      detailCols.push({ label: 'TRANSACTION CODE', value: pmt.transaction_code });
-    }
-
-    if (detailCols.length > 0) {
-      const colWidth = CW / detailCols.length;
-      detailCols.forEach((col, i) => {
-        const x = M + (i * colWidth);
-        doc.fillColor('#999999').fontSize(8).font('Helvetica-Bold').text(col.label, x, y);
-        doc.fillColor('#333333').fontSize(10).font('Helvetica').text(col.value, x, y + 12);
-      });
-    }
-
+    renderReceiptPdf(doc, data);
     doc.end();
   } catch (error) {
     console.error('Generate receipt PDF error:', error);
@@ -691,182 +769,25 @@ router.get('/receipt/:paymentId', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// generateReceiptPdfBuffer — same receipt PDF but returns a Buffer (for email)
+// generateReceiptPdfBuffer — same receipt PDF but returns a Buffer (for email,
+// and for the tenant portal, which passes opts.tenantIds)
 // ─────────────────────────────────────────────────────────────────────────────
-async function generateReceiptPdfBuffer(pool, paymentId, orgId) {
-  // 1. Fetch payment
-  const [paymentRows] = await pool.execute(
-    `SELECT a.*, a.transaction_code, a.payment_date, a.note AS payment_note, a.amount AS header_amount,
-            t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
-            t.email AS tenant_email, t.phone AS tenant_phone,
-            t.company_name AS tenant_company_name, t.type AS tenant_type,
-            pms.payment_method AS payment_method_name
-     FROM accounting a
-     LEFT JOIN tenant t ON a.tenant_id = t.id
-     LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
-     WHERE a.id = ? AND a.org_id = ? AND a.deleted_at IS NULL`,
-    [paymentId, orgId]
-  );
-  if (paymentRows.length === 0) return null;
-  const pmt = paymentRows[0];
-
-  // 2. Fetch lines
-  const [lines] = await pool.execute(
-    `SELECT al.amount, al.invoice_code,
-            i.id AS invoice_id, i.amount AS invoice_amount, i.note AS invoice_note,
-            cs.name AS invoice_category,
-            u.name AS unit_name, u.account_name AS unit_account_name,
-            p.display_name AS property_name, p.street_address AS property_address,
-            p.city AS property_city, p.state AS property_state, p.currency AS property_currency,
-            p.landlord_name AS property_landlord_name
-     FROM accounting_line al
-     LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
-     LEFT JOIN category_setting cs ON cs.id = i.category
-     LEFT JOIN unit u ON i.unit_id = u.id
-     LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
-     WHERE al.accounting_id = ? AND al.deleted_at IS NULL ORDER BY al.id ASC`,
-    [orgId, paymentId]
-  );
-
-  // 3. Org settings
-  const [orgRows] = await pool.execute(
-    ORG_INFO_SQL, [orgId]
-  ).catch(() => [[]]);
-  const org = orgRows?.[0] || {};
-
-  // Same chain as the /receipt/:id route above — keep both copies in step.
-  const companyName = (lines.length > 0 && (lines[0].unit_account_name || lines[0].property_landlord_name)) || '';
-  const firstLine = lines[0] || {};
-  const currencyCode = firstLine.property_currency || org.default_currency || 'USD';
-  const currSymbol = { USD: '$', HKD: 'HK$', GBP: '\u00a3', EUR: '\u20ac', SGD: 'S$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$' }[currencyCode] || (currencyCode + ' ');
-  const fmtCurr = (v) => `${currSymbol}${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '-';
-
-  const codeDigits = (pmt.transaction_code || '').replace(/^[A-Za-z-]+/, '');
-  const receiptNo = `REC${codeDigits}`;
-
-  let paymentAmount = 0;
-  lines.forEach(l => { paymentAmount += parseFloat(l.amount) || 0; });
-  if (paymentAmount === 0) paymentAmount = parseFloat(pmt.header_amount) || 0;
-
-  // Build PDF into buffer
+function receiptBufferFromData(data) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 0, size: 'A4' });
     const chunks = [];
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
-
-    const W = doc.page.width;
-    const M = 40;
-    const CW = W - M * 2;
-
-    let y = 25;
-    if (org.logo) {
-      try {
-        const fs = require('fs');
-        const path = require('path');
-        const logoPath = path.join(__dirname, '../../uploads', org.logo);
-        if (fs.existsSync(logoPath)) {
-          doc.image(logoPath, M, y, { height: 45 });
-        }
-      } catch (e) { /* skip */ }
-      y += 55;
-    } else {
-      y += 10;
-    }
-
-    // Header bar
-    doc.rect(0, y, W, 65).fill('#f0f0f0');
-    const titleText = companyName || 'RECEIPT';
-    doc.fillColor('#333333').fontSize(24).font('Helvetica-Bold').text(titleText, M, y + 12);
-    if (companyName) doc.fillColor('#666666').fontSize(10).font('Helvetica').text(companyName, M, y + 40);
-    doc.fillColor('#333333').fontSize(11).font('Helvetica-Bold').text(`Date: ${(pmt.payment_date ? fmtDate(pmt.payment_date) : fmtInstantHk(new Date()))}`, W - M - 200, y + 15, { width: 200, align: 'right' });
-    doc.fillColor('#666666').fontSize(9).font('Helvetica').text(`Receipt: #${receiptNo}`, W - M - 200, y + 36, { width: 200, align: 'right' });
-    y += 80;
-
-    // Status
-    doc.rect(M, y, 50, 18).fill('#52c41a');
-    doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold').text('PAID', M + 2, y + 4, { width: 46, align: 'center' });
-    y += 30;
-
-    // Info grid
-    const halfW = CW / 2;
-    doc.rect(M, y, halfW - 2, 80).fill('#f8f9fb');
-    doc.rect(M + halfW + 2, y, halfW - 2, 80).fill('#f8f9fb');
-    doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('RECEIVED FROM', M + 12, y + 8);
-    const tenantName = pmt.tenant_type === 1
-      ? (pmt.tenant_company_name || `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim())
-      : `${pmt.tenant_first_name || ''} ${pmt.tenant_last_name || ''}`.trim();
-    doc.fillColor('#333333').fontSize(9).font('Helvetica')
-       .text(tenantName || '-', M + 12, y + 22)
-       .text(pmt.tenant_email || '', M + 12, y + 35)
-       .text(pmt.tenant_phone || '', M + 12, y + 48);
-    doc.fillColor('#1a3c8f').fontSize(8).font('Helvetica-Bold').text('PROPERTY / UNIT', M + halfW + 14, y + 8);
-    const addressParts = [firstLine.property_address, firstLine.property_city, firstLine.property_state].filter(Boolean).join(', ');
-    doc.fillColor('#333333').fontSize(9).font('Helvetica')
-       .text(firstLine.property_name || '-', M + halfW + 14, y + 22)
-       .text(firstLine.unit_name ? `Unit ${firstLine.unit_name}` : '', M + halfW + 14, y + 35)
-       .text(addressParts || '', M + halfW + 14, y + 48, { width: halfW - 30 });
-    y += 95;
-
-    // Items table
-    doc.rect(M, y, CW, 22).fill('#f0f0f0');
-    doc.fillColor('#333333').fontSize(9).font('Helvetica-Bold')
-       .text('DESCRIPTION', M + 10, y + 6)
-       .text('INVOICE #', M + CW * 0.55, y + 6)
-       .text('AMOUNT', M + CW - 80, y + 6, { width: 70, align: 'right' });
-    y += 22;
-    const displayLines = lines.length > 0 ? lines : [{ amount: paymentAmount, invoice_code: pmt.invoice_code, invoice_note: null }];
-    const descW = CW * 0.5 - 10;
-    displayLines.forEach((line, idx) => {
-      // Per-line description (see /receipt route): each line uses its OWN invoice
-      // note; only single-line receipts fall back to the payment's combined note,
-      // collapsed if an earlier Xero import stored it as "X — X".
-      const desc = (displayLines.length > 1
-        ? (line.invoice_note || line.invoice_category || 'Payment')
-        : (collapseDuplicateNote(pmt.payment_note) || line.invoice_note || line.invoice_category || 'Payment'));
-      // Dynamic row height so a long wrapped note doesn't overlap the next row.
-      const descH = doc.fontSize(9).font('Helvetica').heightOfString(desc, { width: descW });
-      const rowH = Math.max(28, descH + 14);
-      const bg = idx % 2 === 0 ? '#ffffff' : '#fafafa';
-      doc.rect(M, y, CW, rowH).fill(bg);
-      doc.fillColor('#333333').fontSize(9).font('Helvetica').text(desc, M + 10, y + 8, { width: descW })
-         .text(line.invoice_code || '-', M + CW * 0.55, y + 8)
-         .font('Helvetica-Bold').text(fmtCurr(line.amount), M + CW - 80, y + 8, { width: 70, align: 'right' });
-      y += rowH;
-    });
-    doc.moveTo(M, y).lineTo(M + CW, y).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
-    y += 15;
-
-    // Total
-    const totalsX = M + CW - 220;
-    const totalsW = 220;
-    doc.moveTo(totalsX, y).lineTo(totalsX + totalsW, y).strokeColor('#333333').lineWidth(1.5).stroke();
-    y += 8;
-    doc.fillColor('#333333').fontSize(12).font('Helvetica-Bold')
-       .text('Total Received:', totalsX, y, { width: totalsW / 2 })
-       .text(fmtCurr(paymentAmount), totalsX + totalsW / 2, y, { width: totalsW / 2, align: 'right' });
-    y += 22;
-
-    // Payment details
-    doc.moveTo(M, y + 10).lineTo(M + CW, y + 10).strokeColor('#e8e8e8').lineWidth(0.5).stroke();
-    y += 25;
-    const detailCols = [];
-    if (pmt.payment_method_name) detailCols.push({ label: 'PAYMENT METHOD', value: pmt.payment_method_name });
-    if (pmt.payment_date) detailCols.push({ label: 'PAYMENT DATE', value: fmtDate(pmt.payment_date) });
-    if (pmt.transaction_code) detailCols.push({ label: 'TRANSACTION CODE', value: pmt.transaction_code });
-    if (detailCols.length > 0) {
-      const colWidth = CW / detailCols.length;
-      detailCols.forEach((col, i) => {
-        const x = M + (i * colWidth);
-        doc.fillColor('#999999').fontSize(8).font('Helvetica-Bold').text(col.label, x, y);
-        doc.fillColor('#333333').fontSize(10).font('Helvetica').text(col.value, x, y + 12);
-      });
-    }
-
+    renderReceiptPdf(doc, data);
     doc.end();
   });
+}
+
+async function generateReceiptPdfBuffer(pool, paymentId, orgId, opts = {}) {
+  const data = await loadReceiptPdfData(pool, paymentId, orgId, opts);
+  if (!data) return null;
+  return receiptBufferFromData(data);
 }
 
 module.exports = router;
@@ -875,3 +796,11 @@ module.exports.generateInvoicePdfBuffer = generateInvoicePdfBuffer;
 // Exported for tests: lets the renderer be driven against a stub `doc` so the
 // text it actually emits can be asserted, rather than a copy of its logic.
 module.exports.renderInvoicePdf = renderInvoicePdf;
+module.exports.renderReceiptPdf = renderReceiptPdf;
+module.exports.loadReceiptPdfData = loadReceiptPdfData;
+// Split from generateReceiptPdfBuffer so a caller that already has the data — the
+// portal needs the receipt number for the filename — renders it without loading twice.
+module.exports.receiptBufferFromData = receiptBufferFromData;
+// Exported for tests: the tenant-scoping rule is the whole reason a portal receipt
+// is safe to serve, so it is asserted directly rather than through a PDF.
+module.exports.buildVisibleLines = buildVisibleLines;

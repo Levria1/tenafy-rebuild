@@ -40,6 +40,21 @@ export const tenantPortal = {
   getProfile: () => tenantApi.get('/api/tenant-portal/profile'),
   updateProfile: (data) => tenantApi.put('/api/tenant-portal/profile', data),
 
+  getUtilities: () => tenantApi.get('/api/tenant-portal/utilities'),
+
+  // Payment activity on one invoice, loaded when its row is expanded rather than for
+  // every row up front. Each entry carries receipt_available, decided by the same
+  // renderer that would produce the file.
+  getInvoicePayments: (id) => tenantApi.get(`/api/tenant-portal/invoices/${id}/payments`),
+
+  // Blobs, not URLs. Both are Content-Disposition: attachment, and going through axios
+  // keeps the 401 interceptor in play — a window.open on an expired session would
+  // otherwise download a JSON error body named invoice-TRIV1234.pdf.
+  downloadInvoicePdf: (id) =>
+    tenantApi.get(`/api/tenant-portal/invoices/${id}/pdf`, { responseType: 'blob' }),
+  downloadReceiptPdf: (paymentId) =>
+    tenantApi.get(`/api/tenant-portal/payments/${paymentId}/receipt`, { responseType: 'blob' }),
+
   getRepairs: () => tenantApi.get('/api/tenant-portal/service'),
   getRepairOptions: () => tenantApi.get('/api/tenant-portal/service/options'),
   // Multipart: photos ride along with the form so there is no orphan-file-id to validate.

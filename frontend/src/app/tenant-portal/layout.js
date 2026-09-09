@@ -9,6 +9,7 @@ import {
   ContainerOutlined,
   UserOutlined,
   ToolOutlined,
+  ThunderboltOutlined,
   LogoutOutlined,
 } from '@ant-design/icons';
 import { tenantPortal } from '../../lib/tenantApi';
@@ -16,10 +17,14 @@ import { tenantPortal } from '../../lib/tenantApi';
 const { Header, Content, Footer } = Layout;
 const { Text } = Typography;
 
+// `feature` marks a tab that only appears when the profile probe says this tenant has
+// anything to see there. Utilities is metered electricity, which most orgs do not bill,
+// so an always-present tab would be permanently empty for them.
 const navItems = [
   { key: '/tenant-portal/dashboard', label: 'Dashboard', icon: <DashboardOutlined /> },
   { key: '/tenant-portal/leases', label: 'Leases', icon: <FileTextOutlined /> },
   { key: '/tenant-portal/invoices', label: 'Invoices', icon: <ContainerOutlined /> },
+  { key: '/tenant-portal/utilities', label: 'Utilities', icon: <ThunderboltOutlined />, feature: 'utilities' },
   { key: '/tenant-portal/repairs', label: 'Repairs', icon: <ToolOutlined /> },
   { key: '/tenant-portal/profile', label: 'Profile', icon: <UserOutlined /> },
 ];
@@ -45,6 +50,7 @@ function TenantPortalLayout({ children }) {
   // probe is redirected by the axios interceptor rather than rendered here.
   const [state, setState] = useState('checking');
   const [tenantName, setTenantName] = useState('');
+  const [features, setFeatures] = useState({});
 
   useEffect(() => {
     if (isAuthPage) return;
@@ -62,6 +68,7 @@ function TenantPortalLayout({ children }) {
         if (cancelled) return;
         const p = response.data?.data || {};
         setTenantName([p.first_name, p.last_name].filter(Boolean).join(' ').trim());
+        setFeatures(p.features || {});
         setState('ok');
       } catch (error) {
         if (cancelled) return;
@@ -112,7 +119,9 @@ function TenantPortalLayout({ children }) {
     );
   }
 
-  const selectedKey = navItems.find((item) => pathname.startsWith(item.key))?.key || '';
+  // Filter before selecting, so a hidden tab cannot be the highlighted one.
+  const visibleNav = navItems.filter((item) => !item.feature || features[item.feature]);
+  const selectedKey = visibleNav.find((item) => pathname.startsWith(item.key))?.key || '';
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -153,7 +162,7 @@ function TenantPortalLayout({ children }) {
             mode="horizontal"
             selectedKeys={[selectedKey]}
             onClick={handleMenuClick}
-            items={navItems}
+            items={visibleNav.map(({ feature, ...item }) => item)}
             style={{ background: 'transparent', borderBottom: 'none', minWidth: 400 }}
           />
         </Space>

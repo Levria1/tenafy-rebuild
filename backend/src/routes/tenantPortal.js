@@ -432,6 +432,229 @@ router.get('/invoices', authenticateTenant, async (req, res) => {
   }
 });
 
+
+// ── documents: invoice PDFs and receipts ────────────────────────────────────
+//
+// Both call the SAME renderers staff use (routes/pdf.js), never the staff routes
+// themselves — those sit behind `authenticate`, which attaches a staff identity.
+// The ownership check happens here instead, against the session's tenant ids.
+const { generateInvoicePdfBuffer, loadReceiptPdfData, receiptBufferFromData } = require('./pdf');
+
+// `attachment`, not `inline`. Staff view these in a tab; a tenant asked for them
+// wants a file to keep or forward.
+function sendPdf(res, buffer, filename) {
+  // The name is built from an invoice or transaction code, which the sequence table
+  // generates — but it still ends up in a response header, and a quote or newline
+  // reaching one is header injection. Cheaper to strip than to rely on the source.
+  const safe = String(filename).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100) || 'document.pdf';
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
+  res.setHeader('Content-Length', buffer.length);
+  res.end(buffer);
+}
+
+// Their own invoice, by id. `deleted_at IS NULL` matters: a voided invoice must not
+// keep producing a document after staff have withdrawn it.
+async function ownInvoice(req, invoiceId) {
+  const { orgId, tenantIds } = req.tenantPortal;
+  if (!/^\d+$/.test(String(invoiceId || ''))) return null;
+  const [rows] = await req.pool.execute(
+    `SELECT id, invoice_code FROM invoice
+      WHERE id = ? AND tenant_id IN (${idsIn(req)}) AND org_id = ? AND deleted_at IS NULL`,
+    [invoiceId, ...tenantIds, orgId]
+  );
+  return rows[0] || null;
+}
+
+router.get('/invoices/:id/pdf', authenticateTenant, async (req, res) => {
+  try {
+    const inv = await ownInvoice(req, req.params.id);
+    if (!inv) return res.status(404).json({ code: 404, message: 'Invoice not found' });
+
+    const buffer = await generateInvoicePdfBuffer(req.pool, String(inv.id), req.tenantPortal.orgId);
+    if (!buffer) return res.status(404).json({ code: 404, message: 'Invoice not found' });
+    sendPdf(res, buffer, `invoice-${inv.invoice_code || inv.id}.pdf`);
+  } catch (error) {
+    console.error('[tenant-portal] invoice pdf error:', error);
+    if (!res.headersSent) res.status(500).json({ code: 500, message: 'Failed to generate the invoice' });
+  }
+});
+
+// Payment activity on one of their invoices. Deliberately thin: transaction code,
+// date, method and amount, which is what identifies a receipt worth downloading.
+//
+// `receipt_available` is computed here rather than left for the page to guess, and
+// it is computed by asking the real renderer's rule — so the button is only offered
+// when the document will actually be produced.
+router.get('/invoices/:id/payments', authenticateTenant, async (req, res) => {
+  try {
+    const { orgId, tenantIds } = req.tenantPortal;
+    const ph = idsIn(req);
+    const inv = await ownInvoice(req, req.params.id);
+    if (!inv) return res.status(404).json({ code: 404, message: 'Invoice not found' });
+
+    // `own_lines` mirrors the decisive branch of buildVisibleLines (routes/pdf.js):
+    // a scoped receipt exists when at least one line on the payment resolves to an
+    // invoice of theirs. Computed here as a subquery rather than by loading each
+    // receipt in turn — one invoice in Tane's data carries 18 payments, and that
+    // would have been 54 queries to answer a question about a button.
+    //
+    // In practice it is always true, because these payments were found THROUGH the
+    // tenant's own invoice line. It is still derived rather than assumed, so the
+    // button cannot start lying if the scoping rule changes.
+    const [payments] = await req.pool.execute(
+      `SELECT a.id, a.transaction_code, a.payment_date, al.amount,
+              pms.payment_method AS payment_method_name,
+              (SELECT COUNT(*) FROM accounting_line al2
+                 JOIN invoice i2 ON i2.invoice_code = al2.invoice_code
+                      AND i2.org_id = a.org_id AND i2.deleted_at IS NULL
+                WHERE al2.accounting_id = a.id AND al2.deleted_at IS NULL
+                  AND i2.tenant_id IN (${ph})) AS own_lines
+         FROM accounting_line al
+         JOIN accounting a ON a.id = al.accounting_id
+         LEFT JOIN payment_method_setting pms ON a.payment_setting_id = pms.id
+        WHERE al.invoice_code = ? AND a.org_id = ?
+          AND a.deleted_at IS NULL AND al.deleted_at IS NULL
+        ORDER BY a.payment_date DESC, a.id DESC`,
+      [...tenantIds, inv.invoice_code, orgId]
+    );
+
+    res.json({
+      code: 200,
+      // bigNumberStrings makes COUNT(*) a STRING, and '0' is truthy.
+      data: payments.map(({ own_lines, ...p }) => ({
+        ...p,
+        receipt_available: Number(own_lines) > 0,
+      })),
+    });
+  } catch (error) {
+    console.error('[tenant-portal] invoice payments error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load payment activity' });
+  }
+});
+
+// A receipt for a payment, scoped to this tenant's lines. loadReceiptPdfData does the
+// deciding — see buildVisibleLines in routes/pdf.js for why a plain check on
+// accounting.tenant_id is not enough here.
+router.get('/payments/:id/receipt', authenticateTenant, async (req, res) => {
+  try {
+    const { orgId, tenantIds } = req.tenantPortal;
+    const paymentId = String(req.params.id || '');
+    if (!/^\d+$/.test(paymentId)) return res.status(404).json({ code: 404, message: 'Payment not found' });
+
+    const data = await loadReceiptPdfData(req.pool, paymentId, orgId, { tenantIds });
+    if (!data) return res.status(404).json({ code: 404, message: 'Payment not found' });
+
+    const buffer = await receiptBufferFromData(data);
+    sendPdf(res, buffer, `receipt-${data.receiptNo || paymentId}.pdf`);
+  } catch (error) {
+    console.error('[tenant-portal] receipt error:', error);
+    if (!res.headersSent) res.status(500).json({ code: 500, message: 'Failed to generate the receipt' });
+  }
+});
+
+// ── utilities ───────────────────────────────────────────────────────────────
+//
+// The same history staff see on a tenant's Utilities tab
+// (GET /api/utility/tenant/:tenantId/history), scoped to the session's tenants and
+// read-only — no settlement edit or undo.
+//
+// Org scoping has to come through `utility_bill.org_id`: `utility_bill_line` has no
+// org_id column of its own, so that join IS the tenancy boundary here, not a
+// convenience. The meter and unit joins hang off an already-scoped line.
+
+/** True when this tenant has any utility history at all. Drives the portal nav. */
+async function hasUtilityHistory(pool, orgId, tenantIds) {
+  const ph = tenantIds.map(() => '?').join(',');
+  const [[{ n }]] = await pool.execute(
+    `SELECT COUNT(*) AS n FROM utility_bill_line bl
+       JOIN utility_bill b ON bl.bill_id = b.id
+      WHERE bl.tenant_id IN (${ph}) AND b.org_id = ?`,
+    [...tenantIds, orgId]
+  );
+  // bigNumberStrings makes COUNT(*) a STRING, and '0' is truthy.
+  if (Number(n) > 0) return true;
+  try {
+    const [[settled]] = await pool.execute(
+      `SELECT COUNT(*) AS n FROM utility_checkout_settlement
+        WHERE tenant_id IN (${ph}) AND org_id = ?`,
+      [...tenantIds, orgId]
+    );
+    return Number(settled.n) > 0;
+  } catch (e) {
+    // The settlement table postdates some org databases — same guard the staff
+    // endpoint uses. No history is the honest answer when it is absent.
+    return false;
+  }
+}
+
+router.get('/utilities', authenticateTenant, async (req, res) => {
+  try {
+    const { orgId, tenantIds } = req.tenantPortal;
+    const ph = idsIn(req);
+
+    const [billLines] = await req.pool.execute(
+      `SELECT bl.id, bl.starting_reading, bl.ending_reading, bl.kw_used,
+              bl.gross_amount, bl.prorated_credit, bl.net_amount, bl.is_common_area,
+              b.period_start, b.period_end, b.rate_per_kw,
+              m.meter_number,
+              u.name AS unit_name, p.display_name AS property_name,
+              i.id AS invoice_id, i.invoice_code, i.status AS invoice_status
+         FROM utility_bill_line bl
+         JOIN utility_bill b ON bl.bill_id = b.id
+         LEFT JOIN utility_meter m ON bl.meter_id = m.id
+         LEFT JOIN unit u ON bl.unit_id = u.id
+         LEFT JOIN property p ON u.property_id = p.id
+         LEFT JOIN invoice i ON bl.invoice_id = i.id AND i.deleted_at IS NULL
+        WHERE bl.tenant_id IN (${ph}) AND b.org_id = ?
+        ORDER BY b.period_start DESC`,
+      [...tenantIds, orgId]
+    );
+
+    let settlements = [];
+    try {
+      const [rows] = await req.pool.execute(
+        `SELECT cs.id, cs.starting_reading, cs.checkout_reading, cs.kw_used, cs.rate_per_kw,
+                cs.gross_amount, cs.prorated_credit, cs.net_amount, cs.reading_date,
+                m.meter_number,
+                u.name AS unit_name, p.display_name AS property_name,
+                i.id AS invoice_id, i.invoice_code, i.status AS invoice_status
+           FROM utility_checkout_settlement cs
+           LEFT JOIN utility_meter m ON cs.meter_id = m.id
+           LEFT JOIN unit u ON m.unit_id = u.id
+           LEFT JOIN property p ON u.property_id = p.id
+           LEFT JOIN invoice i ON cs.invoice_id = i.id AND i.deleted_at IS NULL
+          WHERE cs.tenant_id IN (${ph}) AND cs.org_id = ?
+          ORDER BY cs.reading_date DESC, cs.id DESC`,
+        [...tenantIds, orgId]
+      );
+      settlements = rows;
+    } catch (e) {
+      // Table absent on this org — see hasUtilityHistory.
+    }
+
+    // The header block: monthly credit, the dates, and the meter either side of the
+    // tenancy. `leaseIsTheirs` rather than `tenant_id`, so an additional tenant on
+    // the lease sees the same figures as the named one.
+    const [leases] = await req.pool.execute(
+      `SELECT DISTINCT l.id, l.start_date, l.end_date, l.utility_credit,
+              l.check_in_meter, l.check_out_meter,
+              u.name AS unit_name, p.display_name AS property_name
+         FROM leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+        WHERE ${leaseIsTheirs(ph)} AND p.org_id = ? AND l.deleted_at IS NULL
+        ORDER BY l.start_date DESC`,
+      [...tenantIds, ...tenantIds, orgId]
+    );
+
+    res.json({ code: 200, data: { billLines, settlements, leases } });
+  } catch (error) {
+    console.error('[tenant-portal] utilities error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to load utility history' });
+  }
+});
+
 router.get('/profile', authenticateTenant, async (req, res) => {
   try {
     const { orgId, tenantIds } = req.tenantPortal;
@@ -442,7 +665,18 @@ router.get('/profile', authenticateTenant, async (req, res) => {
       [...tenantIds, orgId]
     );
     if (!rows.length) return res.status(404).json({ code: 404, message: 'Tenant profile not found' });
-    res.json({ code: 200, data: rows[0] });
+
+    // The nav is built from this, so a tenant with no utility history never sees a
+    // Utilities tab that would only ever be empty. A failure here must not take the
+    // profile — and therefore every portal page — down with it.
+    let utilities = false;
+    try {
+      utilities = await hasUtilityHistory(req.pool, orgId, tenantIds);
+    } catch (err) {
+      console.error('[tenant-portal] utility feature probe failed:', err.message);
+    }
+
+    res.json({ code: 200, data: { ...rows[0], features: { utilities } } });
   } catch (error) {
     console.error('[tenant-portal] profile error:', error);
     res.status(500).json({ code: 500, message: 'Failed to load profile' });
