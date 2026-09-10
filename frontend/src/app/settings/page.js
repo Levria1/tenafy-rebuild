@@ -383,8 +383,16 @@ function SettingsPage() {
     )},
     { key: 'smtpAccounts', label: 'SMTP Accounts', children: <SmtpAccountSettings isMobile={isMobile} /> },
     { key: 'emailSettings', label: 'Whitelist', children: <EmailWhitelistSettings /> },
-    // Lives in components/settings rather than inline: this file already
-    // carries fourteen tab components and 2,200 lines.
+  ];
+
+  // Its own section, not a member of emailTabs. It was added to that array but
+  // never to emailKeys, so `?tab=reminders` matched no section and fell through
+  // to Account Settings — the screen could not be reached at all, while
+  // EmailTimingCard told people to go to "Settings › Payment Reminders".
+  //
+  // Lives in components/settings rather than inline: this file already carries
+  // fourteen tab components and 2,200 lines.
+  const reminderTabs = [
     { key: 'reminders', label: 'Payment Reminders', children: <PaymentRemindersSettings /> },
   ];
 
@@ -483,6 +491,7 @@ function SettingsPage() {
   const accountingKeys = ['categories', 'payment', 'accounts', 'sequences'];
   const amenityKeys = ['amenities'];
   const emailKeys = ['emailTemplates', 'smtpAccounts', 'emailSettings'];
+  const reminderKeys = ['reminders'];
   const whatsappKeys = ['whatsappTemplates', 'whatsappSettings'];
   const userKeys = ['users', 'roles'];
   const apiKeyKeys = ['apiKeys'];
@@ -510,6 +519,9 @@ function SettingsPage() {
   } else if (userKeys.includes(activeTab)) {
     tabItems = userTabs;
     pageTitle = 'User Management';
+  } else if (reminderKeys.includes(activeTab)) {
+    tabItems = reminderTabs;
+    pageTitle = 'Payment Reminders';
   } else {
     tabItems = accountTabs;
     pageTitle = 'Account Settings';

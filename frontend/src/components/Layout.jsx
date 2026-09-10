@@ -221,6 +221,9 @@ function buildMenuItems(hasPermission, isSuperAdmin) {
   // software. Gated by the email-template permission for now; promote to its own
   // permission when there's more than one integration needing separate gates.
   if (hasPermission('LANDLORD/SETTING_EMAIL_TEMPLATE')) acctSettingsChildren.push({ key: '/settings/integrations', label: <Link href="/settings/integrations">Integrations</Link> });
+  // Chasing unpaid invoices is accounting, not a channel, so it sits here rather
+  // than under Email. Ungated to match the API, which is authenticate-only.
+  acctSettingsChildren.push({ key: '/settings?tab=reminders', label: <Link href="/settings?tab=reminders">Payment Reminders</Link> });
   if (acctSettingsChildren.length > 0) {
     settingsChildren.push({
       key: '/settings/accounting',

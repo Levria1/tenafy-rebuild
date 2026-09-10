@@ -176,3 +176,37 @@ test('new leases default to recurring', () => {
   const page = stripComments(read('../../frontend/src/app/leasing/create/page.js'));
   assert.match(page, /const \[makeRecurring, setMakeRecurring\] = useState\(true\)/);
 });
+
+// ── the screen has to be reachable ──────────────────────────────────────────
+
+test('every settings tab key belongs to exactly one section', () => {
+  // `reminders` was added to emailTabs but never to emailKeys, so ?tab=reminders
+  // matched no section and fell through to Account Settings. The screen could not
+  // be opened at all, while EmailTimingCard told people to go to
+  // "Settings › Payment Reminders".
+  const page = stripComments(read('../../frontend/src/app/settings/page.js'));
+
+  // Every key the page can render, taken from the tab arrays themselves.
+  const declared = [...page.matchAll(/\{\s*key:\s*'([A-Za-z]+)',\s*label:/g)].map((m) => m[1]);
+  // Every key routed to a section.
+  const routed = new Set(
+    [...page.matchAll(/const \w*Keys = \[([^\]]*)\]/g)]
+      .flatMap((m) => [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]))
+  );
+
+  const orphans = [...new Set(declared)].filter((k) => !routed.has(k));
+  assert.deepStrictEqual(orphans, [],
+    `these tabs render nowhere because no *Keys list claims them: ${orphans.join(', ')}`);
+});
+
+test('the payment reminders screen has a way in from the sidebar', () => {
+  const layout = stripComments(read('../../frontend/src/components/Layout.jsx'));
+  assert.match(layout, /\/settings\?tab=reminders/,
+    'a screen nothing links to is a screen nobody can open');
+});
+
+test('the reminders tab routes to its own section', () => {
+  const page = stripComments(read('../../frontend/src/app/settings/page.js'));
+  assert.match(page, /const reminderKeys = \['reminders'\]/);
+  assert.match(page, /tabItems = reminderTabs;/);
+});
