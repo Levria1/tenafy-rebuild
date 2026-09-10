@@ -122,6 +122,18 @@ export default function TenantInvoicesPage() {
       title: 'Amount', dataIndex: 'amount', key: 'amount', align: 'right',
       render: (v) => formatCurrency(v),
     },
+    {
+      title: 'Paid', dataIndex: 'amount_paid', key: 'amount_paid', align: 'right',
+      render: (v) => (Number(v) > 0 ? formatCurrency(v) : <Text type="secondary">-</Text>),
+    },
+    {
+      // The number that answers "what do I still owe". Emphasised when it is not zero,
+      // because a part-paid invoice used to read as though nothing had arrived.
+      title: 'Outstanding', dataIndex: 'outstanding', key: 'outstanding', align: 'right',
+      render: (v) => (Number(v) > 0
+        ? <Text strong style={{ color: '#cf1322' }}>{formatCurrency(v)}</Text>
+        : <Text type="secondary">{formatCurrency(0)}</Text>),
+    },
     { title: 'Due', dataIndex: 'due_on', key: 'due_on', render: (v) => formatDate(v) },
     {
       title: 'Status', dataIndex: 'status', key: 'status',
@@ -223,6 +235,8 @@ export default function TenantInvoicesPage() {
 
       <Text type="secondary" style={{ display: 'block', marginTop: 16, fontSize: 12 }}>
         Open a row to see the payments received against that invoice and download a receipt.
+        A payment made through a booking platform may arrive as part of a larger transfer,
+        so it can appear a few days after the date you paid.
       </Text>
     </div>
   );

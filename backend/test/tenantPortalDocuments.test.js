@@ -369,3 +369,36 @@ test('the download filename cannot inject a response header', () => {
   assert.match(send, /replace\(\/\[\^A-Za-z0-9\._-\]\/g, '_'\)/);
   assert.match(send, /slice\(0, 100\)/);
 });
+
+// ── what the invoice list says you owe ──────────────────────────────────────
+
+test('the invoice list carries amount_paid and outstanding', () => {
+  // TRIV34883 is 83,317.01 with 20,580.30 received across two Airbnb payouts. The list
+  // selected only amount and status, so it read "Overdue 83,317.01" — as though nothing
+  // had arrived.
+  const list = portal.slice(portal.indexOf("router.get('/invoices'"));
+  const body = list.slice(0, list.indexOf('router.get(', 10));
+  assert.match(body, /AS amount_paid/);
+  assert.match(body, /FROM accounting_line al/);
+  assert.match(body, /a\.org_id = i\.org_id/, 'the payment lookup must stay inside the org');
+  assert.match(body, /a\.deleted_at IS NULL AND al\.deleted_at IS NULL/,
+    'a voided payment must not count as paid');
+});
+
+test('outstanding follows the staff rule and never goes negative', () => {
+  const list = portal.slice(portal.indexOf("router.get('/invoices'"));
+  const body = list.slice(0, list.indexOf('router.get(', 10));
+  // A Paid invoice owes nothing whatever the lines total, and an overpayment is a
+  // credit rather than a negative bill.
+  assert.match(body, /Number\(inv\.status\) === 1 \? 0 : Math\.max\(0, amount - paid\)/);
+  // DECIMAL and SUM are strings under bigNumberStrings, so this arithmetic cannot
+  // happen in the browser.
+  assert.match(body, /Number\(inv\.amount\) \|\| 0/);
+  assert.match(body, /Number\(inv\.amount_paid\) \|\| 0/);
+});
+
+test('the outstanding figure is the emphasised one on the page', () => {
+  const page = stripComments(read('../../frontend/src/app/tenant-portal/invoices/page.js'));
+  assert.match(page, /dataIndex: 'amount_paid'/);
+  assert.match(page, /dataIndex: 'outstanding'/);
+});

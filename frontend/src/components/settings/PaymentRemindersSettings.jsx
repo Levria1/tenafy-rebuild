@@ -66,6 +66,8 @@ export default function PaymentRemindersSettings() {
         days_after_due: policy.days_after_due ?? 0,
         days_after_issue: policy.days_after_issue ?? 7,
         repeat_days: policy.repeat_days ?? 7,
+        min_outstanding_pct: policy.min_outstanding_pct ?? 0,
+        min_outstanding_amount: policy.min_outstanding_amount ?? 0,
       });
     } catch (err) {
       message.error('Could not load reminder settings');
@@ -193,6 +195,22 @@ export default function PaymentRemindersSettings() {
           extra="Counted per invoice, from the last reminder actually sent for it."
         >
           <InputNumber min={1} max={365} style={{ width: 120 }} addonAfter="days" />
+        </Form.Item>
+
+        <Form.Item
+          name="min_outstanding_pct"
+          label="Skip an invoice when less than this share of it is outstanding"
+          extra="A share of the invoice, not of the balance. 5% leaves HK$400 unpaid on HK$18,000 rent alone. Zero chases any amount."
+        >
+          <InputNumber min={0} max={100} step={0.5} style={{ width: 120 }} addonAfter="%" />
+        </Form.Item>
+
+        <Form.Item
+          name="min_outstanding_amount"
+          label="…or when less than this is outstanding"
+          extra="A cash floor, for small invoices where a percentage comes to almost nothing. Below either figure is enough to skip. Zero chases any amount."
+        >
+          <InputNumber min={0} max={99999999} step={50} style={{ width: 160 }} />
         </Form.Item>
 
         <Space>

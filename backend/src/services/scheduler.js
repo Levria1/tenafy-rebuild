@@ -598,6 +598,16 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
        AND l.status = 1 AND (l.end_date IS NULL OR l.end_date >= ?) AND l.deleted_at IS NULL
        AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
      HAVING outstanding > 0
+       -- Too small to be worth an automated demand. A tenant who paid HK$17,600
+       -- of HK$18,000 was chased exactly like one who paid nothing, and the
+       -- template threatens "5% of the monthly rent" per week over what is
+       -- usually a bank transfer fee. Both thresholds default to 0, which keeps
+       -- the old behaviour until someone sets them on the settings screen.
+       --
+       -- Below EITHER threshold means skip, so raising one can only chase fewer
+       -- people, never more. The percentage is of the invoice, not of the balance.
+       AND (? = 0 OR outstanding >= i.amount * ? / 100)
+       AND (? = 0 OR outstanding >= ?)
      -- Never-chased first, then longest-since-chased, then oldest due. Ordering
      -- by due_on alone starves the queue: with repeat_days matching the weekly
      -- cron, the same oldest 50 become eligible again every Monday and an
@@ -606,7 +616,12 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
      -- than a live fault.
      ORDER BY i.last_chased_at IS NULL DESC, i.last_chased_at ASC, i.due_on ASC
      LIMIT 50`,
-    [today, ...categoryIds, today, today, today, today, orgId]
+    // The four threshold placeholders sit in HAVING, which follows WHERE in the
+    // statement, so they bind last. Each is passed twice: once to test whether the
+    // threshold is set at all, once to compare against.
+    [today, ...categoryIds, today, today, today, today, orgId,
+     policy.min_outstanding_pct, policy.min_outstanding_pct,
+     policy.min_outstanding_amount, policy.min_outstanding_amount]
   );
 
   if (invoices.length === 0) return;

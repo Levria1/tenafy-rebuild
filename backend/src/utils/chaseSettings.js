@@ -22,6 +22,10 @@ const DEFAULTS = {
   days_after_due: 0,
   days_after_issue: 7,
   repeat_days: 7,
+  // 0 means "no threshold" — today's behaviour, where a cent outstanding is
+  // chased like a whole month's rent. See migration 082.
+  min_outstanding_pct: 0,
+  min_outstanding_amount: 0,
 };
 
 // A setting that is absent, blank or not a number falls back to the default
@@ -35,6 +39,16 @@ function intOr(value, fallback, min = 0) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.trunc(n));
+}
+
+// Money and percentages are not whole numbers, so they cannot go through intOr —
+// Math.trunc would quietly turn a 2.5% threshold into 2%. Floored at 0 for the
+// same reason intOr floors: a negative threshold read straight from the database
+// would invert the comparison and chase only the people who had nearly paid.
+function numOr(value, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
 }
 
 /**
@@ -57,7 +71,8 @@ function serialiseCategories(list) {
 async function loadChaseSettings(pool, orgId) {
   try {
     const [[row]] = await pool.execute(
-      `SELECT enabled, categories, days_after_due, days_after_issue, repeat_days
+      `SELECT enabled, categories, days_after_due, days_after_issue, repeat_days,
+              min_outstanding_pct, min_outstanding_amount
          FROM chase_setting WHERE org_id = ? LIMIT 1`,
       [orgId]
     );
@@ -68,6 +83,10 @@ async function loadChaseSettings(pool, orgId) {
       days_after_due: intOr(row.days_after_due, DEFAULTS.days_after_due),
       days_after_issue: intOr(row.days_after_issue, DEFAULTS.days_after_issue),
       repeat_days: intOr(row.repeat_days, DEFAULTS.repeat_days, 1),
+      // Capped at 100: a percentage above that would skip every invoice, which is
+      // a way to silently disable the sweep without the enabled switch saying so.
+      min_outstanding_pct: numOr(row.min_outstanding_pct, DEFAULTS.min_outstanding_pct, 0, 100),
+      min_outstanding_amount: numOr(row.min_outstanding_amount, DEFAULTS.min_outstanding_amount, 0),
     };
   } catch (err) {
     // A missing table (org not yet migrated) must not turn into a burst of
@@ -78,4 +97,4 @@ async function loadChaseSettings(pool, orgId) {
   }
 }
 
-module.exports = { loadChaseSettings, parseCategories, serialiseCategories, CHASE_DEFAULTS: DEFAULTS };
+module.exports = { loadChaseSettings, parseCategories, serialiseCategories, numOr, CHASE_DEFAULTS: DEFAULTS };

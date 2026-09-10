@@ -100,7 +100,17 @@ test('the sweep binds one parameter per placeholder, in order', () => {
   // DATEDIFF, then the category list, then the two chaseable dates, the repeat
   // date and the lease end date, then the org. Binding these out of order does
   // not throw: it silently compares a date against a category id.
-  assert.equal(binding[1].trim(), 'today, ...categoryIds, today, today, today, today, orgId');
+  //
+  // The four threshold parameters come LAST because they sit in HAVING, which
+  // follows WHERE in the statement. Each is bound twice: once to test whether the
+  // threshold is set at all (`? = 0`), once to compare against. Whitespace is
+  // collapsed so wrapping the array over several lines is not a failure, but the
+  // ORDER still is.
+  const bound = binding[1].replace(/\s+/g, ' ').trim();
+  assert.equal(bound,
+    'today, ...categoryIds, today, today, today, today, orgId, '
+    + 'policy.min_outstanding_pct, policy.min_outstanding_pct, '
+    + 'policy.min_outstanding_amount, policy.min_outstanding_amount');
 });
 
 // ---------------------------------------------------------------------------

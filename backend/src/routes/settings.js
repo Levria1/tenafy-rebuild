@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const { authenticate, requireSuperAdmin, requirePermission } = require('../middleware/auth');
 const { getMasterPool } = require('../config/poolRegistry');
 const { logActivity } = require('../utils/activityLog');
-const { loadChaseSettings, serialiseCategories, CHASE_DEFAULTS } = require('../utils/chaseSettings');
+const { loadChaseSettings, serialiseCategories, numOr, CHASE_DEFAULTS } = require('../utils/chaseSettings');
 const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
 
@@ -222,7 +222,8 @@ router.get('/setting/payment-reminders', authenticate, async (req, res) => {
 router.put('/setting/payment-reminders', authenticate, requirePermission('LANDLORD/EMAIL_TEMPLATE_EDIT'), async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const { enabled, categories, days_after_due, days_after_issue, repeat_days } = req.body || {};
+    const { enabled, categories, days_after_due, days_after_issue, repeat_days,
+            min_outstanding_pct, min_outstanding_amount } = req.body || {};
 
     // Day counts are clamped rather than trusted. A negative window would chase
     // invoices before they are due; repeat_days of 0 would re-send the same
@@ -239,6 +240,10 @@ router.put('/setting/payment-reminders', authenticate, requirePermission('LANDLO
       days_after_due: clamp(days_after_due, CHASE_DEFAULTS.days_after_due, 0, 365),
       days_after_issue: clamp(days_after_issue, CHASE_DEFAULTS.days_after_issue, 0, 365),
       repeat_days: clamp(repeat_days, CHASE_DEFAULTS.repeat_days, 1, 365),
+      // Not clamp(): that truncates to an integer, and these are a percentage and
+      // a money amount. numOr keeps 2.5 as 2.5 and floors both at 0.
+      min_outstanding_pct: numOr(min_outstanding_pct, CHASE_DEFAULTS.min_outstanding_pct, 0, 100),
+      min_outstanding_amount: numOr(min_outstanding_amount, CHASE_DEFAULTS.min_outstanding_amount, 0, 99999999),
     };
 
     // Category ids are validated against this org before they are stored, so a
@@ -258,18 +263,26 @@ router.put('/setting/payment-reminders', authenticate, requirePermission('LANDLO
     }
 
     await req.pool.execute(
-      `INSERT INTO chase_setting (org_id, enabled, categories, days_after_due, days_after_issue, repeat_days)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO chase_setting (org_id, enabled, categories, days_after_due, days_after_issue, repeat_days,
+         min_outstanding_pct, min_outstanding_amount)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), categories = VALUES(categories),
          days_after_due = VALUES(days_after_due), days_after_issue = VALUES(days_after_issue),
-         repeat_days = VALUES(repeat_days)`,
-      [orgId, row.enabled, row.categories, row.days_after_due, row.days_after_issue, row.repeat_days]
+         repeat_days = VALUES(repeat_days),
+         min_outstanding_pct = VALUES(min_outstanding_pct),
+         min_outstanding_amount = VALUES(min_outstanding_amount)`,
+      [orgId, row.enabled, row.categories, row.days_after_due, row.days_after_issue, row.repeat_days,
+       row.min_outstanding_pct, row.min_outstanding_amount]
     );
 
     // Turning this on wakes a job that mails tenants unattended, so it belongs
     // in the audit trail rather than only in the row's updated_at.
+    const floor = [
+      row.min_outstanding_pct > 0 ? `${row.min_outstanding_pct}%` : null,
+      row.min_outstanding_amount > 0 ? String(row.min_outstanding_amount) : null,
+    ].filter(Boolean).join(' or ');
     await logActivity(req, 'UPDATE', 'settings', orgId, row.enabled
-      ? `Enabled automatic overdue payment reminders (every ${row.repeat_days}d, from ${row.days_after_due}d past due)`
+      ? `Enabled automatic overdue payment reminders (every ${row.repeat_days}d, from ${row.days_after_due}d past due${floor ? `, skipping balances under ${floor}` : ''})`
       : 'Disabled automatic overdue payment reminders');
 
     const data = await loadChaseSettings(req.pool, orgId);

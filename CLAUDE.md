@@ -160,8 +160,8 @@ See `docs/completed-work.md` for detailed progress tracking.
   transaction drawer (via `object_file`, marked private)
 - Meter readings can be corrected from Settings, logged as a dated Correction
 - Tenant portal: electricity billing history (read-only, full breakdown; tab hidden for
-  tenants with no utility history) and invoice + receipt PDF downloads. Portal receipts
-  are tenant-scoped — see gotcha 16
+  tenants with no utility history), invoice + receipt PDF downloads, and paid/outstanding
+  on the invoice list. Portal receipts are tenant-scoped — see gotcha 16
 
 ### Known Missing
 - Public listings module (entire tenafy-listing microservice)
@@ -208,6 +208,19 @@ See `docs/completed-work.md` for detailed progress tracking.
     it names every other guest, with confirmation codes and Airbnb's fee
 17. **`utility_bill_line` has no `org_id`.** Scope it through `JOIN utility_bill ... AND
     b.org_id = ?`; that join is the tenancy boundary, not a convenience
+18. **`leasing.share_lease` IS the recurring-invoice flag**, despite the name. The only
+    reads are the scheduler's lease filter and `isRecurring` in leasing.js; nothing
+    shares a lease with a tenant. A checkbox labelled "Share lease with tenant" used to
+    write the same column and won on the edit page, so Recurring Invoice could be
+    switched on, saved, and still generate nothing
+19. **`utility_bill_line.utility_credit` is a SNAPSHOT** taken at bill creation, and the
+    proration in `PUT /bill-line/:id` reads that snapshot, not the lease. A credit added
+    to the lease afterwards never applies — 15 lines carry HK$8,731.87 of charges that
+    exist only for this reason (none invoiced)
+20. **The recurring sweep only ever EXTENDS from an existing rent invoice.** With no
+    rental-category invoice on the lease it hits `if (!latestInvoice) continue` and skips
+    forever, silently. It also generates one cycle ahead, not on the due date: the guard
+    is `daysDiff(today, lastDue) < 1`, so a 15 Sep invoice yields 15 Oct on 16 Sep
 
 ## Reference Docs
 - `docs/migration-plan.md` — Page-by-page migration status from original

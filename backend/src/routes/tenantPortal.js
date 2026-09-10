@@ -408,11 +408,24 @@ router.get('/invoices', authenticateTenant, async (req, res) => {
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 20));
     const offset = (page - 1) * limit;
 
+    // amount_paid comes from accounting_line the same way the staff invoice detail
+    // computes it. Without it a part-paid invoice reads as though nothing has arrived:
+    // TRIV34883 is 83,317.01 with 20,580.30 received across two Airbnb payouts, and the
+    // list showed only "Overdue 83,317.01".
+    //
+    // A correlated subquery rather than a join, so an invoice with several payments
+    // stays one row. accounting_line.idx_invoice_code makes it a lookup per row, and
+    // invoice codes are unique per org, so it cannot pick up someone else's payment.
     const [invoices] = await req.pool.execute(
-      `SELECT id, invoice_code, note, amount, due_on, status, created_at
-         FROM invoice
-        WHERE tenant_id IN (${ph}) AND org_id = ? AND deleted_at IS NULL
-        ORDER BY created_at DESC
+      `SELECT i.id, i.invoice_code, i.note, i.amount, i.due_on, i.status, i.created_at,
+              COALESCE((SELECT SUM(al.amount)
+                          FROM accounting_line al
+                          JOIN accounting a ON a.id = al.accounting_id
+                         WHERE al.invoice_code = i.invoice_code AND a.org_id = i.org_id
+                           AND a.deleted_at IS NULL AND al.deleted_at IS NULL), 0) AS amount_paid
+         FROM invoice i
+        WHERE i.tenant_id IN (${ph}) AND i.org_id = ? AND i.deleted_at IS NULL
+        ORDER BY i.created_at DESC
         LIMIT ? OFFSET ?`,
       [...tenantIds, orgId, String(limit), String(offset)]
     );
@@ -422,9 +435,24 @@ router.get('/invoices', authenticateTenant, async (req, res) => {
       [...tenantIds, orgId]
     );
 
+    // DECIMAL and SUM both arrive as strings under bigNumberStrings, so the arithmetic
+    // happens here rather than in the browser. Outstanding follows the staff rule: a
+    // Paid invoice owes nothing whatever the lines add up to, and it never goes negative
+    // — an overpayment is a credit, not a negative bill.
+    const content = invoices.map((inv) => {
+      const amount = Number(inv.amount) || 0;
+      const paid = Number(inv.amount_paid) || 0;
+      const outstanding = Number(inv.status) === 1 ? 0 : Math.max(0, amount - paid);
+      return {
+        ...inv,
+        amount_paid: Number(paid.toFixed(2)),
+        outstanding: Number(outstanding.toFixed(2)),
+      };
+    });
+
     res.json({
       code: 200,
-      data: { content: invoices, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page },
+      data: { content, totalElements: total, totalPages: Math.ceil(total / limit), currentPage: page },
     });
   } catch (error) {
     console.error('[tenant-portal] invoices error:', error);

@@ -205,8 +205,10 @@ export default function LeasingEditPage() {
           setFilteredUnits(unitsList.filter(u => String(u.property_id) === String(propertyId)));
         }
 
-        // Initialize recurring toggle from existing data
-        setMakeRecurring(!!d.invoicing);
+        // Both halves, because the scheduler needs both: it filters on
+        // `share_lease = 1 AND invoicing IS NOT NULL`. Reading `invoicing` alone
+        // showed the switch ON for a lease that generates nothing.
+        setMakeRecurring(!!d.share_lease && !!d.invoicing);
         // Tick the stamped-term box only if this lease actually has an override.
         setStampEnabled(!!d.stamp_end_date);
 
@@ -254,7 +256,6 @@ export default function LeasingEditPage() {
           tenant_renewal_days: d.tenant_renewal_days != null ? Number(d.tenant_renewal_days) : 30,
           // Access & sharing
           access_setting: d.access_setting != null ? Number(d.access_setting) : undefined,
-          share_lease: !!d.share_lease,
           all_past: !!d.all_past,
         });
         setLoadedEndDate(d.end_date ? dayjs(d.end_date).format('YYYY-MM-DD') : null);
@@ -335,7 +336,11 @@ export default function LeasingEditPage() {
         tenant_renewal_days: values.tenant_renewal_days || 0,
         // Access & sharing
         access_setting: values.access_setting ?? null,
-        share_lease: !!values.share_lease,
+        // The switch, not the old "Share lease with tenant" checkbox. That checkbox
+        // wrote this same column, so turning Recurring Invoice on and saving left
+        // the flag the scheduler reads at 0 — the switch appeared to work and the
+        // lease silently generated nothing. Four active leases were in that state.
+        share_lease: makeRecurring ? 1 : 0,
         all_past: !!values.all_past,
         send_payment_options: !!values.send_payment_options,
       };
@@ -917,7 +922,7 @@ export default function LeasingEditPage() {
         <div style={sectionStyle}>
           <div style={{ ...sectionTitle, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>Access & Sharing</span>
-            <SelectAllCheckbox form={form} fields={['share_lease', 'all_past']} />
+            <SelectAllCheckbox form={form} fields={['all_past']} />
           </div>
           <Row gutter={16}>
             <Col span={12}>
@@ -929,13 +934,6 @@ export default function LeasingEditPage() {
                   <Select.Option value={2}>Public</Select.Option>
                 </Select>
               </Form.Item>
-            </Col>
-            <Col span={12}>
-              <div style={{ marginTop: 24 }}>
-                <Form.Item name="share_lease" valuePropName="checked" style={{ marginBottom: 0 }}>
-                  <Checkbox>Share lease with tenant</Checkbox>
-                </Form.Item>
-              </div>
             </Col>
           </Row>
           <div style={{ marginTop: 12 }}>

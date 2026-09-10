@@ -960,8 +960,13 @@ export default function LeaseCreatePage() {
         </Row>
       </Card>
 
+      {/* `share_lease` is NOT here. It is the recurring-invoice flag — the only two
+          things that read it are the scheduler's lease filter and the confirmation
+          branch in leasing.js — and it is owned by the Recurring Invoice switch
+          above. It used to appear here as well, labelled "Share lease with tenant",
+          so two controls wrote the same column under different names. */}
       <Card size="small" title="Access & Sharing" style={{ marginBottom: 16 }}
-        extra={<SelectAllCheckbox form={form} fields={['share_lease', 'all_past']} />}>
+        extra={<SelectAllCheckbox form={form} fields={['all_past']} />}>
         <Row gutter={16}>
           <Col span={12}>
             <Form.Item name="access_setting" label="Access Setting">
@@ -973,14 +978,7 @@ export default function LeaseCreatePage() {
             </Form.Item>
           </Col>
           <Col span={12}>
-            <Form.Item name="share_lease" valuePropName="checked" label=" ">
-              <Checkbox>Share lease with tenant</Checkbox>
-            </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item name="all_past" valuePropName="checked">
+            <Form.Item name="all_past" valuePropName="checked" label=" ">
               <Checkbox>Include all past invoices</Checkbox>
             </Form.Item>
           </Col>
