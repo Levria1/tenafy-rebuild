@@ -869,3 +869,147 @@ test('resolver: the unit load excludes deactivated and deleted properties', () =
   assert.ok(/p\.deleted_at IS NULL/.test(where), 'units of deleted properties must not resolve');
   assert.ok(/p\.status = 1/.test(where), 'units of DEACTIVATED properties must not resolve');
 });
+
+// ─── a bare unit letter, once the building is known ──────────────────────────
+//
+// A prospect who writes "Bonham Strand West Studio A" has named the unit: Nam Pak
+// Hong's flats are all on the 7th floor, so "A" can only be 7A. Before this the
+// address matched and the letter did not, and the reply listed all seven units
+// back to someone who had already said which one they wanted.
+//
+// Shaped on the live portfolio: Nam Pak Hong is single-floor, Mong Kok has an A on
+// every floor, Po Thai's two units are hyphenated.
+const LETTER_UNITS = [
+  ...['7A', '7B', '7C', '7D', '7E', '7F', '7G'].map((n, i) => ({
+    id: `nph-${i}`, name: n, property_id: 'nph', property_name: 'Nam Pak Hong',
+    street_address: 'Nam Pak Hong Building, 24 Bonham Strand West', district: 'Sheung Wan', city: 'Hong Kong', marketable: true })),
+  ...['1A', '1B', '2A', '2B', '3A', '3B', '4A', '4B', '5A', '5B'].map((n, i) => ({
+    id: `mk-${i}`, name: n, property_id: 'mk', property_name: 'Mong Kok',
+    street_address: '95 Tung Choi Street, Mong Kok', district: 'Mong Kok', city: 'Kowloon', marketable: true })),
+  ...['3D-A', '3D-B'].map((n, i) => ({
+    id: `pt-${i}`, name: n, property_id: 'pt', property_name: 'Po Thai',
+    street_address: '9 Possession Street', district: 'Sheung Wan', city: 'Hong Kong', marketable: true })),
+  ...['Unit 103', 'Unit 105'].map((n, i) => ({
+    id: `ly-${i}`, name: n, property_id: 'ly', property_name: '13B Lai Yuen Apartments',
+    street_address: ' 56-61 Russell Street', district: 'Causeway Bay', city: 'Hong Kong', marketable: true })),
+  ...['1A', '1B', '2H', '3C'].map((n, i) => ({
+    id: `flt-${i}`, name: n, property_id: 'flt', property_name: 'Fuk Lo Tsun',
+    street_address: ' 23 Fuk Lo Tsun Road, Kowloon City', district: 'Kowloon City', city: 'Kowloon', marketable: true })),
+];
+const L = (q) => scoreUnits(q, LETTER_UNITS);
+const labels = (r) => r.candidates.map(c => c.label);
+
+test('letter: a single-floor building resolves a bare letter confidently', () => {
+  const r = L('Hi, I am interested in Bonham Strand West Studio A. (ref: google)');
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.label, 'Nam Pak Hong 7A');
+});
+
+test('letter: marker-then-letter needs no capital ("studio a" is not an article)', () => {
+  const r = L('nam pak hong studio a');
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.label, 'Nam Pak Hong 7A');
+});
+
+test('letter: a building with an A on every floor asks WHICH, listing only the A units', () => {
+  const r = L('Tung Choi A unit');
+  assert.equal(r.status, 'ambiguous');
+  assert.deepEqual(labels(r), ['Mong Kok 1A', 'Mong Kok 2A', 'Mong Kok 3A', 'Mong Kok 4A', 'Mong Kok 5A']);
+});
+
+// One letter is one request. Counting the five A-units it matches as five NAMED
+// units sent a plain enquiry to staff as a multi-flat viewing request.
+test('letter: matching several units on one letter is not a multi-unit request', () => {
+  assert.equal(L('Tung Choi A unit').status, 'ambiguous');
+  assert.equal(L('Tung Choi Street B unit').status, 'ambiguous');
+  // naming two units by their own tokens still is one
+  assert.equal(L('mong kok 5a 3b').status, 'multi_unit');
+});
+
+test('letter: "a" as the English article does not name unit A', () => {
+  for (const q of [
+    'Do you have a unit available at Bonham Strand West?',
+    'A unit at Bonham Strand West please',   // sentence-initial capital is not a choice
+    'TUNG CHOI A UNIT',                      // all caps: the capital says nothing
+  ]) {
+    const r = L(q);
+    assert.equal(r.status, 'property_only', q);
+    assert.equal(r.match, null, q);
+  }
+});
+
+// b-z are never articles, so they need no capital.
+test('letter: a non-article letter matches in any case', () => {
+  const r = L('tung choi b unit');
+  assert.equal(r.status, 'ambiguous');
+  assert.deepEqual(labels(r), ['Mong Kok 1B', 'Mong Kok 2B', 'Mong Kok 3B', 'Mong Kok 4B', 'Mong Kok 5B']);
+});
+
+// The letter is only a unit reference once a BUILDING is known. Without one it
+// would match an A on every floor of every property; "not found" is the honest answer.
+test('letter: a bare letter with no building named still resolves nothing', () => {
+  const r = L('unit A');
+  assert.equal(r.status, 'none');
+  assert.equal(r.match, null);
+});
+
+// ─── one distinctive street name identifies a building ───────────────────────
+test('address: a single street name resolves when the customer writes "Street"', () => {
+  assert.deepEqual(labels(L('Russell Street')),
+    ['13B Lai Yuen Apartments Unit 103', '13B Lai Yuen Apartments Unit 105']);
+  assert.deepEqual(labels(L('Possession Street')), ['Po Thai 3D-A', 'Po Thai 3D-B']);
+});
+
+// "possession" is a tenancy word before it is a street. Without "Street" beside
+// it, it must not drag the prospect to Po Thai.
+test('address: a street word alone, used as ordinary English, matches nothing', () => {
+  assert.equal(L('I need possession by 1 Oct').status, 'none');
+});
+
+// "kowloon" appears in exactly one property's ADDRESS (Fuk Lo Tsun Road, Kowloon
+// City), so the single-token rule would hand the whole enquiry to that one
+// building. It is a district, so it must not: naming a district matches every
+// property in it, which is the pre-existing city/district behaviour and the right
+// answer here.
+test('address: a district name never singles out one building', () => {
+  for (const q of ['anything in Kowloon?', 'Kowloon City Road']) {
+    const r = L(q);
+    assert.equal(r.match, null, q);
+    const properties = new Set(r.candidates.map(c => c.property_name));
+    assert.ok(properties.size > 1, `${q} narrowed to ${[...properties]}`);
+    assert.ok(properties.has('Mong Kok') && properties.has('Fuk Lo Tsun'), q);
+  }
+});
+
+// The letter of a FLOOR marker is not a unit letter: at Nam Pak Hong, whose units
+// are 7A-7G, "3/F unit" must not come back as 7F.
+test('letter: the "F" of a floor marker is not unit F', () => {
+  const r = L('Nam Pak Hong 3/F unit');
+  assert.equal(r.match, null);
+  assert.equal(r.status, 'property_only');
+});
+
+// ─── a hyphen joins, a space separates ───────────────────────────────────────
+test('hyphen: a hyphenated unit name keeps the part after the hyphen', () => {
+  assert.equal(_unitCore('3D-A'), '3da');
+  assert.equal(_unitCore('3D-B'), '3db');
+  // the space-suffix tolerance this rule must not break
+  assert.equal(_unitCore('6A Test'), '6a');
+  assert.equal(_unitCore('10/F'), '10');
+  assert.equal(_unitCore('Unit 22'), '22');
+});
+
+test('hyphen: the exact name of a hyphenated unit resolves confidently', () => {
+  assert.equal(L('Po Thai 3D-A').match.label, 'Po Thai 3D-A');
+  assert.equal(L('Po Thai 3D-B').match.label, 'Po Thai 3D-B');
+  // "3D" alone is genuinely ambiguous between them — the customer did not say which
+  assert.equal(L('Po Thai 3D').status, 'ambiguous');
+});
+
+// A hyphen used as punctuation still separates, so it cannot weld a building name
+// to a unit token.
+test('hyphen: a spaced hyphen is punctuation, not part of a name', () => {
+  const r = L('mong kok - 5a');
+  assert.equal(r.status, 'confident');
+  assert.equal(r.match.label, 'Mong Kok 5A');
+});

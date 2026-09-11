@@ -18,6 +18,15 @@
 const { orgTodaySql } = require('../utils/orgTime');
 const { PUBLIC_UNIT_NAME_SQL } = require('../utils/publicUnitScope');
 
+// A hyphen INSIDE a word joins; a space separates. unitCore keeps only the first
+// token, which is what lets a stray suffix be tolerated ("6A Test" -> "6a") — but
+// norm() turned every punctuation run into a space, so "3D-A" and "3D-B" both
+// collapsed to "3d" and a customer typing either name exactly was still asked to
+// choose between them. Only a hyphen between two alphanumerics is joined, so a
+// hyphen used as punctuation ("mong kok - 6a") keeps separating as before.
+function joinHyphens(s) {
+  return String(s == null ? '' : s).replace(/([a-z0-9])-([a-z0-9])/ig, '$1$2');
+}
 function norm(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
@@ -104,7 +113,7 @@ const GENERIC_UNIT_WORDS = new Set(['unit', 'flat', 'apt', 'apartment', 'room', 
 // "3b" (taking only the next token would collide "Unit 3 A"/"Unit 3 B" on "3").
 // A name that is ONLY a generic word keeps it (nothing better to use).
 function unitCore(name) {
-  const t = toTokens(name);
+  const t = toTokens(joinHyphens(name));
   if (!t.length) return '';
   if (t.length > 1 && GENERIC_UNIT_WORDS.has(t[0])) return t.slice(1).join('');
   return t[0];
@@ -173,8 +182,48 @@ function addressMatchedTokens(streetAddress, qTokens) {
   return [...new Set(qualifyingAddressTokens(streetAddress).filter(t => query.has(t)))];
 }
 
-function addressMatchScore(streetAddress, qTokens) {
-  return addressMatchedTokens(streetAddress, qTokens).length >= 2 ? 2 : 0;
+// Words that mark the token beside them as a STREET NAME rather than an ordinary
+// word. They are address stopwords above (they carry no identity of their own),
+// but in the customer's sentence they are the evidence that "possession" means
+// Possession Street and not "I need possession by 1 Oct".
+const STREET_TYPE_WORDS = new Set([
+  'street', 'st', 'road', 'rd', 'lane', 'avenue', 'ave', 'terrace', 'crescent',
+  'path', 'square', 'drive', 'quay', 'praya',
+]);
+
+// Place names are excluded from single-token matching: "kowloon" appears in
+// exactly one property's address, but it is also a district, and "anything in
+// Kowloon?" must not resolve to the one building that happens to sit there.
+function placeNameTokens(units) {
+  const out = new Set();
+  for (const u of units || []) {
+    for (const t of toTokens(u.district)) out.add(t);
+    for (const t of toTokens(u.city)) out.add(t);
+  }
+  return out;
+}
+
+// True when the customer wrote a street-type word next to this token.
+function namedAsStreet(token, qTokens) {
+  for (let i = 0; i < qTokens.length; i++) {
+    if (qTokens[i] !== token) continue;
+    if (STREET_TYPE_WORDS.has(qTokens[i + 1] || '')) return true;
+    if (STREET_TYPE_WORDS.has(qTokens[i - 1] || '')) return true;
+  }
+  return false;
+}
+
+// Two matching address words identify a building on their own ("Bonham Strand
+// West"). ONE does too, but only when it is long enough to be a real street name,
+// is not a district/city, and the customer wrote "Street"/"Road" beside it — which
+// is what rescues "Russell Street" and "Possession Street", each of which has a
+// single distinctive word and matched nothing at all before.
+function addressMatchScore(streetAddress, qTokens, placeTokens = new Set()) {
+  const matched = addressMatchedTokens(streetAddress, qTokens);
+  if (matched.length >= 2) return 2;
+  return matched.some(t =>
+    t.length >= 6 && !placeTokens.has(t) && namedAsStreet(t, qTokens)
+  ) ? 2 : 0;
 }
 
 // A bare number in a sentence is a price, a headcount or a duration far more often
@@ -198,7 +247,56 @@ function markedNumericTokens(qTokens) {
   return marked;
 }
 
-function scoreOne(qSquish, qTokens, unit, markedNumbers = new Set()) {
+// A bare unit letter: "Studio A", "unit a", "A unit". Read from the RAW message,
+// before norm() lowercases it, because for the letter "a" the capital is the only
+// thing separating a unit name from the English article.
+//
+//   marker THEN letter ("studio A", "unit a")  - safe in any case: an article
+//     cannot follow "studio", so there is nothing to confuse it with.
+//   letter THEN marker ("A unit")              - safe in any case for b-z, but
+//     for "a"/"i" it is exactly the shape of "do you have a unit available".
+//     Those need a capital that the writer chose: not sentence-initial (every
+//     sentence starts capitalised), and not in an all-caps message (where the
+//     capital says nothing). When the guard rejects it we simply fall through to
+//     the old behaviour - list the building's units and ask.
+const UNIT_MARKER_WORDS = 'studios?|units?|flats?|rooms?|apt|apartments?|suites?|rm';
+const ARTICLE_LETTERS = new Set(['a', 'i']);
+const EMPTY_SET = new Set();
+
+// "3/F unit" is a FLOOR, and its "F" is not unit F — at Nam Pak Hong it would
+// have matched 7F and answered a question about the 3rd floor with a 7th-floor
+// flat. normalizeFloorUnit reads floor markers properly; here they are simply
+// removed so they cannot be misread as a letter.
+function stripFloorMarkers(text) {
+  return text.replace(/\b\d{1,2}\s*\/?\s*f\b/ig, ' ');
+}
+
+function explicitUnitLetters(rawText) {
+  const text = stripFloorMarkers(String(rawText == null ? '' : rawText));
+  const letters = new Set();
+  const caseIsInformative = /[a-z]/.test(text);
+
+  for (const m of text.matchAll(new RegExp(`\\b(?:${UNIT_MARKER_WORDS})\\.?\\s*([A-Za-z])\\b`, 'ig'))) {
+    letters.add(m[1].toLowerCase());
+  }
+  for (const m of text.matchAll(new RegExp(`\\b([A-Za-z])\\s+(?:${UNIT_MARKER_WORDS})\\b`, 'ig'))) {
+    const letter = m[1];
+    const lower = letter.toLowerCase();
+    if (!ARTICLE_LETTERS.has(lower)) { letters.add(lower); continue; }
+    const startsMessage = text.slice(0, m.index).trim() === '';
+    if (caseIsInformative && letter === letter.toUpperCase() && !startsMessage) letters.add(lower);
+  }
+  return letters;
+}
+
+// The letter that distinguishes one unit on a floor from its neighbours: the last
+// letter of a core like "7a" or "3da" (Po Thai's 3D-A, where "3D" is the flat and
+// "A" the half). Purely numeric cores have none.
+function coreUnitLetter(core) {
+  return /^\d+[a-z]{1,2}$/.test(core) ? core[core.length - 1] : null;
+}
+
+function scoreOne(qSquish, qTokens, unit, markedNumbers = new Set(), opts = {}) {
   const pName = unit.property_name || '';
   const pSquish = squish(pName);
   const pInit = initials(pName);
@@ -227,10 +325,14 @@ function scoreOne(qSquish, qTokens, unit, markedNumbers = new Set()) {
     prop,
     locationMatchScore(unit.district, 2, qSquish, qTokens),
     locationMatchScore(unit.city, 1, qSquish, qTokens),
-    addressMatchScore(unit.street_address, qTokens)
+    addressMatchScore(unit.street_address, qTokens, opts.placeTokens)
   );
   const core = unitCore(unit.name);
   let u = 0;
+  // Whether this unit scored on a bare letter rather than on its own token. The
+  // multi_unit rule counts distinct units the customer NAMED, and one letter at a
+  // building with five A-units is not five requests — see scoreUnits.
+  let viaLetter = false;
   if (core) {
     if (qTokens.includes(core) && (!/^\d+$/.test(core) || markedNumbers.has(core))) u = 3; // exact unit token "6a"
     // A purely-numeric core must match EXACTLY. The prefix tolerance below exists so a
@@ -239,6 +341,18 @@ function scoreOne(qSquish, qTokens, unit, markedNumbers = new Set()) {
     // is 25k" matched flat 25/F, and "30k" matched a unit whose core is "3".
     else if (!/^\d+$/.test(core) &&
              qTokens.some(t => t.length >= 2 && (t.startsWith(core) || core.startsWith(t)))) u = 2; // "6a" ~ "6ab"
+    // A bare letter names the unit once the BUILDING is known: at Nam Pak Hong,
+    // whose units are all on the 7th floor, "Studio A" can only be 7A. It is
+    // gated on prop > 0 because the letter alone is not a unit reference — "unit
+    // A" with no building named would otherwise match an A on every floor of all
+    // 17 properties, where today it honestly reports nothing found. Where the
+    // building DOES have several (Mong Kok has 1A-5A), every one of them scores
+    // and the existing ambiguous path asks which — with the other 14 units of
+    // that building no longer in the list.
+    if (u < 3 && prop > 0) {
+      const letter = coreUnitLetter(core);
+      if (letter && (opts.letters || EMPTY_SET).has(letter)) { u = 3; viaLetter = true; }
+    }
   }
   const consumed = {
     property: toTokens(pName).filter(w => w.length >= 3),
@@ -248,11 +362,11 @@ function scoreOne(qSquish, qTokens, unit, markedNumbers = new Set()) {
     city: locationMatchScore(unit.city, 1, qSquish, qTokens)
       ? locationMatchedTokens(unit.city, qSquish, qTokens)
       : [],
-    address: addressMatchScore(unit.street_address, qTokens)
+    address: addressMatchScore(unit.street_address, qTokens, opts.placeTokens)
       ? addressMatchedTokens(unit.street_address, qTokens)
       : [],
   };
-  return { prop, nameProp, nameWordHits, unit: u, total: prop + u, consumed };
+  return { prop, nameProp, nameWordHits, unit: u, viaLetter, total: prop + u, consumed };
 }
 
 function unitOut(u) {
@@ -439,13 +553,26 @@ function scoreResult(status, match, candidateInfo, query, rows, qTokens, units, 
  *   status: 'confident' | 'ambiguous' | 'property_only' | 'multi_unit' | 'none'
  */
 function scoreUnits(text, units) {
-  const scoreText = normalizeFloorUnit(dropDecimalFraction(collapseThousands(text)));
+  const scoreText = normalizeFloorUnit(dropDecimalFraction(collapseThousands(joinHyphens(text))));
   const qSquish = squish(scoreText);
   const qTokens = toTokens(scoreText);
   if (!qTokens.length) return { status: 'none', match: null, candidates: [], candidate_count: 0, query: String(text || ''), unmatched: [] };
 
   const markedNumbers = markedNumericTokens(qTokens);
-  const rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u, markedNumbers) }));
+  const placeTokens = placeNameTokens(units);
+  let rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u, markedNumbers, { placeTokens }) }));
+
+  // The bare letter is a FALLBACK, read from the RAW text (the capital on "A" is
+  // the whole signal and norm() destroys it). It is consulted only when nothing at
+  // a matched building was named by its own token — because a sentence that
+  // already names a unit is not also asking for a different one by letter. A unit
+  // genuinely CALLED "3/F Unit 1 (Room A and Room B)" is the case in point: typed
+  // out in full it names itself, and its own "Room A"/"Room B" were then matching
+  // flats 3A and 3B, turning an exact request into a list of three.
+  const letters = explicitUnitLetters(text);
+  if (letters.size && !rows.some(r => r.s.prop > 0 && r.s.unit === 3)) {
+    rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u, markedNumbers, { placeTokens, letters }) }));
+  }
 
   // "More than one unit" intent: the prospect named ≥2 DISTINCT units at a
   // matched property, each an exact unit-token match (e.g. "mongkok 6a 5a"). We
@@ -453,7 +580,10 @@ function scoreUnits(text, units) {
   // "Distinct" is by unit core, so a single token that merely collides across
   // properties ("6a" at two buildings) stays a normal ambiguous pick, NOT a
   // multi-unit request.
-  const exactUnitRows = rows.filter(r => r.s.unit === 3 && r.s.prop > 0);
+  // viaLetter is excluded: "Tung Choi A unit" scores 1A-5A at 3 apiece, but the
+  // customer typed ONE letter. Counting those as five named units escalated a
+  // plain enquiry to staff as a multi-flat viewing request.
+  const exactUnitRows = rows.filter(r => r.s.unit === 3 && r.s.prop > 0 && !r.s.viaLetter);
   const namedCores = new Set(exactUnitRows.map(r => unitCore(r.u.name)));
   if (namedCores.size >= 2) {
     return scoreResult('multi_unit', null, candidateList(exactUnitRows), norm(text), rows, qTokens, units, markedNumbers);
@@ -558,5 +688,5 @@ module.exports = {
   // formatters would drift apart silently the first time either gains a field.
   scoreUnits, resolveUnit, loadUnitsWithMarketable, optionsText, unitOut,
   // exported for tests
-  candidateList, normalizeFloorUnit, collapseThousands, dropDecimalFraction, _norm: norm, _squish: squish, _editDistance: editDistance, _unitCore: unitCore,
+  candidateList, normalizeFloorUnit, collapseThousands, dropDecimalFraction, joinHyphens, explicitUnitLetters, _norm: norm, _squish: squish, _editDistance: editDistance, _unitCore: unitCore,
 };
