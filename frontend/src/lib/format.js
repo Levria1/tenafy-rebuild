@@ -105,3 +105,36 @@ export function bedsSelectOptions(currentValue) {
   }
   return standard;
 }
+
+// ── door code (leasing.unit_information) ────────────────────────────────────
+//
+// The lease's "Unit Information" field is where the door code lives: 100 of the
+// 102 current leases carrying one hold a single line like "Poplar 1C door code:
+// 984197#". A handful instead hold the full Salto set-up instructions — app
+// store links, a video tutorial, how to refresh the key — which is written for
+// the arriving tenant, not for someone standing at the door on an inspection.
+// There is no code to read out on those units at all: access is granted through
+// the app. So they collapse to the one word that answers the question.
+//
+// Shared rather than duplicated per page: the lease details row and the check-in
+// /check-out card must agree about what a door is, and two copies of this rule
+// would not stay in step.
+const SALTO_PATTERN = /\bsalto\b/i;
+
+// Returns null when there is nothing recorded, else:
+//   label      what to show where there is room for all of it
+//   short      the first line only, for a one-line slot. Two leases write the
+//              code on line 1 and then continue with instructions, and on a
+//              schedule card the code is the whole point of the line.
+//   full       the text as entered, unchanged
+//   collapsed  true when `label` is standing in for something longer
+export function formatDoorCode(text) {
+  const full = String(text == null ? '' : text).trim();
+  if (!full) return null;
+  // Length matters as much as the word: "Salto, gate code 8362" is a usable
+  // answer and must survive, while the instruction blob is ~900 characters.
+  const collapsed = SALTO_PATTERN.test(full) && full.length > 60;
+  const label = collapsed ? 'Salto' : full;
+  const short = label.split('\n').map(l => l.trim()).find(Boolean) || label;
+  return { label, short, full, collapsed };
+}

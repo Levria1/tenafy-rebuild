@@ -10,6 +10,7 @@ import useIsMobile from '../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../components/mobile/MobileCardList';
 import SignStatusTag from '../../../../components/SignStatusTag';
 import { leasing, pdf, utility, signature, file as fileApi, advertisingApi } from '../../../../lib/api';
+import { formatDoorCode } from '../../../../lib/format';
 
 const LEASE_TYPE_MAP = { 0: 'Fixed', 1: 'Month-to-Month' };
 const CONTRACT_TYPE_MAP = { 1: 'MR (May Renew)', 2: 'MTM (Month To Month)', 3: 'NR (Not Renewing)', 4: 'UC (Unconfirmed)' };
@@ -823,6 +824,9 @@ function LeasingDetailPageInner() {
           <Descriptions.Item label="Lease No">{lease?.lease_no || '-'}</Descriptions.Item>
           <Descriptions.Item label="Property">{lease?.property_name || '-'}</Descriptions.Item>
           <Descriptions.Item label="Unit">{lease?.unit_name || '-'}</Descriptions.Item>
+          {/* Sits directly under Unit: this is read off during a checkout inspection,
+              where the unit and the code are one question, not two. */}
+          <Descriptions.Item label="Door Code"><DoorCode value={lease?.unit_information} /></Descriptions.Item>
           <Descriptions.Item label="Primary Tenant">{[lease?.tenant_first_name, lease?.tenant_last_name].filter(Boolean).join(' ') || '-'}</Descriptions.Item>
           <Descriptions.Item label="Additional Tenants">
             {lease?.additional_tenants?.length > 0
@@ -1462,6 +1466,28 @@ function LeasingDetailPageInner() {
         </Card>
       </Space>
     </MainLayout>
+  );
+}
+
+// Shows the code itself, or "Salto" where the lease instead carries the full
+// app set-up instructions. Collapsing hides nothing: the raw text is one click
+// away, because the person reading it is also the person who typed it and may
+// need to check what is actually recorded.
+function DoorCode({ value }) {
+  const [expanded, setExpanded] = useState(false);
+  const code = formatDoorCode(value);
+  if (!code) return <span style={{ color: '#bbb' }}>-</span>;
+  if (!code.collapsed) return <span style={{ whiteSpace: 'pre-wrap' }}>{code.label}</span>;
+  return (
+    <span>
+      <Tag color="blue" style={{ marginInlineEnd: 8 }}>{code.label}</Tag>
+      <a onClick={() => setExpanded(!expanded)} style={{ fontSize: 12 }}>
+        {expanded ? 'hide instructions' : 'show instructions'}
+      </a>
+      {expanded && (
+        <div style={{ whiteSpace: 'pre-wrap', marginTop: 8, fontSize: 12, color: '#666' }}>{code.full}</div>
+      )}
+    </span>
   );
 }
 

@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, DatePicker, Empty, Segmented, Select, Space, Spin, Tag, Typography, message } from 'antd';
-import { LoginOutlined, LogoutOutlined, ReloadOutlined, SwapOutlined } from '@ant-design/icons';
+import { KeyOutlined, LoginOutlined, LogoutOutlined, ReloadOutlined, SwapOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import Link from 'next/link';
 import MainLayout from '../../../components/Layout';
 import { leasing, property as propertyApi } from '../../../lib/api';
+import { formatDoorCode } from '../../../lib/format';
 import useIsMobile from '../../../hooks/useIsMobile';
 
 const { Text, Title } = Typography;
@@ -185,6 +186,7 @@ export default function CheckInCheckOutPage() {
 
 function MovementCard({ row, isMobile }) {
   const meta = TYPE_META[row.type];
+  const doorCode = formatDoorCode(row.door_code);
   return (
     <Link href={`/leasing/${row.lease_id}/detail`} style={{ color: 'inherit' }}>
       <Card
@@ -213,6 +215,23 @@ function MovementCard({ row, isMobile }) {
               {row.property_name || 'Unknown property'}
               {row.unit_name ? ` · ${row.unit_name}` : ''}
             </Text>
+            {/* Under the unit, because on an inspection the unit and its code are
+                one question. Omitted entirely when the lease records none — an
+                empty row here would read as "no code needed", which is not the
+                same thing as "nobody wrote it down". */}
+            {doorCode && (
+              <div
+                style={{
+                  fontSize: 12, color: '#595959', marginTop: 2,
+                  fontFamily: doorCode.collapsed ? undefined : 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}
+                title={doorCode.full}
+              >
+                <KeyOutlined style={{ marginInlineEnd: 6, color: '#8c8c8c' }} />
+                {doorCode.short}
+              </div>
+            )}
           </div>
 
           {row.turnover && (

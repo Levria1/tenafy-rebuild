@@ -521,7 +521,12 @@ router.get('/check-in-out', authenticate, requirePermission('LANDLORD/LEASING_LI
              DATE_FORMAT(l.${dateCol}, '%Y-%m-%d') AS date,
              ${nameSql} AS tenant_name, t.phone AS tenant_phone, l.tenant_id,
              p.id AS property_id, p.display_name AS property_name,
-             u.id AS unit_id, u.name AS unit_name
+             u.id AS unit_id, u.name AS unit_name,
+             -- The door code, for the checkout inspection this list is used to plan.
+             -- It lives on the LEASE, not the unit: unit.key_code is set on 2 of 118
+             -- units, while unit_information carries the code on 102 of the 137
+             -- current and upcoming leases.
+             l.unit_information AS door_code
         FROM leasing l
         JOIN unit u ON l.unit_id = u.id
         JOIN property p ON u.property_id = p.id
