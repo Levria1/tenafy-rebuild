@@ -24,6 +24,7 @@ const LEASING_ROUTE = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes'
 const SCHEDULE_PAGE = read('frontend/src/app/leasing/check-in-out/page.js');
 const DETAIL_PAGE = read('frontend/src/app/leasing/[id]/detail/page.js');
 const FORMAT = read('frontend/src/lib/format.js');
+const UNIT_PAGE = read('frontend/src/app/property/[id]/unit/[unitid]/page.js');
 
 // Bounded to the check-in-out handler: a match anywhere else in a 1,700-line
 // route file would prove nothing about THIS query.
@@ -83,4 +84,38 @@ test('door code: long Salto instructions collapse, short entries do not', () => 
     'collapsing must require BOTH the word and the length — "Salto, gate code 8362" is a usable answer');
   assert.match(body, /collapsed \? 'Salto' : full/);
   assert.match(body, /split\('\\n'\)/, 'short form is the first line, for one-line slots');
+});
+
+// ─── the unit page reads the CURRENT lease, not the unit ────────────────────
+//
+// This card used to print unit.key_code and had gone stale in the only place it
+// mattered: Cleverly 8B showed 664851# while the tenant living there had 439012#.
+// A door code changes with the tenant, so it belongs to the lease. Reading the
+// lease that is running today means the card re-dates itself on every turnover
+// with nobody remembering to edit the unit.
+test('door code: the unit page shows the current lease\'s code, not unit.key_code', () => {
+  assert.match(UNIT_PAGE, /title="DOOR CODE"/, 'the card must be titled Door Code');
+  assert.doesNotMatch(UNIT_PAGE, /title="KEY CODES"/, 'the stale unit-level card must be gone');
+  assert.doesNotMatch(UNIT_PAGE, /unit\?\.key_code/, 'nothing on this page may read unit.key_code again');
+  assert.match(UNIT_PAGE, /formatDoorCode\(currentLease\?\.unit_information\)/,
+    'it must read the lease running today, through the shared helper');
+});
+
+// "No active lease" and "no code recorded" both mean there is nothing to give
+// out, so both show the same dash the sibling cards use.
+test('door code: the unit card is blank between tenancies', () => {
+  const card = UNIT_PAGE.slice(UNIT_PAGE.indexOf('title="DOOR CODE"'));
+  assert.match(card.slice(0, 700), /if \(!code\) return <Text type="secondary">--<\/Text>/);
+});
+
+// The endpoint behind it must keep selecting by TODAY, or the card silently
+// starts showing a past tenant's code.
+test('door code: the unit lease endpoint is bounded to today', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'property.js'), 'utf8');
+  const from = src.indexOf("router.get('/unit/:unit_id/current-lease'");
+  assert.ok(from !== -1, 'current-lease route not found');
+  const block = src.slice(from, from + 1400);
+  assert.match(block, /l\.start_date <= \$\{orgTodaySql\(\)\}/, 'the current lease must have started');
+  assert.match(block, /l\.end_date >= \$\{orgTodaySql\(\)\} OR l\.end_date IS NULL/, 'and not have ended');
+  assert.match(block, /SELECT l\.\*/, 'unit_information reaches the page via SELECT l.*');
 });

@@ -16,7 +16,7 @@ import useIsMobile from '../../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../../components/mobile/MobileCardList';
 import UnitViewingsTab from '../../../../../components/viewings/UnitViewingsTab';
 import { property as propertyApi, service as serviceApi } from '../../../../../lib/api';
-import { formatBeds, formatUnitType, bedSizeFromAmenities } from '../../../../../lib/format';
+import { formatBeds, formatUnitType, bedSizeFromAmenities, formatDoorCode } from '../../../../../lib/format';
 
 const { Text, Title } = Typography;
 
@@ -105,9 +105,25 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
         <Text style={{ whiteSpace: 'pre-wrap' }}>{unit?.access_information || '--'}</Text>
       </Card>
 
-      {/* KEY CODES */}
-      <Card size="small" title="KEY CODES" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
-        <Text>{unit?.key_code || '--'}</Text>
+      {/* DOOR CODE — from the lease running TODAY, not from the unit.
+          unit.key_code used to fill this card and had gone stale: it still showed
+          664851# for Cleverly 8B while the tenant in residence had 439012#. A code
+          changes with the tenant, so it belongs to the lease; reading the current
+          one means this card re-dates itself every time occupancy turns over, with
+          nobody having to remember to edit the unit. Blank between tenancies,
+          which is the honest answer — there is no code to give out. */}
+      <Card size="small" title="DOOR CODE" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
+        {(() => {
+          const code = formatDoorCode(currentLease?.unit_information);
+          if (!code) return <Text type="secondary">--</Text>;
+          if (!code.collapsed) return <Text style={{ whiteSpace: 'pre-wrap' }}>{code.label}</Text>;
+          return (
+            <>
+              <Tag color="blue">{code.label}</Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>app access, no code to read out</Text>
+            </>
+          );
+        })()}
       </Card>
 
       {/* WIFI INFORMATION */}
