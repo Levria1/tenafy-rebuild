@@ -62,14 +62,10 @@ export default function TenantUtilitiesPage() {
       period: bl.period_start && bl.period_end
         ? `${dayjs(bl.period_start).format('MMM D')} - ${dayjs(bl.period_end).format('MMM D, YYYY')}`
         : '-',
-      meter_number: bl.meter_number,
       starting_reading: num(bl.starting_reading),
       ending_reading: num(bl.ending_reading),
       kw_used: num(bl.kw_used),
       rate: num(bl.rate_per_kw),
-      gross_amount: num(bl.gross_amount),
-      credit: num(bl.prorated_credit),
-      net_amount: num(bl.net_amount),
       invoice_code: bl.invoice_code,
       invoice_status: bl.invoice_status,
       sort_date: bl.period_start,
@@ -79,20 +75,22 @@ export default function TenantUtilitiesPage() {
       type: 'Checkout',
       unit: [cs.property_name, cs.unit_name].filter(Boolean).join(' - ') || '-',
       period: cs.reading_date ? dayjs(cs.reading_date).format('MMM D, YYYY') : '-',
-      meter_number: cs.meter_number,
       starting_reading: num(cs.starting_reading),
       ending_reading: num(cs.checkout_reading),
       kw_used: num(cs.kw_used),
       rate: num(cs.rate_per_kw),
-      gross_amount: num(cs.gross_amount),
-      credit: num(cs.prorated_credit),
-      net_amount: num(cs.net_amount),
       invoice_code: cs.invoice_code,
       invoice_status: cs.invoice_status,
       sort_date: cs.reading_date,
     })),
   ].sort((a, b) => new Date(b.sort_date) - new Date(a.sort_date));
 
+  // Readings, rate, and the invoice the charge landed on. The gross / credit / net
+  // breakdown stays staff-side (the tenant's Utilities tab in the admin app): what a
+  // tenant owes is the invoice total, and the working in between only invites
+  // arguments about proration. The Meter column went with them — tenants asked for
+  // readings, not meter numbers, and the check-in and check-out readings are in the
+  // card above.
   const columns = [
     {
       title: 'Type',
@@ -105,28 +103,10 @@ export default function TenantUtilitiesPage() {
     },
     { title: 'Unit', dataIndex: 'unit', width: 170 },
     { title: 'Period', dataIndex: 'period', width: 180 },
-    { title: 'Meter', dataIndex: 'meter_number', width: 110, render: (v) => v || '-' },
     { title: 'Start', dataIndex: 'starting_reading', width: 90, align: 'right', render: reading },
     { title: 'End', dataIndex: 'ending_reading', width: 90, align: 'right', render: reading },
     { title: 'kW', dataIndex: 'kw_used', width: 80, align: 'right', render: reading },
     { title: 'Rate', dataIndex: 'rate', width: 90, align: 'right', render: money },
-    { title: 'Gross', dataIndex: 'gross_amount', width: 100, align: 'right', render: money },
-    {
-      title: 'Credit',
-      dataIndex: 'credit',
-      width: 100,
-      align: 'right',
-      render: (v) => (num(v) > 0 ? `-${money(v)}` : '-'),
-    },
-    {
-      title: 'Net',
-      dataIndex: 'net_amount',
-      width: 100,
-      align: 'right',
-      render: (v) => (
-        <Text strong style={{ color: num(v) > 0 ? '#cf1322' : '#52c41a' }}>{money(v)}</Text>
-      ),
-    },
     {
       title: 'Invoice',
       key: 'invoice',
@@ -181,17 +161,16 @@ export default function TenantUtilitiesPage() {
             dataSource={history}
             rowKey="key"
             size="small"
-            scroll={{ x: 1360 }}
+            scroll={{ x: 880 }}
             pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
           />
         )}
       </Card>
 
       <Text type="secondary" style={{ display: 'block', marginTop: 16, fontSize: 12 }}>
-        Net is the gross charge less the utility credit included in your rent, prorated for
-        part months. A common area row is your share of electricity for the shared parts of
-        the building. If a reading looks wrong, reply to your invoice email and we will check
-        the meter.
+        The amount charged for each period is on the invoice shown against that row. A
+        common area row is your share of electricity for the shared parts of the building.
+        If a reading looks wrong, reply to your invoice email and we will check the meter.
       </Text>
     </div>
   );

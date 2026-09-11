@@ -342,6 +342,32 @@ test('the utilities page offers no way to edit a reading', () => {
   });
 });
 
+test('the utility money breakdown never leaves the server', () => {
+  // Gross, credit and net are staff working. Dropping the columns from the page while
+  // the API still shipped the numbers would not be hiding them, so the SELECT stops
+  // short too — there is no other consumer of this endpoint.
+  const utilities = portal.slice(portal.indexOf("router.get('/utilities'"));
+  const body = stripComments(utilities.slice(0, utilities.indexOf('router.get(', 10)));
+  ['gross_amount', 'prorated_credit', 'net_amount'].forEach((col) => {
+    assert.ok(!body.includes(col), `portal utilities query should not select ${col}`);
+  });
+});
+
+test('the tenant utility table shows readings and the invoice, not the working', () => {
+  const page = stripComments(read('../../frontend/src/app/tenant-portal/utilities/page.js'));
+  const columns = page.slice(page.indexOf('const columns = ['), page.indexOf('return ('));
+  ["title: 'Type'", "title: 'Unit'", "title: 'Period'", "title: 'Start'",
+    "title: 'End'", "title: 'kW'", "title: 'Rate'", "title: 'Invoice'"].forEach((col) => {
+    assert.ok(columns.includes(col), `utility table should keep ${col}`);
+  });
+  ["title: 'Gross'", "title: 'Credit'", "title: 'Net'", "title: 'Meter'"].forEach((col) => {
+    assert.ok(!columns.includes(col), `utility table should not have ${col}`);
+  });
+  // The footer used to define Net. A definition of a column nobody can see is worse
+  // than none, because it tells the tenant a number is being kept from them.
+  assert.ok(!page.includes('Net is the gross charge'));
+});
+
 test('receipt availability is answered in one query, not one per payment', () => {
   // One invoice in Tane's data carries 18 payments. Loading each receipt to decide
   // whether to show its button was 54 queries for one row expanding.

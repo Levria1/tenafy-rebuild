@@ -590,6 +590,12 @@ router.get('/payments/:id/receipt', authenticateTenant, async (req, res) => {
 // Org scoping has to come through `utility_bill.org_id`: `utility_bill_line` has no
 // org_id column of its own, so that join IS the tenancy boundary here, not a
 // convenience. The meter and unit joins hang off an already-scoped line.
+//
+// Deliberately NOT selected: gross_amount, prorated_credit, net_amount. The tenant is
+// charged what the invoice says, and the credit proration behind it is staff working
+// (and `utility_bill_line.utility_credit` is a snapshot that can disagree with the
+// lease). Hiding the columns in the page while still shipping the numbers over the
+// API would not be hiding them, so they stop here.
 
 /** True when this tenant has any utility history at all. Drives the portal nav. */
 async function hasUtilityHistory(pool, orgId, tenantIds) {
@@ -623,7 +629,7 @@ router.get('/utilities', authenticateTenant, async (req, res) => {
 
     const [billLines] = await req.pool.execute(
       `SELECT bl.id, bl.starting_reading, bl.ending_reading, bl.kw_used,
-              bl.gross_amount, bl.prorated_credit, bl.net_amount, bl.is_common_area,
+              bl.is_common_area,
               b.period_start, b.period_end, b.rate_per_kw,
               m.meter_number,
               u.name AS unit_name, p.display_name AS property_name,
@@ -643,7 +649,7 @@ router.get('/utilities', authenticateTenant, async (req, res) => {
     try {
       const [rows] = await req.pool.execute(
         `SELECT cs.id, cs.starting_reading, cs.checkout_reading, cs.kw_used, cs.rate_per_kw,
-                cs.gross_amount, cs.prorated_credit, cs.net_amount, cs.reading_date,
+                cs.reading_date,
                 m.meter_number,
                 u.name AS unit_name, p.display_name AS property_name,
                 i.id AS invoice_id, i.invoice_code, i.status AS invoice_status
