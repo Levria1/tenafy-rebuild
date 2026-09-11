@@ -4,6 +4,40 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Unit resolver addresses + door codes (2026-09-11)
+
+### Unit resolver — an address and a bare letter name a unit (`643a47b`)
+- **Why** — a prospect wrote "Bonham Strand West Studio A" and got all seven Nam Pak Hong units read back. The address matched (three qualifying tokens); the unit did not, because NPH flats are named `7A` whose core token is `7a`, and the query token `a` is one character, under the two-character floor on the partial-match rule.
+- **Bare unit letter** (`backend/src/services/unitResolver.js`) — a letter names the unit once the BUILDING is known. NPH is single-floor so "A" resolves confidently to 7A; Mong Kok has an A on every floor so all five score and the existing `ambiguous` path asks which, with the building's other 14 units dropped from the list. No new status and no floor counting: "only one unit carries that letter" already means what single-floor means.
+- **Three guards, each earned by a case that broke in build** — (1) requires a matched property, or "unit A" matches an A on every floor of all 17 buildings; (2) a FALLBACK, consulted only when nothing at a matched building was named by its own token, because the unit literally called `3/F Unit 1 (Room A and Room B)` was matching flats 3A and 3B off its own name (this broke an existing test); (3) floor markers stripped first, so the F of "3/F unit" is not unit F — it was answering with 7F.
+- **The article "a"** — capitalisation decides, except where it carries no signal: sentence-initial, or an all-caps message. Rejection falls through to the old behaviour.
+- **`viaLetter` flag** — excluded from the `multi_unit` rule. One letter matching five A-units was escalating a plain enquiry to staff as a five-flat viewing request.
+- **One distinctive street name** — a lone address word now identifies a building at 6+ chars, when it is not a district/city anywhere in the portfolio, and the customer wrote Street/Road beside it. Rescues "Russell Street" and "Possession Street"; the street-word clause keeps "I need possession by 1 Oct" away from Po Thai.
+- **A hyphen joins, a space separates** (`joinHyphens`) — `unitCore` keeps the first token, which tolerates a stray suffix (`6A Test` → `6a`), but `norm()` made every punctuation run a space so Po Thai's `3D-A` and `3D-B` both collapsed to `3d`; a customer typing either name exactly was still asked to choose. Only a hyphen between two alphanumerics joins, so `mong kok - 6a` keeps separating.
+- **Tests** — 14 new cases in `backend/test/unitResolver.test.js`. Verified read-only against the live portfolio (116 marketable units, 16 buildings).
+
+### Door code on the lease and the schedule (`20bc750`)
+- **Source is `leasing.unit_information`, NOT `unit.key_code`** — key_code is the obvious-looking column and is set on 2 of 118 units, one of them the word "Test". `unit_information` carries the code on 102 of 137 current/upcoming leases, as a single line like "Poplar 1C door code: 984197#". `backend/test/doorCodeWiring.test.js` pins which field is read.
+- **Two surfaces** — a "Door Code" row under Unit in Leasing Details (`frontend/src/app/leasing/[id]/detail/page.js`), and a line under "Cleverly · 8B" on the Check In / Check Out card (`frontend/src/app/leasing/check-in-out/page.js`). One column added to the `/check-in-out` query; the detail endpoint is `SELECT l.*` and already returned the field.
+- **`formatDoorCode`** (`frontend/src/lib/format.js`) — shared so the surfaces cannot drift. Long Salto instructions (~900 chars of app links and a video tutorial, written for the arriving tenant) collapse to the single word "Salto" with the full text one click away; collapsing requires BOTH the word and length > 60, so "Salto, gate code 8362" survives. `short` takes the first line for one-line slots, because two leases write the code on line 1 then continue.
+- **Empty is omitted, not blank** — 35 of 137 leases record nothing; an empty row reads as "no code needed", which is not "nobody wrote it down".
+
+### Unit page door code follows the current lease (`6eaae2b`)
+- **The KEY CODES card was wrong where it mattered** — it printed `unit.key_code`, showing `664851#` for Cleverly 8B while the tenant in residence had `439012#`. Across the portfolio it showed something on two units and was wrong on both (the other said "Test").
+- **Replaced with DOOR CODE** reading `currentLease.unit_information` (`frontend/src/app/property/[id]/unit/[unitid]/page.js`). Populated on 81 of 118 units, up from 2, and it re-dates itself on every turnover with nobody editing the unit. Blank between tenancies.
+- **No backend change** — `/api/property/unit/:id/current-lease` already selects `start_date <= today AND end_date >= today` via `orgTodaySql()` and returns `unit_information` through `SELECT l.*`. A test pins that date bounding: the day it loosens, the card silently starts showing a past tenant's code.
+- **`unit.key_code` keeps its column and its unit-edit-form field**; only the read-only display changed. The form field is now write-only in practice — worth removing.
+
+### Marketing site
+- `© 2026` → `© 2018` in the footer of all five pages at `/var/www/tenafy-site` (tenafy.com). Edited in place: the site is not a git repo, and the local copy at `D:\Tane\tenafy-website` was STALE — it still had `href="#"` placeholders where live has real Sign in links to the tenant portal, so deploying it would have broken Sign in on every page. Local copy has since been synced from live. Backup: `/var/www/tenafy-site.bak-20260911-121049`.
+
+### Known follow-ups
+- 35 of 137 current/upcoming leases have no door code recorded; Nam Pak Hong 7F says "Door access details will be sent to you via WhatsApp on your move-in date" instead of a code.
+- Po Thai `3D-A` / `3D-B` resolve correctly now, but the unit-page CURRENT LEASE card still duplicates the door code in its "Unit Information" row.
+- `platform.tenafy.com` is the real domain for the app; `tenafy.com` is the marketing site.
+
+---
+
 ## Session: Booking-horizon + gap-band settings UI (2026-08-17)
 
 - **UI** (`frontend/src/app/chatbot/settings/page.js` `LeasingAvailabilitySettings`) — booking horizon days, three stay-length gap bands, and the optional "too far out" phrase. Empty phrase stays empty (no default wording). Same Card / InputNumber / TextArea / save-reload pattern as the existing inquiry windows.
