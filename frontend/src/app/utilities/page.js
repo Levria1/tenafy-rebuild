@@ -93,7 +93,8 @@ function ReportTab() {
     const groupMatch = (group.group_name || '').toLowerCase().includes(q);
     const filteredUnits = (group.units || []).filter(u =>
       (u.unit_name || '').toLowerCase().includes(q) ||
-      (u.tenant_name || '').toLowerCase().includes(q)
+      (u.tenant_name || '').toLowerCase().includes(q) ||
+      (u.booking_platform || '').toLowerCase().includes(q)
     );
     if (groupMatch) return group;
     if (filteredUnits.length > 0) return { ...group, units: filteredUnits };
@@ -117,7 +118,12 @@ function ReportTab() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                     <Text strong>{unit.unit_name}</Text>
                     {unit.tenant_name ? (
-                      <Text style={{ fontSize: 13 }}>{unit.tenant_name}</Text>
+                      <div style={{ textAlign: 'right' }}>
+                        <Text style={{ fontSize: 13 }}>{unit.tenant_name}</Text>
+                        {unit.booking_platform && (
+                          <div style={{ fontSize: 11, color: '#999', lineHeight: 1.3 }}>{unit.booking_platform}</div>
+                        )}
+                      </div>
                     ) : (
                       <Text type="secondary" style={{ fontStyle: 'italic', fontSize: 13 }}>Vacant</Text>
                     )}
@@ -205,7 +211,12 @@ function ReportTab() {
                     <div style={{ width: 280, minWidth: 280, padding: '6px 12px', borderRight: '1px solid #d9d9d9' }}>
                       <Row>
                         <Col span={8}><Text strong style={{ fontSize: 12 }}>{unit.unit_name}</Text></Col>
-                        <Col span={8}><Text style={{ fontSize: 11 }}>{unit.tenant_name || <span style={{ color: '#bbb', fontStyle: 'italic' }}>Vacant</span>}</Text></Col>
+                        <Col span={8}>
+                          <Text style={{ fontSize: 11 }}>{unit.tenant_name || <span style={{ color: '#bbb', fontStyle: 'italic' }}>Vacant</span>}</Text>
+                          {unit.booking_platform && (
+                            <div style={{ fontSize: 10, color: '#999', lineHeight: 1.3 }}>{unit.booking_platform}</div>
+                          )}
+                        </Col>
                         <Col span={8}>
                           <div style={{ background: '#52c41a', padding: '2px 4px', color: '#fff', fontSize: 9, textAlign: 'center' }}>
                             <div>Meter</div>
@@ -1197,6 +1208,13 @@ function MetersTab() {
 
 // ─── BILLING TAB ─────────────────────────────────────────────
 
+// Mirrors the WHERE clause in POST /bill/:id/generate-invoices: a tenant line
+// with money still owed and no invoice yet. Used both to pre-tick the modal and
+// to build its table — two copies of this filter could drift apart and silently
+// pre-tick a different set than the one shown.
+const isEligibleForInvoice = (l) =>
+  !Number(l.is_common_area) && Number(l.net_amount) > 0 && !l.invoice_id && l.tenant_id;
+
 function BillingTab() {
   const { hasPermission } = useAuth();
   const canDeleteBill = hasPermission ? hasPermission('LANDLORD/UTILITY_BILL_DELETE') : false;
@@ -1324,8 +1342,7 @@ function BillingTab() {
 
   const openInvoiceModal = () => {
     if (!billDetail) return;
-    const tenantLines = (billDetail.lines || []).filter(l => !Number(l.is_common_area));
-    const eligible = tenantLines.filter(l => Number(l.net_amount) > 0 && !l.invoice_id && l.tenant_id);
+    const eligible = (billDetail.lines || []).filter(isEligibleForInvoice);
     setSelectedLineIds(eligible.map(l => l.id));
     setInvoiceModal(true);
   };
@@ -1377,6 +1394,13 @@ function BillingTab() {
     const tenantLines = (billDetail.lines || []).filter(l => !Number(l.is_common_area));
     const commonLines = (billDetail.lines || []).filter(l => Number(l.is_common_area));
     const hasUninvoiced = tenantLines.some(l => Number(l.net_amount) > 0 && !l.invoice_id);
+    // Mirrors the backend's eligibility filter in POST /bill/:id/generate-invoices.
+    const eligibleLines = tenantLines.filter(isEligibleForInvoice);
+    // Invoices are raised at Math.ceil(net_amount), so the summary totals the
+    // same way — otherwise the figure here wouldn't match what gets billed.
+    const selectedTotal = eligibleLines
+      .filter(l => selectedLineIds.includes(l.id))
+      .reduce((sum, l) => sum + Math.ceil(Number(l.net_amount)), 0);
     const allReadingsEntered = (billDetail.lines || []).every(l => Number(l.ending_reading) > 0);
     const totalKwEntered = (billDetail.lines || []).reduce((sum, l) => sum + Number(l.kw_used), 0);
 
@@ -1554,11 +1578,19 @@ function BillingTab() {
           onCancel={() => setInvoiceModal(false)}
           width={700}
         >
-          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-            Select which tenants should receive utility invoices. Uncheck tenants who should not be billed (e.g. Airbnb/Agoda).
-          </Text>
+          <div style={{ marginBottom: 12 }}>
+            <Text>
+              <Text strong>{selectedLineIds.length}</Text> of {eligibleLines.length} tenant
+              {eligibleLines.length === 1 ? '' : 's'} selected, totalling{' '}
+              <Text strong>${selectedTotal.toLocaleString()}</Text>.
+            </Text>
+            <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>
+              Everyone with an amount due is selected. Tenants whose utility credit covers
+              their usage are already excluded. Untick anyone who should not be billed.
+            </div>
+          </div>
           <Table
-            dataSource={tenantLines.filter(l => Number(l.net_amount) > 0 && !l.invoice_id && l.tenant_id)}
+            dataSource={eligibleLines}
             columns={[
               {
                 title: 'Unit / Tenant', key: 'unit_tenant',
@@ -1566,6 +1598,10 @@ function BillingTab() {
                   const tenant = [row.tenant_first_name, row.tenant_last_name].filter(Boolean).join(' ');
                   return <div><div>{row.unit_name}</div>{tenant && <div style={{ fontSize: 12, color: '#888' }}>{tenant}</div>}</div>;
                 }
+              },
+              {
+                title: 'Platform', dataIndex: 'booking_platform', key: 'booking_platform', width: 130,
+                render: v => v || <Text type="secondary">-</Text>
               },
               { title: 'kW Used', dataIndex: 'kw_used', key: 'kw_used', width: 80, render: v => Number(v).toLocaleString() },
               { title: 'Gross', dataIndex: 'gross_amount', key: 'gross', width: 90, render: v => `$${Number(v).toFixed(2)}` },

@@ -851,13 +851,16 @@ router.get('/bill/:id', authenticate, async (req, res) => {
               u.name AS unit_name,
               t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
               p.display_name AS property_name,
-              i.invoice_code, i.status AS invoice_status
+              i.invoice_code, i.status AS invoice_status,
+              bp.name AS booking_platform
        FROM utility_bill_line bl
        LEFT JOIN utility_meter m ON bl.meter_id = m.id
        LEFT JOIN unit u ON bl.unit_id = u.id
        LEFT JOIN property p ON u.property_id = p.id
        LEFT JOIN tenant t ON bl.tenant_id = t.id
        LEFT JOIN invoice i ON bl.invoice_id = i.id
+       LEFT JOIN leasing l ON bl.leasing_id = l.id
+       LEFT JOIN booking_platform bp ON l.booking_platform_id = bp.id
        WHERE bl.bill_id = ?
        ORDER BY bl.is_common_area, u.name, m.meter_number`,
       [id]
@@ -1342,7 +1345,8 @@ router.get('/report', authenticate, async (req, res) => {
                 t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
                 t.company_name AS tenant_company_name, t.type AS tenant_type,
                 i.status AS invoice_status, i.invoice_code,
-                b.period_end AS bill_period_end
+                b.period_end AS bill_period_end,
+                bp.name AS booking_platform
          FROM utility_bill_line bl
          JOIN utility_bill b ON bl.bill_id = b.id
          LEFT JOIN utility_meter m ON bl.meter_id = m.id
@@ -1350,6 +1354,8 @@ router.get('/report', authenticate, async (req, res) => {
          LEFT JOIN property p ON u.property_id = p.id
          LEFT JOIN tenant t ON bl.tenant_id = t.id
          LEFT JOIN invoice i ON bl.invoice_id = i.id
+         LEFT JOIN leasing l ON bl.leasing_id = l.id
+         LEFT JOIN booking_platform bp ON l.booking_platform_id = bp.id
          WHERE bl.bill_id IN (${placeholders})
          ORDER BY b.period_end DESC, u.name`,
         billIds
@@ -1375,6 +1381,10 @@ router.get('/report', authenticate, async (req, res) => {
             unit_name: line.unit_name,
             property_name: line.property_name,
             tenant_name: tenantName || null,
+            // Same most-recent-line rule as tenant_name above: the platform shown
+            // is the one on the lease that the displayed tenant is actually under,
+            // not whoever occupied the meter six bills ago.
+            booking_platform: line.booking_platform || null,
             months: {},
           };
         }
