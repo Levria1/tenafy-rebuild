@@ -1539,14 +1539,14 @@ test('/units/search engine keeps out-of-band results advisory-only', async () =>
   assert.ok(executed.length >= 2);
 });
 
-test('/units/search publishes asking_rent tiers and preserves already-vacant discount timing', async () => {
+test('/units/search publishes asking_rent tiers and preserves already-vacant timing', async () => {
   const { searchUnits } = require('../src/services/unitSearch');
   const today = orgToday();
   const rows = [
     { unit_id: 'u-high', unit_name: 'High', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(56) },
-    { unit_id: 'u-mid', unit_name: 'Mid', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(42) },
-    { unit_id: 'u-low', unit_name: 'Low', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: today },
-    { unit_id: 'u-discount', unit_name: 'Discount', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(-12) },
+    { unit_id: 'u-soon', unit_name: 'Soon', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(42) },
+    { unit_id: 'u-today', unit_name: 'Today', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: today },
+    { unit_id: 'u-vacant', unit_name: 'Vacant', rent_price_min: 14000, rent_price_max: 16500, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(-12) },
     { unit_id: 'u-null', unit_name: 'No Price', rent_price_min: null, rent_price_max: null, last_lease_price: null, last_lease_invoicing: null, last_lease_end_date: addOrgDays(56) },
   ].map(row => ({
     beds: 1,
@@ -1594,12 +1594,14 @@ test('/units/search publishes asking_rent tiers and preserves already-vacant dis
     min: '14000.00',
     max: '16500.00',
   });
-  assert.equal(byId.get('u-mid').asking_rent.tier, 'mid');
-  assert.equal(byId.get('u-mid').asking_rent.amount, '15250.00');
-  assert.equal(byId.get('u-low').asking_rent.tier, 'low');
-  assert.equal(byId.get('u-low').asking_rent.amount, '14000.00');
-  assert.equal(byId.get('u-discount').asking_rent.tier, 'discount');
-  assert.equal(byId.get('u-discount').asking_rent.amount, '12600.00');
+  // Still occupied, however close the move-out: top of range.
+  assert.equal(byId.get('u-soon').asking_rent.tier, 'high');
+  assert.equal(byId.get('u-soon').asking_rent.amount, '16500.00');
+  assert.equal(byId.get('u-today').asking_rent.tier, 'high');
+  assert.equal(byId.get('u-today').asking_rent.amount, '16500.00');
+  // Standing empty for 12 days: midpoint, and no lower.
+  assert.equal(byId.get('u-vacant').asking_rent.tier, 'mid');
+  assert.equal(byId.get('u-vacant').asking_rent.amount, '15250.00');
   assert.equal(byId.get('u-null').asking_rent, null);
 });
 

@@ -31,12 +31,21 @@ const PLACEHOLDERS = [
   { token: '%WebpageLink%',     description: "The template's webpage link" },
 ];
 
-// Posting rent — the rate to advertise at, stepping DOWN as availability nears,
-// across the unit's rent_price_min..max range:
-//   >= 8 weeks (56d)  → high (top of range)
-//   6–8 weeks (42d)   → mid  (midpoint)
-//   < 6 weeks upcoming→ low  (bottom of range)
-//   vacant > 1 day    → low − 10%
+// Posting rent — the rate to advertise at, across the unit's rent_price_min..max
+// range. Ask the top of the range while the unit is still coming up, and only come
+// down once it is actually standing empty:
+//   not yet vacant (d >= 0, or unknown) → high (top of range)
+//   already vacant (d < 0)              → mid  (midpoint)
+//
+// This replaced an 8-week / 6-week step-down (high 56d+, mid 42-55d, low below,
+// minus 10% once vacant) whose top rung could never be reached. A unit does not
+// join the advertising roster until it is inside the lead window — 60 days out for
+// a confirmed Not Renewing tenant, 45 for everything else — while `high` needed 56
+// days or more. So NR units were `high` for five days and nothing else ever was:
+// on 11 Sep 2026 the whole roster of six sat at low, mid or discount, and Poplar 2B
+// was being advertised at HK$12,000 out of a HK$12,000-13,000 range with five weeks'
+// notice. Rule set by the owner, 11 Sep 2026.
+//
 // `daysToAvailable`: positive = days until vacant; negative = days already vacant;
 // null = unknown. Pure + testable. Returns { amount, tier } or null.
 function computePostingRent(rentMin, rentMax, daysToAvailable) {
@@ -52,12 +61,10 @@ function computePostingRent(rentMin, rentMax, daysToAvailable) {
   const hi = (hasMin && hasMax) ? Math.max(min, max) : (hasMax ? max : min);
   const mid = Math.round((lo + hi) / 2);
   const d = daysToAvailable;
-  if (d == null)     return { amount: lo, tier: 'low' };                     // unknown → conservative
-  if (d >= 56)       return { amount: hi, tier: 'high' };                    // >= 8 weeks
-  if (d >= 42)       return { amount: mid, tier: 'mid' };                    // 6–8 weeks
-  if (d >= 0)        return { amount: lo, tier: 'low' };                     // < 6 weeks, upcoming
-  if (d < -1)        return { amount: Math.round(lo * 0.9), tier: 'discount' }; // vacant > 1 day
-  return { amount: lo, tier: 'low' };                                        // vacant 0–1 day
+  // Unknown counts as not-yet-vacant: a unit standing empty always has a date
+  // behind it, so a missing one means the lease has simply not ended yet.
+  if (d == null || d >= 0) return { amount: hi, tier: 'high' };
+  return { amount: mid, tier: 'mid' };
 }
 
 const PLACEHOLDER_TOKENS = PLACEHOLDERS.map(p => p.token);

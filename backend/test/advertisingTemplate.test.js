@@ -48,25 +48,41 @@ test('convertBold: **marked** segments become Unicode bold, rest untouched', () 
   assert.equal(convertBold('keep (punct) **A!**'), 'keep (punct) \u{1D400}!'); // punctuation inside stays literal
 });
 
-test('computePostingRent: tiers step down as availability nears', () => {
-  const min = 5000, max = 8000;
-  assert.deepEqual(computePostingRent(min, max, 70), { amount: 8000, tier: 'high' });    // >8wk → high
-  assert.deepEqual(computePostingRent(min, max, 56), { amount: 8000, tier: 'high' });    // exactly 8wk
-  assert.deepEqual(computePostingRent(min, max, 50), { amount: 6500, tier: 'mid' });     // 6–8wk → mid (midpoint)
-  assert.deepEqual(computePostingRent(min, max, 42), { amount: 6500, tier: 'mid' });     // exactly 6wk
-  assert.deepEqual(computePostingRent(min, max, 30), { amount: 5000, tier: 'low' });     // <6wk → low
-  assert.deepEqual(computePostingRent(min, max, 21), { amount: 5000, tier: 'low' });     // 3wk → low
-  assert.deepEqual(computePostingRent(min, max, 0),  { amount: 5000, tier: 'low' });     // due today
-  assert.deepEqual(computePostingRent(min, max, -1), { amount: 5000, tier: 'low' });     // vacant ≤1 day → no discount
-  assert.deepEqual(computePostingRent(min, max, -5), { amount: 4500, tier: 'discount' });// vacant >1 day → low−10%
+test('computePostingRent: top of range until the unit is actually empty', () => {
+  // Set by the owner on 11 Sep 2026. The old ladder (high 56d+, mid 42-55d, low
+  // below, -10% once vacant) had a top rung nothing could reach: a unit only joins
+  // the roster at 60 days out (NR) or 45 (everything else), so `high` needed more
+  // notice than the roster ever gave. Every one of the six units on the roster that
+  // day sat at low, mid or discount.
+  const [min, max] = [5000, 8000];
+  assert.deepEqual(computePostingRent(min, max, 70), { amount: 8000, tier: 'high' });
+  assert.deepEqual(computePostingRent(min, max, 56), { amount: 8000, tier: 'high' });
+  assert.deepEqual(computePostingRent(min, max, 50), { amount: 8000, tier: 'high' }); // was mid
+  assert.deepEqual(computePostingRent(min, max, 35), { amount: 8000, tier: 'high' }); // was low
+  assert.deepEqual(computePostingRent(min, max, 1),  { amount: 8000, tier: 'high' });
+  assert.deepEqual(computePostingRent(min, max, 0),  { amount: 8000, tier: 'high' }); // free today
+});
+
+test('computePostingRent: a unit standing empty drops to the midpoint, and no lower', () => {
+  const [min, max] = [5000, 8000];
+  assert.deepEqual(computePostingRent(min, max, -1), { amount: 6500, tier: 'mid' });
+  assert.deepEqual(computePostingRent(min, max, -5), { amount: 6500, tier: 'mid' });
+  assert.deepEqual(computePostingRent(min, max, -90), { amount: 6500, tier: 'mid' });
+  // The bottom of the range and the 10%-under discount are both retired: nothing
+  // advertises below the midpoint any more.
+  for (const d of [70, 0, -1, -90, null]) {
+    const t = computePostingRent(min, max, d).tier;
+    assert.ok(t === 'high' || t === 'mid', `tier ${t} should no longer occur`);
+  }
 });
 
 test('computePostingRent: single value (min==max) and missing bounds', () => {
   assert.deepEqual(computePostingRent(5500, 5500, 70), { amount: 5500, tier: 'high' });
   assert.deepEqual(computePostingRent(5500, null, 70), { amount: 5500, tier: 'high' }); // only min
-  assert.deepEqual(computePostingRent(null, 6000, 30), { amount: 6000, tier: 'low' });  // only max → lo=max
+  assert.deepEqual(computePostingRent(null, 6000, 30), { amount: 6000, tier: 'high' }); // only max → hi=max
   assert.equal(computePostingRent(null, null, 30), null);                                // no range
-  assert.deepEqual(computePostingRent(5000, 8000, null), { amount: 5000, tier: 'low' }); // unknown days → conservative
+  // Unknown days reads as not-yet-vacant: an empty unit always has a date behind it.
+  assert.deepEqual(computePostingRent(5000, 8000, null), { amount: 8000, tier: 'high' });
 });
 
 test('applyPlaceholders substitutes known tokens', () => {

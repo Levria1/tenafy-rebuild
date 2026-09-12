@@ -34,15 +34,16 @@ test('falls back to the step-down price when there is no template to render', ()
   assert.equal(p.posting_tier, 'high');
 });
 
-test('surfaces the discount tier for a unit that has sat vacant', () => {
-  // -30 = vacant for 30 days → low minus 10%. The tier is the whole point of
-  // showing this: it is how the operator notices they are discounting.
+test('surfaces the mid tier for a unit that has sat vacant', () => {
+  // -30 = vacant for 30 days → midpoint of 20,000-30,000. The tier is the whole
+  // point of showing this: it is how the operator notices the unit has gone empty
+  // and is no longer being advertised at the top of its range.
   const bundle = { units: [unit({ days_left: -30 })] };
 
   const [p] = postingPrices(bundle, null);
 
-  assert.equal(p.posting_rent, 18000);
-  assert.equal(p.posting_tier, 'discount');
+  assert.equal(p.posting_rent, 25000);
+  assert.equal(p.posting_tier, 'mid');
 });
 
 test('a unit with no advertised range reports null rather than a fake zero', () => {

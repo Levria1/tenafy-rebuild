@@ -239,8 +239,10 @@ test('asking rent can pass a cap when the sitting-tenant rent is above it', () =
   const row = {
     last_lease_price: 15000,
     last_lease_invoicing: 'monthly',
-    rent_price_min: 14000,
-    rent_price_max: 15000,
+    // The advertised ceiling is what we now quote while a unit is still occupied,
+    // so it is the bound that has to sit under the cap for this case to exist.
+    rent_price_min: 13000,
+    rent_price_max: 14000,
   };
   // Assert BOTH figures: the point of the test is that they disagree across the
   // cap. Asserting only the asking side would still pass if the two were equal.
@@ -286,11 +288,19 @@ test('askingRentAmount follows posting-rent tier boundaries', () => {
     last_lease_end_date: lastLeaseEndDate,
   });
 
-  assert.equal(askingRentAmount(row('2026-11-26'), realToday), 20000, '56 days out uses high');
-  assert.equal(askingRentAmount(row('2026-11-25'), realToday), 15000, '55 days out uses mid');
-  assert.equal(askingRentAmount(row('2026-11-12'), realToday), 15000, '42 days out uses mid');
-  assert.equal(askingRentAmount(row('2026-11-11'), realToday), 10000, '41 days out uses low');
-  assert.equal(askingRentAmount(row('2026-10-01'), realToday), 10000, '0 days out uses low');
+  // Occupied, however near the move-out: top of range. The old ladder conceded
+  // to the midpoint at 55 days and the bottom at 41, which meant a lead asking
+  // about a flat six weeks out was quoted the floor price while the tenant was
+  // still living in it.
+  assert.equal(askingRentAmount(row('2026-11-26'), realToday), 20000, '56 days out');
+  assert.equal(askingRentAmount(row('2026-11-25'), realToday), 20000, '55 days out');
+  assert.equal(askingRentAmount(row('2026-11-12'), realToday), 20000, '42 days out');
+  assert.equal(askingRentAmount(row('2026-11-11'), realToday), 20000, '41 days out');
+  assert.equal(askingRentAmount(row('2026-10-01'), realToday), 20000, 'free today');
+
+  // Standing empty: midpoint, and it stays there however long it sits.
+  assert.equal(askingRentAmount(row('2026-09-30'), realToday), 15000, 'vacant 1 day');
+  assert.equal(askingRentAmount(row('2026-07-01'), realToday), 15000, 'vacant 3 months');
 });
 
 

@@ -90,7 +90,7 @@ test('scheduled lease publishes the lease figure with rent_basis lease', () => {
   assert.equal(result.rent_price_max, '10000.00');
 });
 
-test('asking_rent uses high tier at least 56 days out without changing existing rent fields', () => {
+test('asking_rent uses high tier while the unit is still occupied, without changing existing rent fields', () => {
   const result = vacancyToPublicShape(row({
     invoicing: 'monthly',
     rent: 12000,
@@ -111,29 +111,24 @@ test('asking_rent uses high tier at least 56 days out without changing existing 
   assert.equal(result.rent_price_max, '16500.00');
 });
 
-test('asking_rent uses mid tier 42 to 55 days out', () => {
-  const result = vacancyToPublicShape(row({
-    rent_price_min: 14000,
-    rent_price_max: 16500,
-    days_left: 42,
-  }));
-
-  assert.equal(result.asking_rent.tier, 'mid');
-  assert.equal(result.asking_rent.amount, '15250.00');
-});
-
-test('asking_rent uses low tier 0 to 41 days out', () => {
-  const result = vacancyToPublicShape(row({
-    rent_price_min: 14000,
-    rent_price_max: 16500,
-    days_left: 41,
-  }));
-
-  assert.equal(result.asking_rent.tier, 'low');
-  assert.equal(result.asking_rent.amount, '14000.00');
+test('asking_rent stays at the top of the range right up to the move-out day', () => {
+  // 42 and 41 days used to be the mid/low boundary. Both are now high: we do not
+  // start conceding rent to a prospect while the tenant is still in the flat.
+  for (const days of [42, 41, 1, 0]) {
+    const result = vacancyToPublicShape(row({
+      rent_price_min: 14000,
+      rent_price_max: 16500,
+      days_left: days,
+    }));
+    assert.equal(result.asking_rent.tier, 'high', `${days} days out`);
+    assert.equal(result.asking_rent.amount, '16500.00', `${days} days out`);
+  }
 });
 
 test('already-vacant asking_rent uses raw negative days_left despite clamped availability', () => {
+  // availability.days_until is clamped to 0 for a vacant unit, but the asking rent
+  // must read the real negative figure — otherwise an empty flat would price as
+  // though it were still occupied.
   const result = vacancyToPublicShape(row({
     tier: 1,
     rent_price_min: 14000,
@@ -143,8 +138,8 @@ test('already-vacant asking_rent uses raw negative days_left despite clamped ava
   }));
 
   assert.equal(result.availability.days_until, 0);
-  assert.equal(result.asking_rent.tier, 'discount');
-  assert.equal(result.asking_rent.amount, '12600.00');
+  assert.equal(result.asking_rent.tier, 'mid');
+  assert.equal(result.asking_rent.amount, '15250.00');
 });
 
 test('asking_rent is null when no price bounds exist', () => {

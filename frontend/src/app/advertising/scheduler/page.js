@@ -136,14 +136,16 @@ export default function SchedulerPage() {
     }
   };
 
-  // The advertised rate steps DOWN as availability nears, so the tier is not
-  // decoration — it is how the operator spots that a unit is being discounted.
+  // We ask the top of the range until the unit is actually standing empty, then
+  // drop to the midpoint. The tag is not decoration: it is how the operator spots
+  // at a glance that a unit has gone vacant and is now being advertised for less.
+  // low/discount are retired tiers, kept here so old screenshots still read.
   const TIER_COLOR = { high: 'green', mid: 'blue', low: 'orange', discount: 'red' };
   const TIER_HINT = {
-    high: 'Top of range — 8+ weeks before it frees up',
-    mid: 'Midpoint — 6 to 8 weeks out',
-    low: 'Bottom of range — under 6 weeks out',
-    discount: '10% under the bottom of range — already vacant',
+    high: 'Top of range — not vacant yet',
+    mid: 'Midpoint — already standing empty',
+    low: 'Retired tier (bottom of range)',
+    discount: 'Retired tier (10% under bottom of range)',
   };
   const money = (n) => (n == null ? null : `HK$${Number(n).toLocaleString('en-US')}`);
 
