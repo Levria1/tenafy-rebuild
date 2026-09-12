@@ -278,8 +278,14 @@ const get_unit_details = {
     if (!rows.length) return { error: 'Unit not found or no longer available' };
     const u = rows[0];
 
+    // The amenity table's label column is `display_name`; there is no `name`.
+    // Selecting a.name threw "Unknown column 'a.name' in 'field list'" on every
+    // call, and the tool loop in routes/chat.js turns a thrown tool into
+    // { error } handed straight to the model — so get_unit_details had never
+    // once returned a unit. The prospect lost the whole payload with it:
+    // amenities, beds, baths, the price range, the listing URL, the address.
     const [amens] = await pool.execute(
-      `SELECT a.id, a.name FROM unit_amenity ua
+      `SELECT a.id, a.display_name AS name FROM unit_amenity ua
        JOIN amenity a ON ua.amenity_id = a.id
        WHERE ua.unit_id = ?`,
       [args.unit_id]
