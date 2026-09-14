@@ -84,3 +84,51 @@ test('no query anywhere selects a column the amenity table does not have', () =>
   assert.deepStrictEqual(offenders, [],
     `queries naming a column the amenity table does not have:\n  ${offenders.join('\n  ')}`);
 });
+
+// ---------------------------------------------------------------------------
+// The model only uses what the tool contract tells it about.
+//
+// search_available_units returns each unit's amenity list (unitSearch.js:477),
+// but its description never said so — it documented the fit metadata,
+// asking_rent and listing_url and stopped there. So whether the bot mentioned
+// "Shared Bathroom" came down to the model noticing an undocumented field.
+//
+// That is not a cosmetic gap. Fuk Lo Tsun's fourteen studios share a floor
+// bathroom and a laundry room, and the `baths` filter counts a shared bathroom
+// as one, so a prospect asking for a unit with a bathroom matches all fourteen.
+// The amenity list is the only thing that says "shared", and it has to be read.
+// ---------------------------------------------------------------------------
+
+test('the search tool tells the model amenities are in the response', () => {
+  const { ALL_BY_NAME } = require('../src/services/chatTools');
+  const fn = ALL_BY_NAME.search_available_units.definition.function;
+
+  assert.match(fn.description, /`amenities`/,
+    'the description must name the amenities field');
+  assert.match(fn.description, /Shared Bathroom/,
+    'it must show the model what a communal facility looks like');
+  assert.match(fn.description, /never present one of those as\s+private or in-unit/,
+    'and say plainly not to describe a shared facility as private');
+});
+
+test('the baths filter warns that the count includes shared bathrooms', () => {
+  // Fourteen FLT studios report baths: 1 for a bathroom they share, which is the
+  // honest count. Without this note the model reads 1 as "has its own".
+  const { ALL_BY_NAME } = require('../src/services/chatTools');
+  const baths = ALL_BY_NAME.search_available_units.definition.function
+    .parameters.properties.baths.description;
+
+  assert.match(baths, /communal ones included/i);
+  assert.match(baths, /Shared Bathroom/);
+});
+
+test('the amenity names the tool advertises are the ones in the catalogue', () => {
+  // The description quotes three amenity labels at the model. If someone renames
+  // one in the catalogue, the quoted example goes stale and the instruction stops
+  // matching the data. These are the labels the seeded catalogue uses.
+  const { ALL_BY_NAME } = require('../src/services/chatTools');
+  const fn = ALL_BY_NAME.search_available_units.definition.function;
+  for (const label of ['Shared Bathroom', 'Shared Washing Machine', 'Shared Dryer']) {
+    assert.ok(fn.description.includes(label), `description should quote "${label}"`);
+  }
+});

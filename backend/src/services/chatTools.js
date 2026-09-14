@@ -63,12 +63,16 @@ const search_available_units = {
         'QUOTE `asking_rent` as the monthly rent — it is the price a new tenant pays. ' +
         'IMPORTANT: before searching, make sure you have the prospect’s move-in date and budget — if either is missing, ' +
         'ask for it first (one question at a time). Pass move_in_date as YYYY-MM-DD; omit only if truly unknown. ' +
-        'Each result includes a listing_url — INCLUDE that link so the prospect can see photos.',
+        'Each result includes a listing_url — INCLUDE that link so the prospect can see photos. ' +
+        'Each result also carries `amenities`, the unit\u2019s own amenity list, and `description`, any free-text note ' +
+        'on it. READ the amenity list before describing a unit: communal facilities are named as such ' +
+        '("Shared Bathroom", "Shared Washing Machine", "Shared Dryer"), so never present one of those as ' +
+        'private or in-unit, and say "shared" when the prospect asks about it.',
       parameters: {
         type: 'object',
         properties: {
           beds: { type: 'integer', description: 'Exact number of BEDROOMS (not occupancy). Pass 0 for a studio. "For 2 people / 2 guests / a couple" is OCCUPANCY — do NOT set beds for that; only set beds when the prospect explicitly asks for N bedrooms / NBR / N rooms.' },
-          baths: { type: 'integer', description: 'Exact number of bathrooms (optional).' },
+          baths: { type: 'integer', description: 'Exact number of bathrooms (optional). This counts bathrooms SERVING the unit, communal ones included — a studio sharing a floor bathroom still counts as 1. Check the result\u2019s `amenities` for "Shared Bathroom" before telling a prospect a unit has its own.' },
           budget: { type: 'number', description: "The prospect's target monthly rent. Units up to ~15% over are included and flagged via over_budget_pct. Prefer this over max_price." },
           max_price: { type: 'number', description: 'Hard maximum monthly rent — use only if the prospect insists on a strict cap. Prefer `budget`.' },
           min_price: { type: 'number', description: 'Minimum monthly rent (rarely useful).' },
