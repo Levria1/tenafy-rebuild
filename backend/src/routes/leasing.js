@@ -7,6 +7,7 @@ const { findLastMeterReadingForUnit } = require('../utils/meterReadingLookup');
 const { generateInvoiceCode, generateSequenceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
 const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
+const { rentPeriodNote } = require('../utils/rentPeriodNote');
 const { resolveLeaseValues } = require('../utils/leaseRevision');
 const { computePaperworkState, addDays } = require('../utils/paperworkPeriod');
 const { parseContractType, CONTRACT_TYPE_REQUIRED_MESSAGE } = require('../utils/contractType');
@@ -1257,17 +1258,17 @@ router.post('/', authenticate, requirePermission('LANDLORD/LEASING_CREATE'), asy
 
       // Helper: create a single invoice with collision-safe code generation
       // Returns { invoiceId, invoiceCode, dueDate } for email sending
-      const createOneInvoice = async (dueDate, status, amount) => {
+      const createOneInvoice = async (dueDate, status, amount, note) => {
         const invoiceCode = await generateInvoiceCode(req.pool, orgId);
         const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
         await req.pool.execute(
           `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
             invoice_code, amount, due_on, status, category, currency_id, type,
-            booking_platform_id, sales_agent_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NOW())`,
+            booking_platform_id, sales_agent_id, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NOW())`,
           [invoiceId, orgId, tenant_id, unit_id, leaseId.toString(), propertyId,
            invoiceCode, amount, dueDate, status, rentCategoryId, currencyId,
-           booking_platform_id || null, sales_agent_id || null]
+           booking_platform_id || null, sales_agent_id || null, note]
         );
         return { invoiceId, invoiceCode, dueDate };
       };
@@ -1304,9 +1305,13 @@ router.post('/', authenticate, requirePermission('LANDLORD/LEASING_CREATE'), asy
           if (thisAmount === null) break; // lease already over before this period
 
           if (isPast) {
-            createdInvoices.push(await createOneInvoice(dateStr, mark_past_paid ? 1 : 0, thisAmount));
+            createdInvoices.push(await createOneInvoice(dateStr, mark_past_paid ? 1 : 0, thisAmount, rentPeriodNote({
+              dueOn: dateStr, invoicing, dueDay: due_date, leaseStart: start_date, leaseEnd: end_date,
+            })));
           } else {
-            createdInvoices.push(await createOneInvoice(dateStr, 0, thisAmount));
+            createdInvoices.push(await createOneInvoice(dateStr, 0, thisAmount, rentPeriodNote({
+              dueOn: dateStr, invoicing, dueDay: due_date, leaseStart: start_date, leaseEnd: end_date,
+            })));
             break;
           }
           cursor = nextCursor;
@@ -1317,7 +1322,12 @@ router.post('/', authenticate, requirePermission('LANDLORD/LEASING_CREATE'), asy
         const invoiceDate = first_invoice_date || start_date || today;
         const isPast = new Date(invoiceDate).getTime() <= todayMs;
         const invoiceStatus = (isPast && mark_past_paid) ? 1 : 0;
-        createdInvoices.push(await createOneInvoice(invoiceDate, invoiceStatus, invoiceAmount));
+        createdInvoices.push(await createOneInvoice(invoiceDate, invoiceStatus, invoiceAmount, rentPeriodNote({
+          // The lease's real schedule, not null: this branch also runs for a monthly
+          // lease with recurring switched OFF, where the invoice is one period's rent.
+          // Only a lease with no schedule at all bills (and describes) the whole stay.
+          dueOn: invoiceDate, invoicing, dueDay: due_date, leaseStart: start_date, leaseEnd: end_date,
+        })));
       }
 
       // Send invoice posted emails (fire-and-forget, don't block lease creation)
@@ -2192,17 +2202,17 @@ router.post('/:id/confirm', authenticate, requirePermission('LANDLORD/LEASING_ED
       );
       const rentCategoryId = rentCat ? rentCat.id : null;
 
-      const createOneInvoice = async (dueDate, status, amount) => {
+      const createOneInvoice = async (dueDate, status, amount, note) => {
         const invoiceCode = await generateInvoiceCode(req.pool, orgId);
         const invoiceId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
         await req.pool.execute(
           `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
             invoice_code, amount, due_on, status, category, currency_id, type,
-            booking_platform_id, sales_agent_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NOW())`,
+            booking_platform_id, sales_agent_id, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NOW())`,
           [invoiceId, orgId, lease.tenant_id, lease.unit_id, id, unitRow.property_id,
            invoiceCode, amount, dueDate, status, rentCategoryId, lease.currency_id,
-           lease.booking_platform_id || null, lease.sales_agent_id || null]
+           lease.booking_platform_id || null, lease.sales_agent_id || null, note]
         );
         return { invoiceId, invoiceCode };
       };
@@ -2225,14 +2235,21 @@ router.post('/:id/confirm', authenticate, requirePermission('LANDLORD/LEASING_ED
             periodStart: cursor, periodEnd, leaseEnd: lease.end_date,
           });
           if (thisAmount === null) break;
-          await createOneInvoice(dateStr, 0, thisAmount);
+          await createOneInvoice(dateStr, 0, thisAmount, rentPeriodNote({
+            dueOn: dateStr, invoicing: lease.invoicing, dueDay: lease.due_date,
+            leaseStart: lease.start_date, leaseEnd: lease.end_date,
+          }));
           if (!isPast) break;
           cursor = nextCursor;
           count++;
         }
       } else {
         const invoiceDate = lease.first_invoice_date || lease.start_date || today;
-        await createOneInvoice(invoiceDate, 0, invoiceAmount);
+        await createOneInvoice(invoiceDate, 0, invoiceAmount, rentPeriodNote({
+          // Real schedule, not null — see the matching note in POST / above.
+          dueOn: invoiceDate, invoicing: lease.invoicing, dueDay: lease.due_date,
+          leaseStart: lease.start_date, leaseEnd: lease.end_date,
+        }));
       }
     }
 

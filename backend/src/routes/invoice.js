@@ -6,6 +6,7 @@ const { logActivity } = require('../utils/activityLog');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount, inclusiveDays } = require('../utils/rentProrata');
 const { advanceInvoiceDate, periodEndFor } = require('../utils/invoiceSchedule');
+const { rentPeriodNote } = require('../utils/rentPeriodNote');
 const { generateInvoicePdfBuffer } = require('./pdf');
 const { sendTemplateEmail } = require('../services/emailService');
 const { sendMail, sendMailWithAccount } = require('../config/mailer');
@@ -416,23 +417,33 @@ router.post('/publish', authenticate, requirePermission('LANDLORD/INVOICE_CREATE
     // (scheduled / recurring) invoices carry their own copy.
     let platformId = null;
     let agentId = null;
+    let note = null;
     const [[leaseRow]] = await req.pool.execute(
-      'SELECT booking_platform_id, sales_agent_id FROM leasing WHERE id = ? LIMIT 1',
+      'SELECT booking_platform_id, sales_agent_id, invoicing, due_date, start_date, end_date FROM leasing WHERE id = ? LIMIT 1',
       [leasing_id]
     );
     if (leaseRow) {
       platformId = leaseRow.booking_platform_id || null;
       agentId = leaseRow.sales_agent_id || null;
+      if (!category) {
+        note = rentPeriodNote({
+          dueOn: due_date,
+          invoicing: leaseRow.invoicing,
+          dueDay: leaseRow.due_date,
+          leaseStart: leaseRow.start_date,
+          leaseEnd: leaseRow.end_date,
+        });
+      }
     }
 
     await req.pool.execute(
       `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
         invoice_code, amount, due_on, status, category, currency_id, type, tag_id,
-        booking_platform_id, sales_agent_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, NOW())`,
+        booking_platform_id, sales_agent_id, note, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [invoiceId, orgId, tenant_id, unit_id || null, leasing_id, propId,
        code, finalAmount, due_date, catId, currId, type || 0, tag_id || null,
-       platformId, agentId]
+       platformId, agentId, note]
     );
 
     // Publishing creates ONE invoice, despite the endpoint's name.

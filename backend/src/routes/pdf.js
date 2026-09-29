@@ -6,6 +6,7 @@ const { renderFromTemplate } = require('../services/leasePdfRenderer');
 const { resolveLeaseTemplateId } = require('../services/leaseTemplateResolver');
 const { orgToday, ORG_TIME_ZONE } = require('../utils/orgTime');
 const { collapseDuplicateNote } = require('../utils/paymentNote');
+const { rentPeriodNote } = require('../utils/rentPeriodNote');
 
 
 // Org-level info for document headers.
@@ -63,16 +64,30 @@ async function loadInvoicePdfData(pool, id, orgId) {
             u.name as unit_name, u.account_name as unit_account_name,
             p.display_name as property_name, p.street_address as property_address,
             p.city as property_city, p.state as property_state,
-            p.currency as property_currency, p.landlord_name as property_landlord_name
+            p.currency as property_currency, p.landlord_name as property_landlord_name,
+            cs.name AS category_name,
+            l.invoicing AS lease_invoicing, l.due_date AS lease_due_day,
+            l.start_date AS lease_start, l.end_date AS lease_end
      FROM invoice i
      LEFT JOIN tenant t ON i.tenant_id = t.id
      LEFT JOIN unit u ON i.unit_id = u.id
      LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
+     LEFT JOIN category_setting cs ON cs.id = i.category
+     LEFT JOIN leasing l ON l.id = i.leasing_id AND l.deleted_at IS NULL
      WHERE i.id = ? AND i.org_id = ? AND i.deleted_at IS NULL`,
     [id, orgId]
   );
   if (invoices.length === 0) return null;
   const inv = invoices[0];
+  if (/Rental Income/i.test(inv.category_name || '') && inv.lease_start) {
+    inv.derived_note = rentPeriodNote({
+      dueOn: inv.due_on,
+      invoicing: inv.lease_invoicing,
+      dueDay: inv.lease_due_day,
+      leaseStart: inv.lease_start,
+      leaseEnd: inv.lease_end,
+    });
+  }
 
   let amountPaid = 0;
   if (inv.invoice_code) {
@@ -192,7 +207,7 @@ function renderInvoicePdf(doc, { inv, org, amountTotal, amountPaid, outstanding 
 
   doc.rect(M, y, CW, 28).fill('#ffffff');
   doc.fillColor('#333333').fontSize(9).font('Helvetica')
-     .text(inv.note || 'Invoice', M + 10, y + 8, { width: CW * 0.5 - 10 })
+     .text(inv.note || inv.derived_note || 'Invoice', M + 10, y + 8, { width: CW * 0.5 - 10 })
      .text(invoiceNo, M + CW * 0.55, y + 8)
      .font('Helvetica-Bold')
      .text(fmtCurr(amountTotal), M + CW - 80, y + 8, { width: 70, align: 'right' });
@@ -485,8 +500,11 @@ const RECEIPT_PAYMENT_SQL =
 const RECEIPT_LINES_SQL =
   `SELECT al.amount, al.invoice_code,
           i.id AS invoice_id, i.tenant_id AS invoice_tenant_id,
+          i.due_on AS invoice_due_on,
           i.amount AS invoice_amount, i.status AS invoice_status, i.note AS invoice_note,
           cs.name AS invoice_category,
+          l.invoicing AS lease_invoicing, l.due_date AS lease_due_day,
+          l.start_date AS lease_start, l.end_date AS lease_end,
           u.name AS unit_name, u.account_name AS unit_account_name,
           p.display_name AS property_name, p.street_address AS property_address,
           p.city AS property_city, p.state AS property_state,
@@ -494,6 +512,7 @@ const RECEIPT_LINES_SQL =
      FROM accounting_line al
      LEFT JOIN invoice i ON i.invoice_code = al.invoice_code AND i.org_id = ? AND i.deleted_at IS NULL
      LEFT JOIN category_setting cs ON cs.id = i.category
+     LEFT JOIN leasing l ON l.id = i.leasing_id AND l.deleted_at IS NULL
      LEFT JOIN unit u ON i.unit_id = u.id
      LEFT JOIN property p ON COALESCE(i.property_id, u.property_id) = p.id
     WHERE al.accounting_id = ? AND al.deleted_at IS NULL
@@ -554,7 +573,21 @@ async function loadReceiptPdfData(pool, paymentId, orgId, opts = {}) {
     if (!pmt.tenant_id || !ids.has(String(pmt.tenant_id))) return null;
   }
 
-  const lines = buildVisibleLines(pmt, allLines, tenantIds);
+  const lines = buildVisibleLines(pmt, allLines, tenantIds).map((line) => {
+    if (/Rental Income/i.test(line.invoice_category || '') && line.lease_start) {
+      return {
+        ...line,
+        derived_note: rentPeriodNote({
+          dueOn: line.invoice_due_on,
+          invoicing: line.lease_invoicing,
+          dueDay: line.lease_due_day,
+          leaseStart: line.lease_start,
+          leaseEnd: line.lease_end,
+        }),
+      };
+    }
+    return line;
+  });
   if (tenantIds && allLines.length > 0 && lines.length === 0) return null;
 
   const [orgRows] = await pool.execute(ORG_INFO_SQL, [orgId]).catch(() => [[]]);
@@ -680,7 +713,7 @@ function renderReceiptPdf(doc, data) {
     // allowPaymentNote is false for the tenant portal. On a combined Airbnb payout
     // the note is a transcript of every guest's stay on that deposit, so a scoped
     // receipt describes each line from its own invoice or nothing at all.
-    const ownNote = line.invoice_note || line.invoice_category || 'Payment';
+    const ownNote = line.invoice_note || line.derived_note || line.invoice_category || 'Payment';
     const desc = (allowPaymentNote && displayLines.length === 1)
       ? (collapseDuplicateNote(pmt.payment_note) || ownNote)
       : ownNote;
@@ -797,6 +830,7 @@ module.exports.generateInvoicePdfBuffer = generateInvoicePdfBuffer;
 // text it actually emits can be asserted, rather than a copy of its logic.
 module.exports.renderInvoicePdf = renderInvoicePdf;
 module.exports.renderReceiptPdf = renderReceiptPdf;
+module.exports.loadInvoicePdfData = loadInvoicePdfData;
 module.exports.loadReceiptPdfData = loadReceiptPdfData;
 // Split from generateReceiptPdfBuffer so a caller that already has the data — the
 // portal needs the receipt number for the filename — renders it without loading twice.

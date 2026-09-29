@@ -6,6 +6,7 @@ const { sendMail } = require('../config/mailer');
 const { bitToBool } = require('../utils/mysqlBit');
 const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { computeRentInvoiceAmount } = require('../utils/rentProrata');
+const { rentPeriodNote } = require('../utils/rentPeriodNote');
 const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 const config = require('../config');
 const inquiryExtractor = require('./inquiryExtractor');
@@ -320,11 +321,17 @@ async function generateRecurringInvoicesForOrg(pool, orgId) {
           await pool.execute(
             `INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id,
               invoice_code, amount, due_on, status, category, currency_id, type,
-              booking_platform_id, sales_agent_id, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, NOW())`,
+              booking_platform_id, sales_agent_id, note, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, ?, NOW())`,
             [invoiceId, orgId, lease.tenant_id, lease.unit_id, lease.id, lease.property_id,
              invoiceCode, thisAmount, nextDueDateStr, catId, currId,
-             lease.booking_platform_id || null, lease.sales_agent_id || null]
+             lease.booking_platform_id || null, lease.sales_agent_id || null, rentPeriodNote({
+               dueOn: nextDueDateStr,
+               invoicing: lease.invoicing,
+               dueDay: lease.due_date,
+               leaseStart: lease.start_date,
+               leaseEnd: lease.end_date,
+             })]
           );
 
           invoicesCreated++;
