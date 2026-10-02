@@ -614,14 +614,23 @@ export default function ReconcilePage() {
     },
     {
       title: 'Description', key: 'desc',
-      render: (_, row) => (
-        <div>
-          <div>{row.contact_name || row.reference || '(no contact)'}</div>
-          {row.description && row.description !== row.reference && (
-            <div style={{ fontSize: 11, color: '#999' }}>{row.description}</div>
-          )}
-        </div>
-      ),
+      // The reference/description says what the payment is for ("TRIV35232 Rental
+      // payment for Oct"), so it leads. This used to lead with the Xero contact and
+      // hide the description whenever it equalled the reference — which is most
+      // lines, since sync merges an identical Reference and line Description — so
+      // staff saw only "Yanru Jiang" and lost the invoice code.
+      render: (_, row) => {
+        const main = row.description || row.reference || row.contact_name || '(no description)';
+        const showContact = row.contact_name && row.contact_name !== main;
+        return (
+          <div>
+            <div>{main}</div>
+            {showContact && (
+              <div style={{ fontSize: 11, color: '#999' }}>{row.contact_name}</div>
+            )}
+          </div>
+        );
+      },
     },
     {
       title: 'Proposed Action', key: 'action_proposed', width: 160,
