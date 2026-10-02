@@ -300,7 +300,7 @@ function CalendarInner() {
                 {l.paperwork_gap && (
                   <span style={{ color: '#ffa940', fontWeight: 700, marginRight: 4 }}>*UNSIGNED PERIOD*</span>
                 )}
-                {l.tenant_name}
+                {l.tenant_name || 'Unnamed tenant'}
               </div>
               {l.phone && <div style={{ fontSize: 11, opacity: 0.85 }}>{l.phone}</div>}
               <div style={{ fontSize: 11 }}>

@@ -584,6 +584,7 @@ export const utility = {
   deleteMeter: (id) => api.delete(`/api/utility/meter/${id}`),
   // Meter readings
   logMeterReading: (data) => api.post('/api/utility/meter-reading', data),
+  deleteMeterReading: (id) => api.delete(`/api/utility/meter-reading/${id}`),
   getMeterReadings: (params) => api.get('/api/utility/meter-readings', { params }),
   getUnitReadings: (params) => api.get('/api/utility/unit-readings', { params }),
   // Lookup the most recent reading on any unit-mapped meter before a date.

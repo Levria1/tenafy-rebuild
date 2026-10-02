@@ -5,7 +5,7 @@ const { generateInvoiceCode } = require('../utils/sequenceCode');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { logActivity } = require('../utils/activityLog');
 const {
-  READING_TYPE_CORRECTION, normaliseReadingDate, parseReadingValue, isCorrection,
+  READING_TYPE_CORRECTION, normaliseReadingDate, parseReadingValue, isCorrection, decideCorrection,
 } = require('../utils/meterReading');
 
 const genId = () => (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
@@ -266,8 +266,8 @@ router.get('/meters', authenticate, async (req, res) => {
                LEFT JOIN property p ON u.property_id = p.id
                LEFT JOIN (
                  SELECT meter_id, reading_value, reading_date, reading_type,
-                        ROW_NUMBER() OVER (PARTITION BY meter_id ORDER BY reading_date DESC, created_at DESC) AS rn
-                 FROM utility_meter_reading
+                        ROW_NUMBER() OVER (PARTITION BY meter_id ORDER BY reading_date DESC, created_at DESC, id DESC) AS rn
+                 FROM utility_meter_reading WHERE org_id = ?
                ) lr ON lr.meter_id = m.id AND lr.rn = 1
                LEFT JOIN (
                  SELECT unit_id, tenant_id, id, end_date, start_date, deleted_at,
@@ -276,7 +276,7 @@ router.get('/meters', authenticate, async (req, res) => {
                ) l ON l.unit_id = m.unit_id AND m.unit_id IS NOT NULL AND l.rn = 1
                LEFT JOIN tenant t ON l.tenant_id = t.id
                WHERE m.org_id = ? AND m.status = 1`;
-    const params = [today, today, orgId];
+    const params = [today, today, orgId, orgId];
 
     if (group_id) {
       sql += ' AND m.group_id = ?';
@@ -400,13 +400,37 @@ router.put('/meter/:id', authenticate, async (req, res) => {
     // column would log a correction nobody asked for every time an unrelated field
     // was edited on one of the meters where they differ.
     const [[lastReading]] = await conn.execute(
-      `SELECT reading_value FROM utility_meter_reading
+      `SELECT reading_value, reading_date FROM utility_meter_reading
         WHERE meter_id = ? AND org_id = ?
         ORDER BY reading_date DESC, created_at DESC, id DESC LIMIT 1`,
       [id, orgId]
     );
+    const today = orgToday();
     const shown = lastReading ? Number(lastReading.reading_value) : Number(meter.current_reading);
     const wantsCorrection = isCorrection(shown, submitted);
+    let duplicateExists = false;
+    if (wantsCorrection) {
+      const [[duplicate]] = await conn.execute(
+        `SELECT id FROM utility_meter_reading
+          WHERE meter_id = ? AND org_id = ? AND reading_value = ?
+            AND reading_date = ? AND reading_type = ? LIMIT 1`,
+        [id, orgId, submitted, today, READING_TYPE_CORRECTION]
+      );
+      duplicateExists = !!duplicate;
+    }
+    const decision = decideCorrection({
+      latestReading: lastReading || { reading_value: meter.current_reading, reading_date: null },
+      submitted, today, duplicateExists,
+    });
+    const shouldInsertCorrection = decision.action === 'insert';
+
+    if (decision.action === 'blocked-future') {
+      await conn.rollback();
+      return res.status(409).json({
+        code: 409,
+        message: `A later reading dated ${decision.date} with value ${decision.value} is hiding this correction. Delete it from Reading History first.`,
+      });
+    }
 
     if (fields.length === 0 && !wantsCorrection) {
       await conn.rollback();
@@ -419,9 +443,8 @@ router.put('/meter/:id', authenticate, async (req, res) => {
     }
 
     let correction = null;
-    if (wantsCorrection) {
+    if (shouldInsertCorrection) {
       const readingId = genId();
-      const today = orgToday();
       await conn.execute(
         `INSERT INTO utility_meter_reading (id, org_id, meter_id, reading_value, reading_date, reading_type, notes)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -447,7 +470,8 @@ router.put('/meter/:id', authenticate, async (req, res) => {
 
     res.json({
       code: 200,
-      message: correction ? 'Meter updated and reading corrected' : 'Meter updated',
+      message: correction ? 'Meter updated and reading corrected'
+        : decision.action === 'duplicate' ? 'That correction is already in Reading History' : 'Meter updated',
       data: { correction },
     });
   } catch (error) {
@@ -506,8 +530,8 @@ router.post('/meter-reading', authenticate, async (req, res) => {
 
     // Get last reading for comparison
     const [[lastReading]] = await req.pool.execute(
-      `SELECT reading_value FROM utility_meter_reading WHERE meter_id = ? ORDER BY reading_date DESC, created_at DESC LIMIT 1`,
-      [meter_id]
+      `SELECT reading_value FROM utility_meter_reading WHERE meter_id = ? AND org_id = ? ORDER BY reading_date DESC, created_at DESC, id DESC LIMIT 1`,
+      [meter_id, orgId]
     );
 
     const warning = lastReading && Number(reading_value) < Number(lastReading.reading_value)
@@ -520,6 +544,9 @@ router.post('/meter-reading', authenticate, async (req, res) => {
     const readingDate = normaliseReadingDate(reading_date, orgToday());
     if (readingDate === null) {
       return res.status(400).json({ code: 400, message: 'Reading date must be a valid date (YYYY-MM-DD)' });
+    }
+    if (readingDate > orgToday()) {
+      return res.status(400).json({ code: 400, message: 'Reading date cannot be in the future' });
     }
 
     const id = genId();
@@ -550,16 +577,16 @@ router.post('/meter-reading', authenticate, async (req, res) => {
         WHERE m.id = ? AND m.org_id = ?
           AND NOT EXISTS (
             SELECT 1 FROM utility_meter_reading r
-             WHERE r.meter_id = m.id AND r.reading_date > ?
+             WHERE r.meter_id = m.id AND r.org_id = ? AND r.reading_date > ?
           )`,
-      [reading_value, meter_id, orgId, readingDate]
+      [reading_value, meter_id, orgId, orgId, readingDate]
     );
     // affectedRows counts rows CHANGED, so re-logging the same value reports 0 even
     // though the reading is the newest. Ask the log separately for the flag the UI
     // shows, and let the UPDATE above be the thing that enforces the rule.
     const [[{ newerCount }]] = await req.pool.execute(
-      'SELECT COUNT(*) AS newerCount FROM utility_meter_reading WHERE meter_id = ? AND reading_date > ?',
-      [meter_id, readingDate]
+      'SELECT COUNT(*) AS newerCount FROM utility_meter_reading WHERE meter_id = ? AND org_id = ? AND reading_date > ?',
+      [meter_id, orgId, readingDate]
     );
     // COUNT(*) arrives as a STRING (the pool sets bigNumberStrings), and '0' is truthy.
     const isNewest = Number(newerCount) === 0;
@@ -697,7 +724,7 @@ router.get('/meter-readings', authenticate, async (req, res) => {
        FROM utility_meter_reading r
        LEFT JOIN tenant t ON r.tenant_id = t.id
        WHERE r.meter_id = ? AND r.org_id = ?
-       ORDER BY r.reading_date DESC, r.created_at DESC`,
+       ORDER BY r.reading_date DESC, r.created_at DESC, r.id DESC`,
       [meter_id, orgId]
     );
 
@@ -743,6 +770,73 @@ router.get('/meter-readings', authenticate, async (req, res) => {
     console.error('Get meter readings error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get readings' });
   }
+});
+
+// DELETE /api/utility/meter-reading/:id — remove a bad history row and restore
+// the denormalised meter value from the next newest row.
+router.delete('/meter-reading/:id', authenticate, requirePermission('LANDLORD/UTILITY_METER_DELETE'), async (req, res) => {
+  const { id } = req.params;
+  const orgId = req.user.orgId;
+  let conn;
+  let deleted;
+  try {
+    conn = await req.pool.getConnection();
+    await conn.beginTransaction();
+    const [[reading]] = await conn.execute(
+      `SELECT id, meter_id, reading_value, reading_date, bill_id
+         FROM utility_meter_reading WHERE id = ? AND org_id = ? FOR UPDATE`,
+      [id, orgId]
+    );
+    if (!reading) {
+      await conn.rollback();
+      return res.status(404).json({ code: 404, message: 'Meter reading not found' });
+    }
+
+    if (reading.bill_id) {
+      const [[{ cnt }]] = await conn.execute(
+        `SELECT COUNT(*) AS cnt
+           FROM utility_bill b
+           JOIN utility_bill_line bl ON bl.bill_id = b.id
+           JOIN invoice i ON i.id = bl.invoice_id AND i.deleted_at IS NULL
+          WHERE b.id = ? AND b.org_id = ?`,
+        [reading.bill_id, orgId]
+      );
+      if (Number(cnt) > 0) {
+        await conn.rollback();
+        return res.status(400).json({
+          code: 400,
+          message: 'Cannot delete this reading while its bill has an active invoice. Delete the invoice and bill first.',
+        });
+      }
+    }
+
+    await conn.execute('DELETE FROM utility_meter_reading WHERE id = ? AND org_id = ?', [id, orgId]);
+    const [[latest]] = await conn.execute(
+      `SELECT reading_value FROM utility_meter_reading
+        WHERE meter_id = ? AND org_id = ?
+        ORDER BY reading_date DESC, created_at DESC, id DESC LIMIT 1`,
+      [reading.meter_id, orgId]
+    );
+    if (latest) {
+      await conn.execute(
+        'UPDATE utility_meter SET current_reading = ? WHERE id = ? AND org_id = ?',
+        [latest.reading_value, reading.meter_id, orgId]
+      );
+    }
+    await conn.commit();
+    deleted = reading;
+  } catch (error) {
+    if (conn) { try { await conn.rollback(); } catch { /* ignore rollback failure */ } }
+    console.error('Delete meter reading error:', error);
+    return res.status(500).json({ code: 500, message: 'Failed to delete meter reading' });
+  } finally {
+    if (conn) conn.release();
+  }
+
+  const deletedDate = normaliseReadingDate(deleted.reading_date, orgToday());
+  await logActivity(req, 'DELETE', 'utility_meter_reading', id,
+    `Deleted meter reading ${deleted.reading_value} dated ${deletedDate}`);
+  return res.json({ code: 200, message: 'Reading deleted' });
 });
 
 // GET /api/utility/unit-readings?unit_id= — all readings for a unit's meters
@@ -1132,6 +1226,13 @@ router.post('/bill/:id/finalize', authenticate, async (req, res) => {
     if (Number(bill.status) === 1) {
       return res.status(400).json({ code: 400, message: 'Bill is already finalized' });
     }
+    const periodEnd = normaliseReadingDate(bill.period_end, orgToday());
+    if (periodEnd && periodEnd > orgToday()) {
+      return res.status(400).json({
+        code: 400,
+        message: `This bill's period ends on ${periodEnd}; finalize it on or after that date`,
+      });
+    }
 
     // Verify all lines have ending readings
     const [[{ unfinished }]] = await req.pool.execute(
@@ -1156,12 +1257,12 @@ router.post('/bill/:id/finalize', authenticate, async (req, res) => {
       );
       // Also update current_reading for backward compat
       await req.pool.execute(
-        'UPDATE utility_meter SET current_reading = ? WHERE id = ?',
-        [line.ending_reading, line.meter_id]
+        'UPDATE utility_meter SET current_reading = ? WHERE id = ? AND org_id = ?',
+        [line.ending_reading, line.meter_id, orgId]
       );
     }
 
-    await req.pool.execute('UPDATE utility_bill SET status = 1 WHERE id = ?', [id]);
+    await req.pool.execute('UPDATE utility_bill SET status = 1 WHERE id = ? AND org_id = ?', [id, orgId]);
     res.json({ code: 200, message: 'Bill finalized' });
   } catch (error) {
     console.error('Finalize utility bill error:', error);
@@ -1272,35 +1373,74 @@ router.post('/bill/:id/generate-invoices', authenticate, async (req, res) => {
 
 // DELETE /api/utility/bill/:id
 router.delete('/bill/:id', authenticate, requirePermission('LANDLORD/UTILITY_BILL_DELETE'), async (req, res) => {
+  let conn;
+  let removedReadings = 0;
   try {
     const { id } = req.params;
     const orgId = req.user.orgId;
 
-    const [[bill]] = await req.pool.execute(
-      'SELECT status FROM utility_bill WHERE id = ? AND org_id = ?', [id, orgId]
+    conn = await req.pool.getConnection();
+    await conn.beginTransaction();
+    const [[bill]] = await conn.execute(
+      'SELECT status FROM utility_bill WHERE id = ? AND org_id = ? FOR UPDATE', [id, orgId]
     );
-    if (!bill) return res.status(404).json({ code: 404, message: 'Bill not found' });
+    if (!bill) {
+      await conn.rollback();
+      return res.status(404).json({ code: 404, message: 'Bill not found' });
+    }
 
     // Check if any invoices were generated (exclude soft-deleted invoices)
-    const [[{ cnt }]] = await req.pool.execute(
+    const [[{ cnt }]] = await conn.execute(
       `SELECT COUNT(*) as cnt FROM utility_bill_line bl
+       JOIN utility_bill b ON b.id = bl.bill_id AND b.org_id = ?
        JOIN invoice i ON i.id = bl.invoice_id
        WHERE bl.bill_id = ? AND bl.invoice_id IS NOT NULL AND i.deleted_at IS NULL`,
-      [id]
+      [orgId, id]
     );
     if (Number(cnt) > 0) {
+      await conn.rollback();
       return res.status(400).json({
         code: 400,
         message: `Cannot delete: ${cnt} active invoice(s) have been generated from this bill. Delete them first.`
       });
     }
+    const [meterRows] = await conn.execute(
+      `SELECT DISTINCT bl.meter_id FROM utility_bill_line bl
+       JOIN utility_bill b ON b.id = bl.bill_id AND b.org_id = ?
+       WHERE bl.bill_id = ? AND bl.meter_id IS NOT NULL`,
+      [orgId, id]
+    );
+    const [deletedResult] = await conn.execute(
+      'DELETE FROM utility_meter_reading WHERE bill_id = ? AND org_id = ?', [id, orgId]
+    );
+    removedReadings = Number(deletedResult.affectedRows || 0);
+    await conn.execute('DELETE FROM utility_bill_line WHERE bill_id = ?', [id]);
+    await conn.execute('DELETE FROM utility_bill WHERE id = ? AND org_id = ?', [id, orgId]);
 
-    await req.pool.execute('DELETE FROM utility_bill_line WHERE bill_id = ?', [id]);
-    await req.pool.execute('DELETE FROM utility_bill WHERE id = ? AND org_id = ?', [id, orgId]);
-    res.json({ code: 200, message: 'Bill deleted' });
+    for (const { meter_id } of meterRows) {
+      const [[latest]] = await conn.execute(
+        `SELECT reading_value FROM utility_meter_reading
+          WHERE meter_id = ? AND org_id = ?
+          ORDER BY reading_date DESC, created_at DESC, id DESC LIMIT 1`,
+        [meter_id, orgId]
+      );
+      if (latest) {
+        await conn.execute(
+          'UPDATE utility_meter SET current_reading = ? WHERE id = ? AND org_id = ?',
+          [latest.reading_value, meter_id, orgId]
+        );
+      }
+    }
+    await conn.commit();
+    await logActivity(req, 'DELETE', 'utility_bill', id,
+      `Deleted utility bill and removed ${removedReadings} meter reading(s)`);
+    res.json({ code: 200, message: `Bill deleted; ${removedReadings} reading(s) removed` });
   } catch (error) {
+    if (conn) { try { await conn.rollback(); } catch { /* ignore rollback failure */ } }
     console.error('Delete utility bill error:', error);
     res.status(500).json({ code: 500, message: 'Failed to delete bill' });
+  } finally {
+    if (conn) conn.release();
   }
 });
 

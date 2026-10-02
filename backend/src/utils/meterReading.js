@@ -70,4 +70,24 @@ function isCorrection(shown, submitted) {
   return Number(submitted) !== Number(shown);
 }
 
-module.exports = { READING_TYPE_CORRECTION, normaliseReadingDate, parseReadingValue, isCorrection };
+/** Decide whether Edit Meter may append a correction row. */
+function decideCorrection({ latestReading, submitted, today, duplicateExists = false }) {
+  const shown = latestReading ? Number(latestReading.reading_value) : null;
+  if (!isCorrection(shown, submitted)) return { action: 'none', shown };
+
+  const latestDate = latestReading?.reading_date == null
+    ? null
+    : normaliseReadingDate(latestReading.reading_date, today);
+  if (latestDate && latestDate > today) {
+    return {
+      action: 'blocked-future', shown,
+      date: latestDate, value: latestReading.reading_value,
+    };
+  }
+  if (duplicateExists) return { action: 'duplicate', shown };
+  return { action: 'insert', shown };
+}
+
+module.exports = {
+  READING_TYPE_CORRECTION, normaliseReadingDate, parseReadingValue, isCorrection, decideCorrection,
+};

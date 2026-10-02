@@ -352,7 +352,10 @@ router.get('/calendar', authenticate, requirePermission('LANDLORD/LEASING_LIST')
     const [leases] = await req.pool.execute(
       `SELECT l.id, l.unit_id, l.tenant_id, l.start_date, l.end_date, l.status, l.type, l.amount, l.price, l.contract_type, l.lease_state, l.signature_status,
               ${depositPendingSql},
-              t.first_name, t.last_name, t.company_name, t.type AS tenant_type, t.phone, t.email
+              t.first_name, t.last_name, t.company_name, t.type AS tenant_type, t.phone, t.email,
+              CASE WHEN t.type = 1
+                   THEN COALESCE(NULLIF(TRIM(t.company_name), ''), TRIM(CONCAT(COALESCE(t.first_name, ''), ' ', COALESCE(t.last_name, ''))))
+                   ELSE TRIM(CONCAT(COALESCE(t.first_name, ''), ' ', COALESCE(t.last_name, ''))) END AS tenant_name
        FROM leasing l
        JOIN tenant t ON l.tenant_id = t.id
        WHERE l.unit_id IN (${placeholders})
@@ -436,9 +439,7 @@ router.get('/calendar', authenticate, requirePermission('LANDLORD/LEASING_LIST')
       leasesByUnit[uid].push({
         id: String(lease.id),
         tenant_id: String(lease.tenant_id),
-        tenant_name: lease.tenant_type === 1
-          ? (lease.company_name || 'Company')
-          : [lease.first_name, lease.last_name].filter(Boolean).join(' '),
+        tenant_name: lease.tenant_name,
         phone: lease.phone || null,
         email: lease.email || null,
         start_date: lease.start_date,
@@ -510,7 +511,7 @@ router.get('/check-in-out', authenticate, requirePermission('LANDLORD/LEASING_LI
 
     // A company tenant has no first/last name, but the arrival still has to say who
     // is turning up, so fall back to the company name.
-    const nameSql = `TRIM(CASE WHEN t.type = 1 THEN COALESCE(t.company_name, '')
+    const nameSql = `TRIM(CASE WHEN t.type = 1 THEN COALESCE(NULLIF(TRIM(t.company_name), ''), TRIM(CONCAT(COALESCE(t.first_name, ''), ' ', COALESCE(t.last_name, ''))))
                                ELSE CONCAT(COALESCE(t.first_name, ''), ' ', COALESCE(t.last_name, '')) END)`;
 
     const propertyFilter = propertyId ? ' AND p.id = ?' : '';
@@ -631,7 +632,7 @@ router.get('/:id', authenticate, requirePermission('LANDLORD/LEASING_DETAIL'), a
     // Fetch additional tenants
     const [additionalTenants] = await req.pool.execute(
       `SELECT t.id, t.first_name, t.last_name, t.company_name, t.type,
-        CASE t.type WHEN 1 THEN t.company_name ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) END as display_name
+        CASE t.type WHEN 1 THEN COALESCE(NULLIF(TRIM(t.company_name), ''), TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')))) ELSE TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) END as display_name
        FROM leasing_additional_tenant lat
        LEFT JOIN tenant t ON t.id = lat.tenant_id
        WHERE lat.leasing_id = ?`,
@@ -712,8 +713,8 @@ router.post('/:id/send-checkin', authenticate, requirePermission('LANDLORD/LEASI
     // Confirm the lease belongs to this org and grab the tenant email.
     const [[lease]] = await req.pool.execute(
       `SELECT l.id, l.lease_state, t.email AS tenant_email,
-              CASE WHEN t.type = 1 THEN t.company_name
-                   ELSE CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')) END AS tenant_name
+              CASE WHEN t.type = 1 THEN COALESCE(NULLIF(TRIM(t.company_name), ''), TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))))
+                   ELSE TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) END AS tenant_name
          FROM leasing l
          JOIN unit u ON l.unit_id = u.id
          JOIN property p ON u.property_id = p.id

@@ -584,7 +584,7 @@ function SettingsTab() {
         // was silently discarded, which is how a no-op passed for a save.
         message.success(correction
           ? `Reading corrected from ${Number(correction.from).toLocaleString()} to ${Number(correction.to).toLocaleString()}, logged in the reading history.`
-          : 'Meter updated');
+          : (r?.data?.message || 'Meter updated'));
       } else {
         await utility.createMeter({ ...values, group_id: selectedGroupForMeter });
         message.success('Meter added');
@@ -899,6 +899,8 @@ function SettingsTab() {
 // ─── METERS TAB ──────────────────────────────────────────────
 
 function MetersTab() {
+  const { hasPermission } = useAuth();
+  const canDeleteReading = hasPermission ? hasPermission('LANDLORD/UTILITY_METER_DELETE') : false;
   const [meters, setMeters] = useState([]);
   const [groups, setGroups] = useState([]);
   const [filterGroup, setFilterGroup] = useState(null);
@@ -970,6 +972,18 @@ function MetersTab() {
     }
   };
 
+  const handleDeleteReading = async (reading) => {
+    try {
+      const res = await utility.deleteMeterReading(reading.id);
+      message.success(res.data?.message || 'Reading deleted');
+      const historyRes = await utility.getMeterReadings({ meter_id: selectedMeter.id });
+      setReadings(historyRes.data?.data || []);
+      await loadData();
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to delete reading');
+    }
+  };
+
   const columns = [
     { title: 'Meter #', dataIndex: 'meter_number', key: 'meter_number' },
     { title: 'Category', key: 'meter_category', width: 100, render: (_, row) => Number(row.meter_category) === 0 ? <Tag color="gold">Master</Tag> : <Tag>Sub-meter</Tag> },
@@ -1029,6 +1043,19 @@ function MetersTab() {
     { title: 'Type', dataIndex: 'reading_type', key: 'type', render: v => <Tag>{READING_TYPE_LABELS[Number(v)] || '-'}</Tag> },
     { title: 'Tenant', key: 'tenant', render: (_, row) => [row.tenant_first_name, row.tenant_last_name].filter(Boolean).join(' ') || '-' },
     { title: 'Notes', dataIndex: 'notes', key: 'notes', render: v => v || '-' },
+    {
+      title: 'Action', key: 'action', width: 80,
+      render: (_, row) => canDeleteReading && !row.is_lease_checkin ? (
+        <Popconfirm
+          title="Delete this reading? The meter will show the next latest reading."
+          onConfirm={() => handleDeleteReading(row)}
+          okText="Delete"
+          okButtonProps={{ danger: true }}
+        >
+          <Button type="link" danger size="small" icon={<DeleteOutlined />}>Delete</Button>
+        </Popconfirm>
+      ) : null,
+    },
   ];
 
   const lastReading = selectedMeter ? Number(selectedMeter.last_reading ?? selectedMeter.current_reading) : 0;
