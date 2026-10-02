@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { getOrgPool } = require('../config/poolRegistry');
+const { isTokenRevoked } = require('../utils/sessionRevocation');
 
 const authenticate = async (req, res, next) => {
   try {
@@ -36,6 +37,12 @@ const authenticate = async (req, res, next) => {
         }
         console.error('Org pool error:', poolErr);
         return res.status(500).json({ code: 500, message: 'Database connection error' });
+      }
+      if (await isTokenRevoked(req.pool, decoded)) {
+        return res.status(401).json({
+          code: 401,
+          message: 'Session ended because the password was changed. Please log in again.',
+        });
       }
     }
 

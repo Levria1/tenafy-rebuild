@@ -7,6 +7,21 @@ const { getMasterPool, getOrgPool } = require('../config/poolRegistry');
 const { authenticate, isSuperAdmin } = require('../middleware/auth');
 const { sendMail, sendMailWithAccount, accountSender } = require('../config/mailer');
 const { findSmtpAccount } = require('../services/emailService');
+const { changeOwnPassword, markPasswordChanged } = require('../services/passwordChange');
+const { logActivity } = require('../utils/activityLog');
+
+function setSessionCookie(res, token) {
+  res.cookie('__s_t', token, {
+    // Intentionally false — the frontend reads __s_t from document.cookie to
+    // attach it as a Bearer token on API requests. Flipping this to true
+    // breaks all authenticated requests. See lib/api.js axios request
+    // interceptor. Long-term fix: switch to withCredentials + server-reads
+    // cookie, then this can become true.
+    httpOnly: false,
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 7200 * 1000
+  });
+}
 
 /**
  * Send the password-reset email using the org's SMTP account if configured,
@@ -152,16 +167,7 @@ router.post('/login', async (req, res) => {
       { expiresIn: config.jwtExpiresIn }
     );
 
-    res.cookie('__s_t', token, {
-      // Intentionally false — the frontend reads __s_t from document.cookie to
-      // attach it as a Bearer token on API requests. Flipping this to true
-      // breaks all authenticated requests. See lib/api.js axios request
-      // interceptor. Long-term fix: switch to withCredentials + server-reads
-      // cookie, then this can become true.
-      httpOnly: false,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 7200 * 1000
-    });
+    setSessionCookie(res, token);
 
     // Fetch user permissions
     let permissions = [];
@@ -314,9 +320,17 @@ router.post('/forget-password/reset', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     await orgPool.execute(
-      'UPDATE user SET password = ? WHERE id = ?',
-      ['{bcrypt}' + hashedPassword, tokens[0].user_id]
+      'UPDATE user SET password = ? WHERE id = ? AND org_id = ?',
+      ['{bcrypt}' + hashedPassword, tokens[0].user_id, orgInfo.orgId]
     );
+    // The password has already changed by this point. Failing to stamp the change
+    // must not report the reset as failed; it only means other sessions survive
+    // until their token expires.
+    try {
+      await markPasswordChanged(orgPool, orgInfo.orgId, tokens[0].user_id);
+    } catch (err) {
+      console.error('Reset password: could not mark password change:', err.message);
+    }
 
     await orgPool.execute('UPDATE password_reset_token SET used = 1 WHERE code = ?', [code]);
 
@@ -330,26 +344,29 @@ router.post('/forget-password/reset', async (req, res) => {
 // POST /api/auth/password/change - Change password (authenticated, uses req.pool)
 router.post('/password/change', authenticate, async (req, res) => {
   try {
-    const { currentPassword, newPassword, userId } = req.body;
-
-    const [users] = await req.pool.execute('SELECT id, password FROM user WHERE id = ?', [userId]);
-    if (users.length === 0) {
-      return res.status(404).json({ code: 404, message: 'User not found' });
+    const { currentPassword, newPassword } = req.body;
+    const { id, username, orgId, orgType, isSuperAdmin: userIsSuperAdmin } = req.user;
+    const result = await changeOwnPassword(
+      req.pool,
+      { userId: id, orgId },
+      { currentPassword, newPassword }
+    );
+    if (!result.ok) {
+      return res.status(result.status).json({ code: result.code, message: result.message });
     }
 
-    let storedHash = users[0].password;
-    if (storedHash.startsWith('{bcrypt}')) storedHash = storedHash.replace('{bcrypt}', '');
-    if (storedHash.startsWith('$2a$')) storedHash = storedHash.replace('$2a$', '$2b$');
-
-    const isValid = await bcrypt.compare(currentPassword, storedHash);
-    if (!isValid) {
-      return res.status(400).json({ code: 4004, message: 'Current password is incorrect' });
-    }
-
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await req.pool.execute('UPDATE user SET password = ?, updated_at = NOW() WHERE id = ?', ['{bcrypt}' + hashedPassword, userId]);
-
-    res.json({ code: 200, message: 'Password changed successfully' });
+    const token = jwt.sign(
+      { id, username, orgId, orgType, isSuperAdmin: userIsSuperAdmin },
+      config.jwtSecret,
+      { expiresIn: config.jwtExpiresIn }
+    );
+    setSessionCookie(res, token);
+    await logActivity(req, 'UPDATE', 'user', String(id), 'Changed own password');
+    res.json({
+      code: 200,
+      message: 'Password changed',
+      data: { token, sessionsRevoked: result.changedAt !== null },
+    });
   } catch (error) {
     console.error('Change password error:', error);
     res.status(500).json({ code: 500, message: 'Failed to change password' });

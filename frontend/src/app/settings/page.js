@@ -1,11 +1,12 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
+import Cookies from 'js-cookie';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Alert, Card, Tabs, Table, Button, Form, Input, message, Row, Col, Select, Tag, Space, InputNumber, Switch, Popover, Badge, Pagination, Modal, Popconfirm, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, FilterOutlined, SearchOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons';
 import MainLayout, { useAuth } from '../../components/Layout';
-import { settings, user, amenity, role, emailTemplate, whatsappTemplate, smtpAccount, bookingPlatform, salesAgent } from '../../lib/api';
+import { auth, settings, user, amenity, role, emailTemplate, whatsappTemplate, smtpAccount, bookingPlatform, salesAgent } from '../../lib/api';
 import { useCallback } from 'react';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
@@ -560,7 +561,9 @@ function SettingsPage() {
 
 function PersonalSettings({ isMobile }) {
   const [form] = Form.useForm();
+  const [passwordForm] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  const [passwordLoading, setPasswordLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
 
   useEffect(() => {
@@ -574,16 +577,71 @@ function PersonalSettings({ isMobile }) {
     finally { setLoading(false); }
   };
 
+  const onPasswordFinish = async ({ currentPassword, newPassword }) => {
+    setPasswordLoading(true);
+    try {
+      const res = await auth.changePassword({ currentPassword, newPassword });
+      const token = res.data?.data?.token;
+      if (token) Cookies.set('__s_t', token, { expires: 1 });
+      message.success('Password changed. Other devices have been signed out.');
+      passwordForm.resetFields();
+    } catch (error) {
+      const body = error?.response?.data;
+      if (body?.code === 4004) {
+        passwordForm.setFields([{ name: 'currentPassword', errors: [body.message] }]);
+      } else {
+        message.error(body?.message || 'Failed to change password');
+      }
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
   return (
-    <Card loading={initialLoading}>
-      <Form form={form} layout="vertical" onFinish={onFinish} style={{ maxWidth: 600 }}>
-        <Form.Item name="username" label="Username"><Input disabled /></Form.Item>
-        <Form.Item name="email" label="Email" rules={[{ type: 'email' }]}><Input /></Form.Item>
-        <Form.Item name="first_name" label="First Name"><Input /></Form.Item>
-        <Form.Item name="last_name" label="Last Name"><Input /></Form.Item>
-        <Form.Item><Button type="primary" htmlType="submit" loading={loading}>Save</Button></Form.Item>
-      </Form>
-    </Card>
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Card loading={initialLoading}>
+        <Form form={form} layout="vertical" onFinish={onFinish} style={{ maxWidth: 600 }}>
+          <Form.Item name="username" label="Username"><Input disabled /></Form.Item>
+          <Form.Item name="email" label="Email" rules={[{ type: 'email' }]}><Input /></Form.Item>
+          <Form.Item name="first_name" label="First Name"><Input /></Form.Item>
+          <Form.Item name="last_name" label="Last Name"><Input /></Form.Item>
+          <Form.Item><Button type="primary" htmlType="submit" loading={loading}>Save</Button></Form.Item>
+        </Form>
+      </Card>
+      <Card title="Change password">
+        <Form form={passwordForm} layout="vertical" onFinish={onPasswordFinish} style={{ maxWidth: isMobile ? '100%' : 600 }}>
+          <Form.Item name="currentPassword" label="Current password" rules={[{ required: true }]}>
+            <Input.Password />
+          </Form.Item>
+          <Form.Item
+            name="newPassword"
+            label="New password"
+            extra="At least 12 characters. Changing it signs you out on every other device."
+            rules={[{ required: true }, { min: 12 }]}
+          >
+            <Input.Password />
+          </Form.Item>
+          <Form.Item
+            name="confirmPassword"
+            label="Confirm password"
+            dependencies={['newPassword']}
+            rules={[
+              { required: true },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  return !value || getFieldValue('newPassword') === value
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('Passwords do not match'));
+                },
+              }),
+            ]}
+          >
+            <Input.Password />
+          </Form.Item>
+          <Form.Item><Button type="primary" htmlType="submit" loading={passwordLoading}>Change password</Button></Form.Item>
+        </Form>
+      </Card>
+    </Space>
   );
 }
 
