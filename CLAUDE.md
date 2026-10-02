@@ -198,8 +198,10 @@ See `docs/completed-work.md` for detailed progress tracking.
     (`/api/file/preview` serves non-private images to anyone, so listing photos load).
     It is global to the file row, so never privatise a file attached elsewhere
 14. **`of` is a reserved word in MySQL 8** — alias `object_file` as `objf`, never `of`
-15. **Google Vision OCR is DOWN**: billing disabled on GCP project 610536915782, so
-    Smart Extract extracts nothing. Needs re-enabling in the console, not a code fix
+15. **Google APIs live in GCP project "Tane Claude"** (owner taneresidence6@gmail.com,
+    project number 1031777977842) since 2026-10-02. Vision (Smart Extract) works again
+    there with billing on; the key is restricted to the Cloud Vision API and the server IP.
+    The old project 610536915782 (billing disabled) is retired — don't put keys back there
 16. **One `accounting` row can settle several tenants' invoices.** Airbnb payouts arrive
     via Xero as a single bank deposit split one `accounting_line` per guest invoice, with
     `accounting.tenant_id` NULL (17 rows since 2026-07-20, 4 spanning tenants). So a
