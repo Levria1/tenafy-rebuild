@@ -172,6 +172,52 @@ async function findInvoiceMatch(pool, orgId, { amount, description, contactName,
 }
 
 /**
+ * Explicit invoice-code matcher. A reference to an invoice code is a stronger
+ * signal than payer-name matching and may legitimately represent a part
+ * payment, so compare the bank amount with the invoice's remaining balance.
+ */
+async function findInvoiceByCode(pool, orgId, { amount, description }) {
+  const codes = [...new Set(
+    (String(description || '').match(/\b(?:TANEINV|TRIV|INV)\d{3,}\b/gi) || [])
+      .map(code => code.toUpperCase())
+  )];
+  if (codes.length === 0) return null;
+
+  const placeholders = codes.map(() => '?').join(', ');
+  const [rows] = await pool.execute(
+    `SELECT inv.id, inv.tenant_id, inv.leasing_id, inv.invoice_code,
+            inv.amount - (SELECT COALESCE(SUM(al.amount),0)
+                            FROM accounting_line al
+                            JOIN accounting a ON al.accounting_id = a.id
+                           WHERE al.invoice_code = inv.invoice_code
+                             AND a.org_id = inv.org_id
+                             AND a.deleted_at IS NULL
+                             AND al.deleted_at IS NULL) AS outstanding
+       FROM invoice inv
+      WHERE inv.org_id = ?
+        AND inv.deleted_at IS NULL
+        AND inv.status != 1
+        AND inv.invoice_code IN (${placeholders})`,
+    [orgId, ...codes]
+  );
+
+  const bankAmount = Math.abs(Number(amount) || 0);
+  const survivors = rows.filter(row => bankAmount <= Number(row.outstanding) + 0.01);
+  if (survivors.length !== 1) return null;
+
+  const invoice = survivors[0];
+  const outstanding = Number(invoice.outstanding);
+  return {
+    invoice_id: String(invoice.id),
+    tenant_id: invoice.tenant_id ? String(invoice.tenant_id) : null,
+    leasing_id: invoice.leasing_id ? String(invoice.leasing_id) : null,
+    invoice_code: String(invoice.invoice_code),
+    outstanding,
+    full: Math.abs(bankAmount - outstanding) <= 0.01,
+  };
+}
+
+/**
  * Categorization: try user-defined rules first, then optionally LLM fallback.
  * Returns { category_id, rule_id } where either may be null.
  *
@@ -507,14 +553,15 @@ async function stageTransaction(pool, orgId, tx, accountMap, xeroAccountNames = 
     // 3. Invoice match (only for inflows — outflows don't pay invoices).
     const isInflow = !isSpend;
     if (isInflow) {
-      const invMatch = await findInvoiceMatch(pool, orgId, {
+      const codeMatch = await findInvoiceByCode(pool, orgId, { amount, description });
+      const invMatch = codeMatch || await findInvoiceMatch(pool, orgId, {
         amount, description, contactName, date: dateStr,
       });
       if (invMatch) {
         matchKind = 'invoice_payment';
         proposedInvoiceId = invMatch.invoice_id;
         proposedTenantId = invMatch.tenant_id;
-        confidence = 'high';
+        confidence = codeMatch && !codeMatch.full ? 'medium' : 'high';
       }
     }
     // 4. Fallback: new entry.
@@ -575,4 +622,5 @@ async function stageTransaction(pool, orgId, tx, accountMap, xeroAccountNames = 
   );
 }
 
-module.exports = { syncForOrg };
+// stageTransaction is exported for tests only; syncForOrg is the entry point.
+module.exports = { syncForOrg, findInvoiceByCode, stageTransaction };
