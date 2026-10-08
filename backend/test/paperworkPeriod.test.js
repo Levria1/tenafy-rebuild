@@ -199,3 +199,34 @@ test('mysql2 Date term ends are compared as wall-clock dates', () => {
   assert.equal(s.needs_document, true);
   assert.deepEqual(s.uncovered, { from: '2026-08-20', to: '2026-09-19' });
 });
+
+test('an expired never-signed request does not opt the lease into paperwork', () => {
+  const s = computePaperworkState({
+    leaseEndDate: '2027-01-05',
+    documents: [{
+      status: 1,
+      term_start: '2026-09-05',
+      term_end: '2026-11-05',
+      expires_at: '2020-08-22T00:00:00.000Z',
+    }],
+  });
+  assert.notEqual(s.reason, 'in_flight');
+  assert.equal(s.has_documents, false);
+});
+
+test('an expired next-period request does not hide a paperwork gap', () => {
+  const s = computePaperworkState({
+    leaseEndDate: '2026-11-05',
+    documents: [
+      signed('2025-06-05', '2026-09-04'),
+      {
+        status: 2,
+        term_start: '2026-09-05',
+        term_end: '2026-11-05',
+        expires_at: '2020-10-06T00:00:00.000Z',
+      },
+    ],
+  });
+  assert.equal(s.needs_document, true);
+  assert.equal(s.reason, 'gap');
+});

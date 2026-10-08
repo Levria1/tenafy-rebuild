@@ -26,6 +26,11 @@ const { sendMail } = require('../config/mailer');
 const { sendTemplateEmail, loadTemplate } = require('../services/emailService');
 const config = require('../config');
 const { nextSignatureStatus } = require('../utils/signatureLedger');
+const {
+  isExpiredRequest,
+  periodOf,
+  findOverlappingLive,
+} = require('../utils/signatureOverlap');
 
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 
@@ -38,6 +43,30 @@ function newId() {
 }
 function newToken() {
   return crypto.randomBytes(32).toString('hex');
+}
+
+function formatPeriodDate(value) {
+  if (!value) return null;
+  const [year, month, day] = value.split('-').map(Number);
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+    .format(new Date(Date.UTC(year, month - 1, day)));
+}
+
+function overlapResponse(res, conflicts, lease) {
+  const covered = periodOf(conflicts[0], lease);
+  const label = covered && covered.start && covered.end
+    ? ` covering ${formatPeriodDate(covered.start)} \u2013 ${formatPeriodDate(covered.end)}`
+    : '';
+  return res.status(409).json({
+    code: 409,
+    message: `This lease already has a document out for signature${label}. Cancel it first, or choose to replace it.`,
+    data: {
+      reason: 'overlapping_request',
+      conflicts: conflicts.map(({ id, term_start, term_end, sent_at, expires_at }) => ({
+        id: String(id), term_start, term_end, sent_at, expires_at,
+      })),
+    },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,6 +311,34 @@ router.post('/request', authenticate, async (req, res) => {
       return fail(res, 'The period end cannot be before its start', 400);
     }
 
+    const [[lease]] = await req.pool.execute(
+      `SELECT l.id,
+              DATE_FORMAT(l.start_date, '%Y-%m-%d') AS start_date,
+              DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date
+         FROM leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+        WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL LIMIT 1`,
+      [lease_id, orgId]
+    );
+    if (!lease) return fail(res, 'Lease not found', 404);
+    const [openRequests] = await req.pool.execute(
+      `SELECT id, status, expires_at, sent_at,
+              DATE_FORMAT(term_start, '%Y-%m-%d') AS term_start,
+              DATE_FORMAT(term_end, '%Y-%m-%d') AS term_end
+         FROM signature_request
+        WHERE lease_id = ? AND org_id = ? AND status IN (1,2)`,
+      [lease_id, orgId]
+    );
+    const conflicts = findOverlappingLive(
+      openRequests,
+      { start: termStart, end: termEnd },
+      lease
+    );
+    if (conflicts.length && req.body?.replace_overlapping !== true) {
+      return overlapResponse(res, conflicts, lease);
+    }
+
     // Render the unsigned lease PDF using the template + lease data. Store it
     // in the file table so we can re-serve it for the signer (no auth needed
     // since the file is gated by the unique party token).
@@ -360,11 +417,11 @@ router.post('/request', authenticate, async (req, res) => {
       inserted.push({ id: partyId, party_token: partyToken, signer_name: p.signer_name, signer_email: p.signer_email });
     }
 
-    // Update lease.signature_status = 'pending'
-    await req.pool.execute(
-      `UPDATE leasing SET signature_status = 'pending' WHERE id = ?`,
-      [lease_id]
-    );
+    if (conflicts.length) {
+      await cancelSuperseded(req.pool, orgId, conflicts, requestId);
+    }
+
+    await recomputeLeaseSignatureStatus(req.pool, orgId, lease_id);
 
     // Audit event
     await req.pool.execute(
@@ -396,6 +453,32 @@ router.post('/request', authenticate, async (req, res) => {
     fail(res, err.message || 'Failed to create signature request');
   }
 });
+
+async function cancelSuperseded(pool, orgId, conflicts, supersededBy) {
+  for (const conflict of conflicts) {
+    await pool.execute(
+      `UPDATE signature_request SET status = 6, updated_at = NOW()
+        WHERE id = ? AND org_id = ? AND status IN (1,2)`,
+      [conflict.id, orgId]
+    );
+    await pool.execute(
+      `INSERT INTO signature_event (id, request_id, event_type, metadata)
+       VALUES (?, ?, 'cancelled', ?)`,
+      [newId(), conflict.id, JSON.stringify({ superseded_by: String(supersededBy) })]
+    );
+  }
+}
+
+async function recomputeLeaseSignatureStatus(pool, orgId, leaseId) {
+  const [requests] = await pool.execute(
+    `SELECT status FROM signature_request WHERE lease_id = ? AND org_id = ?`,
+    [leaseId, orgId]
+  );
+  await pool.execute(
+    `UPDATE leasing SET signature_status = ? WHERE id = ?`,
+    [nextSignatureStatus(requests), leaseId]
+  );
+}
 
 // POST /api/signature/record-paper — record a lease signed in ink, not e-signed.
 //
@@ -541,7 +624,7 @@ router.get('/lease/:leaseId', authenticate, async (req, res) => {
         ORDER BY sr.term_start IS NULL, sr.term_start ASC, sr.created_at ASC`,
       [req.params.leaseId, orgId]
     );
-    ok(res, rows);
+    ok(res, rows.map(row => ({ ...row, is_expired: isExpiredRequest(row) })));
   } catch (err) {
     console.error('[signature] lease list error:', err);
     fail(res, 'Failed to load lease signatures');
@@ -599,7 +682,32 @@ router.post('/request/:id/resend', authenticate, async (req, res) => {
       [req.params.id, orgId]
     );
     if (!r) return fail(res, 'Not found', 404);
-    if (r.status !== 1 && r.status !== 2) return fail(res, 'Can only resend a sent/viewed request', 400);
+    if (Number(r.status) !== 1 && Number(r.status) !== 2) return fail(res, 'Can only resend a sent/viewed request', 400);
+
+    const [[lease]] = await req.pool.execute(
+      `SELECT l.id,
+              DATE_FORMAT(l.start_date, '%Y-%m-%d') AS start_date,
+              DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date
+         FROM leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+        WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL LIMIT 1`,
+      [r.lease_id, orgId]
+    );
+    if (!lease) return fail(res, 'Lease not found', 404);
+    const [otherRequests] = await req.pool.execute(
+      `SELECT id, status, expires_at, sent_at,
+              DATE_FORMAT(term_start, '%Y-%m-%d') AS term_start,
+              DATE_FORMAT(term_end, '%Y-%m-%d') AS term_end
+         FROM signature_request
+        WHERE lease_id = ? AND org_id = ? AND status IN (1,2)`,
+      [r.lease_id, orgId]
+    );
+    const requestPeriod = periodOf(r, lease);
+    const conflicts = findOverlappingLive(otherRequests, requestPeriod, lease, { excludeId: r.id });
+    if (conflicts.length && req.body?.replace_overlapping !== true) {
+      return overlapResponse(res, conflicts, lease);
+    }
 
     // Extend (or reset) the expiry so a resend REVIVES the link — even if the
     // original 14-day window already lapsed. Without this, resending an expired
@@ -611,6 +719,10 @@ router.post('/request/:id/resend', authenticate, async (req, res) => {
       `UPDATE signature_request SET expires_at = ?, status = 1, updated_at = NOW() WHERE id = ?`,
       [newExpiry, req.params.id]
     );
+    if (conflicts.length) {
+      await cancelSuperseded(req.pool, orgId, conflicts, r.id);
+    }
+    await recomputeLeaseSignatureStatus(req.pool, orgId, r.lease_id);
 
     const [parties] = await req.pool.execute(
       `SELECT party_token, signer_name, signer_email FROM signature_party

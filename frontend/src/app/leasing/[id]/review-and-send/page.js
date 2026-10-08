@@ -23,7 +23,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Card, Button, Select, Input, Space, message, Spin, Empty,
-  Form, Row, Col, Tag, Tooltip, InputNumber, DatePicker, Checkbox, Alert,
+  Form, Row, Col, Tag, Tooltip, InputNumber, DatePicker, Checkbox, Alert, Modal,
 } from 'antd';
 import {
   ArrowLeftOutlined, SendOutlined, EyeOutlined, PlusOutlined, DeleteOutlined,
@@ -177,28 +177,65 @@ export default function ReviewAndSendPage() {
       .filter(p => p.signer_name && p.signer_email);
     if (!cleanParties.length) return message.warning('Add at least one signer with name and email.');
 
-    setSending(true);
-    try {
-      const msg = form.getFieldValue('message');
-      const exp = form.getFieldValue('expires_in_days') || 14;
-      const r = await signature.createRequest({
-        lease_id: leaseId,
-        template_id: selectedTemplateId,
-        landlord_signature_id: selectedLandlordSigId || null,
-        parties: cleanParties,
-        message: msg || null,
-        expires_in_days: exp,
-        term_start: termFrom ? termFrom.format('YYYY-MM-DD') : null,
-        term_end: termTo ? termTo.format('YYYY-MM-DD') : null,
-        term_stamp_end: stampLonger && termStampEnd ? termStampEnd.format('YYYY-MM-DD') : null,
-      });
+    const payload = {
+      lease_id: leaseId,
+      template_id: selectedTemplateId,
+      landlord_signature_id: selectedLandlordSigId || null,
+      parties: cleanParties,
+      message: form.getFieldValue('message') || null,
+      expires_in_days: form.getFieldValue('expires_in_days') || 14,
+      term_start: termFrom ? termFrom.format('YYYY-MM-DD') : null,
+      term_end: termTo ? termTo.format('YYYY-MM-DD') : null,
+      term_stamp_end: stampLonger && termStampEnd ? termStampEnd.format('YYYY-MM-DD') : null,
+    };
+    const sendRequest = async (data) => {
+      const r = await signature.createRequest(data);
       if (r.data?.code === 200) {
         message.success(`Signature request sent to ${cleanParties.length} signer${cleanParties.length === 1 ? '' : 's'}.`);
         router.push(`/leasing/${leaseId}/detail`);
       } else {
         message.error(r.data?.message || 'Failed to send');
       }
+    };
+
+    setSending(true);
+    try {
+      await sendRequest(payload);
     } catch (e) {
+      const conflictData = e.response?.data?.data;
+      if (e.response?.status === 409 && conflictData?.reason === 'overlapping_request') {
+        Modal.confirm({
+          title: 'Another document is already out for signature',
+          content: (
+            <div>
+              <ul style={{ margin: '8px 0', paddingLeft: 20 }}>
+                {(conflictData.conflicts || []).map(conflict => (
+                  <li key={conflict.id}>
+                    {conflict.term_start && conflict.term_end
+                      ? `${dayjs(conflict.term_start).format('D MMM YYYY')} \u2013 ${dayjs(conflict.term_end).format('D MMM YYYY')}`
+                      : 'Period not recorded'}
+                    {conflict.sent_at ? ` \u00b7 sent ${dayjs(conflict.sent_at).format('D MMM YYYY')}` : ''}
+                  </li>
+                ))}
+              </ul>
+              <div>Sending this will cancel the older request &mdash; its signing link stops working.</div>
+            </div>
+          ),
+          okText: 'Cancel older and send',
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            setSending(true);
+            try {
+              await sendRequest({ ...payload, replace_overlapping: true });
+            } catch (retryError) {
+              message.error(retryError.response?.data?.message || 'Failed to send');
+            } finally {
+              setSending(false);
+            }
+          },
+        });
+        return;
+      }
       message.error(e.response?.data?.message || 'Failed to send');
     } finally {
       setSending(false);

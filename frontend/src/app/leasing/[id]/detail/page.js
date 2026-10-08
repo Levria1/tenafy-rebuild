@@ -111,32 +111,54 @@ function LeasingDetailPageInner() {
     }
   };
 
-  // Resend the lease for signing — finds the most recent (pending) signature
-  // request for this lease and re-emails it, REVIVING the link with a fresh
-  // 14-day window even if the original one expired.
-  const handleResendSignature = async () => {
+  // Resend one ledger row, reviving its link with a fresh 14-day window.
+  const handleResendSignature = async (requestId, data = {}) => {
+    let targetId = requestId;
     setResendingSig(true);
     try {
-      const listRes = await signature.listForLease(leaseId);
-      const requests = listRes.data?.data || [];
-      // Newest active request, chosen explicitly. The list is ordered by PERIOD
-      // now (a lease can hold one document per period), so position no longer
-      // implies recency.
-      const active = requests
-        .filter(r => Number(r.status) === 1 || Number(r.status) === 2)
-        .sort((a, b) => new Date(b.sent_at || 0) - new Date(a.sent_at || 0))[0];
-      if (!active) {
-        message.info('No active signing request to resend. Use "Send Again" to create a new one.');
-        return;
+      // Retain compatibility with any non-row caller that omits an id.
+      if (!targetId) {
+        const listRes = await signature.listForLease(leaseId);
+        const requests = listRes.data?.data || [];
+        targetId = requests
+          .filter(r => Number(r.status) === 1 || Number(r.status) === 2)
+          .sort((a, b) => new Date(b.sent_at || 0) - new Date(a.sent_at || 0))[0]?.id;
+        if (!targetId) {
+          message.info('No active signing request to resend. Use "Send Again" to create a new one.');
+          return;
+        }
       }
-      const res = await signature.resendRequest(active.id);
+      const res = await signature.resendRequest(targetId, data);
       if (res.data?.code === 200) {
         const exp = res.data.data?.expires_at ? dayjs(res.data.data.expires_at).format('YYYY-MM-DD') : null;
         message.success(`Resent to signer(s).${exp ? ` Link now valid until ${exp}.` : ''}`);
+        await loadLease();
       } else {
         message.error(res.data?.message || 'Failed to resend');
       }
     } catch (err) {
+      const conflictData = err.response?.data?.data;
+      if (err.response?.status === 409 && conflictData?.reason === 'overlapping_request') {
+        Modal.confirm({
+          title: 'Another document is already out for signature',
+          content: (
+            <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+              {(conflictData.conflicts || []).map(conflict => (
+                <li key={conflict.id}>
+                  {conflict.term_start && conflict.term_end
+                    ? `${dayjs(conflict.term_start).format('D MMM YYYY')} \u2013 ${dayjs(conflict.term_end).format('D MMM YYYY')}`
+                    : 'Period not recorded'}
+                  {conflict.sent_at ? ` \u00b7 sent ${dayjs(conflict.sent_at).format('D MMM YYYY')}` : ''}
+                </li>
+              ))}
+            </ul>
+          ),
+          okText: 'Cancel it and resend',
+          okButtonProps: { danger: true },
+          onOk: () => handleResendSignature(targetId, { replace_overlapping: true }),
+        });
+        return;
+      }
       message.error(err.response?.data?.message || 'Failed to resend');
     } finally {
       setResendingSig(false);
@@ -1273,6 +1295,13 @@ function LeasingDetailPageInner() {
                         </Tag>
                       );
                     }
+                    if ((st === 1 || st === 2) && d.is_expired) {
+                      return (
+                        <Tag color="orange" title="The signing link expired before it was signed. Resend to revive it, or Cancel.">
+                          Expired{d.expires_at ? ` \u00b7 ${dayjs(d.expires_at).format('D MMM YYYY')}` : ''}
+                        </Tag>
+                      );
+                    }
                     if (st === 1 || st === 2) return <Tag color="blue">Out for signature</Tag>;
                     if (st === 4) return <Tag color="red">Declined</Tag>;
                     if (st === 5) return <Tag>Expired</Tag>;
@@ -1317,8 +1346,8 @@ function LeasingDetailPageInner() {
                           <span style={{ color: '#999', fontSize: 12 }}>No scan on file</span>
                         )}
                         {(st === 1 || st === 2) && (
-                          <Button size="small" loading={resendingSig} onClick={handleResendSignature}>
-                            Resend
+                          <Button size="small" loading={resendingSig} onClick={() => handleResendSignature(d.id)}>
+                            {d.is_expired ? 'Resend (new link)' : 'Resend'}
                           </Button>
                         )}
                         {(st === 0 || st === 1 || st === 2 || st === 4) && (

@@ -10,6 +10,8 @@
  * undocumented year.
  */
 
+const { isExpiredRequest } = require('./signatureOverlap');
+
 // Wall-clock YYYY-MM-DD. mysql2 hands back DATE columns as LOCAL-midnight Date
 // objects; toISOString() would shift the day west of UTC. Same convention as
 // ymd() in services/leaseTemplateVariables.js.
@@ -59,7 +61,9 @@ function addOneMonthMinusDay(dateStr) {
 }
 
 const isSigned = (doc) => Number(doc.status) === 3;
-const isInFlight = (doc) => Number(doc.status) === 1 || Number(doc.status) === 2;
+const isInFlight = (doc) => (
+  (Number(doc.status) === 1 || Number(doc.status) === 2) && !isExpiredRequest(doc)
+);
 
 /**
  * @param {object}   input
@@ -68,9 +72,8 @@ const isInFlight = (doc) => Number(doc.status) === 1 || Number(doc.status) === 2
  */
 function computePaperworkState({ leaseEndDate, documents }) {
   const all = Array.isArray(documents) ? documents : [];
-  // Only SIGNED or IN-FLIGHT documents opt a lease in. A lease whose sole
-  // request was cancelled or declined never got papered, so treating it as
-  // "documented" would nag about an abandoned attempt.
+  // Only SIGNED or genuinely IN-FLIGHT documents opt a lease in. Expired,
+  // cancelled and declined attempts do not count as paperwork.
   const docs = all.filter(d => isSigned(d) || isInFlight(d));
   const leaseEnd = ymd(leaseEndDate);
 

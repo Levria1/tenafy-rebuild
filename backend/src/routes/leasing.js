@@ -10,6 +10,7 @@ const { advanceInvoiceDate } = require('../utils/invoiceSchedule');
 const { rentPeriodNote } = require('../utils/rentPeriodNote');
 const { resolveLeaseValues } = require('../utils/leaseRevision');
 const { computePaperworkState, addDays } = require('../utils/paperworkPeriod');
+const { isExpiredRequest } = require('../utils/signatureOverlap');
 const { parseContractType, CONTRACT_TYPE_REQUIRED_MESSAGE } = require('../utils/contractType');
 const { bitToBool, decodeLeasingBits, decodeLeasingBitsAll } = require('../utils/mysqlBit');
 const {
@@ -406,7 +407,7 @@ router.get('/calendar', authenticate, requirePermission('LANDLORD/LEASING_LIST')
       try {
         const leasePlaceholders = leaseIds.map(() => '?').join(',');
         const [docs] = await req.pool.execute(
-          `SELECT lease_id, status,
+          `SELECT lease_id, status, expires_at,
                   DATE_FORMAT(term_start, '%Y-%m-%d') AS term_start,
                   DATE_FORMAT(term_end, '%Y-%m-%d')   AS term_end
              FROM signature_request
@@ -2509,7 +2510,7 @@ async function loadPaperwork(conn, orgId, leaseId, leaseEndDate) {
               DATE_FORMAT(term_end, '%Y-%m-%d')       AS term_end,
               DATE_FORMAT(term_stamp_end, '%Y-%m-%d') AS term_stamp_end,
               DATE_FORMAT(${orgTimeSql('completed_at')}, '%Y-%m-%d')   AS completed_at,
-              sent_at
+              sent_at, expires_at
          FROM signature_request
         WHERE lease_id = ? AND org_id = ?
         ORDER BY term_start IS NULL, term_start ASC, created_at ASC`,
@@ -2523,6 +2524,7 @@ async function loadPaperwork(conn, orgId, leaseId, leaseEndDate) {
       // out; without it the ledger can only show a document after it comes back signed.
       original_file_id: r.original_file_id != null ? String(r.original_file_id) : null,
       template_id: r.template_id != null ? String(r.template_id) : null,
+      is_expired: isExpiredRequest(r),
     }));
   } catch (e) {
     if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') {
