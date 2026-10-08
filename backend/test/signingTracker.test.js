@@ -81,6 +81,14 @@ test('extension gaps create an unsigned row unless an exact attempt represents i
   assert.equal(rows[0].signed_status, 'pending');
 });
 
+test('sorts newest lease creation first, then newest period, then unit', () => {
+  const byCreated = build([
+    lease({ id: 'old', start_date: '2026-12-01', lease_created_at: '2026-09-01' }),
+    lease({ id: 'new', start_date: '2026-09-05', lease_created_at: '2026-10-07' }),
+  ]);
+  assert.deepEqual(byCreated.map(r => [r.lease_id, r.lease_created_at]), [['new', '2026-10-07'], ['old', '2026-09-01']]);
+});
+
 test('sorts newest period first then unit ascending', () => {
   const rows = build([
     lease({ id: '1', start_date: '2026-09-02', unit_name: 'Z' }),
@@ -118,5 +126,7 @@ test('signing-tracking queries are org-scoped', () => {
   const body = src.slice(start, src.indexOf('router.', start + 20));
   assert.match(body, /WHERE p\.org_id = \? AND l\.deleted_at IS NULL/);
   assert.match(body, /bp\.org_id = \?/);
+  // The page's first column and default sort; in HK time like every other date shown.
+  assert.match(body, /DATE_FORMAT\(\$\{orgTimeSql\('l\.created_at'\)\}, '%Y-%m-%d'\) AS lease_created_at/);
   assert.match(body, /FROM signature_request\s+WHERE org_id = \? AND lease_id IN/);
 });

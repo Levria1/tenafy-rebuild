@@ -622,6 +622,7 @@ router.get('/signing-tracking', authenticate, requirePermission('LANDLORD/LEASIN
       `SELECT l.id, l.lease_no,
               DATE_FORMAT(l.start_date, '%Y-%m-%d') AS start_date,
               DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
+              DATE_FORMAT(${orgTimeSql('l.created_at')}, '%Y-%m-%d') AS lease_created_at,
               u.name AS unit_name, p.display_name AS property_name,
               COALESCE(NULLIF(TRIM(t.company_name),''), TRIM(CONCAT(IFNULL(t.first_name,''),' ',IFNULL(t.last_name,'')))) AS tenant_name,
               bp.name AS platform_name, bp.requires_signature

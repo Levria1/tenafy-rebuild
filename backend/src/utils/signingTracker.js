@@ -16,6 +16,7 @@ function baseRow(lease, periodStart, periodEnd) {
   return {
     lease_id: String(lease.id),
     lease_no: lease.lease_no || null,
+    lease_created_at: ymd(lease.lease_created_at),
     request_id: null,
     property_name: lease.property_name || null,
     unit_name: lease.unit_name || null,
@@ -127,8 +128,10 @@ function buildSigningRows({ leases = [], documents = [], from, now = new Date() 
     }
   }
 
+  // Newest lease first (the page's default sort), then newest period within a lease.
   rows.sort((a, b) => (
-    String(b.period_start || '').localeCompare(String(a.period_start || ''))
+    String(b.lease_created_at || '').localeCompare(String(a.lease_created_at || ''))
+    || String(b.period_start || '').localeCompare(String(a.period_start || ''))
     || String(a.unit_name || '').localeCompare(String(b.unit_name || ''))
   ));
   return rows;
