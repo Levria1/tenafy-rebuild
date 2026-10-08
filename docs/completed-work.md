@@ -4,6 +4,38 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Droplet compromise, migration to OVH, follow-up fixes (2026-10-01 → 10-08)
+
+### Infrastructure (no repo commit — server work)
+- **Old DigitalOcean droplet 159.89.203.164 was compromised** (botnet root since 13 Jul via the `tenafy` user's weak password; Perl backdoor to a C2 server). Investigated read-only, then **migrated to a new OVH VPS `15.204.87.7`** (Ubuntu 24.04, key-only SSH, ufw 22/80/443, fail2ban, unattended-upgrades). App runs as `ubuntu` from `/home/ubuntu/tenafy-v2`, PM2 via `~/ecosystem.config.js`, nginx `tenafy-sites`, fresh Let's Encrypt certs, WP bridge at `/opt/tenafy-wp-bridge`.
+- Data: final DB dump at cutover (row counts verified), legacy `taneresidence_prod`, 10,297 legacy files (`~/legacy-storage`) + 2,813 uploads; files type-checked, two quarantined. Integrity audit of users/API keys/bank numbers/templates found no tampering.
+- **Every secret rotated or replaced**: DB passwords (+ main org's `organizations.db_user=root` override removed), JWT/tenant JWT/Xero encryption key, Mailgun, MiniMax, OpenRouter, Google Vision (new GCP project "Tane Claude"), Xero client secret, WP Booking Bridge key, Titan mailboxes, GitHub token, master admin. Still pending: TaneChat key, Google Calendar service account, 2 read-only Tenafy API keys, Xero reconnect.
+- DNS moved (GoDaddy tenafy.com, Cloudflare faq.taneresidence.com). Old droplet powered off, not yet destroyed. **No automated DB backups exist yet.**
+
+### Change password + sign out other devices (`991bc18`)
+- Account Settings → Personal Info gets a Change password card. Endpoint no longer trusts a body `userId`; scoped by user + org; 12-char minimum.
+- Per-org migration **083** `user.password_changed_at`; `authenticate` refuses staff tokens issued before it (30s cache, fails open). Reset via "Forgot Password?" also stamps it.
+
+### Utility readings (`478391d`)
+- Deleting a bill deletes the readings it created and resets meters; new `DELETE /api/utility/meter-reading/:id` + Delete in Reading History (refused if the bill is invoiced).
+- Future-dated readings and early finalize refused; a correction hidden by a later-dated reading returns 409 naming it; no duplicate corrections. Prompted by orphaned 28 Oct test readings on Cleverly 8A/8B (cleaned up).
+- Leasing tenant names fall back to the person's name for a company-type tenant with no company name (PCM Unit 26 showed "Company").
+
+### Xero reconcile (`9b7a470`, `ce8d887`)
+- Description column leads with the reference/description; contact name moves underneath (182 lines had shown only the payer's name).
+- Staging proposes the invoice named in the reference (`TRIV|INV|TANEINV` + digits) when exactly one open invoice still owes at least the transfer — part payments at medium confidence.
+
+### Utility invoice wording (`7087ccd`)
+- Notes show the tenant's own period (move-in/move-out within the cycle), kWh, and "less utility allowance for N days". Charges were already correct — only the printed period was the bill's.
+- `scripts/backfillUtilityInvoiceNotes.js` rewrote 37 unpaid invoices (incl. 6 still showing raw `GMT+0000` timestamps); TRIV34077 left alone (meter renamed since). Reviewed by Codex; its six findings fixed.
+
+### Docs (`b28fc9f`)
+- CLAUDE.md gotcha 15 now points at the "Tane Claude" GCP project.
+
+### Open at session end
+- LEA2824 (Mong Kok 4D) has two overlapping, expired-but-"Out for signature" contracts; proposed overlap guard + "Expired" status (not built).
+- TRIV34077 note; nightly DB backup; destroy droplet; OpenRouter key `…626` unidentified.
+
 ## Session: Unit resolver addresses + door codes (2026-09-11)
 
 ### Unit resolver — an address and a bare letter name a unit (`643a47b`)
