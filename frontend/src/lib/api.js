@@ -212,6 +212,7 @@ export const leasing = {
   checkConflict: (data) => api.post('/api/leasing/check-conflict', data),
   getCalendar: (params) => api.get('/api/leasing/calendar', { params }),
   getCheckInOut: (params) => api.get('/api/leasing/check-in-out', { params }),
+  signingTracking: (params) => api.get('/api/leasing/signing-tracking', { params }),
   getSettlement: (id) => api.get(`/api/leasing/${id}/settlement`),
   saveSettlementNotes: (id, notes) => api.put(`/api/leasing/${id}/settlement-notes`, { notes }),
 };
