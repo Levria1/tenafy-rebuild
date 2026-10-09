@@ -16,6 +16,7 @@
  */
 
 const { personOrCompanyName, sanitiseNamePart } = require('../utils/personName');
+const { fullAddress } = require('../utils/propertyAddress');
 
 // ───────────────────────────────────────────────────────────────────────────
 // Formatters — keep money/dates consistent across every template.
@@ -265,8 +266,7 @@ const VARIABLES = [
     resolve: (ctx) => ctx.property?.city || '' },
   { key: 'PROPERTY_FULL_ADDRESS', group: 'Property', label: 'Full address (concatenated)',
     sample: '88 Hennessy Road, Causeway Bay, Hong Kong Island',
-    resolve: (ctx) => [ctx.property?.street_address, ctx.property?.district, ctx.property?.city]
-      .filter(Boolean).join(', ') },
+    resolve: (ctx) => fullAddress(ctx.property) },
   { key: 'UNIT_NAME',  group: 'Property', label: 'Unit name / number',
     sample: '3D',
     resolve: (ctx) => ctx.unit?.name || '' },
@@ -532,6 +532,7 @@ module.exports = {
   publicList,
   SIGNATURE_MARKERS,
   applyTermOverride,
+  fullAddress,
   findEmptyPlaceholders,
   applyPageBreakMarkers,
   PAGE_BREAK_TOKEN,

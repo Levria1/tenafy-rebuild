@@ -37,18 +37,19 @@ function GeneralInfoTab({ unit, propertyInfo, amenities, leaseData }) {
       <Card size="small" title="GENERAL INFORMATION" style={{ marginBottom: 16 }} headStyle={{ color: '#000' }}>
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small" {...descStyle}>
           <Descriptions.Item label="Property Name">{propertyInfo?.display_name || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Year Built">{propertyInfo?.year_built || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Property ID#">{propertyInfo?.property_code || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Year Built">{propertyInfo?.year_of_built || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Property ID#">{propertyInfo?.mls || '-'}</Descriptions.Item>
         </Descriptions>
         <Descriptions column={1} size="small" {...descStyle}>
           <Descriptions.Item label="Address">
             {propertyInfo?.street_address || '-'}
           </Descriptions.Item>
         </Descriptions>
-        <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small" {...descStyle}>
+        <Descriptions column={{ xs: 1, sm: 2, md: 5 }} size="small" {...descStyle}>
+          <Descriptions.Item label="District">{propertyInfo?.district || '-'}</Descriptions.Item>
           <Descriptions.Item label="City">{propertyInfo?.city || '-'}</Descriptions.Item>
           <Descriptions.Item label="State / Province">{propertyInfo?.state || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Zip">{propertyInfo?.zip || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Zip">{propertyInfo?.zip_code || '-'}</Descriptions.Item>
           <Descriptions.Item label="Country">{propertyInfo?.country || '-'}</Descriptions.Item>
         </Descriptions>
       </Card>

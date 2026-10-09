@@ -1400,11 +1400,11 @@ router.get('/unit/:unit_id/property-info', authenticate, async (req, res) => {
     const unitId = req.params.unit_id;
     const [[propInfo]] = await req.pool.execute(
       `SELECT p.id, p.display_name, p.street_address, p.city, p.state, p.zip_code, p.country,
-              p.year_of_built, p.district, p.currency
+              p.year_of_built, p.district, p.currency, p.mls
        FROM property p
        JOIN unit u ON u.property_id = p.id
-       WHERE u.id = ?`,
-      [unitId]
+       WHERE u.id = ? AND p.org_id = ?`,
+      [unitId, req.user.orgId]
     );
     res.json({ code: 200, data: propInfo || null });
   } catch (error) {

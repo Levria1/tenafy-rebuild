@@ -18,6 +18,7 @@ const { buildViewingIcs } = require('../utils/ics');
 const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
 const { searchUnits } = require('./unitSearch');
+const { fullAddress } = require('../utils/propertyAddress');
 const { loadSettings } = require('../routes/advertising');
 const { resolveGapBands } = require('../utils/advertisingPlan');
 const { validateSelect, runReadOnly } = require('./askDataService');
@@ -1372,7 +1373,7 @@ const search_vacancies = {
       seen.add(uid);
       const base = {
         unit_id: uid, unit: r.unit_name, property: r.property_name,
-        address: [r.street_address, r.district, r.city].filter(Boolean).join(', '),
+        address: fullAddress(r),
         next_tenant_moves_in: d(r.next_start_date),
       };
       if (!r.cur_lease_id) {
