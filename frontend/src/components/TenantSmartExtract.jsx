@@ -14,7 +14,7 @@
 // Props:
 //   onExtracted(patch) — called with an object of fields to prefill. Keys
 //     correspond to Ant Form names (first_name, last_name, middle_name,
-//     birth_date as a dayjs, id_card, sex as 1|2).
+//     birth_date as a dayjs, id_card, id_type, sex as 1|2).
 //   onFileSaved(fileId) — called with the id of the stored screenshot. The
 //     Create form holds this until save, because the tenant it belongs to does
 //     not exist yet; the Edit form can link it straight away.
@@ -98,6 +98,7 @@ export default function TenantSmartExtract({ onExtracted, onFileSaved, compact =
       if (fields.last_name)   patch.last_name   = String(fields.last_name).trim();
       if (fields.middle_name) patch.middle_name = String(fields.middle_name).trim();
       if (fields.id_card)     patch.id_card     = String(fields.id_card).trim();
+      if (fields.id_type)     patch.id_type     = String(fields.id_type);
       if (fields.birth_date) {
         const d = dayjs(fields.birth_date);
         if (d.isValid()) patch.birth_date = d;

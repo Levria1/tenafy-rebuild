@@ -1251,3 +1251,48 @@ have become 2%. The percentage is capped at 100, since above that would skip eve
 invoice and silently disable the sweep without the enabled switch saying so.
 
 Suite 1656 → **1675**. Migration 082. Script: `repairRecurringFlag`.
+
+## Session 2026-10-09 — a stamping API, so a bot can pull what IRD eTAX needs
+
+Started from a 23-minute Zoom recording of staff stamping a tenancy agreement by hand
+(`docs/stamp-duty-workflow-2026-10-09.md`): Slack → Google Sheet → screenshot Schedule I →
+ask a chatbot for the duty → retype every field into eTAX. The eTAX side stays manual and
+is written up for later in `docs/etax-stamping-handoff.md`. Spec:
+`docs/superpowers/specs/2026-10-09-stamping-api-design.md`. Built by Codex, reviewed here.
+
+### What shipped (local)
+- `GET /api/public/stamping/queue`, `/:request_id`, `/:request_id/document` — read-only key.
+  The queue reuses the Signing & Stamp Tracking page's loader and row builder (the queries
+  moved to `services/signingTrackerData.js`), so the two cannot disagree.
+- Payload logic is pure, in `services/stampingPayload.js`; anything the data cannot settle is
+  a warning, never a guess.
+- `property.landlord_br_no` and `tenant.id_type` (migration 084), with fields on the property
+  and tenant forms. Smart Extract now sets the ID type: passport from a parsed MRZ, HKID from a
+  valid check digit, otherwise nothing.
+
+### What review caught
+- **`ORDER BY lat.id` on a table with no `id`** — every payload call would have 500'd in
+  production. The faked pool returned whatever the test handed it, so the suite was green.
+  Found by running the real handlers against a scratch MySQL built from the real schema.
+- **The fake pool never read the SQL.** Deleting the org check, the deleted-lease check, or a
+  SELECT column all left the route tests green. Real-DB run catches them; a new test pins the
+  predicates and parameter order. The org is checked twice (request AND property), so deleting
+  one alone leaks nothing — deleting both is caught.
+- **A source-scanning test satisfied by a comment.** When the tracker queries moved out of
+  `leasing.js`, Codex pasted the SQL fragments into a comment there so the old text-match
+  tests still passed. Repointed them at the new file with comments stripped, and replaced the
+  clamp check with a behavioural one.
+- **My brief's typo became code.** I gave Tai Yuen's end date as 2026-10-16 (should be 2027);
+  Codex invented a "legacy convention" making end-before-start count as 12 months. Removed.
+- Duty rounding now rounds to cents before the ceiling (`0.0025` is inexact in binary).
+- The landlord-mismatch warning fired only when a BR was filled in; now always.
+- Tenant edit: clearing the ID-type dropdown sent nothing, so the old value stuck.
+
+### Live data that shaped it
+Both Pearl City properties say **ACJ Ventures** while every unit says **Parcelle Limited** (and
+the contract prints Parcelle) — so the landlord follows `unit.account_name`, and a property-level
+BR is withheld when they differ. 245 of 871 recorded IDs are bracketed HKIDs; most of the rest
+are ambiguous, which is why ID type is a recorded field rather than inferred.
+
+Suite 1830 → **1844**, same 4 known failures, UTC and HKT. Migration 084 (idempotent, applied
+twice against a scratch DB).

@@ -61,6 +61,7 @@ const { findUnitByListingUrl, normalizeListingUrl } = require('../utils/listingU
 // req.apiKey.{id, orgId, name}. Every query below filters by req.apiKey.orgId
 // AND runs against req.pool, so multi-tenant isolation is enforced in two places.
 router.use(authenticateApiKey);
+router.use('/stamping', require('./publicStamping'));
 
 // Static advertising automation routes must precede the dynamic resource routes.
 // Read-only API keys are allowed to fetch a plan; authenticateApiKey rejects the

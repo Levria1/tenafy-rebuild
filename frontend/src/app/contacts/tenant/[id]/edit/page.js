@@ -57,6 +57,7 @@ export default function TenantEditPage() {
         form.setFieldsValue({
           ...data,
           birth_date: data.birth_date ? dayjs(data.birth_date) : null,
+          id_type: data.id_type ?? null,
           sex: Number(data.sex) || 0,
           status: Number(data.status) ?? 1,
         });
@@ -84,6 +85,9 @@ export default function TenantEditPage() {
         type: displayAsCompany ? 1 : 0,
         sex: values.sex ?? 0,
         status: values.status ?? 1,
+        // A cleared Select is undefined, which JSON drops, and the backend only
+        // updates id_type when the key is sent — so send null to really clear it.
+        id_type: values.id_type ?? null,
         file_ids: extractedFileIds,
       };
       const response = await tenant.update(tenantId, payload);
@@ -249,6 +253,20 @@ export default function TenantEditPage() {
                     <Label>ID / PASSPORT</Label>
                     <Form.Item name="id_card" noStyle>
                       <Input placeholder="Input ID or passport number" />
+                    </Form.Item>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <Label>ID TYPE</Label>
+                    <Form.Item name="id_type" noStyle>
+                      <Select
+                        placeholder="Select ID type"
+                        allowClear
+                        options={[
+                          { label: 'HKID', value: 'hkid' },
+                          { label: 'Passport', value: 'passport' },
+                          { label: 'Other', value: 'other' },
+                        ]}
+                      />
                     </Form.Item>
                   </div>
                   <div style={{ flex: 1 }}>

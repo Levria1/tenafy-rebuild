@@ -11,6 +11,7 @@ const llmClient = require('../services/llmClient');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { sanitiseNamePart, nameProblem } = require('../utils/personName');
 const { parseMrz } = require('../utils/mrz');
+const { isValidHkid } = require('../services/stampingPayload');
 const { decodeLeasingBitsAll } = require('../utils/mysqlBit');
 const { prepareInvite } = require('../utils/tenantPortalInvite');
 const { tenantPortalEnabled } = require('../middleware/tenantAuth');
@@ -79,6 +80,15 @@ async function linkFilesToTenant(pool, orgId, tenantId, fileIds) {
 
 function _parseOk(res, data)       { return res.json({ code: 200, data }); }
 function _parseFail(res, msg, s=500) { return res.status(s).json({ code: s, message: msg }); }
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+function normaliseIdType(value) {
+  if (value == null || String(value).trim() === '') return { ok: true, value: null };
+  const text = String(value).trim().toLowerCase();
+  if (['hkid', 'passport', 'other'].includes(text)) return { ok: true, value: text };
+  return { ok: false, value: null };
+}
 
 
 // POST /api/tenant/contacts - List tenants with paging
@@ -378,6 +388,11 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
       if (!fields.first_name && mrz.first_name) fields.first_name = titled(mrz.first_name);
       if (!fields.middle_name && mrz.middle_name) fields.middle_name = titled(mrz.middle_name);
     }
+    if (mrz && mrz.document_type === 'passport') {
+      fields.id_type = 'passport';
+    } else if (isValidHkid(fields.id_card)) {
+      fields.id_type = 'hkid';
+    }
 
     _parseOk(res, {
       fields,
@@ -460,8 +475,12 @@ router.post('/', authenticate, requirePermission('LANDLORD/TENANT_CREATE'), asyn
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
             company_name, type, sex, id_card, profession, budget, employer, salary,
             emergency_contact, referral, notes, cleaning_notes, status, lead_source_id,
-            whatsapp_opt_out, file_ids } = req.body;
+            whatsapp_opt_out, id_type, file_ids } = req.body;
     const orgId = req.user.orgId;
+    const cleanIdType = normaliseIdType(id_type);
+    if (!cleanIdType.ok) {
+      return res.status(400).json({ code: 400, message: 'id_type must be hkid, passport, other, or empty' });
+    }
 
     // Reject duplicate primary email (case-insensitive, ignoring soft-deleted rows)
     if (email && String(email).trim()) {
@@ -489,12 +508,12 @@ router.post('/', authenticate, requirePermission('LANDLORD/TENANT_CREATE'), asyn
 
     await req.pool.execute(
       `INSERT INTO tenant (id, org_id, first_name, last_name, middle_name, email, secondary_email, phone,
-       birth_date, company_name, type, sex, id_card, profession, budget, employer, salary,
+       birth_date, company_name, type, sex, id_card, id_type, profession, budget, employer, salary,
        emergency_contact, referral, notes, cleaning_notes, status, lead_source_id, whatsapp_opt_out, category, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
       [tenantId, orgId, cleanFirst, cleanLast, cleanMiddle,
        email || null, secondary_email || null, phone || null, birth_date || null,
-       company_name || null, type ?? 0, sex ?? 0, id_card || null, profession || null,
+       company_name || null, type ?? 0, sex ?? 0, id_card || null, cleanIdType.value, profession || null,
        budget || null, employer || null, salary || null, emergency_contact || null,
        referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null,
        whatsapp_opt_out ? 1 : 0]
@@ -606,7 +625,12 @@ router.put('/:id/profile', authenticate, requirePermission('LANDLORD/TENANT_EDIT
     const { first_name, last_name, middle_name, email, secondary_email, phone, birth_date,
             company_name, type, sex, id_card, profession, budget, employer, salary,
             emergency_contact, referral, notes, cleaning_notes, status, lead_source_id,
-            whatsapp_opt_out, file_ids } = req.body;
+            whatsapp_opt_out, id_type, file_ids } = req.body;
+    const updateIdType = hasOwn(req.body, 'id_type') ? 1 : 0;
+    const cleanIdType = normaliseIdType(id_type);
+    if (!cleanIdType.ok) {
+      return res.status(400).json({ code: 400, message: 'id_type must be hkid, passport, other, or empty' });
+    }
 
     // Refuse rather than silently rewrite. Quietly stripping a character someone just
     // typed makes them doubt the save; naming it lets them fix it.
@@ -621,13 +645,14 @@ router.put('/:id/profile', authenticate, requirePermission('LANDLORD/TENANT_EDIT
 
     await req.pool.execute(
       `UPDATE tenant SET first_name = ?, last_name = ?, middle_name = ?, email = ?, secondary_email = ?,
-       phone = ?, birth_date = ?, company_name = ?, type = ?, sex = ?, id_card = ?, profession = ?,
+       phone = ?, birth_date = ?, company_name = ?, type = ?, sex = ?, id_card = ?,
+       id_type = CASE WHEN ? = 1 THEN ? ELSE id_type END, profession = ?,
        budget = ?, employer = ?, salary = ?, emergency_contact = ?, referral = ?, notes = ?,
        cleaning_notes = ?, status = ?, lead_source_id = ?, whatsapp_opt_out = ?,
        updated_at = NOW() WHERE id = ?`,
       [cleanFirst, cleanLast, cleanMiddle, email || null, secondary_email || null,
        phone || null, birth_date || null, company_name || null, type ?? 0, sex ?? 0,
-       id_card || null, profession || null, budget || null, employer || null, salary || null,
+       id_card || null, updateIdType, cleanIdType.value, profession || null, budget || null, employer || null, salary || null,
        emergency_contact || null, referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null,
        whatsapp_opt_out ? 1 : 0, id]
     );

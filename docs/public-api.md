@@ -1152,6 +1152,65 @@ not hold anything.
 
 ---
 
+### Stamping — pull what IRD eTAX needs for a signed tenancy (added 2026-10-09)
+
+Read-only; a read-only key is enough. Spec: `docs/superpowers/specs/2026-10-09-stamping-api-design.md`.
+The eTAX filing itself stays manual — see `docs/etax-stamping-handoff.md`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /stamping/queue?signed_since=YYYY-MM-DD` | Signed contract periods, newest first. The same rows the Signing & Stamp Tracking page marks signed (same loader, same rules), so the two cannot disagree. `signed_since` is clamped to 2026-09-01. OTA bookings never appear. |
+| `GET /stamping/:request_id` | The eTAX payload for one signed document. 404 unless it is signed, in your org, on a live lease. |
+| `GET /stamping/:request_id/document` | The signed PDF (binary). 404 for a paper signing recorded without a scan. |
+
+Queue row: `request_id, lease_id, lease_no, property_name, unit_name, tenant_name, period_start,
+period_end, period_recorded, signed_method ('esign'|'paper'), signed_at`. Track which `request_id`s
+you have filed yourself — nothing in Tenafy records "stamped" yet.
+
+Payload:
+
+```json
+{
+  "request_id": "…", "lease_id": "…", "lease_no": "LEA…", "signature_method": "esign",
+  "signed_on": "2026-10-08",
+  "duplicates": 0, "applicant_capacity": "landlord", "payment_method": "offline",
+  "term": { "start": "2026-10-17", "end": "2027-10-16", "months": 12, "exceeds_one_year": false, "period_recorded": true },
+  "rent": { "field": "total", "amount": 228000, "monthly_rent": 19000, "total_rent": 228000 },
+  "address": { "flat": null, "floor": "25", "block": null, "building": null, "estate": null,
+               "street": "15 Tai Yuen St", "district": "Wan Chai",
+               "unit_name": "25/F", "street_address": "15 Tai Yuen St", "confident": true },
+  "tenants": [{ "role": "primary", "english_name": "…", "id_no": "…", "id_type": "passport", "id_type_source": "recorded" }],
+  "landlord": { "english_name": "Parcelle Limited", "br_no": "…" },
+  "duty_estimate": { "duty": 570, "tenant_share": 285, "rate": 0.0025, "basis": "total_rent" },
+  "signed_pdf_url": "/api/public/stamping/…/document",
+  "warnings": []
+}
+```
+
+- **`signed_on`** is the Date of Signing eTAX asks for — the Hong Kong date the document was
+  completed, NOT the lease start.
+- **`term.end`** is the stamped Term of Tenancy (`term_stamp_end`, else `term_end`, else the lease's
+  stamped/real end) — what the contract prints.
+- **`rent.field`** is `monthly` only when the term EXCEEDS a year (exactly 12 months does not), the
+  rent is fixed throughout and there are no credits; otherwise `total`. `amount` is the figure to
+  type into that field. `null` when it cannot be computed (a warning says why).
+- **`duty_estimate`** is a cross-check. 0.25% of total rent up to a year; 0.5% / 1% of average yearly
+  rent for 1–3 / over 3 years; rounded up to the dollar; no duplicate fee. **The IRD notice is the
+  real figure**; the tenant pays half of the notice total.
+- **`id_type_source`**: `recorded` (staff set it), `inferred` (`hkid` only, from a valid check
+  digit — passports are never inferred), `unknown`.
+- **`landlord`** follows the unit's account name when one is set, else the property's Landlord /
+  Legal Entity. The BR number is property-level, so it is withheld (`null` +
+  `landlord_entity_mismatch`) whenever the two name different companies.
+
+**Warnings — any warning means a person checks that field before filing:**
+`period_not_recorded`, `partial_month_term`, `stay_total_lease`, `unsupported_invoicing`,
+`rent_changes_during_term`, `lease_has_credits`, `address_unparsed`, `missing_district`,
+`missing_tenant`, `missing_id_no`, `id_type_inferred`, `id_type_unknown`, `missing_landlord`,
+`missing_br_no`, `landlord_entity_mismatch`, `no_signed_file`. Warnings are de-duplicated by code.
+
+---
+
 ## Field Reference (commonly-needed enums)
 
 | Field | Values |

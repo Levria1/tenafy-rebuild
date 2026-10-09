@@ -98,13 +98,25 @@ test('sorts newest period first then unit ascending', () => {
   assert.deepEqual(rows.map(r => r.lease_id), ['3', '2', '1']);
 });
 
+// The queries and the date clamp moved to services/signingTrackerData.js on
+// 2026-10-09 so GET /api/public/stamping/queue shares them. These guards follow the
+// code there, with comments stripped so a comment can never satisfy them.
+const stripComments = src => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const trackerDataSource = () => stripComments(
+  fs.readFileSync(path.join(__dirname, '../src/services/signingTrackerData.js'), 'utf8'));
+
 test('route is static-first, org-scoped, and clamps the tracking date', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/routes/leasing.js'), 'utf8');
+  const source = stripComments(fs.readFileSync(path.join(__dirname, '../src/routes/leasing.js'), 'utf8'));
   assert.ok(source.indexOf("router.get('/signing-tracking'") < source.indexOf("router.get('/:id'"));
   const route = source.slice(source.indexOf("router.get('/signing-tracking'"), source.indexOf("router.get('/:id'"));
-  assert.match(route, /p\.org_id = \?/);
-  assert.match(route, /2026-09-01/);
-  assert.match(route, /requested >= earliest \? requested : earliest/);
+  assert.match(route, /clampTrackerFrom\(req\.query\.from\)/);
+  assert.match(route, /loadSigningTrackerInputs\(req\.pool, orgId, from\)/);
+  assert.match(trackerDataSource(), /p\.org_id = \?/);
+  const { clampTrackerFrom } = require('../src/services/signingTrackerData');
+  assert.equal(clampTrackerFrom('2026-01-01'), '2026-09-01');
+  assert.equal(clampTrackerFrom('2026-10-05'), '2026-10-05');
+  assert.equal(clampTrackerFrom('2026-02-31'), '2026-09-01');
+  assert.equal(clampTrackerFrom(undefined), '2026-09-01');
 });
 
 test('an expired request for the extension period is the row for it — no extra unsigned gap row', () => {
@@ -121,9 +133,7 @@ test('an expired request for the extension period is the row for it — no extra
 });
 
 test('signing-tracking queries are org-scoped', () => {
-  const src = fs.readFileSync(path.join(__dirname, '../src/routes/leasing.js'), 'utf8');
-  const start = src.indexOf("router.get('/signing-tracking'");
-  const body = src.slice(start, src.indexOf('router.', start + 20));
+  const body = trackerDataSource();
   assert.match(body, /WHERE p\.org_id = \? AND l\.deleted_at IS NULL/);
   assert.match(body, /bp\.org_id = \?/);
   // The page's first column and default sort; in HK time like every other date shown.

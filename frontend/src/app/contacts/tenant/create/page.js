@@ -290,6 +290,20 @@ function TenantCreatePage() {
                     </Form.Item>
                   </div>
                   <div style={{ flex: 1 }}>
+                    <Label>ID TYPE</Label>
+                    <Form.Item name="id_type" noStyle>
+                      <Select
+                        placeholder="Select ID type"
+                        allowClear
+                        options={[
+                          { label: 'HKID', value: 'hkid' },
+                          { label: 'Passport', value: 'passport' },
+                          { label: 'Other', value: 'other' },
+                        ]}
+                      />
+                    </Form.Item>
+                  </div>
+                  <div style={{ flex: 1 }}>
                     <Label>LEAD SOURCE</Label>
                     <Form.Item name="lead_source_id" noStyle>
                       <Select
