@@ -4,6 +4,36 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Signing guard, Signing & Stamp Tracking, address fixes (2026-10-08 → 10-09)
+
+### Overlapping / expired signature requests (`2ea36b9`)
+- Prompted by LEA2824: an extension and a full-term contract were both sent and both expired, yet both still showed "Out for signature".
+- Send and Resend now return 409 `overlapping_request` when a LIVE request on the lease overlaps the period (a null period counts as the whole lease). `replace_overlapping:true` cancels the conflicts, recorded as `superseded_by`. `POST /signature/request` is now org-scoped.
+- "Expired" is computed (status 1/2 with `expires_at` in the past, `utils/signatureOverlap.js`) and shown as an orange tag; expired requests no longer count as in flight for the paperwork-gap check.
+- Per-row Resend on the lease page resent the newest open request rather than the clicked row; fixed.
+- Production at deploy: 29 expired-but-open requests on 25 leases, 6 live, 4 leases with overlapping (all expired) pairs. No data changed.
+
+### Signing & Stamp Tracking page (`57a22dd`, `ad1af60`)
+- Leasing → Signing & Stamp Tracking (`/leasing/signing-tracking`). One row per contract period from 1 Sep 2026 (`utils/signingTracker.js`):
+  - new leases with no document → Unsigned
+  - each request → Pending Signing / Expired link / Signed (paper or e-sign) / Declined
+  - extension gaps of a month or more → Unsigned (Extension)
+  - platforms with `requires_signature = 0` (Airbnb, Agoda) → "OTA — no signing needed"
+  - leases with no platform → "Not set" tag
+- Columns: Lease Created (default sort, newest first), Tenant, Property / Building, Source, Lease Start/End, Signed Status (with Resend / Resend new link / Send for signing), Stamp Status (placeholder), Lease. All sortable; filters drive the counters.
+- At deploy: 99 rows (67 signed, 13 unsigned, 8 expired, 6 pending, 4 OTA, 1 declined).
+- Limit: a pre-Sep lease with no documents never shows its later extension (end-date history isn't kept).
+
+### Property address (`45622ed`)
+- Contracts printed "…Causeway Bay, Causeway Bay, Hong Kong": `PROPERTY_FULL_ADDRESS` appended district and city even when the street address already contained them (9 of 19 properties). New `utils/propertyAddress.js` skips a part already present as a whole comma-separated part; the chatbot's unit address uses it too.
+- Unit General Information now shows District. Year Built, Zip and Property ID# had always shown "–" (wrong field names: `year_built`/`zip`/`property_code` vs `year_of_built`/`zip_code`/`mls`). The property-info endpoint is now org-scoped.
+
+### Open at session end
+- Stamp Status rules to be specified by the operator.
+- LEA2824 still needs the operator to cancel the Sep–Nov request and resend the full-term one.
+- 13 Unsigned + 8 Expired rows on the tracker to work through.
+- TRIV34077 note; nightly DB backup; destroy droplet; OpenRouter key `…626`; TaneChat key, Google Calendar SA, 2 read-only API keys, Xero reconnect.
+
 ## Session: Droplet compromise, migration to OVH, follow-up fixes (2026-10-01 → 10-08)
 
 ### Infrastructure (no repo commit — server work)
