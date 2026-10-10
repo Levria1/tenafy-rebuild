@@ -56,6 +56,9 @@ function stampingPool(fixtures) {
           && r.deleted_at == null);
         return [[row ? project(sql, row) : undefined]];
       }
+      if (/FROM property_lease_template/.test(sql)) return [fixtures.propertyTemplates || []];
+      if (/FROM lease_template_revision/.test(sql)) return [[undefined]];
+      if (/FROM lease_template/.test(sql)) return [[undefined]];
       if (/FROM leasing_additional_tenant/.test(sql)) return [[]];
       if (/FROM lease_revision/.test(sql)) return [[]];
       if (/FROM file/.test(sql)) return [[fixtures.files && fixtures.files[params[0]]]];
@@ -75,7 +78,7 @@ test('stamping route 404s across org, unsigned status and deleted leases', async
     stamp_end_date: null, price: 19000, amount: null, invoicing: '30', credits: null,
     unit_id: 'unit1', unit_name: '5A', unit_account_name: null, property_id: 'prop1',
     property_name: 'Tai Yuen', street_address: 'Nam Pak Hong Building, 24 Bonham Strand West',
-    district: 'Sheung Wan', landlord_name: 'ACJ Ventures Limited', landlord_br_no: 'BR1',
+    district: 'Sheung Wan', landlord_name: 'ACJ Ventures Limited',
     tenant_id: 'tenant1', first_name: 'Ada', last_name: 'Lovelace', company_name: null,
     id_card: 'A1234563', id_type: 'hkid',
   };
@@ -181,4 +184,42 @@ test('stamping payload query keeps its org, status and deleted-lease guards', as
   assert.match(bare, /sr\.status = 3/);
   assert.match(bare, /l\.deleted_at IS NULL/);
   assert.deepEqual(params.map(String), ['req1', 'org1', 'org1']);
+});
+
+// The landlord's BR number comes from template text, and a document's template_id is
+// just a number — so each template lookup must be org-scoped or a document could be
+// stamped with another organisation's landlord. Verified 2026-10-09 against real MySQL:
+// dropping the live-template org check returned ACJ for a Parcelle document.
+test('template lookups for the landlord are org-scoped', async () => {
+  const router = require('../src/routes/publicStamping');
+  const handler = routeHandler(router, '/:request_id');
+  const seen = [];
+  const row = {
+    id: 'req1', lease_id: 'lease1', status: 3, signature_method: 'esign', signed_file_id: null,
+    template_id: 'tpl9', template_version: 3, term_start: '2026-10-17', term_end: '2027-10-16',
+    term_stamp_end: null, completed_at: '2026-10-08', lease_no: 'LEA1', start_date: '2026-10-17',
+    end_date: '2027-10-16', stamp_end_date: null, price: 19000, amount: 19000, invoicing: '30',
+    credits: null, unit_id: 'u1', unit_name: '5A', unit_account_name: null, property_id: 'p1',
+    property_name: 'P', street_address: '1 St', district: 'D', landlord_name: null,
+    tenant_id: null,
+  };
+  const pool = {
+    execute: async (sql, params = []) => {
+      seen.push({ sql, params });
+      if (/FROM signature_request sr/.test(sql)) return [[row]];
+      return [[]];
+    },
+  };
+  const response = res();
+  await handler({ params: { request_id: 'req1' }, apiKey: { orgId: 'org1' }, pool }, response);
+  assert.equal(response.statusCode, 200);
+  const live = seen.find(c => /FROM lease_template\s+WHERE/.test(c.sql));
+  const snap = seen.find(c => /FROM lease_template_revision/.test(c.sql));
+  const allow = seen.find(c => /FROM property_lease_template/.test(c.sql));
+  assert.match(live.sql, /org_id = \?/);
+  assert.deepEqual(live.params.map(String), ['tpl9', 'org1', '3']);
+  assert.match(snap.sql, /t\.org_id = \?/);
+  assert.deepEqual(snap.params.map(String), ['tpl9', '3', 'org1']);
+  assert.match(allow.sql, /plt\.org_id = \? AND lt\.org_id = \?/);
+  assert.deepEqual(allow.params.map(String), ['p1', 'org1', 'org1']);
 });

@@ -10,8 +10,8 @@ Out of scope: any write endpoint (notice/paid/certificate/invoice), the Stamp St
 
 Per-org migration `backend/migrations-org/084_stamping_fields.sql` (idempotent via information_schema):
 
-- `property.landlord_br_no VARCHAR(32) NULL` — Business Registration No. of the property's landlord entity
-  (`property.landlord_name`). Property-level only (operator decision 2026-10-09).
+- ~~`property.landlord_br_no`~~ — dropped before deploy (2026-10-10): every entity's BR number is
+  already typed into its lease templates' signature block, so the payload reads it from there.
 - `tenant.id_type VARCHAR(16) NULL` — `'hkid' | 'passport' | 'other'`; NULL = not recorded.
 
 Backend accepts both on create/update (`routes/property.js`, `routes/tenant.js`), mirroring how
@@ -44,7 +44,7 @@ term: { start, end, months, exceeds_one_year, period_recorded },
 rent: { field: 'monthly'|'total'|null, amount, monthly_rent, total_rent },
 address: { flat, floor, block, building, estate, street, district, unit_name, street_address, confident },
 tenants: [{ role: 'primary'|'additional', english_name, id_no, id_type, id_type_source }],
-landlord: { english_name, br_no },
+landlord: { english_name, br_no, source },
 duty_estimate: { duty, tenant_share, rate, basis },
 signed_pdf_url, warnings: [{ code, message }]
 ```
@@ -81,11 +81,15 @@ Rules (each one a pure function in `backend/src/services/stampingPayload.js`, un
   `id_no` = trimmed `id_card`. `id_type` = recorded column (`id_type_source:'recorded'`); else inferred
   `'hkid'` if it passes the HKID check digit (`'inferred'`, warning `id_type_inferred`); else null
   (`'unknown'`, warning `id_type_unknown`). Never infer passport. Missing id_card → warning `missing_id_no`.
-- **Landlord.** `english_name` = trimmed `unit.account_name` || `property.landlord_name` (matches what
-  invoices and contracts print). `br_no` = `property.landlord_br_no` ONLY when the unit has no account name or
-  it equals the property's landlord_name (trimmed, case-insensitive); otherwise `br_no` null + warning
-  `landlord_entity_mismatch` (live: both Pearl City properties say ACJ Ventures, their units say Parcelle).
-  Missing name → `missing_landlord`; missing BR → `missing_br_no`.
+- **Landlord** (revised 2026-10-10). Read "Name: … Business Registration Number: NNNNNNNN" from the
+  landlord signature block of the exact template version on `signature_request.template_id/version`
+  (live `lease_template` row if still at that version, else the `lease_template_revision` snapshot;
+  org-scoped). No template on the document → the property's allowed templates, only if they all agree
+  (`landlord_from_property_template`; disagreeing → `landlord_ambiguous`). Else unit account name /
+  property entity with `br_no` null (`missing_br_no`). A signed template with no BR line →
+  `br_not_in_template`. Verified on prod data: all 8 current templates and every one of the 83
+  template-bearing signed documents resolve to the right company and BR. Pearl City's property field
+  says ACJ, its templates say Parcelle — the template wins.
 - `signed_pdf_url` = `/api/public/stamping/<id>/document` when `signed_file_id` is set, else null +
   warning `no_signed_file` (paper recorded without a scan).
 

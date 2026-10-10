@@ -13,9 +13,51 @@ function fail(res, message, status = 500) {
   return res.status(status).json({ code: status, message });
 }
 
+/**
+ * The template text the landlord's name and BR number are read from (they exist
+ * nowhere else in Tenafy — each entity's number is typed into its own templates).
+ *
+ * The EXACT version the document was generated from: the live row if the template
+ * is still at that version, otherwise the snapshot in lease_template_revision (an
+ * edit snapshots the outgoing version there). A deleted template still counts — the
+ * contract was signed with it. Some versions were snapshotted twice; take the latest.
+ *
+ * Only when the document records no template (a paper signing) fall back to the
+ * property's allowed templates, which the payload uses only if they all agree.
+ */
+async function loadLandlordTemplates(pool, orgId, templateId, templateVersion, propertyId) {
+  const html = r => (r ? [r.header_html, r.body_html, r.footer_html].filter(Boolean).join(' ') : null);
+  if (templateId != null && templateVersion != null) {
+    const [[live]] = await pool.execute(
+      `SELECT header_html, body_html, footer_html FROM lease_template
+        WHERE id = ? AND org_id = ? AND version = ? LIMIT 1`,
+      [String(templateId), orgId, Number(templateVersion)]
+    );
+    if (live) return { signedTemplateHtml: html(live), propertyTemplateHtmls: [] };
+    const [[snap]] = await pool.execute(
+      `SELECT r.header_html, r.body_html, r.footer_html
+         FROM lease_template_revision r
+         JOIN lease_template t ON t.id = r.template_id
+        WHERE r.template_id = ? AND r.version = ? AND t.org_id = ?
+        ORDER BY r.edited_at DESC, r.id DESC LIMIT 1`,
+      [String(templateId), Number(templateVersion), orgId]
+    );
+    if (snap) return { signedTemplateHtml: html(snap), propertyTemplateHtmls: [] };
+  }
+  const [rows] = await pool.execute(
+    `SELECT lt.header_html, lt.body_html, lt.footer_html
+       FROM property_lease_template plt
+       JOIN lease_template lt ON lt.id = plt.template_id
+      WHERE plt.property_id = ? AND plt.org_id = ? AND lt.org_id = ? AND lt.deleted_at IS NULL`,
+    [String(propertyId), orgId, orgId]
+  );
+  return { signedTemplateHtml: null, propertyTemplateHtmls: rows.map(html) };
+}
+
 async function loadSignedRequestContext(pool, orgId, requestId) {
   const [[row]] = await pool.execute(
     `SELECT sr.id, sr.lease_id, sr.status, sr.signature_method, sr.signed_file_id,
+            sr.template_id, sr.template_version,
             DATE_FORMAT(sr.term_start, '%Y-%m-%d') AS term_start,
             DATE_FORMAT(sr.term_end, '%Y-%m-%d') AS term_end,
             DATE_FORMAT(sr.term_stamp_end, '%Y-%m-%d') AS term_stamp_end,
@@ -27,7 +69,7 @@ async function loadSignedRequestContext(pool, orgId, requestId) {
             l.price, l.amount, l.invoicing, l.credits,
             u.id AS unit_id, u.name AS unit_name, u.account_name AS unit_account_name,
             p.id AS property_id, p.display_name AS property_name, p.street_address, p.district,
-            p.landlord_name, p.landlord_br_no,
+            p.landlord_name,
             t.id AS tenant_id, t.first_name, t.last_name, t.company_name, t.id_card, t.id_type
        FROM signature_request sr
        JOIN leasing l ON sr.lease_id = l.id
@@ -50,7 +92,7 @@ async function loadSignedRequestContext(pool, orgId, requestId) {
     [{ id: row.unit_id, name: row.unit_name, account_name: row.unit_account_name }],
     [{
       id: row.property_id, display_name: row.property_name, street_address: row.street_address,
-      district: row.district, landlord_name: row.landlord_name, landlord_br_no: row.landlord_br_no,
+      district: row.district, landlord_name: row.landlord_name,
     }],
     row.tenant_id ? [{
       id: row.tenant_id, first_name: row.first_name, last_name: row.last_name,
@@ -75,7 +117,12 @@ async function loadSignedRequestContext(pool, orgId, requestId) {
     [String(lease.id)]
   );
 
+  const { signedTemplateHtml, propertyTemplateHtmls } =
+    await loadLandlordTemplates(pool, orgId, row.template_id, row.template_version, row.property_id);
+
   return {
+    signedTemplateHtml,
+    propertyTemplateHtmls,
     request: {
       id: row.id, lease_id: row.lease_id, status: row.status, signature_method: row.signature_method,
       signed_file_id: row.signed_file_id, term_start: row.term_start, term_end: row.term_end,

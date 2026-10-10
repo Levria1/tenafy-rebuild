@@ -269,12 +269,6 @@ function PropertyInfoTab({ propertyData, amenities, isMobile }) {
           {propertyData.landlord_name || '—'}
         </span>
       </div>
-      <div style={{ fontSize: 13, marginBottom: 12 }}>
-        <span style={{ color: '#888' }}>BR No.: </span>
-        <span style={{ color: propertyData.landlord_br_no ? '#333' : '#bbb' }}>
-          {propertyData.landlord_br_no || '—'}
-        </span>
-      </div>
       <div style={{ fontSize: 13, marginBottom: 4, color: '#888' }}>Payment Instructions</div>
       <div style={{ color: propertyData.payment_instructions ? '#333' : '#bbb', fontSize: 13, whiteSpace: 'pre-wrap' }}>
         {propertyData.payment_instructions || '—'}

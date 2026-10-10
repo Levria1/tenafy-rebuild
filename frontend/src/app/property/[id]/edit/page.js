@@ -92,7 +92,6 @@ export default function PropertyEditPage() {
           status:                d.status ?? 1,
           mls:                   d.mls,
           landlord_name:         d.landlord_name,
-          landlord_br_no:        d.landlord_br_no,
           payment_instructions:  d.payment_instructions,
           notes:                 d.notes,
           listing_url:           d.listing_url,
@@ -404,13 +403,6 @@ export default function PropertyEditPage() {
               extra="Prints as the company name on invoices and receipts for this property. A unit's own account name overrides it."
             >
               <Input placeholder="e.g. ACJ Ventures Limited" />
-            </Form.Item>
-            <Form.Item
-              name="landlord_br_no"
-              label="Business Registration (BR) No."
-              extra="Used when stamping tenancy agreements on IRD eTAX."
-            >
-              <Input placeholder="e.g. 12345678" />
             </Form.Item>
             <Form.Item name="payment_instructions" label="Payment Instructions">
               <Input.TextArea rows={3} placeholder="e.g. Bank account details, accepted payment methods..." />

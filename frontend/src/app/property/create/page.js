@@ -396,13 +396,6 @@ export default function PropertyCreatePage() {
             >
               <Input placeholder="e.g. ACJ Ventures Limited" />
             </Form.Item>
-            <Form.Item
-              name="landlord_br_no"
-              label="Business Registration (BR) No."
-              extra="Used when stamping tenancy agreements on IRD eTAX."
-            >
-              <Input placeholder="e.g. 12345678" />
-            </Form.Item>
 
             {/* Payment Instructions */}
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, marginTop: 8 }}>

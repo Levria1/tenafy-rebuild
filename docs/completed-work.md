@@ -1266,8 +1266,7 @@ is written up for later in `docs/etax-stamping-handoff.md`. Spec:
   moved to `services/signingTrackerData.js`), so the two cannot disagree.
 - Payload logic is pure, in `services/stampingPayload.js`; anything the data cannot settle is
   a warning, never a guess.
-- `property.landlord_br_no` and `tenant.id_type` (migration 084), with fields on the property
-  and tenant forms. Smart Extract now sets the ID type: passport from a parsed MRZ, HKID from a
+- `tenant.id_type` (migration 084), with a field on the tenant forms. Smart Extract now sets the ID type: passport from a parsed MRZ, HKID from a
   valid check digit, otherwise nothing.
 
 ### What review caught
@@ -1285,14 +1284,21 @@ is written up for later in `docs/etax-stamping-handoff.md`. Spec:
 - **My brief's typo became code.** I gave Tai Yuen's end date as 2026-10-16 (should be 2027);
   Codex invented a "legacy convention" making end-before-start count as 12 months. Removed.
 - Duty rounding now rounds to cents before the ceiling (`0.0025` is inexact in binary).
-- The landlord-mismatch warning fired only when a BR was filled in; now always.
 - Tenant edit: clearing the ID-type dropdown sent nothing, so the old value stuck.
 
 ### Live data that shaped it
 Both Pearl City properties say **ACJ Ventures** while every unit says **Parcelle Limited** (and
-the contract prints Parcelle) — so the landlord follows `unit.account_name`, and a property-level
-BR is withheld when they differ. 245 of 871 recorded IDs are bracketed HKIDs; most of the rest
+the contract prints Parcelle) — the property field is stale; the landlord is read from the signed
+template (see 2026-10-10 below). 245 of 871 recorded IDs are bracketed HKIDs; most of the rest
 are ambiguous, which is why ID type is a recorded field rather than inferred.
 
 Suite 1830 → **1844**, same 4 known failures, UTC and HKT. Migration 084 (idempotent, applied
 twice against a scratch DB).
+
+### 2026-10-10 — the BR number was already in the templates
+Operator: "every contract has the BR for the company". It does — typed into each lease template's
+signature block (ACJ 63225001, Tane Residence 63461516, Parcelle 71930004, Naos 67888859). Dropped
+the property BR field before it shipped and read name + BR from the exact template version the
+document was signed with. Checked against production: all 83 template-bearing signed documents
+resolve correctly; old revisions ran "Account Name" on after the landlord name, so "Account" is a
+stop word. Org-scoping on the template lookup proven by planting its removal against real MySQL.

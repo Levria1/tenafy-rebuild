@@ -706,7 +706,7 @@ router.get('/:id', authenticate, async (req, res) => {
 // POST /api/property - Create property
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { display_name, landlord_name, landlord_br_no, street_address, city, state, country, zip_code, district,
+    const { display_name, landlord_name, street_address, city, state, country, zip_code, district,
             type, status, currency, year_of_built, notes, payment_instructions, amenityIds,
             photo, galleryFileIds, listing_url, bank_account_id } = req.body;
     const orgId = req.user.orgId;
@@ -714,11 +714,11 @@ router.post('/', authenticate, async (req, res) => {
     const propertyId = (BigInt(Date.now()) * BigInt(1000000) + BigInt(Math.floor(Math.random() * 1000000))).toString();
 
     await req.pool.execute(
-      `INSERT INTO property (id, org_id, display_name, landlord_name, landlord_br_no, street_address, city, state, country,
+      `INSERT INTO property (id, org_id, display_name, landlord_name, street_address, city, state, country,
        zip_code, district, type, status, currency, year_of_built, notes, payment_instructions,
        photo, listing_url, bank_account_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [propertyId, orgId, display_name || null, trimOrNull(landlord_name), trimOrNull(landlord_br_no), street_address || null, city || null, state || null, country || null, zip_code || null,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [propertyId, orgId, display_name || null, trimOrNull(landlord_name), street_address || null, city || null, state || null, country || null, zip_code || null,
        district || null, type || 1, status ?? 1, currency || null,
        year_of_built || null, notes || null, payment_instructions || null, photo || null, listing_url || null,
        nullableId(bank_account_id)]
@@ -754,7 +754,7 @@ router.post('/', authenticate, async (req, res) => {
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { display_name, landlord_name, landlord_br_no, street_address, city, state, country, zip_code, district,
+    const { display_name, landlord_name, street_address, city, state, country, zip_code, district,
             type, status, currency, year_of_built, mls, notes, payment_instructions, amenityIds,
             photo, galleryFileIds, listing_url, bank_account_id } = req.body;
     const orgId = req.user.orgId;
@@ -762,7 +762,6 @@ router.put('/:id', authenticate, async (req, res) => {
     // Same guard as bank_account_id: a caller that never sends the field (e.g. a
     // partial update from another screen) must not blank an existing entity name.
     const updateLandlordName = hasOwn(req.body, 'landlord_name') ? 1 : 0;
-    const updateLandlordBrNo = hasOwn(req.body, 'landlord_br_no') ? 1 : 0;
 
     // Block deactivation if there are active or upcoming leases on any unit of this property
     if (status != null && Number(status) === 0) {
@@ -787,7 +786,6 @@ router.put('/:id', authenticate, async (req, res) => {
     await req.pool.execute(
       `UPDATE property SET display_name = ?,
        landlord_name = CASE WHEN ? = 1 THEN ? ELSE landlord_name END,
-       landlord_br_no = CASE WHEN ? = 1 THEN ? ELSE landlord_br_no END,
        street_address = ?, city = ?, state = ?,
        country = ?, zip_code = ?, district = ?, type = ?, status = ?, currency = ?,
        year_of_built = ?, mls = ?, notes = ?, payment_instructions = ?, photo = ?,
@@ -795,7 +793,6 @@ router.put('/:id', authenticate, async (req, res) => {
        updated_at = NOW()
        WHERE id = ? AND org_id = ?`,
       [display_name || null, updateLandlordName, trimOrNull(landlord_name),
-       updateLandlordBrNo, trimOrNull(landlord_br_no),
        street_address || null, city || null, state || null,
        country || null, zip_code || null, district || null, type ?? 1, status ?? 1,
        currency || null, year_of_built || null, mls || null, notes || null,

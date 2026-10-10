@@ -1180,7 +1180,7 @@ Payload:
                "street": "15 Tai Yuen St", "district": "Wan Chai",
                "unit_name": "25/F", "street_address": "15 Tai Yuen St", "confident": true },
   "tenants": [{ "role": "primary", "english_name": "…", "id_no": "…", "id_type": "passport", "id_type_source": "recorded" }],
-  "landlord": { "english_name": "Parcelle Limited", "br_no": "…" },
+  "landlord": { "english_name": "Parcelle Limited", "br_no": "71930004", "source": "signed_template" },
   "duty_estimate": { "duty": 570, "tenant_share": 285, "rate": 0.0025, "basis": "total_rent" },
   "signed_pdf_url": "/api/public/stamping/…/document",
   "warnings": []
@@ -1199,15 +1199,18 @@ Payload:
   real figure**; the tenant pays half of the notice total.
 - **`id_type_source`**: `recorded` (staff set it), `inferred` (`hkid` only, from a valid check
   digit — passports are never inferred), `unknown`.
-- **`landlord`** follows the unit's account name when one is set, else the property's Landlord /
-  Legal Entity. The BR number is property-level, so it is withheld (`null` +
-  `landlord_entity_mismatch`) whenever the two name different companies.
+- **`landlord`** is read from the signature block of the EXACT template version the document was
+  generated from ("Name: … Business Registration Number: …") — the BR number exists nowhere else in
+  Tenafy, and this is what the tenant signed. `source`: `signed_template`; `property_template` when
+  the document records no template (a paper signing) and the property's allowed templates all name
+  the same company (flagged); `property` = the unit account name / property entity with no BR.
 
 **Warnings — any warning means a person checks that field before filing:**
 `period_not_recorded`, `partial_month_term`, `stay_total_lease`, `unsupported_invoicing`,
 `rent_changes_during_term`, `lease_has_credits`, `address_unparsed`, `missing_district`,
 `missing_tenant`, `missing_id_no`, `id_type_inferred`, `id_type_unknown`, `missing_landlord`,
-`missing_br_no`, `landlord_entity_mismatch`, `no_signed_file`. Warnings are de-duplicated by code.
+`missing_br_no`, `br_not_in_template`, `landlord_from_property_template`, `landlord_ambiguous`,
+`no_signed_file`. Warnings are de-duplicated by code.
 
 ---
 

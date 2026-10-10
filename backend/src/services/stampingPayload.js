@@ -227,20 +227,79 @@ function estimateDuty(term, rent) {
   return { duty, tenant_share: money(duty / 2), rate, basis };
 }
 
-function resolveLandlord(unit, property, warnings = []) {
-  const unitName = trimOrNull(unit && unit.account_name);
-  const propertyName = trimOrNull(property && property.landlord_name);
-  const englishName = unitName || propertyName;
-  // The BR number is stored per PROPERTY, but the entity that signs (and that
-  // invoices print) is the unit's account name when one is set. If the two name
-  // different companies, the property's BR belongs to someone else — withhold it.
-  // Live case: both Pearl City properties say ACJ Ventures, their units say Parcelle.
-  const mismatch = Boolean(unitName && propertyName && unitName.toLowerCase() !== propertyName.toLowerCase());
-  if (mismatch) addWarning(warnings, 'landlord_entity_mismatch', 'Unit account name differs from the property landlord entity, so the property BR number is not used.');
-  const brNo = mismatch ? null : trimOrNull(property && property.landlord_br_no);
-  if (!englishName) addWarning(warnings, 'missing_landlord', 'Landlord name is not recorded.');
-  if (!brNo) addWarning(warnings, 'missing_br_no', 'Landlord BR number is not recorded for the resolved landlord.');
-  return { english_name: englishName, br_no: brNo };
+// Template HTML → plain text, so the signature block reads as it prints.
+function templateText(html) {
+  return String(html || '')
+    .replace(/<\s*(br|\/p|\/div|\/tr|\/td|\/li|\/h\d)\b[^>]*>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * The landlord's English name and BR number as printed in a lease template's
+ * signature block, e.g. "Signature Name: Parcelle Limited Business Registration
+ * Number: 71930004". The BR number is not stored anywhere else in Tenafy — every
+ * entity's number is typed into its own templates — so this is the source of truth.
+ *
+ * Reads from the landlord signature anchor onwards, so a tenant-side "Name:" printed
+ * before it cannot be mistaken for the landlord. License agreements print the two
+ * signature columns side by side ("Name: Tane Residence Ltd Name: {{TENANT_NAME}}"),
+ * hence the name stops at the next "Name:" or label. Older template versions put
+ * "Account Name/Number" straight after the landlord name, so "Account" is a stop too.
+ */
+function extractLandlordFromTemplate(html) {
+  const text = templateText(html);
+  if (!text) return { english_name: null, br_no: null };
+  let anchor = text.search(/\{\{\s*SIGNATURE_LANDLORD\s*\}\}/i);
+  if (anchor < 0) anchor = text.search(/by the Landlord/i);
+  const tail = anchor >= 0 ? text.slice(anchor) : text;
+  const br = tail.match(/Business Registration (?:Number|No\.?)\s*:?\s*(\d{8})\b/i);
+  const name = tail.match(/Name\s*:\s*(.+?)\s*(?=Name\s*:|Business Registration|Account\b|DATE\s*:|I\.?\s*D\.?\s*No|EMAIL\s*:|NUMBER\s*:|\{\{|$)/i);
+  const englishName = name && !/[{}]/.test(name[1]) ? trimOrNull(name[1]) : null;
+  return { english_name: englishName, br_no: br ? br[1] : null };
+}
+
+/**
+ * Who the landlord is, in this order:
+ *  1. the exact template version the contract was signed with — what the tenant saw;
+ *  2. the property's allowed templates, when the document records none (a paper
+ *     signing) and they all name the same entity — flagged, because it is inferred;
+ *  3. the unit's account name / property's landlord_name, with no BR number.
+ * Live 2026-10-09: both Pearl City properties' landlord_name says ACJ Ventures while
+ * their contracts print Parcelle — the template is right, the property field is stale.
+ */
+function resolveLandlord({ signedTemplateHtml, propertyTemplateHtmls, unit, property } = {}, warnings = []) {
+  const fallbackName = trimOrNull(unit && unit.account_name) || trimOrNull(property && property.landlord_name);
+
+  if (signedTemplateHtml) {
+    const found = extractLandlordFromTemplate(signedTemplateHtml);
+    if (!found.br_no) addWarning(warnings, 'br_not_in_template', 'The signed template does not print a landlord Business Registration Number.');
+    const englishName = found.english_name || fallbackName;
+    if (!englishName) addWarning(warnings, 'missing_landlord', 'Landlord name is not recorded.');
+    return { english_name: englishName, br_no: found.br_no, source: 'signed_template' };
+  }
+
+  const candidates = (propertyTemplateHtmls || [])
+    .map(extractLandlordFromTemplate)
+    .filter(c => c.english_name && c.br_no);
+  // Same company spelled with different case is one landlord; keep the first spelling.
+  const byKey = new Map();
+  for (const c of candidates) {
+    const key = `${c.english_name.toLowerCase()}|${c.br_no}`;
+    if (!byKey.has(key)) byKey.set(key, c);
+  }
+  const distinct = [...byKey.values()];
+  if (distinct.length === 1) {
+    addWarning(warnings, 'landlord_from_property_template', 'The document records no template; landlord taken from the property\'s lease templates.');
+    return { ...distinct[0], source: 'property_template' };
+  }
+  if (distinct.length > 1) addWarning(warnings, 'landlord_ambiguous', 'The property\'s lease templates name different landlords.');
+  if (!fallbackName) addWarning(warnings, 'missing_landlord', 'Landlord name is not recorded.');
+  addWarning(warnings, 'missing_br_no', 'No landlord Business Registration Number could be found for this document.');
+  return { english_name: fallbackName, br_no: null, source: 'property' };
 }
 
 function tenantName(tenant) {
@@ -248,7 +307,7 @@ function tenantName(tenant) {
     || trimOrNull(`${tenant && tenant.first_name ? tenant.first_name : ''} ${tenant && tenant.last_name ? tenant.last_name : ''}`);
 }
 
-function buildStampingPayload({ request, lease, unit, property, tenants, revisions }) {
+function buildStampingPayload({ request, lease, unit, property, tenants, revisions, signedTemplateHtml, propertyTemplateHtmls }) {
   const warnings = [];
   const term = computeTerm(request, lease, warnings);
   const rent = computeRent(lease, term, revisions || [], warnings);
@@ -280,7 +339,7 @@ function buildStampingPayload({ request, lease, unit, property, tenants, revisio
     rent,
     address: parseUnitAddress(unit && unit.name, property && property.street_address, property && property.district, warnings),
     tenants: payloadTenants,
-    landlord: resolveLandlord(unit, property, warnings),
+    landlord: resolveLandlord({ signedTemplateHtml, propertyTemplateHtmls, unit, property }, warnings),
     duty_estimate: estimateDuty(term, rent),
     signed_pdf_url: signedPdfUrl,
     warnings,
@@ -295,5 +354,6 @@ module.exports = {
   computeRent,
   estimateDuty,
   resolveLandlord,
+  extractLandlordFromTemplate,
   buildStampingPayload,
 };
