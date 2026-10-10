@@ -133,6 +133,27 @@ function isValidHkid(value) {
   return check === body[6];
 }
 
+/**
+ * What kind of document an ID number is, from its format alone (operator rule,
+ * 2026-10-10). Measured on the 865 recorded numbers:
+ *  - a valid HKID check digit → 'hkid' (265; brackets optional);
+ *  - HKID-SHAPED but the check digit fails → 'passport' (168). These are mostly two
+ *    letters + 7 digits — the mainland passport format ("EA1234567") — or a letter +
+ *    7 digits (also an Indian passport format). A mistyped HKID lands here too, and is
+ *    wrong for stamping either way; the recorded type can always be corrected by hand;
+ *  - any other 6–12 character letter/digit code containing a digit → 'passport' (416);
+ *  - anything else (phone numbers, emails, two IDs in one box) → null (16).
+ */
+function classifyIdNumber(value) {
+  const raw = trimOrNull(value);
+  if (!raw) return null;
+  if (isValidHkid(raw)) return 'hkid';
+  const clean = raw.toUpperCase().replace(/[\s()\-]/g, '');
+  if (/^[A-Z]{1,2}\d{6}[0-9A]$/.test(clean)) return 'passport';
+  if (/^[A-Z0-9]{6,12}$/.test(clean) && /\d/.test(clean)) return 'passport';
+  return null;
+}
+
 function resolveIdType(tenant, warnings = []) {
   const recorded = trimOrNull(tenant && tenant.id_type);
   const idNo = trimOrNull(tenant && tenant.id_card);
@@ -141,12 +162,27 @@ function resolveIdType(tenant, warnings = []) {
     addWarning(warnings, 'missing_id_no', 'Tenant ID number is not recorded.');
     return { id_type: null, id_type_source: 'unknown' };
   }
-  if (isValidHkid(idNo)) {
-    addWarning(warnings, 'id_type_inferred', 'Tenant ID type was inferred from a valid HKID check digit.');
-    return { id_type: 'hkid', id_type_source: 'inferred' };
+  const inferred = classifyIdNumber(idNo);
+  if (inferred) {
+    addWarning(warnings, 'id_type_inferred', 'Tenant ID type was not recorded; inferred from the number\'s format.');
+    return { id_type: inferred, id_type_source: 'inferred' };
   }
-  addWarning(warnings, 'id_type_unknown', 'Tenant ID type is not recorded and could not be inferred.');
+  addWarning(warnings, 'id_type_unknown', 'Tenant ID type is not recorded and the number is not a recognisable ID format.');
   return { id_type: null, id_type_source: 'unknown' };
+}
+
+/**
+ * Tenancies shorter than one calendar month are not stamped (operator, 2026-10-10).
+ * Exactly one month (17 Oct → 16 Nov) IS stamped — consistent with the paperwork rule
+ * that exactly one month needs a contract. Measured on the stamped end, since that is
+ * the term the contract prints.
+ */
+function isUnderOneMonth(start, end) {
+  const s = parseDate(start);
+  const e = parseDate(end);
+  if (!s || !e) return false;
+  const oneMonthEnd = addDays(addMonths(s, 1), -1);
+  return e < oneMonthEnd;
 }
 
 function computeTerm(request, lease, warnings = []) {
@@ -332,6 +368,8 @@ function buildStampingPayload({ request, lease, unit, property, tenants, revisio
     lease_no: lease.lease_no || null,
     signature_method: request.signature_method || 'esign',
     signed_on: ymd(request.completed_at),
+    stamping_required: !isUnderOneMonth(term.start, term.end),
+    not_required_reason: isUnderOneMonth(term.start, term.end) ? 'under_one_month' : null,
     duplicates: 0,
     applicant_capacity: 'landlord',
     payment_method: 'offline',
@@ -350,6 +388,8 @@ module.exports = {
   parseUnitAddress,
   isValidHkid,
   resolveIdType,
+  classifyIdNumber,
+  isUnderOneMonth,
   computeTerm,
   computeRent,
   estimateDuty,

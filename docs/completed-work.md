@@ -1302,3 +1302,15 @@ the property BR field before it shipped and read name + BR from the exact templa
 document was signed with. Checked against production: all 83 template-bearing signed documents
 resolve correctly; old revisions ran "Account Name" on after the landlord name, so "Account" is a
 stop word. Org-scoping on the template lookup proven by planting its removal against real MySQL.
+
+### 2026-10-10 (later) — ID types from the number, and no stamping under a month
+- `classifyIdNumber` (one rule for save, Smart Extract, the payload and the backfill): valid HKID
+  check digit → hkid; HKID-shaped but failing → passport (mostly "EA1234567" mainland passports);
+  other 6–12 char ID-like codes → passport; phones/emails/two-IDs-in-one-box → blank. Production
+  dry run: 265 hkid, 584 passport, 16 blank of 865. `scripts/backfillTenantIdType.js` (dry run /
+  --apply, org-scoped, never overwrites a set type, prints the revert).
+- Tenant save fills a blank ID type from the number.
+- Under one calendar month is not stamped (operator): left out of the queue, `stamping_required`
+  false on the payload. Exactly one month is still stamped. None of the 72 live contracts is under.
+- "Stay total" leases are NOT OTAs — all 6 are Direct bookings with no invoicing schedule (OTAs were
+  already excluded by `requires_signature = 0`).

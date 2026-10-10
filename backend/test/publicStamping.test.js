@@ -47,6 +47,13 @@ function stampingPool(fixtures) {
         const ids = new Set(params.slice(1).map(String));
         return [fixtures.documents.filter(d => String(d.org_id) === String(orgId) && ids.has(String(d.lease_id))).map(row => project(sql, row))];
       }
+      if (/JOIN leasing l ON l\.id = sr\.lease_id/.test(sql)) {
+        const [orgId, ...ids] = params.map(String);
+        const leases = Object.fromEntries(fixtures.leases.map(l => [String(l.id), l]));
+        return [fixtures.documents
+          .filter(d => String(d.org_id) === orgId && ids.includes(String(d.id)))
+          .map(d => project(sql, { ...leases[String(d.lease_id)], ...d, stamp_end_date: null, term_stamp_end: d.term_stamp_end || null }))];
+      }
       if (/FROM signature_request sr/.test(sql)) {
         const [requestId, orgId, propertyOrgId] = params.map(String);
         const row = fixtures.contextRows.find(r => String(r.id) === requestId
@@ -222,4 +229,33 @@ test('template lookups for the landlord are org-scoped', async () => {
   assert.deepEqual(snap.params.map(String), ['tpl9', '3', 'org1']);
   assert.match(allow.sql, /plt\.org_id = \? AND lt\.org_id = \?/);
   assert.deepEqual(allow.params.map(String), ['p1', 'org1', 'org1']);
+});
+
+test('tenant save fills a blank ID type from the number, and keeps an explicit one', async () => {
+  const tenantRouter = require('../src/routes/tenant');
+  const handler = routeHandler(tenantRouter, '/:id/profile', 'put');
+  const run = async body => {
+    const pool = { execute: async (sql, params) => { pool.last = { sql, params }; return [{ affectedRows: 1 }]; }, query: async () => [[]] };
+    await handler({ params: { id: 't1' }, body: { first_name: 'Ada', last_name: 'L', email: '', file_ids: [], ...body }, user: { orgId: 'org1' }, pool }, res());
+    return pool.last.params.slice(10, 13); // id_card, updateIdType, id_type value
+  };
+  assert.deepEqual(await run({ id_card: 'E12345678', id_type: '' }), ['E12345678', 1, 'passport']);
+  assert.deepEqual(await run({ id_card: 'E12345678', id_type: 'other' }), ['E12345678', 1, 'other']);
+  assert.deepEqual(await run({ id_card: '+85291234567', id_type: null }), ['+85291234567', 1, null]);
+});
+
+test('stamping queue leaves out tenancies under one month', async () => {
+  const router = require('../src/routes/publicStamping');
+  const handler = routeHandler(router, '/queue');
+  const lease = (id, start, end) => ({ id, org_id: 'org1', lease_no: `LEA${id}`, start_date: start, end_date: end, lease_created_at: start, unit_name: id, property_name: 'P', tenant_name: 'T', platform_name: 'Direct', requires_signature: 1 });
+  const doc = (id, leaseId, start, end) => ({ id, org_id: 'org1', lease_id: leaseId, status: 3, signature_method: 'esign', term_start: start, term_end: end, completed_at: '2026-10-01', created_at: '2026-10-01' });
+  const pool = stampingPool({
+    contextRows: [],
+    leases: [lease('1', '2026-10-05', '2026-10-25'), lease('2', '2026-10-17', '2026-11-16')],
+    documents: [doc('short', '1', '2026-10-05', '2026-10-25'), doc('month', '2', '2026-10-17', '2026-11-16')],
+  });
+  const response = res();
+  await handler({ query: { signed_since: '2026-09-01' }, apiKey: { orgId: 'org1' }, pool }, response);
+  assert.deepEqual(response.body.data.rows.map(r => r.request_id), ['month']);
+  assert.equal(response.body.data.excluded_under_one_month, 1);
 });

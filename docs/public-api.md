@@ -1164,8 +1164,9 @@ The eTAX filing itself stays manual — see `docs/etax-stamping-handoff.md`.
 | `GET /stamping/:request_id/document` | The signed PDF (binary). 404 for a paper signing recorded without a scan. |
 
 Queue row: `request_id, lease_id, lease_no, property_name, unit_name, tenant_name, period_start,
-period_end, period_recorded, signed_method ('esign'|'paper'), signed_at`. Track which `request_id`s
-you have filed yourself — nothing in Tenafy records "stamped" yet.
+period_end, period_recorded, signed_method ('esign'|'paper'), signed_at`. Tenancies **under one calendar month are left out** (not stamped; exactly one month
+is included) and counted in `excluded_under_one_month`. Track which `request_id`s you have filed
+yourself — nothing in Tenafy records "stamped" yet.
 
 Payload:
 
@@ -1173,6 +1174,7 @@ Payload:
 {
   "request_id": "…", "lease_id": "…", "lease_no": "LEA…", "signature_method": "esign",
   "signed_on": "2026-10-08",
+  "stamping_required": true, "not_required_reason": null,
   "duplicates": 0, "applicant_capacity": "landlord", "payment_method": "offline",
   "term": { "start": "2026-10-17", "end": "2027-10-16", "months": 12, "exceeds_one_year": false, "period_recorded": true },
   "rent": { "field": "total", "amount": 228000, "monthly_rent": 19000, "total_rent": 228000 },
@@ -1197,8 +1199,11 @@ Payload:
 - **`duty_estimate`** is a cross-check. 0.25% of total rent up to a year; 0.5% / 1% of average yearly
   rent for 1–3 / over 3 years; rounded up to the dollar; no duplicate fee. **The IRD notice is the
   real figure**; the tenant pays half of the notice total.
-- **`id_type_source`**: `recorded` (staff set it), `inferred` (`hkid` only, from a valid check
-  digit — passports are never inferred), `unknown`.
+- **`stamping_required`** is `false` (`not_required_reason: 'under_one_month'`) for a stamped term
+  shorter than one calendar month — the payload still answers if asked directly.
+- **`id_type_source`**: `recorded` (staff set it, or Smart Extract / save filled it), `inferred`
+  (not recorded; from the number's format — valid HKID check digit → `hkid`, any other ID-like code
+  → `passport`), `unknown` (not a recognisable ID number).
 - **`landlord`** is read from the signature block of the EXACT template version the document was
   generated from ("Name: … Business Registration Number: …") — the BR number exists nowhere else in
   Tenafy, and this is what the tenant signed. `source`: `signed_template`; `property_template` when

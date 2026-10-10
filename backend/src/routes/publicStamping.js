@@ -5,7 +5,7 @@ const router = express.Router();
 const { orgTimeSql } = require('../utils/orgTime');
 const { buildSigningRows } = require('../utils/signingTracker');
 const { clampTrackerFrom, loadSigningTrackerInputs } = require('../services/signingTrackerData');
-const { buildStampingPayload } = require('../services/stampingPayload');
+const { buildStampingPayload, computeTerm, isUnderOneMonth } = require('../services/stampingPayload');
 
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 
@@ -143,8 +143,39 @@ router.get('/queue', async (req, res) => {
   try {
     const from = clampTrackerFrom(req.query.signed_since);
     const { leases, documents } = await loadSigningTrackerInputs(req.pool, req.apiKey.orgId, from);
-    const rows = buildSigningRows({ leases, documents, from, now: new Date() })
-      .filter(row => row.signed_status === 'signed')
+    const signed = buildSigningRows({ leases, documents, from, now: new Date() })
+      .filter(row => row.signed_status === 'signed');
+
+    // Tenancies under one calendar month are not stamped. Measure the STAMPED term —
+    // the same computeTerm the payload uses — not the tracker's period, which ignores
+    // term_stamp_end / leasing.stamp_end_date.
+    const terms = new Map();
+    const ids = signed.map(row => String(row.request_id));
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const chunk = ids.slice(offset, offset + 500);
+      const [termRows] = await req.pool.execute(
+        `SELECT sr.id,
+                DATE_FORMAT(sr.term_start, '%Y-%m-%d') AS term_start,
+                DATE_FORMAT(sr.term_end, '%Y-%m-%d') AS term_end,
+                DATE_FORMAT(sr.term_stamp_end, '%Y-%m-%d') AS term_stamp_end,
+                DATE_FORMAT(l.start_date, '%Y-%m-%d') AS start_date,
+                DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
+                DATE_FORMAT(l.stamp_end_date, '%Y-%m-%d') AS stamp_end_date
+           FROM signature_request sr
+           JOIN leasing l ON l.id = sr.lease_id
+          WHERE sr.org_id = ? AND sr.id IN (${chunk.map(() => '?').join(',')})`,
+        [req.apiKey.orgId, ...chunk]
+      );
+      for (const t of termRows) terms.set(String(t.id), computeTerm(t, t));
+    }
+    const underOneMonth = row => {
+      const term = terms.get(String(row.request_id));
+      return Boolean(term && isUnderOneMonth(term.start, term.end));
+    };
+    const excluded = signed.filter(underOneMonth).length;
+
+    const rows = signed
+      .filter(row => !underOneMonth(row))
       .map(row => ({
         request_id: String(row.request_id),
         lease_id: String(row.lease_id),
@@ -158,7 +189,7 @@ router.get('/queue', async (req, res) => {
         signed_method: row.signed_method || null,
         signed_at: row.signed_at || null,
       }));
-    res.json({ code: 200, data: { from, rows } });
+    res.json({ code: 200, data: { from, rows, excluded_under_one_month: excluded } });
   } catch (err) {
     console.error('[public/stamping queue] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to load stamping queue' });

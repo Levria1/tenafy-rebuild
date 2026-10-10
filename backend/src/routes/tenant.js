@@ -11,7 +11,7 @@ const llmClient = require('../services/llmClient');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { sanitiseNamePart, nameProblem } = require('../utils/personName');
 const { parseMrz } = require('../utils/mrz');
-const { isValidHkid } = require('../services/stampingPayload');
+const { classifyIdNumber } = require('../services/stampingPayload');
 const { decodeLeasingBitsAll } = require('../utils/mysqlBit');
 const { prepareInvite } = require('../utils/tenantPortalInvite');
 const { tenantPortalEnabled } = require('../middleware/tenantAuth');
@@ -82,6 +82,11 @@ function _parseOk(res, data)       { return res.json({ code: 200, data }); }
 function _parseFail(res, msg, s=500) { return res.status(s).json({ code: s, message: msg }); }
 function hasOwn(obj, key) {
   return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+// Blank ID type + a recognisable ID number → fill it from the number's format, so
+// staff only touch the dropdown to correct it. Same rule the stamping payload uses.
+function idTypeOrInferred(cleanIdType, idCard) {
+  return cleanIdType.value || classifyIdNumber(idCard);
 }
 function normaliseIdType(value) {
   if (value == null || String(value).trim() === '') return { ok: true, value: null };
@@ -388,10 +393,13 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
       if (!fields.first_name && mrz.first_name) fields.first_name = titled(mrz.first_name);
       if (!fields.middle_name && mrz.middle_name) fields.middle_name = titled(mrz.middle_name);
     }
+    // A parsed passport MRZ is proof; otherwise the number's format decides (same
+    // rule as on save and in the stamping payload), and junk leaves it unset.
     if (mrz && mrz.document_type === 'passport') {
       fields.id_type = 'passport';
-    } else if (isValidHkid(fields.id_card)) {
-      fields.id_type = 'hkid';
+    } else {
+      const guessed = classifyIdNumber(fields.id_card);
+      if (guessed) fields.id_type = guessed;
     }
 
     _parseOk(res, {
@@ -513,7 +521,7 @@ router.post('/', authenticate, requirePermission('LANDLORD/TENANT_CREATE'), asyn
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
       [tenantId, orgId, cleanFirst, cleanLast, cleanMiddle,
        email || null, secondary_email || null, phone || null, birth_date || null,
-       company_name || null, type ?? 0, sex ?? 0, id_card || null, cleanIdType.value, profession || null,
+       company_name || null, type ?? 0, sex ?? 0, id_card || null, idTypeOrInferred(cleanIdType, id_card), profession || null,
        budget || null, employer || null, salary || null, emergency_contact || null,
        referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null,
        whatsapp_opt_out ? 1 : 0]
@@ -652,7 +660,7 @@ router.put('/:id/profile', authenticate, requirePermission('LANDLORD/TENANT_EDIT
        updated_at = NOW() WHERE id = ?`,
       [cleanFirst, cleanLast, cleanMiddle, email || null, secondary_email || null,
        phone || null, birth_date || null, company_name || null, type ?? 0, sex ?? 0,
-       id_card || null, updateIdType, cleanIdType.value, profession || null, budget || null, employer || null, salary || null,
+       id_card || null, updateIdType, idTypeOrInferred(cleanIdType, id_card), profession || null, budget || null, employer || null, salary || null,
        emergency_contact || null, referral || null, notes || null, cleaning_notes || null, status ?? 1, lead_source_id ?? null,
        whatsapp_opt_out ? 1 : 0, id]
     );

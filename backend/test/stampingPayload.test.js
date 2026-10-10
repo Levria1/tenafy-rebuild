@@ -9,6 +9,8 @@ const {
   resolveLandlord,
   extractLandlordFromTemplate,
   buildStampingPayload,
+  classifyIdNumber,
+  isUnderOneMonth,
 } = require('../src/services/stampingPayload');
 
 function hkid(prefix, digits) {
@@ -174,4 +176,40 @@ test('buildStampingPayload assembles IDs as strings and warnings', () => {
   assert.equal(payload.lease_id, '456');
   assert.equal(payload.tenants[0].id_type, 'hkid');
   assert.deepEqual(payload.landlord, { english_name: 'Parcelle Limited', br_no: '71930004', source: 'signed_template' });
+});
+
+test('ID numbers are classified by format: valid HKID, else passport, else nothing', () => {
+  const good = hkid('A', '123456');
+  assert.equal(classifyIdNumber(`${good.slice(0, 7)}(${good.slice(7)})`), 'hkid');
+  assert.equal(classifyIdNumber(good), 'hkid');
+  // HKID-shaped with a failing check digit: mainland passports look exactly like this.
+  const wrong = `${good.slice(0, 7)}${good.endsWith('0') ? '1' : '0'}`;
+  assert.equal(classifyIdNumber(wrong), 'passport');
+  const two = hkid('EA', '123456');
+  assert.equal(classifyIdNumber(two), 'hkid');
+  assert.equal(classifyIdNumber(`${two.slice(0, 8)}${two.endsWith('0') ? '1' : '0'}`), 'passport'); // "EA1234567"-style
+  assert.equal(classifyIdNumber('E12345678'), 'passport');
+  assert.equal(classifyIdNumber('123456789'), 'passport');
+  assert.equal(classifyIdNumber(' k1234 5678 '), 'passport');
+  for (const junk of ['+85291234567', 'someone@example.com', 'A1234567/B7654321', 'ABCDEFG', '12345', '', null]) {
+    assert.equal(classifyIdNumber(junk), null, String(junk));
+  }
+});
+
+test('a tenancy under one calendar month is not stamped; exactly one month is', () => {
+  assert.equal(isUnderOneMonth('2026-10-17', '2026-11-16'), false);
+  assert.equal(isUnderOneMonth('2026-10-17', '2026-11-15'), true);
+  assert.equal(isUnderOneMonth('2026-10-31', '2026-11-29'), false); // 31 Oct + 1 month clamps to 30 Nov
+  assert.equal(isUnderOneMonth('2026-10-31', '2026-11-28'), true);
+  assert.equal(isUnderOneMonth('2026-10-17', '2027-10-16'), false);
+  const short = buildStampingPayload({
+    request: { id: 1, completed_at: '2026-10-01', term_start: '2026-10-05', term_end: '2026-10-25' },
+    lease: { id: 2, price: 9000, invoicing: '30' }, unit: { name: '5A' }, property: {}, tenants: [], revisions: [],
+  });
+  assert.deepEqual([short.stamping_required, short.not_required_reason], [false, 'under_one_month']);
+  const long = buildStampingPayload({
+    request: { id: 1, completed_at: '2026-10-01', term_start: '2026-10-17', term_end: '2027-10-16' },
+    lease: { id: 2, price: 9000, invoicing: '30' }, unit: { name: '5A' }, property: {}, tenants: [], revisions: [],
+  });
+  assert.deepEqual([long.stamping_required, long.not_required_reason], [true, null]);
 });
