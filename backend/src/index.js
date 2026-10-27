@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const config = require('./config');
+const { signatureJsonParser, payloadTooLargeResponse } = require('./middleware/signatureBody');
 const { startScheduler } = require('./services/scheduler');
 
 const app = express();
@@ -17,6 +18,8 @@ app.use(cors({
   credentials: true
 }));
 app.use(morgan('dev'));
+// Parse larger base64 signature uploads before the generic 100 KB parser.
+app.post('/api/signature/public/:token/sign', signatureJsonParser);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -69,6 +72,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+app.use(payloadTooLargeResponse);
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ code: 500, message: 'Internal server error' });
