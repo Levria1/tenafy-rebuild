@@ -4,6 +4,23 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Signer names the PDF fonts can't print (2026-10-30)
+
+- Live error log: `WinAnsi cannot encode "ị"` twice, from `signatureStamper.js` drawing a Vietnamese
+  signer name with pdf-lib's built-in Helvetica. The last signature was already saved, so the signer saw
+  a 500, then "Already signed." on retry, and the request never completed (no signed PDF, nothing retried).
+- Stamped text now goes through `pdfSafeText`: accents outside WinAnsi drop to the bare letter
+  ("Nguyễn Thị" → "Nguyen Thi"), anything else (CJK, emoji) becomes "?". The DB keeps the exact name.
+  Printing the exact name needs an embedded Unicode font (`@pdf-lib/fontkit` + TTF); not done.
+- A stamping failure after signing is logged and the signer gets success; their signature is saved.
+- `POST /api/signature/request/:id/finalize` (org-scoped; refuses completed, cancelled or partly signed
+  requests) re-runs stamping. The Signing Tracking page shows such rows as "Signed — not completed" with a
+  Complete document button. Completing emails the signed copy to the signers, as normal completion does.
+- Tests: `signatureUnicodeNames.test.js` (11). Full backend suite 1,862 pass; the same 4 unrelated
+  date-fixture failures as before (`renewalAsk`, `rentPeriodNote`).
+
+---
+
 ## Session: Signing guard, Signing & Stamp Tracking, address fixes (2026-10-08 → 10-09)
 
 ### Overlapping / expired signature requests (`2ea36b9`)

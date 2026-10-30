@@ -43,7 +43,9 @@ async function loadSigningTrackerInputs(pool, orgId, from) {
                 DATE_FORMAT(${orgTimeSql('sent_at')}, '%Y-%m-%d')      AS sent_at,
                 DATE_FORMAT(${orgTimeSql('completed_at')}, '%Y-%m-%d') AS completed_at,
                 expires_at,
-                created_at
+                created_at,
+                (SELECT COUNT(*) FROM signature_party sp WHERE sp.request_id = signature_request.id) AS party_count,
+                (SELECT COUNT(*) FROM signature_party sp WHERE sp.request_id = signature_request.id AND sp.status = 2) AS signed_count
            FROM signature_request
           WHERE org_id = ? AND lease_id IN (${placeholders})
           ORDER BY term_start IS NULL, term_start ASC, created_at ASC`,

@@ -403,6 +403,7 @@ export const signature = {
   getRequest: (id) => api.get(`/api/signature/request/${id}`),
   cancelRequest: (id) => api.post(`/api/signature/request/${id}/cancel`),
   resendRequest: (id, data) => api.post(`/api/signature/request/${id}/resend`, data || {}),
+  finalizeRequest: (id) => api.post(`/api/signature/request/${id}/finalize`),
   listForLease: (leaseId) => api.get(`/api/signature/lease/${leaseId}`),
   // Record a document signed in ink rather than e-signed, against the period it
   // covers: { lease_id, term_start, term_end, signed_at, file_id?, term_stamp_end? }

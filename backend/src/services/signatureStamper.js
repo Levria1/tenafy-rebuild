@@ -45,6 +45,36 @@ const INITIAL_MARGIN = 24;
 // How far above the anchor baseline the signature image bottom sits.
 const ANCHOR_LIFT = 2;
 
+// The standard Helvetica fonts are WinAnsi-only. drawText THROWS on any other
+// character, and a signer named "Nguyễn Thị" used to crash finalisation after
+// their signature was already saved. Accents fall back to the bare letter
+// (ị → i); anything still unencodable (e.g. CJK) becomes "?". The DB keeps the
+// exact name — this only affects the stamped pages.
+const charsetCache = new WeakMap();
+const LETTER_FALLBACK = { 'đ': 'd', 'Đ': 'D', 'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'ħ': 'h', 'Ħ': 'H' };
+
+function pdfSafeText(font, text) {
+  let charset = charsetCache.get(font);
+  if (!charset) {
+    charset = new Set(font.getCharacterSet());
+    charsetCache.set(font, charset);
+  }
+  const fits = (s) => [...s].every(ch => charset.has(ch.codePointAt(0)));
+  let out = '';
+  for (const ch of String(text ?? '')) {
+    if (fits(ch)) { out += ch; continue; }
+    const bare = ch.normalize('NFD').replace(/\p{M}/gu, '');
+    if (bare && fits(bare)) { out += bare; continue; }
+    const mapped = LETTER_FALLBACK[bare] || LETTER_FALLBACK[ch];
+    out += mapped || '?';
+  }
+  return out;
+}
+
+function drawSafe(page, text, opts) {
+  page.drawText(pdfSafeText(opts.font, text), opts);
+}
+
 function stripDataUrl(s) {
   if (!s) return '';
   return String(s).replace(/^data:image\/[\w.+-]+;base64,/i, '');
@@ -197,15 +227,15 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     const { height } = sigPage.getSize();
     let y = height - PAGE_PADDING;
 
-    sigPage.drawText('Signatures', { x: PAGE_PADDING, y, size: 18, font: helvBold, color: rgb(0.1, 0.24, 0.56) });
+    drawSafe(sigPage, 'Signatures', { x: PAGE_PADDING, y, size: 18, font: helvBold, color: rgb(0.1, 0.24, 0.56) });
     y -= 30;
-    sigPage.drawText('This lease was signed electronically by the parties below.', {
+    drawSafe(sigPage, 'This lease was signed electronically by the parties below.', {
       x: PAGE_PADDING, y, size: 10, font: helv, color: rgb(0.3, 0.3, 0.3),
     });
     y -= 30;
 
     for (const party of unplacedTenants) {
-      sigPage.drawText('TENANT SIGNATURE', { x: PAGE_PADDING, y, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
+      drawSafe(sigPage, 'TENANT SIGNATURE', { x: PAGE_PADDING, y, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
       y -= 8;
       const png = await embedImageSafe(pdfDoc, party.signature_png);
       if (png) {
@@ -216,14 +246,14 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
       y -= 8;
       sigPage.drawLine({ start: { x: PAGE_PADDING, y }, end: { x: PAGE_PADDING + SIG_WIDTH, y }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
       y -= 14;
-      sigPage.drawText(`Name:  ${party.typed_name || party.signer_name}`, { x: PAGE_PADDING, y, size: 10, font: helv });
+      drawSafe(sigPage, `Name:  ${party.typed_name || party.signer_name}`, { x: PAGE_PADDING, y, size: 10, font: helv });
       y -= 14;
       if (party.signer_email) {
-        sigPage.drawText(`Email: ${party.signer_email}`, { x: PAGE_PADDING, y, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
+        drawSafe(sigPage, `Email: ${party.signer_email}`, { x: PAGE_PADDING, y, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
         y -= 14;
       }
       if (party.signed_at) {
-        sigPage.drawText(`Signed: ${stampTimestamp(party.signed_at)}`, {
+        drawSafe(sigPage, `Signed: ${stampTimestamp(party.signed_at)}`, {
           x: PAGE_PADDING, y, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4),
         });
         y -= 24;
@@ -231,7 +261,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     }
 
     if (landlordNeedsAppend) {
-      sigPage.drawText('LANDLORD SIGNATURE', { x: PAGE_PADDING, y, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
+      drawSafe(sigPage, 'LANDLORD SIGNATURE', { x: PAGE_PADDING, y, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
       y -= 8;
       const png = await embedImageSafe(pdfDoc, landlordSig.signature_png);
       if (png) {
@@ -242,9 +272,9 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
       y -= 8;
       sigPage.drawLine({ start: { x: PAGE_PADDING, y }, end: { x: PAGE_PADDING + SIG_WIDTH, y }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
       y -= 14;
-      sigPage.drawText(`Name:  ${landlordSig.label}`, { x: PAGE_PADDING, y, size: 10, font: helv });
+      drawSafe(sigPage, `Name:  ${landlordSig.label}`, { x: PAGE_PADDING, y, size: 10, font: helv });
       y -= 14;
-      sigPage.drawText(`Signed: ${stampTimestamp(new Date())}`, {
+      drawSafe(sigPage, `Signed: ${stampTimestamp(new Date())}`, {
         x: PAGE_PADDING, y, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4),
       });
     }
@@ -254,16 +284,16 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   const cert = pdfDoc.addPage();
   const { height: certH } = cert.getSize();
   let cy = certH - PAGE_PADDING;
-  cert.drawText('Certificate of Completion', { x: PAGE_PADDING, y: cy, size: 18, font: helvBold, color: rgb(0.1, 0.24, 0.56) });
+  drawSafe(cert, 'Certificate of Completion', { x: PAGE_PADDING, y: cy, size: 18, font: helvBold, color: rgb(0.1, 0.24, 0.56) });
   cy -= 30;
-  cert.drawText('This certificate documents the electronic signing of this lease.', {
+  drawSafe(cert, 'This certificate documents the electronic signing of this lease.', {
     x: PAGE_PADDING, y: cy, size: 10, font: helv, color: rgb(0.3, 0.3, 0.3),
   });
   cy -= 30;
 
   const writeKV = (k, v) => {
-    cert.drawText(k, { x: PAGE_PADDING, y: cy, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
-    cert.drawText(String(v ?? ''), { x: PAGE_PADDING + 130, y: cy, size: 9, font: helv });
+    drawSafe(cert, k, { x: PAGE_PADDING, y: cy, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
+    drawSafe(cert, String(v ?? ''), { x: PAGE_PADDING + 130, y: cy, size: 9, font: helv });
     cy -= 14;
   };
   writeKV('Request ID:', String(request.id));
@@ -272,33 +302,33 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   writeKV('Document SHA-256:', docHash);
   cy -= 10;
 
-  cert.drawText('Signers', { x: PAGE_PADDING, y: cy, size: 12, font: helvBold });
+  drawSafe(cert, 'Signers', { x: PAGE_PADDING, y: cy, size: 12, font: helvBold });
   cy -= 16;
   for (const party of parties) {
-    cert.drawText(`• ${party.signer_name}${party.signer_email ? ` <${party.signer_email}>` : ''}`, {
+    drawSafe(cert, `• ${party.signer_name}${party.signer_email ? ` <${party.signer_email}>` : ''}`, {
       x: PAGE_PADDING, y: cy, size: 10, font: helvBold,
     });
     cy -= 14;
     if (party.viewed_at) {
-      cert.drawText(`    Viewed:  ${stampTimestamp(party.viewed_at)}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
+      drawSafe(cert, `    Viewed:  ${stampTimestamp(party.viewed_at)}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
       cy -= 12;
     }
     if (party.signed_at) {
-      cert.drawText(`    Signed:  ${stampTimestamp(party.signed_at)}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
+      drawSafe(cert, `    Signed:  ${stampTimestamp(party.signed_at)}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
       cy -= 12;
     }
     if (party.signer_ip) {
-      cert.drawText(`    IP:      ${party.signer_ip}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
+      drawSafe(cert, `    IP:      ${party.signer_ip}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
       cy -= 12;
     }
     if (party.signer_ua) {
-      cert.drawText(`    Browser: ${party.signer_ua.slice(0, 90)}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
+      drawSafe(cert, `    Browser: ${party.signer_ua.slice(0, 90)}`, { x: PAGE_PADDING, y: cy, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
       cy -= 12;
     }
     cy -= 6;
   }
   if (landlordSig && landlordSig.signature_png) {
-    cert.drawText(`• ${landlordSig.label} (Landlord)`, { x: PAGE_PADDING, y: cy, size: 10, font: helvBold });
+    drawSafe(cert, `• ${landlordSig.label} (Landlord)`, { x: PAGE_PADDING, y: cy, size: 10, font: helvBold });
     cy -= 16;
   }
 
@@ -321,4 +351,4 @@ function stampTimestamp(value) {
   return `${wall.replace('T', ' ')} HKT`;
 }
 
-module.exports = { stampLease, stampTimestamp };
+module.exports = { stampLease, stampTimestamp, pdfSafeText };

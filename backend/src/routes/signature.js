@@ -673,6 +673,40 @@ router.post('/request/:id/cancel', authenticate, async (req, res) => {
   }
 });
 
+// POST /api/signature/request/:id/finalize — re-run stamping for a request
+// every party has signed but that never completed (finalisation failed after
+// the last signature was saved).
+router.post('/request/:id/finalize', authenticate, async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const [[r]] = await req.pool.execute(
+      `SELECT id, lease_id, status FROM signature_request WHERE id = ? AND org_id = ? LIMIT 1`,
+      [req.params.id, orgId]
+    );
+    if (!r) return fail(res, 'Not found', 404);
+    if (Number(r.status) === 3) return fail(res, 'Already completed', 400);
+    if (Number(r.status) === 6) return fail(res, 'This signing request was cancelled.', 400);
+
+    const [[counts]] = await req.pool.execute(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END) AS signed_count
+         FROM signature_party WHERE request_id = ?`,
+      [r.id]
+    );
+    if (!Number(counts.total) || Number(counts.total) !== Number(counts.signed_count)) {
+      return fail(res, 'Not every party has signed yet', 400);
+    }
+
+    await finalizeRequest(req.pool, orgId, r.id);
+    await logActivity(req, 'UPDATE', 'signature_request', r.id,
+      `Completed signature request ${r.id} on lease ${r.lease_id} (finalisation re-run)`);
+    ok(res, { completed: true });
+  } catch (err) {
+    console.error('[signature] finalize error:', err);
+    fail(res, 'Failed to complete the signed document');
+  }
+});
+
 // POST /api/signature/request/:id/resend — re-email pending parties
 router.post('/request/:id/resend', authenticate, async (req, res) => {
   try {
@@ -944,8 +978,16 @@ router.post('/public/:token/sign', async (req, res) => {
       [party.request_id]
     );
 
+    // The signature is already saved, so a stamping failure must not reach the
+    // signer: a 500 here used to be followed by "Already signed." on retry,
+    // with the request stuck unfinalised. Staff re-run it via /finalize.
     if (Number(counts.total) === Number(counts.signed_count)) {
-      await finalizeRequest(pool, orgId, party.request_id);
+      try {
+        await finalizeRequest(pool, orgId, party.request_id);
+      } catch (finalizeErr) {
+        console.error('[signature/public] finalize failed after signing, request %s:',
+          party.request_id, finalizeErr);
+      }
     }
 
     ok(res, { signed: true });
