@@ -41,6 +41,13 @@ function SignedStatus({ row }) {
     ota: { color: 'default', label: 'OTA — no signing needed' },
   }[row.signed_status];
   if (!meta) return '—';
+  if (row.needs_completion) {
+    return (
+      <Tooltip title="Everyone has signed, but the signed PDF was never produced.">
+        <Tag color="volcano" style={{ margin: 0 }}>Signed — not completed</Tag>
+      </Tooltip>
+    );
+  }
   let detail = '';
   if (row.signed_status === 'pending' && row.sent_at) detail = `sent ${dayjs(row.sent_at).format('D MMM')}`;
   if (row.signed_status === 'expired' && row.expires_at) detail = `expired ${dayjs(row.expires_at).format('D MMM')}`;
@@ -79,6 +86,7 @@ export default function SigningTrackingPage() {
 
   const router = useRouter();
   const [resendingKey, setResendingKey] = useState(null);
+  const [completingKey, setCompletingKey] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -137,9 +145,34 @@ export default function SigningTrackingPage() {
     }
   };
 
+  // Every party signed but stamping failed afterwards — re-run it server-side.
+  const complete = async (row) => {
+    setCompletingKey(row.key);
+    try {
+      const res = await signature.finalizeRequest(row.request_id);
+      if (res.data?.code === 200) {
+        message.success('Signed document completed.');
+        await load();
+      } else {
+        message.error(res.data?.message || 'Failed to complete the signed document');
+      }
+    } catch (err) {
+      message.error(err.response?.data?.message || 'Failed to complete the signed document');
+    } finally {
+      setCompletingKey(null);
+    }
+  };
+
   // Pending / expired rows have a request to revive. Unsigned / declined rows need a new
   // document; review-and-send prefills the uncovered period from the server.
   const statusAction = (row) => {
+    if (row.needs_completion && row.request_id) {
+      return (
+        <Button size="small" type="primary" loading={completingKey === row.key} onClick={() => complete(row)}>
+          Complete document
+        </Button>
+      );
+    }
     if ((row.signed_status === 'pending' || row.signed_status === 'expired') && row.request_id) {
       return (
         <Button size="small" type={row.signed_status === 'expired' ? 'primary' : 'default'}

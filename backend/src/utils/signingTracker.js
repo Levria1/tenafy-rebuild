@@ -18,6 +18,7 @@ function baseRow(lease, periodStart, periodEnd) {
     lease_no: lease.lease_no || null,
     lease_created_at: ymd(lease.lease_created_at),
     request_id: null,
+    needs_completion: false,
     property_name: lease.property_name || null,
     unit_name: lease.unit_name || null,
     tenant_name: lease.tenant_name || null,
@@ -33,10 +34,19 @@ function baseRow(lease, periodStart, periodEnd) {
   };
 }
 
+// Every party signed but the request never reached status 3: stamping failed
+// after the last signature was saved. Staff complete it from the tracker.
+function needsCompletion(doc) {
+  const status = Number(doc.status);
+  const total = Number(doc.party_count);
+  return (status === 1 || status === 2) && total > 0 && total === Number(doc.signed_count);
+}
+
 function documentStatus(doc, now) {
   const status = Number(doc.status);
   if (status === 3) return 'signed';
   if (status === 4) return 'declined';
+  if (needsCompletion(doc)) return 'pending';
   if (status === 5 || ((status === 1 || status === 2) && isExpiredRequest(doc, now))) return 'expired';
   return 'pending';
 }
@@ -90,6 +100,7 @@ function buildSigningRows({ leases = [], documents = [], from, now = new Date() 
         period_recorded: recorded,
         kind: 'document',
         signed_status: signedStatus,
+        needs_completion: needsCompletion(doc),
         signed_method: signedStatus === 'signed' ? (doc.signature_method || 'esign') : null,
         sent_at: sentAt,
         expires_at: ymd(doc.expires_at),

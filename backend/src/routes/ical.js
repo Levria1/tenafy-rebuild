@@ -131,7 +131,7 @@ router.get('/unit/:token', stripTrailingIcs, resolveOrgByIcalToken, async (req, 
               DATE_FORMAT(l.start_date, '%Y-%m-%d') AS start_date,
               DATE_FORMAT(l.end_date,   '%Y-%m-%d') AS end_date
          FROM leasing l
-        WHERE l.unit_id = ? AND l.status = 1
+        WHERE l.unit_id = ? AND l.status = 1 AND l.deleted_at IS NULL
         ORDER BY l.start_date`,
       [unit.id]
     );
