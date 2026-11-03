@@ -344,8 +344,8 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
       '    - For passport: keep letters uppercase, keep any spaces',
       '    - For other IDs: preserve as printed',
       '  sex          (string: "M" or "F" — infer from gender field, name pattern, or honorific)',
-      'An HKID prints the name as "SURNAME, Given Names": the first word after the comma is first_name and any',
-      '  further words are middle_name, e.g. "MIU, Hung Nelly" is last_name Miu, first_name Hung, middle_name Nelly.',
+      'An HKID prints the name as "SURNAME, Given Names". The given names are the romanised Chinese given name (one word per',
+      '  Chinese character, kept together) and any English name; whichever comes first after the comma is first_name, the other middle_name. e.g. "CHAN, Tai Man David" is last_name Chan, first_name "Tai Man", middle_name David.',
       'Do NOT include any other keys. Do NOT include explanatory prose. Output a single JSON object only.',
     ].join('\n');
 
