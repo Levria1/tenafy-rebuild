@@ -4,6 +4,25 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Facebook posting — replacing a lost account; slot editor (2026-11-03)
+
+- tane.joanne@gmail.com was lost; tanesignature@gmail.com replaces it. Live data change, approved by the
+  owner over Discord: joanne's 9 weekly slots (Mon–Sat, 6 groups) moved to tanesignature in one
+  transaction, after checking tanesignature is a member of each group. 50 of 52 slots now post.
+- The other 2 (Sat Prop 9, Sun Prop 20) point at "Hong Kong Apartment and Flats for Sale and Rent",
+  a group deleted earlier, so they had not posted since. Left for staff to reassign.
+- There was no way to change a slot's account: slots come from `scripts/seedAdvertisingSchedule.js`,
+  and the Scheduler page could only rewrite a slot flagged as a repeat. And `/schedule` joined live
+  accounts and groups only, so a slot whose account or group was removed vanished from view.
+  Now `/schedule` returns every active slot with `problem` (`slotProblem`: group removed, account
+  removed, account not in the group) plus the live groups with their member accounts. The Posting
+  Sheet shows a red "Not posting" tag and an Edit button per slot (group + member account picker),
+  saved through the existing `PUT /schedule/:id`, which already checks membership.
+- Tests: `advertisingSlotEditor.test.js` (2, both fail on the old code). The new query was dry-run
+  read-only on live MySQL (52 slots, 2 flagged).
+
+---
+
 ## Session: Invoice file attachments; tenant portal dates (2026-11-03)
 
 - **Invoice files never worked.** The Create/Edit invoice upload box had `beforeUpload={() => false}`,

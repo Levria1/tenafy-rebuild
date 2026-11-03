@@ -11,6 +11,18 @@ function slotLabel(row) {
   return `${prefix} ${Number(row && row.slot_no)}`;
 }
 
+// Why a scheduled slot will not post, or null when it will. The daily plan only
+// uses a slot whose group and account are both live and whose account is a
+// member of that group, so a slot failing any of these is dropped from the plan
+// SILENTLY. The Posting Sheet shows the reason, so a removed account (e.g. one
+// nobody can log into any more) is visible and can be reassigned.
+function slotProblem(row) {
+  if (!row || !row.forum_live) return 'Group removed';
+  if (!row.account_live) return 'Account removed';
+  if (!row.is_member) return 'Account is not a member of this group';
+  return null;
+}
+
 function naturalSlotCompare(a, b) {
   const ak = String(a.slot_key || '');
   const bk = String(b.slot_key || '');
@@ -794,6 +806,7 @@ function assignBundlesToSlots(bundles, slots, { tierOf } = {}) {
 module.exports = {
   slotKey,
   slotLabel,
+  slotProblem,
   findRepeatViolations,
   suggestReplacements,
   forumWeeklyLoad,

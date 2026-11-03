@@ -8,7 +8,7 @@ import {
 } from 'antd';
 import {
   SoundOutlined, ReloadOutlined, ThunderboltOutlined, PlusOutlined, DeleteOutlined,
-  EyeOutlined, CopyOutlined,
+  EyeOutlined, CopyOutlined, EditOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../../../components/Layout';
 import { advertisingApi } from '../../../lib/api';
@@ -17,6 +17,7 @@ const { Title, Text } = Typography;
 // Mon–Sat first, then Sunday last. Sunday MUST be included: the seeded schedule puts
 // slots 16–20 there, and a Mon–Sat-only view would silently hide them.
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const DAY_NAMES_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 export default function SchedulerPage() {
   const [slots, setSlots] = useState([]);
@@ -27,7 +28,10 @@ export default function SchedulerPage() {
   const [planDate, setPlanDate] = useState(dayjs());
   const [plan, setPlan] = useState(null);
   const [grid, setGrid] = useState({ days: [], unscheduled: [] });
-  const [week, setWeek] = useState({ days: [], weekly_totals: [] });
+  const [week, setWeek] = useState({ days: [], weekly_totals: [], forums: [] });
+  // Slot being edited in the Posting Sheet: { slot, forum_id, account_id } or null.
+  const [slotEdit, setSlotEdit] = useState(null);
+  const [slotSaving, setSlotSaving] = useState(false);
   const [violations, setViolations] = useState([]);
   // Per-violation pending choice: { [slot_key]: { forum_id, account_id } }
   const [fixChoice, setFixChoice] = useState({});
@@ -52,7 +56,7 @@ export default function SchedulerPage() {
         advertisingApi.scheduleViolations(),
       ]);
       if (gridRes.data.code === 200) setGrid(gridRes.data.data || { days: [], unscheduled: [] });
-      if (weekRes.data.code === 200) setWeek(weekRes.data.data || { days: [], weekly_totals: [] });
+      if (weekRes.data.code === 200) setWeek(weekRes.data.data || { days: [], weekly_totals: [], forums: [] });
       if (violRes.data.code === 200) setViolations(violRes.data.data?.violations || []);
       if (res.data.code === 200) {
         const d = res.data.data;
@@ -133,6 +137,41 @@ export default function SchedulerPage() {
       message.error(e?.response?.data?.message || e.message || 'Failed to apply the change');
     } finally {
       setApplyingKey(null);
+    }
+  };
+
+  // Change which group and account a weekly slot posts with. Only accounts that
+  // are members of the chosen group are offered; the server checks that too.
+  const openSlotEdit = (slot) => {
+    const forums = week.forums || [];
+    const forumLive = forums.some(f => f.forum_id === slot.forum?.forum_id);
+    const forum = forums.find(f => f.forum_id === slot.forum?.forum_id);
+    const accountOk = forum && forum.accounts.some(a => a.id === slot.account?.id);
+    setSlotEdit({
+      slot,
+      forum_id: forumLive ? slot.forum.forum_id : undefined,
+      account_id: accountOk ? slot.account.id : undefined,
+    });
+  };
+
+  const saveSlotEdit = async () => {
+    if (!slotEdit?.forum_id || !slotEdit?.account_id) {
+      message.warning('Pick a group and an account');
+      return;
+    }
+    setSlotSaving(true);
+    try {
+      await advertisingApi.updateScheduleRow(slotEdit.slot.id, {
+        forum_id: slotEdit.forum_id,
+        account_id: slotEdit.account_id,
+      });
+      message.success(`${slotEdit.slot.slot_label} updated`);
+      setSlotEdit(null);
+      await Promise.all([load(), loadPlan(planDate)]);
+    } catch (e) {
+      message.error(e?.response?.data?.message || 'Failed to update the slot');
+    } finally {
+      setSlotSaving(false);
     }
   };
 
@@ -382,9 +421,19 @@ export default function SchedulerPage() {
                             <Space size={4} wrap>
                               <Tag color={s.slot_kind === 'urgent' ? 'gold' : 'default'} style={{ marginInlineEnd: 0 }}>{s.slot_label}</Tag>
                               {Number(s.forum?.is_owned) === 1 && <Tag color="green" style={{ marginInlineEnd: 0 }}>owned</Tag>}
+                              <Tooltip title="Change the group or account for this slot">
+                                <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openSlotEdit(s)} />
+                              </Tooltip>
                             </Space>
-                            <div><Text style={{ fontSize: 12 }}>{s.forum?.forum_name}</Text></div>
-                            <Text type="secondary" style={{ fontSize: 11 }}>{s.account?.email}</Text>
+                            {s.problem && (
+                              <div>
+                                <Tooltip title="The daily plan skips this slot until it's fixed">
+                                  <Tag color="red" style={{ marginInlineEnd: 0 }}>Not posting: {s.problem}</Tag>
+                                </Tooltip>
+                              </div>
+                            )}
+                            <div><Text style={{ fontSize: 12 }} delete={s.problem === 'Group removed'}>{s.forum?.forum_name}</Text></div>
+                            <Text type="secondary" style={{ fontSize: 11 }} delete={s.problem === 'Account removed'}>{s.account?.email}</Text>
                           </div>
                         ))}
                       </Space>
@@ -541,6 +590,63 @@ export default function SchedulerPage() {
           )}
         </Card>
       </div>
+
+      <Modal
+        title={slotEdit ? `Edit ${slotEdit.slot.slot_label} · ${DAY_NAMES_FULL[slotEdit.slot.weekday]}` : ''}
+        open={!!slotEdit}
+        onCancel={() => setSlotEdit(null)}
+        onOk={saveSlotEdit}
+        confirmLoading={slotSaving}
+        okText="Save"
+        okButtonProps={{ disabled: !slotEdit?.forum_id || !slotEdit?.account_id }}
+      >
+        {slotEdit && (() => {
+          const forum = (week.forums || []).find(f => f.forum_id === slotEdit.forum_id);
+          return (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {slotEdit.slot.problem && <Alert type="warning" showIcon message={`Not posting: ${slotEdit.slot.problem}`} />}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Now: {slotEdit.slot.forum?.forum_name || '—'} · {slotEdit.slot.account?.email || '—'}
+              </Text>
+              <div>
+                <div style={{ fontSize: 12, marginBottom: 4 }}>Group</div>
+                <Select
+                  style={{ width: '100%' }}
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Pick a group"
+                  value={slotEdit.forum_id}
+                  onChange={(forum_id) => {
+                    const next = (week.forums || []).find(f => f.forum_id === forum_id);
+                    // Keep the account if it is also in the new group.
+                    const keep = next?.accounts.some(a => a.id === slotEdit.account_id);
+                    setSlotEdit(prev => ({ ...prev, forum_id, account_id: keep ? prev.account_id : undefined }));
+                  }}
+                  options={(week.forums || []).map(f => ({
+                    value: f.forum_id,
+                    label: `${f.forum_name}${f.accounts.length ? '' : ' (no member accounts)'}`,
+                    disabled: f.accounts.length === 0,
+                  }))}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, marginBottom: 4 }}>Account</div>
+                <Select
+                  style={{ width: '100%' }}
+                  placeholder={forum ? 'Pick an account' : 'Pick a group first'}
+                  disabled={!forum}
+                  value={slotEdit.account_id}
+                  onChange={(account_id) => setSlotEdit(prev => ({ ...prev, account_id }))}
+                  options={(forum?.accounts || []).map(a => ({ value: a.id, label: a.email }))}
+                />
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  Only accounts ticked as members of this group (Forums page) are listed.
+                </Text>
+              </div>
+            </Space>
+          );
+        })()}
+      </Modal>
 
       <Modal
         title="Add Urgent Entry"

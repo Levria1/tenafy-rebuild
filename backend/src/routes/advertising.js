@@ -4,7 +4,7 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold } = require('../services/advertisingTemplate');
 const { DAY_NAMES, weekdayOf, postsOnDay, parseDays, validateDays, dayLabel } = require('../utils/advertisingSchedule');
-const { slotLabel, findRepeatViolations, suggestReplacements, forumWeeklyLoad,
+const { slotLabel, slotProblem, findRepeatViolations, suggestReplacements, forumWeeklyLoad,
   gapIsAdvertisable, priorityOf, resolveAvailabilityWindows, sortByPriority, assignBundlesToSlots,
   manualVacancyToRow, overrideAppliesTo, leaseChangedForOverride, pickVacancyRow,
   resolvePageExpiringWindow, PAGE_WINDOW_MAX_DAYS } = require('../utils/advertisingPlan');
@@ -2739,37 +2739,78 @@ async function validateForumAccountMember(pool, orgId, forumId, accountId) {
   return !!row;
 }
 
+// Every active slot for the Posting Sheet, INCLUDING ones the daily plan skips
+// (group or account removed, or the account not in the group). loadScheduleRows
+// drops those, which hid them from staff: two slots in a deleted group sat
+// unnoticed, and deleting an account made its slots vanish instead of showing
+// as needing a new account.
+async function loadSheetRows(pool, orgId) {
+  const [rows] = await pool.execute(
+    `SELECT s.id, s.weekday, s.slot_kind, s.slot_no, s.position,
+            s.forum_id, f.name AS forum_name, f.url, f.is_owned,
+            (f.id IS NOT NULL AND f.deleted_at IS NULL AND f.status = 1) AS forum_live,
+            s.account_id, a.name AS account_name, a.email AS account_email,
+            (a.id IS NOT NULL AND a.deleted_at IS NULL AND a.status = 1) AS account_live,
+            EXISTS (SELECT 1 FROM advertising_forum_account fa
+                     WHERE fa.org_id = s.org_id AND fa.forum_id = s.forum_id
+                       AND fa.account_id = s.account_id) AS is_member
+       FROM advertising_schedule s
+       LEFT JOIN advertising_forum f ON f.id = s.forum_id AND f.org_id = s.org_id
+       LEFT JOIN advertising_account a ON a.id = s.account_id AND a.org_id = s.org_id
+      WHERE s.org_id = ? AND s.deleted_at IS NULL AND s.status = 1
+      ORDER BY s.weekday, s.position`,
+    [orgId]
+  );
+  return rows.map(r => {
+    const flags = {
+      forum_live: Number(r.forum_live) === 1,
+      account_live: Number(r.account_live) === 1,
+      is_member: Number(r.is_member) === 1,
+    };
+    return {
+      id: String(r.id),
+      weekday: Number(r.weekday),
+      slot_kind: r.slot_kind,
+      slot_no: Number(r.slot_no),
+      slot_label: slotLabel(r),
+      position: Number(r.position),
+      problem: slotProblem(flags),
+      forum: {
+        forum_id: String(r.forum_id),
+        forum_name: r.forum_name,
+        url: r.url,
+        is_owned: Number(r.is_owned) === 1 ? 1 : 0,
+      },
+      account: {
+        id: String(r.account_id),
+        name: r.account_name,
+        email: r.account_email,
+      },
+    };
+  });
+}
+
 router.get('/schedule', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
-    const [rows, forums] = await Promise.all([
+    const [rows, sheet, forums] = await Promise.all([
       loadScheduleRows(req.pool, orgId),
+      loadSheetRows(req.pool, orgId),
       loadForumsWithAccounts(req.pool, orgId),
     ]);
     const days = DAY_NAMES.map((name, weekday) => ({
       weekday,
       name,
-      slots: rows.filter(r => r.weekday === weekday).map(r => ({
-        id: r.id,
-        weekday: r.weekday,
-        slot_kind: r.slot_kind,
-        slot_no: r.slot_no,
-        slot_label: r.slot_label,
-        position: r.position,
-        forum: {
-          forum_id: r.forum_id,
-          forum_name: r.forum_name,
-          url: r.url,
-          is_owned: r.is_owned,
-        },
-        account: {
-          id: r.account_id,
-          name: r.account_name,
-          email: r.account_email,
-        },
-      })),
+      slots: sheet.filter(r => r.weekday === weekday),
     }));
-    res.json({ code: 200, data: { days, weekly_totals: forumWeeklyLoad(rows, forums) } });
+    res.json({ code: 200, data: {
+      days,
+      weekly_totals: forumWeeklyLoad(rows, forums),
+      // Live groups and their member accounts, for the slot editor's pickers.
+      forums: forums.map(f => ({
+        forum_id: f.forum_id, forum_name: f.forum_name, is_owned: f.is_owned, accounts: f.accounts,
+      })),
+    } });
   } catch (err) {
     console.error('[advertising/schedule] error:', err);
     res.status(500).json({ code: 500, message: 'Failed to load schedule' });
