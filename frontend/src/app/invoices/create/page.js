@@ -2,9 +2,9 @@
 
 import { Suspense, useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Form, Input, Button, Select, DatePicker, InputNumber, message, Row, Col, Spin, Upload, Divider } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Select, DatePicker, InputNumber, message, Row, Col, Spin, Divider } from 'antd';
 import dayjs from 'dayjs';
+import { FileUploadBox } from '../../../components/AttachedFiles';
 import MainLayout from '../../../components/Layout';
 import { invoice, settings, contact, bookingPlatform, salesAgent } from '../../../lib/api';
 
@@ -29,6 +29,7 @@ function InvoiceCreatePage() {
   const [platforms, setPlatforms] = useState([]);
   const [agents, setAgents] = useState([]);
   const [currencySymbol, setCurrencySymbol] = useState('HK$');
+  const [uploads, setUploads] = useState([]);
 
   // URL params for pre-fill
   const paramTenantId = searchParams.get('tenantId');
@@ -211,6 +212,7 @@ function InvoiceCreatePage() {
         tag_id: values.tag_id || null,
         booking_platform_id: values.booking_platform_id || null,
         sales_agent_id: values.sales_agent_id || null,
+        file_ids: uploads.map(u => u.id),
       };
       const response = await invoice.create(payload);
       if (response.data.code === 200) {
@@ -451,18 +453,7 @@ function InvoiceCreatePage() {
             </Col>
             <Col xs={24} md={12}>
               <FLabel>FILES</FLabel>
-              <Upload.Dragger
-                name="file"
-                multiple
-                beforeUpload={() => false}
-                style={{ padding: '20px 0' }}
-              >
-                <p className="ant-upload-drag-icon">
-                  <UploadOutlined style={{ fontSize: 32, color: '#1890ff' }} />
-                </p>
-                <p className="ant-upload-text">Upload</p>
-                <p className="ant-upload-hint">Store documents and templates</p>
-              </Upload.Dragger>
+              <FileUploadBox value={uploads} onChange={setUploads} />
             </Col>
           </Row>
 

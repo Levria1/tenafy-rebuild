@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Form, Input, Button, Select, DatePicker, InputNumber, message, Row, Col, Spin, Upload, Divider } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Select, DatePicker, InputNumber, message, Row, Col, Spin, Divider } from 'antd';
 import dayjs from 'dayjs';
+import { AttachedFileList, FileUploadBox } from '../../../../components/AttachedFiles';
 import MainLayout from '../../../../components/Layout';
 import { invoice, settings, contact, bookingPlatform, salesAgent } from '../../../../lib/api';
 
@@ -29,6 +29,8 @@ export default function InvoiceEditPage() {
 
   // Original invoice data
   const [invoiceData, setInvoiceData] = useState(null);
+  const [attached, setAttached] = useState([]);
+  const [uploads, setUploads] = useState([]);
 
   useEffect(() => {
     loadAllData();
@@ -68,6 +70,7 @@ export default function InvoiceEditPage() {
       }
 
       setInvoiceData(inv);
+      setAttached(inv.files || []);
 
       // Determine property_id
       const propId = inv.property_id || inv.property_id_resolved || inv.unit_property_id || null;
@@ -185,6 +188,17 @@ export default function InvoiceEditPage() {
     if (Object.keys(updates).length) form.setFieldsValue(updates);
   };
 
+  // Removing an already-attached file takes effect immediately, not on Save.
+  const detachFile = async (fileId) => {
+    try {
+      await invoice.detachFile(invoiceId, fileId);
+      setAttached(prev => prev.filter(f => f.id !== fileId));
+      message.success('File removed');
+    } catch (error) {
+      message.error(error.response?.data?.message || 'Failed to remove file');
+    }
+  };
+
   const onFinish = async (values) => {
     try {
       setLoading(true);
@@ -201,6 +215,7 @@ export default function InvoiceEditPage() {
         note: values.note || null,
         booking_platform_id: values.booking_platform_id || null,
         sales_agent_id: values.sales_agent_id || null,
+        file_ids: uploads.map(u => u.id),
       };
       const res = await invoice.update(invoiceId, payload);
       if (res.data.code === 200) {
@@ -435,18 +450,12 @@ export default function InvoiceEditPage() {
             </Col>
             <Col xs={24} md={12}>
               <FLabel>FILES</FLabel>
-              <Upload.Dragger
-                name="file"
-                multiple
-                beforeUpload={() => false}
-                style={{ padding: '20px 0' }}
-              >
-                <p className="ant-upload-drag-icon">
-                  <UploadOutlined style={{ fontSize: 32, color: '#1890ff' }} />
-                </p>
-                <p className="ant-upload-text">Upload</p>
-                <p className="ant-upload-hint">Store documents and templates</p>
-              </Upload.Dragger>
+              {attached.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <AttachedFileList files={attached} onDetach={detachFile} />
+                </div>
+              )}
+              <FileUploadBox value={uploads} onChange={setUploads} />
             </Col>
           </Row>
 

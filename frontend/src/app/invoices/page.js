@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import dayjs from 'dayjs';
 import Link from 'next/link';
 import MainLayout, { useAuth } from '../../components/Layout';
+import { AttachedFileList } from '../../components/AttachedFiles';
 import { invoice, accountingApi, property as propertyApi, pdf, bookingPlatform as bookingPlatformApi, salesAgent as salesAgentApi } from '../../lib/api';
 import useIsMobile from '../../hooks/useIsMobile';
 import MobileCardList from '../../components/mobile/MobileCardList';
@@ -1070,7 +1071,7 @@ export default function InvoicesPage() {
             {/* Files */}
             <div style={{ margin: '12px 0' }}>
               <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
-              <div>—</div>
+              <AttachedFileList files={selectedInvoice.files} />
             </div>
 
             {/* Payment Activity */}
@@ -1105,7 +1106,7 @@ export default function InvoicesPage() {
                   </div>
                   <div style={{ margin: '8px 0 4px' }}>
                     <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
-                    <div>—</div>
+                    <AttachedFileList files={p.files} />
                   </div>
                   <Button type="link" size="small" icon={<FilePdfOutlined />}
                     style={{ color: '#52c41a', padding: 0 }}

@@ -16,6 +16,7 @@ import {
 import dayjs from 'dayjs';
 import MainLayout, { useAuth } from '../../../../../components/Layout';
 import TenantDocuments from '../../../../../components/TenantDocuments';
+import { AttachedFileList } from '../../../../../components/AttachedFiles';
 import useIsMobile from '../../../../../hooks/useIsMobile';
 import MobileCardList from '../../../../../components/mobile/MobileCardList';
 import { tenant, invoice, utility, settings, pdf } from '../../../../../lib/api';
@@ -1389,7 +1390,7 @@ function TenantDetailPage() {
 
             <div style={{ margin: '12px 0' }}>
               <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
-              <div>—</div>
+              <AttachedFileList files={selectedInvoice.files} />
             </div>
 
             <Divider style={{ margin: '16px 0 12px' }} />
@@ -1411,7 +1412,7 @@ function TenantDetailPage() {
                   </div>
                   <div style={{ margin: '8px 0 4px' }}>
                     <div style={{ fontWeight: 600, color: '#555', fontSize: 13 }}>Files:</div>
-                    <div>—</div>
+                    <AttachedFileList files={p.files} />
                   </div>
                   <Button type="link" size="small" icon={<FilePdfOutlined />}
                     style={{ color: '#52c41a', padding: 0 }}

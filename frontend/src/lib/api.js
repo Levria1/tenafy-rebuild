@@ -245,6 +245,7 @@ export const invoice = {
   update: (id, data) => api.put(`/api/invoice/${id}`, data),
   delete: (id) => api.delete(`/api/invoice/${id}`),
   emailToTenant: (id) => api.post(`/api/invoice/${id}/email-to-tenant`),
+  detachFile: (id, fileId) => api.delete(`/api/invoice/${id}/file/${fileId}`),
   // Uncollectable: keeps the invoice visible but out of outstanding-due totals.
   writeOff: (id, reason) => api.post(`/api/invoice/${id}/write-off`, { reason }),
   writeOffBulk: (ids, reason) => api.post('/api/invoice/write-off-bulk', { ids, reason }),
