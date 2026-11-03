@@ -169,8 +169,10 @@ export default function ReconcilePage() {
         const payload = r.data.data;
         const list = Array.isArray(payload) ? payload : (payload?.candidates || []);
         setInvCandidates(prev => ({ ...prev, [row.id]: list }));
+        return list;
       }
     } catch { /* non-fatal — manual search still works */ }
+    return null;
   }, []);
 
   // ── Category split helpers ────────────────────────────────────────────────
@@ -365,9 +367,23 @@ export default function ReconcilePage() {
             onChange={v => updateOverride(row.id, 'category_id', v)}
             options={catOptions} filterOption={catFilter} />
           <div>
-            <Button {...linkBtn} onClick={() => {
-              setLines(row.id, [{ amount: amountAbs, category_id: categoryId || null, invoice_id: null }]);
-              if (!invCandidates[row.id]) loadInvCandidates(row);
+            <Button {...linkBtn} onClick={async () => {
+              // A "Pay invoice" row starts its split on the invoice Tenafy matched,
+              // so the user only adds the other invoice(s) the deposit also covers.
+              const matched = row.match_kind === 'invoice_payment' && row.proposed_invoice_id
+                ? String(row.proposed_invoice_id) : null;
+              setLines(row.id, [{ amount: amountAbs, category_id: categoryId || null, invoice_id: matched }]);
+              const list = invCandidates[row.id] || await loadInvCandidates(row);
+              const cand = matched && (list || []).find(c => String(c.invoice_id) === matched);
+              if (cand && Number(cand.outstanding) > 0 && Number(cand.outstanding) < amountAbs - 0.01) {
+                // Deposit is more than the matched invoice owes: cap line 1 at its
+                // balance and leave the remainder on a new line to allocate.
+                const first = Number(Number(cand.outstanding).toFixed(2));
+                setLines(row.id, [
+                  { amount: first, category_id: categoryId || null, invoice_id: matched },
+                  { amount: Number((amountAbs - first).toFixed(2)), category_id: null, invoice_id: null },
+                ]);
+              }
             }}>
               Split invoices / categories…
             </Button>
@@ -398,10 +414,15 @@ export default function ReconcilePage() {
                 const over = cand && Number(ln.amount) > Number(cand.outstanding) + 0.01;
                 return (dupe || over) ? 'error' : undefined;
               })()}
-              options={(invCandidates[row.id] || []).map(c => ({
-                value: c.invoice_id,
-                label: `${c.invoice_code} · ${c.tenant_name} · out HK$${Number(c.outstanding).toFixed(2)}`,
-              }))}
+              options={[
+                ...(invCandidates[row.id] || []).map(c => ({
+                  value: c.invoice_id,
+                  label: `${c.invoice_code} · ${c.tenant_name} · out HK$${Number(c.outstanding).toFixed(2)}`,
+                })),
+                ...(row.proposed_invoice_id && row.proposed_invoice_code
+                  && !(invCandidates[row.id] || []).some(c => String(c.invoice_id) === String(row.proposed_invoice_id))
+                  ? [{ value: String(row.proposed_invoice_id), label: row.proposed_invoice_code }] : []),
+              ]}
               onChange={(v) => {
                 const cand = (invCandidates[row.id] || []).find(c => c.invoice_id === v);
                 const next = lines.map((x, j) => j === i
@@ -495,18 +516,8 @@ export default function ReconcilePage() {
             {row.proposed_tenant_name ? <> · {row.proposed_tenant_name}</> : null}
           </div>
           <div style={{ marginTop: 4 }}>
-            <Select
-              size="small"
-              showSearch
-              placeholder="Category"
-              style={{ width: 200 }}
-              value={categoryId || undefined}
-              onChange={v => updateOverride(row.id, 'category_id', v)}
-              options={categories.map(c => ({ label: c.name, value: String(c.id) }))}
-              filterOption={(input, option) =>
-                (option?.label || '').toLowerCase().includes(input.toLowerCase())
-              }
-            />
+            {/* Category, or a split across several invoices when one deposit pays more than one. */}
+            {renderCategoryOrSplit(row)}
           </div>
         </div>
       );
