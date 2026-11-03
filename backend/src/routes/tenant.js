@@ -11,6 +11,7 @@ const llmClient = require('../services/llmClient');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { sanitiseNamePart, nameProblem } = require('../utils/personName');
 const { parseMrz } = require('../utils/mrz');
+const { parseHkidName } = require('../utils/hkidName');
 const { classifyIdNumber } = require('../services/stampingPayload');
 const { decodeLeasingBitsAll } = require('../utils/mysqlBit');
 const { prepareInvite } = require('../utils/tenantPortalInvite');
@@ -343,6 +344,8 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
       '    - For passport: keep letters uppercase, keep any spaces',
       '    - For other IDs: preserve as printed',
       '  sex          (string: "M" or "F" — infer from gender field, name pattern, or honorific)',
+      'An HKID prints the name as "SURNAME, Given Names". The given names are the romanised Chinese given name (one word per',
+      '  Chinese character, kept together) and any English name; whichever comes first after the comma is first_name, the other middle_name. e.g. "CHAN, Tai Man David" is last_name Chan, first_name "Tai Man", middle_name David.',
       'Do NOT include any other keys. Do NOT include explanatory prose. Output a single JSON object only.',
     ].join('\n');
 
@@ -392,6 +395,16 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
       if (!fields.last_name && mrz.last_name) fields.last_name = titled(mrz.last_name);
       if (!fields.first_name && mrz.first_name) fields.first_name = titled(mrz.first_name);
       if (!fields.middle_name && mrz.middle_name) fields.middle_name = titled(mrz.middle_name);
+    }
+    // An HKID's printed name is read by rule, not left to the LLM: it put the
+    // English name first ("MIU, Hung Nelly" became first name Nelly). Only
+    // overrides when the card has a "SURNAME, Given" line.
+    const hkidName = parseHkidName(combined);
+    if (hkidName) {
+      fields.last_name = hkidName.last_name;
+      fields.first_name = hkidName.first_name;
+      if (hkidName.middle_name) fields.middle_name = hkidName.middle_name;
+      else delete fields.middle_name;
     }
     // A parsed passport MRZ is proof; otherwise the number's format decides (same
     // rule as on save and in the stamping payload), and junk leaves it unset.
