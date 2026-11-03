@@ -9,6 +9,7 @@ import {
   HomeOutlined,
 } from '@ant-design/icons';
 import { tenantPortal } from '../../../lib/tenantApi';
+import { formatDateOnly } from '../../../lib/dateOnly';
 
 const { Title } = Typography;
 
@@ -40,14 +41,7 @@ export default function TenantDashboardPage() {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
   };
 
-  const formatDate = (dateStr) => {
-    if (!dateStr) return 'N/A';
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  };
+  const formatDate = (dateStr) => formatDateOnly(dateStr, { month: 'long' });
 
   return (
     <div>

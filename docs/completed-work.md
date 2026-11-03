@@ -4,6 +4,30 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Invoice file attachments; tenant portal dates (2026-11-03)
+
+- **Invoice files never worked.** The Create/Edit invoice upload box had `beforeUpload={() => false}`,
+  so the file was dropped silently, and both invoice drawers printed a hard-coded "—" under Files (for
+  the invoice and for each payment). Now:
+  - `POST /api/invoice` and `PUT /api/invoice/:id` accept `file_ids` and link them through `object_file`
+    with the payment-receipt helpers (`utils/transactionFiles.js`): org-owned files only, marked private.
+    An edit only adds; `DELETE /api/invoice/:id/file/:fileId` removes one link (soft delete).
+  - `GET /api/invoice/:id` returns `files`, and `files` on each payment.
+  - Shared `components/AttachedFiles.jsx` (`AttachedFileList`, `FileUploadBox`) is used on Create, Edit
+    (existing files with Remove) and both drawers (Invoices page, tenant Accounting tab).
+  - 105 legacy invoices in org 8300127259922432 already had `object_file` links; they now show.
+- **Tenant portal showed lease dates a day early** in timezones behind UTC (LEA3402: 1–31 Jan 2027
+  shown as Dec 31 – Jan 30). `new Date('2027-01-01')` is UTC midnight and `toLocaleDateString` shifted
+  it. `lib/dateOnly.js` `formatDateOnly` formats the stored DATE as-is; used on portal Leases, Invoices
+  and Dashboard. Portal lease Rent showed "N/A" (page read `rent_amount`, server sent `price`): the
+  server now sends `l.amount AS rent_amount`, the figure invoices bill. Portal amounts still format as
+  "$" (en-US USD), not "HK$" — unchanged.
+- Tests: `invoiceFiles.test.js` (6), `portalDateOnly.test.js` (5, child processes with TZ set).
+  Full backend suite 1,874 pass; the same 4 date-fixture failures, also failing on untouched main.
+  `next build` passes.
+
+---
+
 ## Session: Signer names the PDF fonts can't print (2026-10-30)
 
 - Live error log: `WinAnsi cannot encode "ị"` twice, from `signatureStamper.js` drawing a Vietnamese

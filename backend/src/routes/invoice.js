@@ -13,6 +13,15 @@ const { sendMail, sendMailWithAccount } = require('../config/mailer');
 const { orgToday, orgTodaySql } = require('../utils/orgTime');
 const { isChaseable } = require('../utils/overdueChase');
 const { loadChaseSettings } = require('../utils/chaseSettings');
+// Invoice attachments use the same object_file link as payment receipts: the
+// helpers take any Snowflake object id, and they verify org ownership and mark
+// the file private. Before this, the invoice upload box discarded the file and
+// the drawer printed a hard-coded "—".
+const {
+  linkTransactionFiles: linkObjectFiles,
+  unlinkTransactionFiles: unlinkObjectFiles,
+  listTransactionFiles: listObjectFiles,
+} = require('../utils/transactionFiles');
 
 // Internal helper used by both /publish and /publish-preview to figure out the
 // authoritative amount for a given lease + due_date. Returns:
@@ -253,7 +262,7 @@ router.post('/invoices', authenticate, async (req, res) => {
 // POST /api/invoice - Create invoice
 router.post('/', authenticate, requirePermission('LANDLORD/INVOICE_CREATE'), async (req, res) => {
   try {
-    const { tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_date, status, category, currency_id, type, tag_id, booking_platform_id, sales_agent_id } = req.body;
+    const { tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_date, status, category, currency_id, type, tag_id, booking_platform_id, sales_agent_id, file_ids } = req.body;
     const orgId = req.user.orgId;
 
     // Generate Snowflake ID
@@ -303,6 +312,7 @@ router.post('/', authenticate, requirePermission('LANDLORD/INVOICE_CREATE'), asy
       'INSERT INTO invoice (id, org_id, tenant_id, unit_id, leasing_id, property_id, invoice_code, amount, note, due_on, status, category, currency_id, type, tag_id, booking_platform_id, sales_agent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())',
       [invoiceId, orgId, tenant_id, unit_id || null, leasing_id || null, property_id || null, code, amount, note || null, due_date, status || 0, catId, currId, type || 0, tag_id || null, platformId, agentId]
     );
+    await linkObjectFiles(req.pool, orgId, invoiceId, file_ids);
     await logActivity(req, 'CREATE', 'invoice', invoiceId, 'Created invoice ' + (code || invoiceId));
     res.json({ code: 200, message: 'Invoice created', data: { id: invoiceId, invoice_code: code } });
   } catch (error) {
@@ -976,7 +986,17 @@ router.get('/:id', authenticate, async (req, res) => {
     const invStatus = Number(inv.status);
     const outstanding = invStatus === 1 ? 0 : Math.max(0, (parseFloat(inv.amount) || 0) - amountPaid);
 
-    res.json({ code: 200, data: { ...inv, payments, amount_paid: amountPaid, outstanding } });
+    // Files on the invoice and on each payment against it. A failed file lookup
+    // must not take the invoice detail down with it, so it degrades to none.
+    let files = [];
+    try {
+      files = await listObjectFiles(req.pool, orgId, inv.id);
+      for (const p of payments) p.files = await listObjectFiles(req.pool, orgId, p.id);
+    } catch (fileErr) {
+      console.error('Invoice files lookup failed:', fileErr);
+    }
+
+    res.json({ code: 200, data: { ...inv, payments, amount_paid: amountPaid, outstanding, files } });
   } catch (error) {
     console.error('Get invoice error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get invoice' });
@@ -987,7 +1007,7 @@ router.get('/:id', authenticate, async (req, res) => {
 router.put('/:id', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount, note, due_date, status, type, category, tenant_id, property_id, unit_id, leasing_id, tag_id, booking_platform_id, sales_agent_id } = req.body;
+    const { amount, note, due_date, status, type, category, tenant_id, property_id, unit_id, leasing_id, tag_id, booking_platform_id, sales_agent_id, file_ids } = req.body;
     const orgId = req.user.orgId;
 
     // Verify invoice exists
@@ -1060,11 +1080,42 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), asy
       }
     }
 
+    // Adds only: existing attachments are removed one at a time through
+    // DELETE /:id/file/:fileId, so a save without file_ids detaches nothing.
+    await linkObjectFiles(req.pool, orgId, id, file_ids);
+
     await logActivity(req, 'UPDATE', 'invoice', id, 'Updated invoice ' + id);
     res.json({ code: 200, message: 'Invoice updated' });
   } catch (error) {
     console.error('Update invoice error:', error);
     res.status(500).json({ code: 500, message: 'Failed to update invoice' });
+  }
+});
+
+// DELETE /api/invoice/:id/file/:fileId - detach one file from an invoice.
+// Soft delete on the link only; the file row and bytes stay, so a file removed
+// by mistake is recoverable and nothing else pointing at it is affected.
+router.delete('/:id/file/:fileId', authenticate, requirePermission('LANDLORD/INVOICE_EDIT'), async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    const { id, fileId } = req.params;
+    const [[owned]] = await req.pool.execute(
+      'SELECT id FROM invoice WHERE id = ? AND org_id = ? AND deleted_at IS NULL', [id, orgId]
+    );
+    if (!owned) return res.status(404).json({ code: 404, message: 'Invoice not found' });
+
+    // The file must be this org's too, so a guessed id cannot touch another org's link.
+    const [[file]] = await req.pool.execute('SELECT id FROM file WHERE id = ? AND org_id = ?', [fileId, orgId]);
+    if (!file) return res.status(404).json({ code: 404, message: 'File not found' });
+
+    const removed = await unlinkObjectFiles(req.pool, id, fileId);
+    if (!removed) return res.status(404).json({ code: 404, message: 'That file is not attached to this invoice' });
+
+    await logActivity(req, 'DELETE', 'invoice_file', id, `Detached file ${fileId} from invoice`);
+    res.json({ code: 200, message: 'File removed' });
+  } catch (error) {
+    console.error('Detach invoice file error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to remove file' });
   }
 });
 
