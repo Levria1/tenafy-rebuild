@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Table, Tag, Typography, Card, message } from 'antd';
 import { tenantPortal } from '../../../lib/tenantApi';
+import { formatDateOnly } from '../../../lib/dateOnly';
 
 const { Title } = Typography;
 
@@ -36,14 +37,7 @@ export default function TenantLeasesPage() {
     }
   };
 
-  const formatDate = (dateStr) => {
-    if (!dateStr) return 'N/A';
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  };
+  const formatDate = (dateStr) => formatDateOnly(dateStr);
 
   const formatCurrency = (amount) => {
     if (amount == null) return 'N/A';

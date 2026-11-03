@@ -378,11 +378,14 @@ router.get('/dashboard', authenticateTenant, async (req, res) => {
   }
 });
 
+// rent_amount is l.amount, the figure invoices bill (the scheduler reads it);
+// l.price can be stale, e.g. 13,000 on a lease whose rent was cut to 11,000.
 router.get('/leases', authenticateTenant, async (req, res) => {
   try {
     const { orgId, tenantIds } = req.tenantPortal;
     const [leases] = await req.pool.execute(
       `SELECT DISTINCT l.id, l.lease_no, l.start_date, l.end_date, l.price, l.status,
+              l.amount AS rent_amount,
               p.display_name AS property_name, u.name AS unit_name
          FROM leasing l
          JOIN unit u ON l.unit_id = u.id

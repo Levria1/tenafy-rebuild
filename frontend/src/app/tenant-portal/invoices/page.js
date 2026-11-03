@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Table, Tag, Typography, Card, Button, Space, Tooltip, Spin, message } from 'antd';
 import { FilePdfOutlined, DownloadOutlined } from '@ant-design/icons';
 import { tenantPortal } from '../../../lib/tenantApi';
+import { formatDateOnly } from '../../../lib/dateOnly';
 
 const { Title, Text } = Typography;
 
@@ -101,12 +102,7 @@ export default function TenantInvoicesPage() {
     }
   };
 
-  const formatDate = (dateStr) => {
-    if (!dateStr) return '-';
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      year: 'numeric', month: 'short', day: 'numeric',
-    });
-  };
+  const formatDate = (dateStr) => formatDateOnly(dateStr, { fallback: '-' });
 
   const formatCurrency = (amount) => {
     if (amount == null) return '-';
