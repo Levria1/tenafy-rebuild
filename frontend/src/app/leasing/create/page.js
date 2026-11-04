@@ -12,7 +12,7 @@ import {
 import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
 import SelectAllCheckbox from '../../../components/SelectAllCheckbox';
-import WhatsAppNotificationsCard, { whatsappTogglePayload } from '../../../components/WhatsAppNotificationsCard';
+import WhatsAppNotificationsCard, { whatsappTogglePayload, WHATSAPP_CREATE_DEFAULTS } from '../../../components/WhatsAppNotificationsCard';
 import TenantEmailPrompt from '../../../components/TenantEmailPrompt';
 import { leasing, property, tenant, file as fileApi, settings, bookingPlatform, salesAgent, utility } from '../../../lib/api';
 
@@ -1022,6 +1022,7 @@ export default function LeaseCreatePage() {
             type: 0,
             landlord_expired_days: 30,
             tenant_renewal_days: 30,
+            ...WHATSAPP_CREATE_DEFAULTS,
           }}
         >
           {stepContent[currentStep]()}

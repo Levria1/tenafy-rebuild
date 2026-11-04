@@ -117,3 +117,13 @@ test('Create Lease and Edit Lease both show the same WhatsApp block and send its
   }
   assert.match(read('../../frontend/src/app/leasing/[id]/edit/page.js'), /\.\.\.whatsappTogglePayload\(d\)/, 'edit loads the saved ticks');
 });
+
+test('Create Lease ticks WhatsApp posted, overdue, check-in, check-out and renewal by default', () => {
+  const card = read('../../frontend/src/components/WhatsAppNotificationsCard.jsx');
+  const block = card.slice(card.indexOf('WHATSAPP_CREATE_DEFAULTS = {'), card.indexOf('};', card.indexOf('WHATSAPP_CREATE_DEFAULTS = {')));
+  for (const n of ['wa_tenant_posted', 'wa_tenant_overdue', 'wa_tenant_checkin', 'wa_tenant_checkout', 'wa_tenant_renewal']) {
+    assert.match(block, new RegExp(`${n}: true`));
+  }
+  assert.doesNotMatch(block, /wa_tenant_deposit_posted/);
+  assert.match(read('../../frontend/src/app/leasing/create/page.js'), /initialValues=\{\{[\s\S]*?\.\.\.WHATSAPP_CREATE_DEFAULTS,/);
+});

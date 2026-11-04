@@ -23,6 +23,18 @@ export const WHATSAPP_TOGGLES = [
 
 export const WHATSAPP_TOGGLE_NAMES = WHATSAPP_TOGGLES.map(t => t.name);
 
+/**
+ * Ticked by default on Create Lease (owner, 2026-11-04): invoice posted, overdue,
+ * check-in, check-out and renewal. Deposit is left to the operator.
+ */
+export const WHATSAPP_CREATE_DEFAULTS = {
+  wa_tenant_posted: true,
+  wa_tenant_overdue: true,
+  wa_tenant_checkin: true,
+  wa_tenant_checkout: true,
+  wa_tenant_renewal: true,
+};
+
 /** The WhatsApp ticks from form values, as booleans, for the save payload. */
 export function whatsappTogglePayload(values) {
   return Object.fromEntries(WHATSAPP_TOGGLE_NAMES.map(n => [n, !!values[n]]));
