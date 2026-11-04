@@ -156,7 +156,8 @@ export default function VacancyPage() {
   const askByLease = new Map(renewalAsks.map(a => [String(a.lease_id), a]));
   // Sequences whose lease never reaches this page — too far out, or the unit is re-let.
   // Without surfacing them here they would run entirely unobserved.
-  const offPageAsks = renewalAsks.filter(a => !rows.some(r => String(r.lease_id) === String(a.lease_id)));
+  // Settled asks (lease renewed, ended or gone) are history, not "in flight".
+  const offPageAsks = renewalAsks.filter(a => !a.settled && !rows.some(r => String(r.lease_id) === String(a.lease_id)));
   const todayForOpenDates = asOf || dayjs().format('YYYY-MM-DD');
 
   const opensOn = (r) => {

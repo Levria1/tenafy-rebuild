@@ -585,3 +585,27 @@ module.exports.unverifiedHoldUntil = unverifiedHoldUntil;
 module.exports.UNVERIFIED_HOLD_DAYS = UNVERIFIED_HOLD_DAYS;
 module.exports.shouldEscalate = shouldEscalate;
 module.exports.renewalAskChannel = renewalAskChannel;
+
+// ── Settled asks ────────────────────────────────────────────────────────────
+// The Vacancy page's "renewal asks in flight" box listed every ask ever sent, so it
+// kept showing "Extend · paperwork due" on leases already extended and "Replied:
+// leaving" on tenants long gone (owner, 2026-11-04: 31 of 36 needed nothing). An ask
+// is settled, and leaves that box, once:
+//   - the lease now runs SETTLED_EXTENSION_DAYS or more past the end we asked about
+//     (renewed; a few days' change is a move-out date being adjusted, not a renewal), or
+//   - the lease's current end date has passed (the tenant left or the unit is re-let), or
+//   - the lease is gone.
+// Dates are 'YYYY-MM-DD' strings; `today` is the org's calendar date.
+const SETTLED_EXTENSION_DAYS = 14;
+function renewalAskSettled({ askedEnd, currentEnd, leaseExists = true, today }) {
+  if (!leaseExists) return true;
+  if (!currentEnd) return false;
+  if (today && currentEnd < today) return true;
+  if (askedEnd) {
+    const days = (Date.parse(currentEnd) - Date.parse(askedEnd)) / 86400000;
+    if (days >= SETTLED_EXTENSION_DAYS) return true;
+  }
+  return false;
+}
+module.exports.renewalAskSettled = renewalAskSettled;
+module.exports.SETTLED_EXTENSION_DAYS = SETTLED_EXTENSION_DAYS;
