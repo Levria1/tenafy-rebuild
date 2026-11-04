@@ -19,6 +19,7 @@ import {
   FontSizeOutlined, UploadOutlined, PictureOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import { signature } from '../../../lib/api';
+import { renderCursivePng } from '../../../lib/typedSignature';
 
 const { Title, Text } = Typography;
 
@@ -151,18 +152,8 @@ export default function SignPage() {
       try { await document.fonts.ready; } catch {}
     }
     const text = typedName.trim() || ctx?.party?.signer_name || '';
-    const canvas = document.createElement('canvas');
-    canvas.width = 700;
-    canvas.height = 160;
-    const g = canvas.getContext('2d');
-    // Transparent background — strokes will land naturally on the lease PDF.
-    g.clearRect(0, 0, canvas.width, canvas.height);
-    g.fillStyle = '#222';
-    g.font = `72px '${typedFont}', cursive`;
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText(text, canvas.width / 2, canvas.height / 2);
-    return canvas.toDataURL('image/png');
+    // Sized to the name, so a long one is never cut off (see lib/typedSignature).
+    return renderCursivePng(text, { font: typedFont, size: 72, minWidth: 700, height: 160 });
   };
 
   // Initials default to the signer's name initials (first letter of each word).
@@ -180,17 +171,7 @@ export default function SignPage() {
     if (document.fonts && document.fonts.ready) {
       try { await document.fonts.ready; } catch {}
     }
-    const canvas = document.createElement('canvas');
-    canvas.width = 260;
-    canvas.height = 120;
-    const g = canvas.getContext('2d');
-    g.clearRect(0, 0, canvas.width, canvas.height);
-    g.fillStyle = '#222';
-    g.font = `64px '${typedFont}', cursive`;
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText(text, canvas.width / 2, canvas.height / 2);
-    return canvas.toDataURL('image/png');
+    return renderCursivePng(text, { font: typedFont, size: 64, minWidth: 260, height: 120 });
   };
 
   const onSign = async () => {
