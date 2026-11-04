@@ -127,7 +127,10 @@ test('the follow-up logs under its own type, or it can never dedup', () => {
   const fn = svc.slice(svc.indexOf('async function sendCheckinFollowUpToTenant'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   assert.match(body, /logType:\s*CHECKIN_FOLLOWUP_TYPE/, 'the follow-up sender must set logType');
-  assert.match(body, /templateType:\s*'Checkin-Tenant'/, 'the follow-up must still render the Check-In template');
+  // Either form: a direct template send, or the per-channel sendTenantNotice
+  // (WhatsApp ticks, migration 085), which takes the template type positionally.
+  assert.match(body, /templateType:\s*'Checkin-Tenant'|sendTenantNotice\(pool, orgId, leaseId, 'Checkin-Tenant'/,
+    'the follow-up must still render the Check-In template');
 });
 
 test('the follow-up reads the send date on the Hong Kong clock', () => {

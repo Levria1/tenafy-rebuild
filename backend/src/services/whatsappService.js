@@ -270,7 +270,11 @@ async function sendTemplateWhatsApp(pool, orgId, {
   invoiceId,
   toOverride,
   extraVariables,
+  // What to record in whatsapp_log.type; defaults to templateType. The check-in
+  // follow-up renders Checkin-Tenant but must dedup separately (Checkin-Tenant-2).
+  logType = null,
 } = {}) {
+  const logAs = logType || templateType;
   // Per-org config check — if org hasn't configured WhatsApp, silently skip
   const cfg = await getOrgWhatsAppConfig(pool, orgId);
   if (!cfg.url || !cfg.key) return null;
@@ -297,22 +301,22 @@ async function sendTemplateWhatsApp(pool, orgId, {
   const { phone, optedOut } = await getRecipient(pool, orgId, { leaseId, templateType, toOverride });
 
   if (optedOut) {
-    await writeLog(pool, { orgId, phone, message: renderedText, type: templateType, templateId: template.id, leaseId, status: 'skipped_opt_out' });
+    await writeLog(pool, { orgId, phone, message: renderedText, type: logAs, templateId: template.id, leaseId, status: 'skipped_opt_out' });
     return null;
   }
   if (!phone) {
-    await writeLog(pool, { orgId, phone: '', message: renderedText, type: templateType, templateId: template.id, leaseId, status: 'skipped_no_phone' });
+    await writeLog(pool, { orgId, phone: '', message: renderedText, type: logAs, templateId: template.id, leaseId, status: 'skipped_no_phone' });
     return null;
   }
 
   const phoneDigits = normalizePhone(phone);
   if (!phoneDigits) {
-    await writeLog(pool, { orgId, phone, message: renderedText, type: templateType, templateId: template.id, leaseId, status: 'failed', error: 'invalid phone format' });
+    await writeLog(pool, { orgId, phone, message: renderedText, type: logAs, templateId: template.id, leaseId, status: 'failed', error: 'invalid phone format' });
     return null;
   }
 
   if (!(await passesWhitelist(pool, orgId, phoneDigits))) {
-    await writeLog(pool, { orgId, phone: phoneDigits, message: renderedText, type: templateType, templateId: template.id, leaseId, status: 'whitelist_blocked' });
+    await writeLog(pool, { orgId, phone: phoneDigits, message: renderedText, type: logAs, templateId: template.id, leaseId, status: 'whitelist_blocked' });
     return null;
   }
 
@@ -321,7 +325,7 @@ async function sendTemplateWhatsApp(pool, orgId, {
     orgId,
     phone: phoneDigits,
     message: renderedText,
-    type: templateType,
+    type: logAs,
     templateId: template.id,
     leaseId,
     status: result.ok ? 'sent' : 'failed',

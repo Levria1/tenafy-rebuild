@@ -1070,6 +1070,33 @@ const TENANT_EMAIL_FLAGS = [
   'tenant_checkout', 'tenant_renewal', 'tenant_deposit_posted', 'payment_receipt',
 ];
 
+// Per-lease WhatsApp switches (migration 085), each paired with the email flag it
+// mirrors. When a client sends no WhatsApp value at all (an older client, or the
+// API), the WhatsApp tick copies the email tick — the same thing the migration did
+// for existing leases, and what WhatsApp did before it had its own setting.
+const WA_TOGGLE_FIELDS = {
+  wa_tenant_posted: 'tenant_posted',
+  wa_tenant_overdue: 'tenant_overdue',
+  wa_tenant_deposit_posted: 'tenant_deposit_posted',
+  wa_tenant_checkin: 'tenant_checkin',
+  wa_tenant_checkout: 'tenant_checkout',
+  wa_tenant_renewal: 'tenant_renewal',
+};
+
+/** { fields: ['wa_x = ?', ...], params: [0|1, ...] } for the WhatsApp ticks in a body. */
+function whatsappToggleAssignments(body, { fallbackToEmail = false } = {}) {
+  const fields = [];
+  const params = [];
+  for (const [wa, email] of Object.entries(WA_TOGGLE_FIELDS)) {
+    let value = body[wa];
+    if (value === undefined && fallbackToEmail) value = body[email];
+    if (value === undefined) continue;
+    fields.push(`${wa} = ?`);
+    params.push(bitToBool(value) ? 1 : 0);
+  }
+  return { fields, params };
+}
+
 function enabledEmailOptions(body) {
   return TENANT_EMAIL_FLAGS.filter(f => !!body[f]);
 }
@@ -1247,6 +1274,16 @@ router.post('/', authenticate, requirePermission('LANDLORD/LEASING_CREATE'), asy
       ]
     );
 
+    // WhatsApp ticks. A separate statement rather than eight more placeholders in
+    // the INSERT above; a failure here leaves the lease with WhatsApp off, which is
+    // the safe direction.
+    {
+      const wa = whatsappToggleAssignments(req.body, { fallbackToEmail: true });
+      if (wa.fields.length) {
+        await req.pool.execute(`UPDATE leasing SET ${wa.fields.join(', ')} WHERE id = ?`, [...wa.params, leaseId.toString()]);
+      }
+    }
+
     // Mark unit as occupied — for BOTH pending and active leases. Pending
     // reserves the unit so parallel prospects can't be drafted; the unit is
     // freed only when the pending lease is deleted (or it ends).
@@ -1408,12 +1445,15 @@ router.post('/', authenticate, requirePermission('LANDLORD/LEASING_CREATE'), asy
     // picked up by POST /:id/confirm instead — see maybeSendCheckin.
     maybeSendCheckin(req.pool, orgId, leaseId.toString(), {
       startDate: start_date,
-      tenantCheckin: tenant_checkin,
+      tenantCheckin: bitToBool(tenant_checkin)
+        || bitToBool(req.body.wa_tenant_checkin === undefined ? tenant_checkin : req.body.wa_tenant_checkin),
       leaseState,
     });
 
     // Send check-out email if lease ends within the template's date_first window (fire-and-forget)
-    if (tenant_checkout && end_date) {
+    const checkoutOn = bitToBool(tenant_checkout)
+      || bitToBool(req.body.wa_tenant_checkout === undefined ? tenant_checkout : req.body.wa_tenant_checkout);
+    if (checkoutOn && end_date) {
       (async () => {
         try {
           const checkoutTemplate = await loadTemplate(req.pool, orgId, 'Checkout-Tenant');
@@ -1658,6 +1698,12 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), asy
     if (landlord_expired_days !== undefined) { fields.push('landlord_expired_days = ?'); params.push(landlord_expired_days || 0); }
     if (tenant_renewal !== undefined) { fields.push('tenant_renewal = ?'); params.push(bitToBool(tenant_renewal) ? 1 : 0); }
     if (tenant_renewal_days !== undefined) { fields.push('tenant_renewal_days = ?'); params.push(tenant_renewal_days || 0); }
+    // WhatsApp notifications — independent of the email ticks above
+    {
+      const wa = whatsappToggleAssignments(req.body);
+      fields.push(...wa.fields);
+      params.push(...wa.params);
+    }
     // Access & sharing
     if (access_setting !== undefined) { fields.push('access_setting = ?'); params.push(access_setting || null); }
     if (share_lease !== undefined) { fields.push('share_lease = ?'); params.push(share_lease ? 1 : 0); }
@@ -2305,7 +2351,7 @@ router.post('/:id/confirm', authenticate, requirePermission('LANDLORD/LEASING_ED
     // notice, so a lease confirmed three days before move-in sat silent overnight.
     maybeSendCheckin(req.pool, orgId, id, {
       startDate: lease.start_date,
-      tenantCheckin: lease.tenant_checkin,
+      tenantCheckin: bitToBool(lease.tenant_checkin) || bitToBool(lease.wa_tenant_checkin),
       leaseState: 'active',
     });
 

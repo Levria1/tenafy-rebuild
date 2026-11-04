@@ -12,6 +12,7 @@ import {
 import dayjs from 'dayjs';
 import MainLayout from '../../../components/Layout';
 import SelectAllCheckbox from '../../../components/SelectAllCheckbox';
+import WhatsAppNotificationsCard, { whatsappTogglePayload } from '../../../components/WhatsAppNotificationsCard';
 import TenantEmailPrompt from '../../../components/TenantEmailPrompt';
 import { leasing, property, tenant, file as fileApi, settings, bookingPlatform, salesAgent, utility } from '../../../lib/api';
 
@@ -416,6 +417,8 @@ export default function LeaseCreatePage() {
       tenant_renewal_days: values.tenant_renewal_days || 0,
       tenant_deposit_posted: values.tenant_deposit_posted || false,
       payment_receipt: values.payment_receipt || false,
+      // WhatsApp notifications — independent of the email ticks
+      ...whatsappTogglePayload(values),
       access_setting: values.access_setting || null,
       all_past: values.all_past || false,
       mark_past_paid: values.mark_past_paid || false,
@@ -959,6 +962,8 @@ export default function LeaseCreatePage() {
           </Col>
         </Row>
       </Card>
+
+      <WhatsAppNotificationsCard form={form} />
 
       {/* `share_lease` is NOT here. It is the recurring-invoice flag — the only two
           things that read it are the scheduler's lease filter and the confirmation
