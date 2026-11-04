@@ -69,7 +69,7 @@ test('the staff invite answers honestly instead', () => {
   const at = src.indexOf("router.post('/:id/portal-invite'");
   assert.ok(at > -1, 'the endpoint must exist');
   const block = src.slice(at, at + 2600);
-  assert.match(block, /requirePermission\('LANDLORD\/TENANT_EDIT'\)/);
+  assert.match(block, /requirePermission\('LANDLORD\/TENANT_PORTAL_INVITE', 'LANDLORD\/TENANT_EDIT'\)/);
   assert.match(block, /prepared\.detail/, 'the refusal reason is reported');
   assert.match(block, /await sendMail\(prepared\.message\)/, 'awaited, so the result is known');
   assert.match(block, /FROM tenant WHERE id = \? AND org_id = \?/, 'org-scoped lookup');
@@ -173,7 +173,7 @@ test('the button names the address before sending a credential link', () => {
 test('the desktop row and the mobile card share one invite control', () => {
   // Two copies of a confirmation dialog is two places for it to be wrong.
   const src = stripComments(read('../../frontend/src/app/contacts/tenants/page.js'));
-  assert.match(src, /function InviteButton\(\{ data, onInvite, busy, icon = null \}\)/);
+  assert.match(src, /function InviteButton\(\{ data, onInvite, busy, icon = null, allowed = true \}\)/);
   assert.strictEqual((src.match(/<InviteButton/g) || []).length, 2);
 });
 
@@ -217,4 +217,18 @@ test('a tombstone explains why, so nobody puts it back', () => {
   const src = read('../src/routes/contact.js');
   assert.match(src, /has been REMOVED/);
   assert.match(src, /POST \/api\/tenant\/:id\/portal-invite/, 'and points at the replacement');
+});
+
+// ── its own permission (owner, 2026-11-04) ──────────────────────────────────
+
+test('Send Portal Invite is its own permission, offered on the Roles page and to new orgs', () => {
+  assert.match(read('../src/routes/role.js'), /key: 'LANDLORD\/TENANT_PORTAL_INVITE', label: 'Send Portal Invite', group: 'Tenants'/);
+  assert.match(read('../src/services/orgProvisioner.js'), /'LANDLORD\/TENANT_PORTAL_INVITE'/);
+});
+
+test('the Tenants list disables Invite for a role that cannot send it, by the same rule as the server', () => {
+  const page = read('../../frontend/src/app/contacts/tenants/page.js');
+  assert.match(page, /hasPermission\('LANDLORD\/TENANT_PORTAL_INVITE'\) \|\| hasPermission\('LANDLORD\/TENANT_EDIT'\)/);
+  assert.equal((page.match(/allowed=\{canInvite\}/g) || []).length, 2, 'desktop and mobile rows');
+  assert.equal((page.match(/canInvite=\{canInvite\}/g) || []).length, 2);
 });

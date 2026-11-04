@@ -448,7 +448,11 @@ router.post('/parse', authenticate, requirePermission('LANDLORD/TENANT_CREATE', 
 // reveal which addresses belong to tenants, so it returns the same body whatever
 // happened. Here a member of staff clicked a button and needs to be told that the
 // contact has no email on file, or that the message went.
-router.post('/:id/portal-invite', authenticate, requirePermission('LANDLORD/TENANT_EDIT'), async (req, res) => {
+//
+// Gated on its own permission, Send Portal Invite (owner, 2026-11-04: "it's different
+// from editing a tenant"), so a team can invite without being able to edit tenant
+// details. Tenant Edit still allows it, so roles that could invite before still can.
+router.post('/:id/portal-invite', authenticate, requirePermission('LANDLORD/TENANT_PORTAL_INVITE', 'LANDLORD/TENANT_EDIT'), async (req, res) => {
   try {
     if (!tenantPortalEnabled()) {
       return res.status(503).json({ code: 503, message: 'The tenant portal is not configured on this server.' });

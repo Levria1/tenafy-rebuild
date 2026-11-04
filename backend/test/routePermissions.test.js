@@ -82,7 +82,7 @@ test('creating a login for a contact is gated on USER_CREATE', () => {
   const src = read('contact.js');
   // The two /tenant/... routes were removed; see the tombstone in contact.js.
   // The tenant equivalent is POST /api/tenant/:id/portal-invite, gated on
-  // TENANT_EDIT and covered in tenantPortalInvite.test.js.
+  // TENANT_PORTAL_INVITE (or TENANT_EDIT) and covered in tenantPortalInvite.test.js.
   for (const route of ['/property-owner/create/user', '/property-owner/check/user']) {
     assert.ok(src.includes(`router.post('${route}', authenticate, requirePermission('LANDLORD/USER_CREATE')`),
       `${route} must require USER_CREATE`);

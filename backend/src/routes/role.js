@@ -27,6 +27,8 @@ const LANDLORD_PERMISSIONS = [
   { key: 'LANDLORD/TENANT_EDIT', label: 'Tenant Edit', group: 'Tenants' },
   { key: 'LANDLORD/TENANT_DELETE', label: 'Tenant Delete', group: 'Tenants' },
   { key: 'LANDLORD/TENANT_DETAIL', label: 'Tenant Detail', group: 'Tenants' },
+  // Separate from Tenant Edit: sending a portal invitation changes nothing on the tenant.
+  { key: 'LANDLORD/TENANT_PORTAL_INVITE', label: 'Send Portal Invite', group: 'Tenants' },
   // Payees
   { key: 'LANDLORD/PAYEE_LIST', label: 'Payee List', group: 'Payees' },
   { key: 'LANDLORD/PAYEE_CREATE', label: 'Payee Create', group: 'Payees' },
