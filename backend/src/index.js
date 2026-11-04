@@ -10,6 +10,16 @@ const { startScheduler } = require('./services/scheduler');
 
 const app = express();
 
+// Production sits behind nginx on the same box, which appends the visitor's
+// address to X-Forwarded-For. Without this every request looked like it came
+// from 127.0.0.1: the portal login/registration and viewing-booking rate limits
+// counted ALL visitors as one (one tenant's failed logins could lock out every
+// other tenant), and express-rate-limit logged ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
+// on each request. 'loopback' trusts only a proxy on this machine, so a header
+// forged by a client is ignored: req.ip is the address nginx itself saw.
+// Never set this to `true` — that would trust whatever the client sends.
+app.set('trust proxy', 'loopback');
+
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
