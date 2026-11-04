@@ -26,8 +26,15 @@ const { Text, Title } = Typography;
  * to discover afterwards. Disabled outright when there is no address: 2,933 of the
  * 4,785 contact rows have none.
  */
-function InviteButton({ data, onInvite, busy, icon = null }) {
+function InviteButton({ data, onInvite, busy, icon = null, allowed = true }) {
   const email = data?.email;
+  if (!allowed) {
+    return (
+      <Tooltip title="Your role can't send portal invites. A super admin can tick Send Portal Invite under Settings → Roles.">
+        <Button size="small" icon={icon} disabled>Invite</Button>
+      </Tooltip>
+    );
+  }
   if (!email) {
     return (
       <Tooltip title="No email address on file for this contact">
@@ -48,7 +55,7 @@ function InviteButton({ data, onInvite, busy, icon = null }) {
   );
 }
 
-function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile, inviting }) {
+function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile, inviting, canInvite }) {
   const hasLease = data.has_active_lease === 1 || data.has_active_lease === true;
 
   return (
@@ -120,7 +127,7 @@ function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile, inviting }) 
       <Space size={6} style={{ flexShrink: 0 }}>
         <Button size="small" onClick={onEmail}>Email</Button>
         <Button size="small" onClick={onInvoice}>+ Invoice</Button>
-        <InviteButton data={data} onInvite={onInvite} busy={inviting === String(data.id)} />
+        <InviteButton data={data} onInvite={onInvite} busy={inviting === String(data.id)} allowed={canInvite} />
       </Space>
 
       {/* Profile arrow */}
@@ -135,7 +142,7 @@ function TenantRow({ data, onEmail, onInvoice, onInvite, onProfile, inviting }) 
 // ---------------------------------------------------------------------------
 // Mobile tenant card component
 // ---------------------------------------------------------------------------
-function MobileTenantRow({ data, onEmail, onInvoice, onInvite, onProfile, inviting }) {
+function MobileTenantRow({ data, onEmail, onInvoice, onInvite, onProfile, inviting, canInvite }) {
   const [expanded, setExpanded] = useState(false);
   const hasLease = data.has_active_lease === 1 || data.has_active_lease === true;
 
@@ -188,6 +195,7 @@ function MobileTenantRow({ data, onEmail, onInvoice, onInvite, onProfile, inviti
                 data={data}
                 onInvite={onInvite}
                 busy={inviting === String(data.id)}
+                allowed={canInvite}
                 icon={<SendOutlined />}
               />
             </span>
@@ -211,6 +219,9 @@ function TenantsPage() {
   // be refused at the end.
   const { hasPermission } = useAuth();
   const canCreate = hasPermission ? hasPermission('LANDLORD/TENANT_CREATE') : false;
+  // Same rule as POST /api/tenant/:id/portal-invite.
+  const canInvite = hasPermission
+    ? (hasPermission('LANDLORD/TENANT_PORTAL_INVITE') || hasPermission('LANDLORD/TENANT_EDIT')) : false;
   const router = useRouter();
   const searchParams = useSearchParams();
   const propertyIdParam = searchParams.get('propertyId');
@@ -483,6 +494,7 @@ function TenantsPage() {
                   onInvoice={() => handleInvoice(t)}
                   onInvite={() => handleInvite(t)}
                   inviting={inviting}
+                  canInvite={canInvite}
                   onProfile={() => handleProfile(t)}
                 />
               ))}
@@ -518,6 +530,7 @@ function TenantsPage() {
                   onInvoice={() => handleInvoice(t)}
                   onInvite={() => handleInvite(t)}
                   inviting={inviting}
+                  canInvite={canInvite}
                   onProfile={() => handleProfile(t)}
                 />
               ))}
