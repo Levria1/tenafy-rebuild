@@ -705,6 +705,8 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
               SUM(r.state = 'FAILED')                      AS undelivered_slots,
               u.name AS unit_name, p.display_name AS property_name,
               l.contract_type, l.renewal_reply,
+              DATE_FORMAT(l.end_date, '%Y-%m-%d') AS current_lease_end,
+              (l.id IS NOT NULL AND l.deleted_at IS NULL) AS lease_exists,
               CASE WHEN t.type = 1 THEN t.company_name
                    ELSE TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) END AS tenant_name
          FROM renewal_ask r
@@ -714,12 +716,14 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
          LEFT JOIN tenant t ON t.id = r.tenant_id
         WHERE r.org_id = ?
         GROUP BY r.lease_id, r.unit_id, r.lease_end_at_ask, r.decision_due_on,
-                 u.name, p.display_name, l.contract_type, l.renewal_reply, tenant_name
+                 u.name, p.display_name, l.contract_type, l.renewal_reply, tenant_name,
+                 l.end_date, l.id, l.deleted_at
         ORDER BY MAX(r.escalated_at IS NOT NULL) DESC, r.decision_due_on ASC
         LIMIT 200`,
       [orgId]
     );
     const REPLY = { 1: 'extend', 2: 'leaving', 3: 'unsure' };
+    const today = orgToday();
     res.json({
       code: 200,
       data: rows.map(r => {
@@ -732,6 +736,12 @@ router.get('/renewal-asks', authenticate, async (req, res) => {
         label: [r.property_name, r.unit_name].filter(Boolean).join(' '),
         tenant_name: r.tenant_name || null,
         lease_end: r.lease_end,
+        current_lease_end: r.current_lease_end || null,
+        // Renewed, ended or gone: the page leaves it out of the "in flight" box.
+        settled: renewalAsk.renewalAskSettled({
+          askedEnd: r.lease_end, currentEnd: r.current_lease_end,
+          leaseExists: Number(r.lease_exists) === 1, today,
+        }),
         decision_due_on: r.decision_due_on,
         asks_delivered: Number(r.asks_delivered) || 0,
         slots_used: Number(r.slots_used) || 0,
