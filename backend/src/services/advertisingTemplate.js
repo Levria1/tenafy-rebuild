@@ -205,27 +205,44 @@ async function resolveUnitValues(pool, orgId, unitId, template = {}) {
     daysToAvailable = past && past.days_vacant != null ? -Number(past.days_vacant) : null;
   }
 
-  // Is the unit handed straight to a next tenant when this lease ends? Reporting
-  // the end date then advertises a flat on the exact day it is taken, which is
-  // worse than saying nothing. Mirrors the rule the vacancy feed already uses
-  // (any lease running past this one means "already re-let") so the renderer and
-  // the feed cannot disagree about what is free.
-  //
-  // Only an immediate handover makes the date a lie. A genuine gap between the
-  // two tenancies IS a real availability window; whether it is long enough to be
-  // worth advertising is min_gap_days' decision upstream, not this function's.
+  // Same-day handovers and overlaps postpone availability to the end of the
+  // connected chain. Fetch once so each extension does not need another query;
+  // SQL keeps days-to-available on the same organisation date as the first lease.
+  // A genuine gap remains an availability window for min_gap_days upstream.
   let reletFrom = null;
+  // An open-ended CURRENT lease keeps its old behaviour (no date, not refused):
+  // such a unit only reaches a post through a manual vacancy override.
+  let takenOnHandover = false;
   if (cur && availableDate) {
-    const [[next]] = await pool.execute(
-      `SELECT DATE_FORMAT(MIN(start_date), '%Y-%m-%d') AS next_start
+    const [leases] = await pool.execute(
+      `SELECT DATE_FORMAT(start_date, '%Y-%m-%d') AS starts_on,
+              DATE_FORMAT(end_date, '%Y-%m-%d') AS ends_on,
+              DATEDIFF(end_date, ${orgTodaySql()}) AS days_to_end
          FROM leasing
         WHERE unit_id = ? AND deleted_at IS NULL
-          AND (end_date IS NULL OR end_date > ?)`,
+          AND (end_date IS NULL OR end_date > ?)
+        ORDER BY start_date ASC`,
       [String(unitId), availableDate]
     );
-    if (next && next.next_start) reletFrom = next.next_start;
+    let hops = 0;
+    for (const lease of leases) {
+      if (lease.starts_on > availableDate) {
+        reletFrom = lease.starts_on;
+        break;
+      }
+      // Shorter overlapping leases cannot extend the occupied period.
+      if (lease.ends_on != null && lease.ends_on <= availableDate) continue;
+      // Malformed data producing an excessive chain: refuse to print a date rather
+      // than fail the whole posting plan.
+      if (++hops > 12) { takenOnHandover = true; availableDate = null; break; }
+      availableDate = lease.ends_on || null;
+      daysToAvailable = lease.days_to_end != null ? Number(lease.days_to_end) : null;
+      if (!availableDate) {
+        takenOnHandover = true;
+        break;
+      }
+    }
   }
-  const takenOnHandover = reletFrom != null && reletFrom <= availableDate;
 
   // "Now" reads better than a past date for an already-vacant unit.
   const availableLabel = takenOnHandover
