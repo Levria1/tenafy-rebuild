@@ -37,3 +37,47 @@ test('scheduler view is unchanged: no occupancy gate on EXPIRING', async () => {
   assert.doesNotMatch(sql, /AND l\.start_date <=/);
   assert.doesNotMatch(sql, /FROM leasing lc/);
 });
+
+function poolWithExpiring(row) {
+  return {
+    execute: async (sql) => {
+      if (/AS days_left/.test(sql) && /FROM leasing l\s/.test(sql)) return [[row]];
+      return [[]];
+    },
+  };
+}
+
+const BACK_TO_BACK_ROW = {
+  lease_id: '902', current_lease_id: '901', current_rent: '7400.00',
+  contract_type: 1, rent: '7900.00', end_date: '2026-12-15', days_left: 36,
+  unit_id: '1', unit_name: '1G', property_id: '9', property_name: 'Fuk Lo Tsun',
+  rent_price_min: '6900', rent_price_max: '8900',
+};
+
+test('page rows carry the posting rent the Scheduler would use, and today\'s rent separately', async () => {
+  const { vacancies } = await computeVacancies(poolWithExpiring(BACK_TO_BACK_ROW), 'org', { page: true });
+  assert.equal(vacancies.length, 1);
+  const r = vacancies[0];
+  assert.equal(r.posting_rent, 8900, 'still let → top of the range');
+  assert.equal(r.posting_tier, 'high');
+  assert.equal(r.current_rent, 7400, 'what the tenant on the unit today pays');
+  assert.equal(r.current_lease_is_row, false);
+  assert.equal(r.rent, 7900, 'row rent stays the row lease');
+});
+
+test('page posting rent falls back to the lease rent, untiered, when the unit has no range', async () => {
+  const row = { ...BACK_TO_BACK_ROW, current_lease_id: '902', rent_price_min: null, rent_price_max: null };
+  const { vacancies: [r] } = await computeVacancies(poolWithExpiring(row), 'org', { page: true });
+  assert.equal(r.posting_rent, 7900);
+  assert.equal(r.posting_tier, null);
+  assert.equal(r.current_lease_is_row, true);
+});
+
+test('page SQL selects today\'s lease rent; scheduler SQL does not', async () => {
+  const a = capturingPool();
+  await computeVacancies(a, 'org', { page: true });
+  assert.match(expiringSql(a.seen), /AS current_rent/);
+  const b = capturingPool();
+  await computeVacancies(b, 'org', { page: false, settings: {} });
+  assert.doesNotMatch(expiringSql(b.seen), /current_rent/);
+});
