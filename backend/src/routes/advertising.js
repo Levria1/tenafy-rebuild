@@ -136,6 +136,19 @@ function noCurrentLease() {
   return `NOT ${hasCurrentLease()}`;
 }
 
+// Page view only: the lease the unit is on TODAY. Usually the same lease as the
+// row (`l`), but when the row is a back-to-back follow-on that has not started,
+// `l` is the next tenant's lease and its rent is not what anyone pays yet.
+function currentLeaseCols() {
+  const pick = col => `(SELECT ${col} FROM leasing lt
+     WHERE lt.unit_id = l.unit_id AND lt.deleted_at IS NULL
+       AND lt.start_date <= ${orgTodaySql()} AND (lt.end_date IS NULL OR lt.end_date >= ${orgTodaySql()})
+     ORDER BY lt.start_date DESC, lt.id DESC LIMIT 1)`;
+  return `
+          ${pick('COALESCE(NULLIF(lt.price, 0), lt.amount)')} AS current_rent,
+          ${pick('lt.id')} AS current_lease_id,`;
+}
+
 // Exclude placeholder/test units by name (unit or property). Substring match —
 // catches "Test Unit 1", "6A Test", "Test Property 2". The definition moved to
 // utils/publicUnitScope so /units/search and /units/resolve enforce the SAME
@@ -192,7 +205,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
           -- when price is missing or 0 (legacy rows).
           COALESCE(NULLIF(l.price, 0), l.amount) AS rent, l.deposit, l.notice_period_days,
           -- Public feed needs the schedule to know whether this figure is monthly.
-          l.invoicing, l.renewal_reply,
+          l.invoicing, l.renewal_reply,${page ? currentLeaseCols() : ''}
           DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date,
           DATEDIFF(l.end_date, ${orgTodaySql()}) AS days_left,
           u.id AS unit_id, u.name AS unit_name, u.type AS unit_type, u.beds, u.baths, u.size,
@@ -353,6 +366,10 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       end_date: r.end_date,
       vacant_since: null,
       rent: r.rent != null ? Number(r.rent) : null,
+      ...(page ? {
+        current_rent: r.current_rent != null ? Number(r.current_rent) : null,
+        current_lease_is_row: r.current_lease_id == null || String(r.current_lease_id) === String(r.lease_id),
+      } : {}),
       invoicing: r.invoicing ?? null,
       deposit: r.deposit != null ? Number(r.deposit) : null,
       unit_id: String(r.unit_id), unit_name: r.unit_name, unit_type: r.unit_type,
@@ -479,8 +496,19 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
       realRows.filter(r => Number(r.renewal_reply) === RENEWAL_REPLY_EXTEND).map(r => String(r.unit_id))
     );
     const notStaying = row => !stayingUnitIds.has(String(row.unit_id));
+    // Page view: the figure to market at, computed exactly as the Scheduler does
+    // (asking range + days to available). No range → the post falls back to the
+    // lease rent, so the page shows that and says so (posting_tier null).
+    const withPostingRent = row => {
+      const step = computePostingRent(row.rent_price_min, row.rent_price_max, row.days_left);
+      return {
+        ...row,
+        posting_rent: step ? step.amount : (row.rent ?? null),
+        posting_tier: step ? step.tier : null,
+      };
+    };
     const vacancies = page
-      ? urgencySorted
+      ? urgencySorted.map(withPostingRent)
       : sortByPriority([...realRows.filter(notStaying), ...manualRows.filter(notStaying)]);
 
     return { vacancies, vacant_count: selectedVacantRows.length, expiring_count: selectedExpiringRows.length, manual_count: manualRows.length, expiring_window: expiringWindow };

@@ -418,12 +418,39 @@ export default function VacancyPage() {
             </div>
           );
         }
+        const money = (n) => `HK$${Number(n).toLocaleString()}`;
         if (r.status === 'vacant') {
-          return r.vacant_since
-            ? <Tooltip title="Vacant since"><Text type="secondary">since {r.vacant_since}</Text></Tooltip>
-            : <Text type="secondary">—</Text>;
+          return (
+            <div>
+              {r.vacant_since
+                ? <Tooltip title="Vacant since"><Text type="secondary">since {r.vacant_since}</Text></Tooltip>
+                : <Text type="secondary">—</Text>}
+              {r.rent != null && (
+                <div><Text type="secondary" style={{ fontSize: 12 }}>Last rent {money(r.rent)}</Text></div>
+              )}
+            </div>
+          );
         }
-        return r.end_date || '—';
+        // current_rent is the lease the unit is on TODAY. On a back-to-back row the
+        // row itself is the next tenant's lease, so its rent is shown separately.
+        const currentRent = r.current_rent != null ? r.current_rent : r.rent;
+        const nextDiffers = r.current_lease_is_row === false && r.rent != null && r.rent !== currentRent;
+        // A lease with no invoicing schedule stores the whole stay as one figure
+        // (FLT 1F: HK$25,376.61 for Sep-Dec), so calling it monthly rent would lie.
+        const wholeStay = r.current_lease_is_row !== false && (r.invoicing == null || String(r.invoicing).trim() === '');
+        return (
+          <div>
+            {r.end_date || '—'}
+            {currentRent != null && (
+              <div>
+                <Text type="secondary" style={{ fontSize: 12 }}>{wholeStay ? 'Lease total' : 'Current rent'} {money(currentRent)}</Text>
+                {nextDiffers && (
+                  <div><Text type="secondary" style={{ fontSize: 12 }}>Next lease {money(r.rent)}</Text></div>
+                )}
+              </div>
+            )}
+          </div>
+        );
       },
     },
     {
@@ -454,17 +481,25 @@ export default function VacancyPage() {
       },
     },
     {
-      title: 'Rent',
-      dataIndex: 'rent',
-      key: 'rent',
-      width: 120,
+      title: 'Posting Rent',
+      dataIndex: 'posting_rent',
+      key: 'posting_rent',
+      width: 140,
       align: 'right',
+      // Same figure the Scheduler posts: the unit's asking range, top while the
+      // flat is still let, mid once it is empty. Without a range the post uses the
+      // lease rent, shown greyed so the missing range is noticed.
       render: (v, r) => {
         if (v == null) return '—';
         const label = `HK$${Number(v).toLocaleString()}`;
-        return r.status === 'vacant'
-          ? <Tooltip title="Last lease rent"><Text type="secondary">{label}</Text></Tooltip>
-          : label;
+        if (!r.posting_tier) {
+          return <Tooltip title="No asking rent range on this unit — the post uses the lease rent"><Text type="secondary">{label}</Text></Tooltip>;
+        }
+        return (
+          <span>
+            {label} <Tag color={r.posting_tier === 'mid' ? 'blue' : 'green'} style={{ marginRight: 0 }}>{r.posting_tier}</Tag>
+          </span>
+        );
       },
     },
     {
