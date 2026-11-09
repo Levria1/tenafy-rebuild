@@ -125,11 +125,15 @@ function nextMoveInCols() {
 }
 
 // Sub-conditions reused for the "vacant now" query (correlated on u.id).
-function noCurrentLease() {
-  return `NOT EXISTS (
+function hasCurrentLease() {
+  return `EXISTS (
   SELECT 1 FROM leasing lc
    WHERE lc.unit_id = u.id AND lc.deleted_at IS NULL
      AND lc.start_date <= ${orgTodaySql()} AND (lc.end_date IS NULL OR lc.end_date >= ${orgTodaySql()}))`;
+}
+
+function noCurrentLease() {
+  return `NOT ${hasCurrentLease()}`;
 }
 
 // Exclude placeholder/test units by name (unit or property). Substring match —
@@ -141,11 +145,14 @@ const NOT_TEST = PUBLIC_UNIT_NAME_SQL;
 // Shared vacancy computation — used by BOTH /vacancies and /scheduler so they can
 // never diverge. Returns the unified, urgency-sorted list plus per-category counts.
 // `page` view (Leasing → Vacancy) differs from the Advertising SCHEDULER view:
-//   - EXPIRING: page requires the lease to be CURRENT (occupied today); the
-//     scheduler keeps the broader "latest lease ends soon incl. a future one"
-//     (so it still advertises a re-let-then-vacant gap). Empty-today units with a
-//     short upcoming lease therefore move OUT of expiring and INTO vacant on the
-//     page (shown as "vacant now + next move-in").
+//   - EXPIRING: page requires the UNIT to be occupied today; the scheduler does
+//     not. Both then take the unit's LATEST lease, so a back-to-back follow-on
+//     (current ends 11 Nov, next runs 11 Nov - 15 Dec) shows as expiring 15 Dec.
+//     Requiring that latest lease itself to have started, as this once did,
+//     dropped such a unit from BOTH lists until the handover day: it was not
+//     expiring (latest lease not started) and not vacant (occupied today).
+//     Empty-today units with a short upcoming lease still move OUT of expiring and
+//     INTO vacant on the page (shown as "vacant now + next move-in").
 //   - VACANT: the page includes every unit empty today. The scheduler filters a
 //     booked next move-in through the minimum-gap setting; `days_to_move_in`
 //     carries the length of that window and `gap_ok` records the decision.
@@ -201,7 +208,7 @@ async function computeVacancies(pool, orgId, { page = false, minGapDays, setting
        WHERE p.org_id = ?
          AND l.deleted_at IS NULL
          AND u.active_status = 1
-         ${page ? `AND l.start_date <= ${orgTodaySql()}` : ''}
+         ${page ? `AND ${hasCurrentLease()}` : ''}
          AND l.end_date IS NOT NULL
          AND l.end_date >= ${orgTodaySql()}
          AND DATEDIFF(l.end_date, ${orgTodaySql()}) <= ${expiringWindow}
