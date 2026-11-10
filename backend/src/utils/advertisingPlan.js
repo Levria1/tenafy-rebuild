@@ -755,49 +755,103 @@ function sortByPriority(rows) {
 }
 
 /**
- * Assign ordered vacancy bundles to ordered schedule slots, recycling spare
- * slots without repeating a property/forum pair in the same plan.
+ * Assign ordered vacancy bundles to ordered schedule slots.
+ *
+ * First pass: each bundle (one combined post per property) gets one slot, in
+ * priority order. Spare slots (owner, 2026-11-10): rather than reposting the same
+ * combined ad, a multi-unit bundle is split into single-unit posts, so each extra
+ * post is a different ad with one price and one date. A property's one-unit bundle
+ * is its own single-unit post and can only be repeated. Spare slots go, in order of:
+ *   1. units that have had the fewest posts of their own (a unit is not posted alone
+ *      twice while another still waits for its first; a one-unit bundle's first-pass
+ *      post counts as its own),
+ *   2. empty units first,
+ *   3. the property with the fewest posts so far today, so no building takes them all,
+ *   4. tier, then soonest available, then original order.
+ * A property is never posted twice to the same forum, combined or split.
  */
 function assignBundlesToSlots(bundles, slots, { tierOf } = {}) {
   const orderedBundles = Array.isArray(bundles) ? bundles : [];
   const orderedSlots = Array.isArray(slots) ? slots : [];
   const assignments = [];
   const firstPassCount = Math.min(orderedBundles.length, orderedSlots.length);
-  const postingCounts = orderedBundles.map(() => 0);
   const forumsByProperty = new Map();
+  const postsByProperty = new Map();
   const propertyKey = (bundle, index) => String(bundle?.property_id ?? bundle?.key ?? `bundle:${index}`);
   const forumKey = slot => String(slot?.forum?.forum_id ?? '');
-
-  const record = (slot, bundle, bundleIndex, extra) => {
-    assignments.push({ slot, bundle, extra });
-    postingCounts[bundleIndex] += 1;
-    const key = propertyKey(bundle, bundleIndex);
-    if (!forumsByProperty.has(key)) forumsByProperty.set(key, new Set());
-    forumsByProperty.get(key).add(forumKey(slot));
+  const tierFor = (bundle) => {
+    const t = tierOf ? Number(tierOf(bundle)) : 0;
+    return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+  };
+  const daysFor = (bundle) => {
+    const days = (Array.isArray(bundle?.units) ? bundle.units : [])
+      .map(u => (u?.days_left == null ? NaN : Number(u.days_left)))
+      .filter(Number.isFinite);
+    return days.length ? Math.min(...days) : Number.POSITIVE_INFINITY;
   };
 
-  for (let i = 0; i < firstPassCount; i++) record(orderedSlots[i], orderedBundles[i], i, false);
+  const record = (slot, bundle, propKey, extra) => {
+    assignments.push({ slot, bundle, extra });
+    postsByProperty.set(propKey, (postsByProperty.get(propKey) || 0) + 1);
+    if (!forumsByProperty.has(propKey)) forumsByProperty.set(propKey, new Set());
+    forumsByProperty.get(propKey).add(forumKey(slot));
+  };
+
+  for (let i = 0; i < firstPassCount; i++) {
+    record(orderedSlots[i], orderedBundles[i], propertyKey(orderedBundles[i], i), false);
+  }
+
+  // Candidates for spare slots: only bundles that already had their first-pass slot
+  // (when there are more bundles than slots, there are no spare slots anyway).
+  const candidates = [];
+  for (let i = 0; i < firstPassCount; i++) {
+    const bundle = orderedBundles[i];
+    const propKey = propertyKey(bundle, i);
+    const units = Array.isArray(bundle?.units) ? bundle.units : [];
+    if (units.length > 1) {
+      for (const unit of units) {
+        const single = {
+          ...bundle,
+          tier: unit.tier ?? bundle.tier,
+          intent: unit.intent ?? bundle.intent,
+          units: [unit],
+          single_unit: true,
+        };
+        candidates.push({ bundle: single, propKey, ownPosts: 0 });
+      }
+    } else {
+      candidates.push({ bundle, propKey, ownPosts: 1 });
+    }
+  }
+  candidates.forEach((c, order) => {
+    c.order = order;
+    c.tier = tierFor(c.bundle);
+    c.days = daysFor(c.bundle);
+  });
+
+  const compare = (a, b) => (a.ownPosts - b.ownPosts)
+    || ((a.tier === 1 ? 0 : 1) - (b.tier === 1 ? 0 : 1))
+    || ((postsByProperty.get(a.propKey) || 0) - (postsByProperty.get(b.propKey) || 0))
+    || (a.tier - b.tier)
+    || (a.days - b.days)
+    || (a.order - b.order);
 
   const overflow = orderedBundles.slice(orderedSlots.length);
   const unfilled = [];
   for (let slotIndex = firstPassCount; slotIndex < orderedSlots.length; slotIndex++) {
     const slot = orderedSlots[slotIndex];
     const forum = forumKey(slot);
-    let selected = -1;
-    for (let i = 0; i < orderedBundles.length; i++) {
-      const usedForums = forumsByProperty.get(propertyKey(orderedBundles[i], i));
-      if (usedForums?.has(forum)) continue;
-      if (selected < 0) {
-        selected = i;
-        continue;
-      }
-      const candidateTier = tierOf ? Number(tierOf(orderedBundles[i])) : 0;
-      const selectedTier = tierOf ? Number(tierOf(orderedBundles[selected])) : 0;
-      if (candidateTier < selectedTier
-          || (candidateTier === selectedTier && postingCounts[i] < postingCounts[selected])) selected = i;
+    let selected = null;
+    for (const c of candidates) {
+      if (forumsByProperty.get(c.propKey)?.has(forum)) continue;
+      if (!selected || compare(c, selected) < 0) selected = c;
     }
-    if (selected < 0) unfilled.push(slot);
-    else record(slot, orderedBundles[selected], selected, true);
+    if (!selected) {
+      unfilled.push(slot);
+      continue;
+    }
+    selected.ownPosts += 1;
+    record(slot, selected.bundle, selected.propKey, true);
   }
 
   return { assignments, overflow, unfilled };
