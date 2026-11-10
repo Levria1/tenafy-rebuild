@@ -388,7 +388,7 @@ export default function VacancyPage() {
       title: 'Renewal Intent',
       dataIndex: 'intent',
       key: 'intent',
-      width: 130,
+      width: 90,
       render: (v) => {
         if (!v) return <Text type="secondary">—</Text>;
         const m = INTENT_META[v] || INTENT_META.Unset;
@@ -398,7 +398,7 @@ export default function VacancyPage() {
     {
       title: 'Ends / Vacant Since',
       key: 'date',
-      width: 150,
+      width: 130,
       render: (_, r) => {
         if (r.source === 'manual') {
           const override = r.override_id ? overrideById.get(String(r.override_id)) : null;
@@ -432,9 +432,9 @@ export default function VacancyPage() {
           );
         }
         // current_rent is the lease the unit is on TODAY. On a back-to-back row the
-        // row itself is the next tenant's lease, so its rent is shown separately.
+        // row itself is the next tenant's lease; its rent is on hover, not a line.
         const currentRent = r.current_rent != null ? r.current_rent : r.rent;
-        const nextDiffers = r.current_lease_is_row === false && r.rent != null && r.rent !== currentRent;
+        const hasNextLease = r.current_lease_is_row === false && r.rent != null;
         // A lease with no invoicing schedule stores the whole stay as one figure
         // (FLT 1F: HK$25,376.61 for Sep-Dec), so calling it monthly rent would lie.
         const wholeStay = r.current_lease_is_row !== false && (r.invoicing == null || String(r.invoicing).trim() === '');
@@ -443,10 +443,11 @@ export default function VacancyPage() {
             {r.end_date || '—'}
             {currentRent != null && (
               <div>
-                <Text type="secondary" style={{ fontSize: 12 }}>{wholeStay ? 'Lease total' : 'Current rent'} {money(currentRent)}</Text>
-                {nextDiffers && (
-                  <div><Text type="secondary" style={{ fontSize: 12 }}>Next lease {money(r.rent)}</Text></div>
-                )}
+                <Tooltip title={hasNextLease ? `Next lease ${money(r.rent)}` : null}>
+                  <Text type="secondary" style={{ fontSize: 12, ...(hasNextLease ? { borderBottom: '1px dotted #bbb', cursor: 'help' } : {}) }}>
+                    {wholeStay ? 'Lease total' : 'Current rent'} {money(currentRent)}
+                  </Text>
+                </Tooltip>
               </div>
             )}
           </div>
