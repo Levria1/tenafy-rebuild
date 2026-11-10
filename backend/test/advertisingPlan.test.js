@@ -12,6 +12,9 @@ const {
   priorityOf,
   sortByPriority,
   assignBundlesToSlots,
+  rotationDayOf,
+  rotationShifts,
+  rotationKey,
 } = require('../src/utils/advertisingPlan');
 
 const FORUMS = {
@@ -293,9 +296,9 @@ test('assignBundlesToSlots is deterministic', () => {
 
 test('assignBundlesToSlots handles empty bundles and empty slots', () => {
   const slots = [planSlot(1, 'A'), planSlot(2, 'B')];
-  assert.deepEqual(assignBundlesToSlots([], slots), { assignments: [], overflow: [], unfilled: slots });
+  assert.deepEqual(assignBundlesToSlots([], slots), { assignments: [], overflow: [], unfilled: slots, restUsed: new Map() });
   const bundles = [bundle(1), bundle(2)];
-  assert.deepEqual(assignBundlesToSlots(bundles, []), { assignments: [], overflow: bundles, unfilled: [] });
+  assert.deepEqual(assignBundlesToSlots(bundles, []), { assignments: [], overflow: bundles, unfilled: [], restUsed: new Map() });
 });
 
 test('priorityOf accepts a vacant unit whose gap is long enough', () => {
@@ -445,4 +448,65 @@ test('assignBundlesToSlots still avoids duplicate forums with tierOf', () => {
   );
   assert.deepEqual(result.assignments.map(a => a.slot.id), ['slot-1', 'slot-3']);
   assert.deepEqual(result.unfilled.map(s => s.id), ['slot-2']);
+});
+
+test('assignBundlesToSlots starts the non-empty queue at shiftFor, empty units always first', () => {
+  const p = { key: 'p', property_id: 'P', tier: 1,
+    units: [unit('1A', 1, -5), unit('1C', 3, 30), unit('5B', 3, 20), unit('7D', 3, 40)] };
+  const slots = ['A', 'B', 'C'].map((forum, i) => planSlot(i + 1, forum));
+  const seconds = [0, 1, 2, 3].map(shift => {
+    const r = assignBundlesToSlots([p], slots, { tierOf: b => b.tier, shiftFor: () => shift });
+    const extras = r.assignments.filter(a => a.extra).map(a => a.bundle.units[0].unit_id);
+    assert.equal(extras[0], '1A');
+    assert.equal(r.restUsed.get(rotationKey(p)), 1);
+    return extras[1];
+  });
+  // Soonest first (5B, 1C, 7D), then round again.
+  assert.deepEqual(seconds, ['5B', '1C', '7D', '5B']);
+});
+
+test('rotationShifts gives every unit its turn even when spare slots fall on alternate days', () => {
+  // The live case that broke a plain day-number rotation: Poplar wins a second spare
+  // slot only on some weekdays (here Wed and Fri, two days apart), so a shift of
+  // one per calendar day kept landing on the same unit and 1C never got a post.
+  const p = { key: 'p', property_id: 'P', tier: 1,
+    units: [unit('1A', 1, -5), unit('5B', 3, 20), unit('1C', 3, 30)] };
+  const three = ['A', 'B', 'C'].map((forum, i) => planSlot(i + 1, forum));
+  const two = ['A', 'B'].map((forum, i) => planSlot(i + 1, forum));
+  const byWeekday = w => (w === 3 || w === 5 ? three : two);   // Wed, Fri
+  const tierOf = b => b.tier;
+  const seen = [];
+  const monday = rotationDayOf('2026-11-16');
+  for (let d = monday; d < monday + 14; d++) {
+    const weekday = (((d + 4) % 7) + 7) % 7;
+    const shifts = rotationShifts([p], byWeekday, d, { tierOf });
+    const r = assignBundlesToSlots([p], byWeekday(weekday), { tierOf, shiftFor: b => shifts.get(rotationKey(b)) || 0 });
+    const rest = r.assignments.filter(a => a.extra && a.bundle.units[0].unit_id !== '1A');
+    seen.push(...rest.map(a => a.bundle.units[0].unit_id));
+  }
+  // Four Wed/Fri days in a fortnight: the two units strictly alternate.
+  assert.equal(seen.length, 4);
+  assert.deepEqual(new Set(seen), new Set(['5B', '1C']));
+  for (let i = 1; i < seen.length; i++) assert.notEqual(seen[i], seen[i - 1]);
+});
+
+test('rotationShifts restarts at the start of each 28-day block', () => {
+  const p = { key: 'p', property_id: 'P', tier: 3, units: [unit('a', 3, 20), unit('b', 3, 30)] };
+  const slots = () => [planSlot(1, 'A'), planSlot(2, 'B')];
+  const blockStart = 28 * 1000;
+  assert.equal(rotationShifts([p], slots, blockStart).size, 0);
+  assert.equal(rotationShifts([p], slots, blockStart + 3).get(rotationKey(p)), 3);
+});
+
+test('assignBundlesToSlots puts the higher rent first when availability ties', () => {
+  const u = (id, max) => ({ ...unit(id, 3, 30), rent_price_min: max - 1000, rent_price_max: max });
+  const p = { key: 'p', property_id: 'P', tier: 3, units: [u('cheap', 9000), u('dear', 15000)] };
+  const r = assignBundlesToSlots([p], [planSlot(1, 'A'), planSlot(2, 'B')], { tierOf: b => b.tier });
+  assert.equal(r.assignments[1].bundle.units[0].unit_id, 'dear');
+});
+
+test('rotationDayOf counts whole days and tolerates bad input', () => {
+  assert.equal(rotationDayOf('2026-11-11') - rotationDayOf('2026-11-10'), 1);
+  assert.equal(rotationDayOf('2026-11-10T23:00:00'), rotationDayOf('2026-11-10'));
+  assert.equal(rotationDayOf('nonsense'), 0);
 });

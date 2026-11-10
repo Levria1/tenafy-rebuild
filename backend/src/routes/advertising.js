@@ -5,7 +5,7 @@ const { authenticate } = require('../middleware/auth');
 const { PLACEHOLDERS, applyPlaceholders, resolveUnitValues, computePostingRent, convertBold } = require('../services/advertisingTemplate');
 const { DAY_NAMES, weekdayOf, postsOnDay, parseDays, validateDays, dayLabel } = require('../utils/advertisingSchedule');
 const { slotLabel, slotProblem, findRepeatViolations, suggestReplacements, forumWeeklyLoad,
-  gapIsAdvertisable, priorityOf, resolveAvailabilityWindows, sortByPriority, assignBundlesToSlots,
+  gapIsAdvertisable, priorityOf, resolveAvailabilityWindows, sortByPriority, assignBundlesToSlots, rotationDayOf, rotationShifts, rotationKey,
   manualVacancyToRow, overrideAppliesTo, leaseChangedForOverride, pickVacancyRow,
   resolvePageExpiringWindow, PAGE_WINDOW_MAX_DAYS } = require('../utils/advertisingPlan');
 const { hkDate } = require('../utils/inquiryFacts');
@@ -2227,11 +2227,12 @@ async function buildPostingPlan(pool, orgId, { date } = {}) {
           AND a.deleted_at IS NULL AND a.status = 1
          JOIN advertising_forum_account fa ON fa.org_id = s.org_id
           AND fa.forum_id = s.forum_id AND fa.account_id = s.account_id
-        WHERE s.org_id = ? AND s.weekday = ? AND s.deleted_at IS NULL AND s.status = 1
-        ORDER BY s.position`,
-      [orgId, weekday]
+        WHERE s.org_id = ? AND s.deleted_at IS NULL AND s.status = 1
+        ORDER BY s.weekday, s.position`,
+      [orgId]
     );
-    const slots = scheduleRows.map(r => ({
+    // Every weekday's slots are loaded: the take-turns rotation replays earlier days.
+    const allSlots = scheduleRows.map(r => ({
       id: String(r.id),
       weekday: Number(r.weekday),
       slot_kind: r.slot_kind,
@@ -2250,7 +2251,13 @@ async function buildPostingPlan(pool, orgId, { date } = {}) {
         email: r.account_email,
       },
     }));
-    const allocation = assignBundlesToSlots(bundles, slots, { tierOf: b => b.tier });
+    const slotsForWeekday = w => allSlots.filter(slot => slot.weekday === w);
+    const slots = slotsForWeekday(weekday);
+    const tierOf = b => b.tier;
+    const shifts = rotationShifts(bundles, slotsForWeekday, rotationDayOf(planDate), { tierOf });
+    const allocation = assignBundlesToSlots(bundles, slots, {
+      tierOf, shiftFor: b => shifts.get(rotationKey(b)) || 0,
+    });
     const templateCache = new Map();        // template_id → row (many bundles share one)
     const posts = [];
 

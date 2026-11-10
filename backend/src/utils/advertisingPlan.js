@@ -754,23 +754,36 @@ function sortByPriority(rows) {
   });
 }
 
+/** Day number of a YYYY-MM-DD date (days since 1970-01-01), for day-by-day rotation. */
+function rotationDayOf(ymd) {
+  const ms = Date.parse(`${String(ymd || '').slice(0, 10)}T00:00:00Z`);
+  return Number.isFinite(ms) ? Math.floor(ms / 86400000) : 0;
+}
+
 /**
  * Assign ordered vacancy bundles to ordered schedule slots.
  *
- * First pass: each bundle (one combined post per property) gets one slot, in
- * priority order. Spare slots (owner, 2026-11-10): rather than reposting the same
- * combined ad, a multi-unit bundle is split into single-unit posts, so each extra
- * post is a different ad with one price and one date. A property's one-unit bundle
- * is its own single-unit post and can only be repeated. Spare slots go, in order of:
- *   1. units that have had the fewest posts of their own (a unit is not posted alone
- *      twice while another still waits for its first; a one-unit bundle's first-pass
- *      post counts as its own),
+ * First pass: each bundle (one combined post per property, at most 3 units) gets
+ * one slot, in priority order.
+ *
+ * Spare slots (owner, 2026-11-10): rather than reposting the same combined ad, a
+ * multi-unit bundle is split into single-unit posts, so each extra post is a
+ * different ad with one price and one date. A one-unit bundle is already its own
+ * single-unit post and can only be repeated.
+ *
+ * Within a bundle the units queue up for spare slots as: empty units first, every
+ * day; then the rest in order of soonest available, then higher posting rent. The
+ * rest take turns across days: `shiftFor(bundle)` says how far along that queue
+ * starts today (see rotationShifts), and `restUsed` reports how far it moved.
+ *
+ * Across properties, each spare slot goes to the best queue head by:
+ *   1. units that have had the fewest posts of their own today,
  *   2. empty units first,
  *   3. the property with the fewest posts so far today, so no building takes them all,
- *   4. tier, then soonest available, then original order.
+ *   4. tier, then soonest available, then higher rent, then original order.
  * A property is never posted twice to the same forum, combined or split.
  */
-function assignBundlesToSlots(bundles, slots, { tierOf } = {}) {
+function assignBundlesToSlots(bundles, slots, { tierOf, shiftFor } = {}) {
   const orderedBundles = Array.isArray(bundles) ? bundles : [];
   const orderedSlots = Array.isArray(slots) ? slots : [];
   const assignments = [];
@@ -783,12 +796,15 @@ function assignBundlesToSlots(bundles, slots, { tierOf } = {}) {
     const t = tierOf ? Number(tierOf(bundle)) : 0;
     return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
   };
-  const daysFor = (bundle) => {
-    const days = (Array.isArray(bundle?.units) ? bundle.units : [])
-      .map(u => (u?.days_left == null ? NaN : Number(u.days_left)))
-      .filter(Number.isFinite);
-    return days.length ? Math.min(...days) : Number.POSITIVE_INFINITY;
+  const unitDays = (u) => (u?.days_left == null || !Number.isFinite(Number(u.days_left))
+    ? Number.POSITIVE_INFINITY : Number(u.days_left));
+  const unitRent = (u) => {
+    const step = computePostingRent(u?.rent_price_min, u?.rent_price_max, u?.days_left);
+    return step && Number.isFinite(Number(step.amount)) ? Number(step.amount) : 0;
   };
+  const bundleUnits = (bundle) => (Array.isArray(bundle?.units) ? bundle.units : []);
+  const daysFor = (bundle) => Math.min(Number.POSITIVE_INFINITY, ...bundleUnits(bundle).map(unitDays));
+  const rentFor = (bundle) => Math.max(0, ...bundleUnits(bundle).map(unitRent));
 
   const record = (slot, bundle, propKey, extra) => {
     assignments.push({ slot, bundle, extra });
@@ -801,40 +817,52 @@ function assignBundlesToSlots(bundles, slots, { tierOf } = {}) {
     record(orderedSlots[i], orderedBundles[i], propertyKey(orderedBundles[i], i), false);
   }
 
-  // Candidates for spare slots: only bundles that already had their first-pass slot
-  // (when there are more bundles than slots, there are no spare slots anyway).
-  const candidates = [];
+  // One queue per first-pass bundle (when there are more bundles than slots there
+  // are no spare slots anyway). The head of each queue competes for the next slot;
+  // whichever wins goes to the back of its queue.
+  const queues = [];
+  const restUsed = new Map();
   for (let i = 0; i < firstPassCount; i++) {
     const bundle = orderedBundles[i];
     const propKey = propertyKey(bundle, i);
-    const units = Array.isArray(bundle?.units) ? bundle.units : [];
+    const units = bundleUnits(bundle);
+    let entries;
     if (units.length > 1) {
-      for (const unit of units) {
-        const single = {
-          ...bundle,
-          tier: unit.tier ?? bundle.tier,
-          intent: unit.intent ?? bundle.intent,
-          units: [unit],
-          single_unit: true,
-        };
-        candidates.push({ bundle: single, propKey, ownPosts: 0 });
-      }
+      const isEmpty = (u) => Number(u.tier) === PRIORITY_VACANT;
+      const byUrgency = (a, b) => (unitDays(a) - unitDays(b)) || (unitRent(b) - unitRent(a));
+      const empty = units.filter(isEmpty).sort(byUrgency);
+      const rest = units.filter(u => !isEmpty(u)).sort(byUrgency);
+      const wanted = shiftFor ? Math.trunc(Number(shiftFor(bundle)) || 0) : 0;
+      const shift = rest.length ? ((wanted % rest.length) + rest.length) % rest.length : 0;
+      const rotated = [...rest.slice(shift), ...rest.slice(0, shift)];
+      entries = [...empty, ...rotated].map(unit => ({
+        bundle: { ...bundle, tier: unit.tier ?? bundle.tier, intent: unit.intent ?? bundle.intent,
+                  units: [unit], single_unit: true },
+        ownPosts: 0,
+        rest: !isEmpty(unit),
+      }));
     } else {
-      candidates.push({ bundle, propKey, ownPosts: 1 });
+      entries = [{ bundle, ownPosts: 1 }];
     }
+    for (const e of entries) {
+      e.tier = tierFor(e.bundle);
+      e.days = daysFor(e.bundle);
+      e.rent = rentFor(e.bundle);
+    }
+    queues.push({ propKey, order: i, entries, key: rotationKey(bundle) });
   }
-  candidates.forEach((c, order) => {
-    c.order = order;
-    c.tier = tierFor(c.bundle);
-    c.days = daysFor(c.bundle);
-  });
 
-  const compare = (a, b) => (a.ownPosts - b.ownPosts)
-    || ((a.tier === 1 ? 0 : 1) - (b.tier === 1 ? 0 : 1))
-    || ((postsByProperty.get(a.propKey) || 0) - (postsByProperty.get(b.propKey) || 0))
-    || (a.tier - b.tier)
-    || (a.days - b.days)
-    || (a.order - b.order);
+  const compare = (qa, qb) => {
+    const a = qa.entries[0];
+    const b = qb.entries[0];
+    return (a.ownPosts - b.ownPosts)
+      || ((a.tier === PRIORITY_VACANT ? 0 : 1) - (b.tier === PRIORITY_VACANT ? 0 : 1))
+      || ((postsByProperty.get(qa.propKey) || 0) - (postsByProperty.get(qb.propKey) || 0))
+      || (a.tier - b.tier)
+      || (a.days - b.days)
+      || (b.rent - a.rent)
+      || (qa.order - qb.order);
+  };
 
   const overflow = orderedBundles.slice(orderedSlots.length);
   const unfilled = [];
@@ -842,22 +870,59 @@ function assignBundlesToSlots(bundles, slots, { tierOf } = {}) {
     const slot = orderedSlots[slotIndex];
     const forum = forumKey(slot);
     let selected = null;
-    for (const c of candidates) {
-      if (forumsByProperty.get(c.propKey)?.has(forum)) continue;
-      if (!selected || compare(c, selected) < 0) selected = c;
+    for (const q of queues) {
+      if (forumsByProperty.get(q.propKey)?.has(forum)) continue;
+      if (!selected || compare(q, selected) < 0) selected = q;
     }
     if (!selected) {
       unfilled.push(slot);
       continue;
     }
-    selected.ownPosts += 1;
-    record(slot, selected.bundle, selected.propKey, true);
+    const entry = selected.entries.shift();
+    entry.ownPosts += 1;
+    selected.entries.push(entry);
+    if (entry.rest) restUsed.set(selected.key, (restUsed.get(selected.key) || 0) + 1);
+    record(slot, entry.bundle, selected.propKey, true);
   }
 
-  return { assignments, overflow, unfilled };
+  return { assignments, overflow, unfilled, restUsed };
+}
+
+/** Identifies one bundle from day to day: same property, template and units. */
+function rotationKey(bundle) {
+  const ids = (Array.isArray(bundle?.units) ? bundle.units : []).map(u => String(u?.unit_id)).sort();
+  return `${bundle?.property_id ?? bundle?.key ?? ''}|${bundle?.template_id ?? ''}|${ids.join(',')}`;
+}
+
+const ROTATION_BLOCK_DAYS = 28;
+
+/**
+ * How far along each bundle's take-turns queue starts on `day` (a rotationDayOf
+ * number). Nothing records which posts actually went out (the post log is empty),
+ * so this replays the plan for the earlier days of the current 28-day block with
+ * today's bundles and each weekday's slots, and carries each queue forward by the
+ * units it used. Every unit therefore gets its turn in order, whatever days the
+ * property happens to win a spare slot. The block restarts every 28 days so the
+ * replay stays short; `slotsForWeekday(w)` takes 0 = Sunday.
+ */
+function rotationShifts(bundles, slotsForWeekday, day, { tierOf } = {}) {
+  const shifts = new Map();
+  const today = Math.trunc(Number(day) || 0);
+  const start = today - (((today % ROTATION_BLOCK_DAYS) + ROTATION_BLOCK_DAYS) % ROTATION_BLOCK_DAYS);
+  for (let d = start; d < today; d++) {
+    const weekday = (((d + 4) % 7) + 7) % 7;   // 1970-01-01 was a Thursday
+    const { restUsed } = assignBundlesToSlots(bundles, slotsForWeekday(weekday) || [], {
+      tierOf, shiftFor: b => shifts.get(rotationKey(b)) || 0,
+    });
+    for (const [key, used] of restUsed) shifts.set(key, (shifts.get(key) || 0) + used);
+  }
+  return shifts;
 }
 
 module.exports = {
+  rotationDayOf,
+  rotationShifts,
+  rotationKey,
   slotKey,
   slotLabel,
   slotProblem,
