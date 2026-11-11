@@ -682,6 +682,75 @@ async function shouldSendEmail(pool, leaseId, toggleColumn) {
 }
 
 // ---------------------------------------------------------------------------
+// Per-lease WhatsApp switches (migration 085), one per tenant notice.
+//
+// Separate from TOGGLE_MAP on purpose: the email and the WhatsApp for a notice are
+// now independent, so unticking the email no longer silences the WhatsApp and a
+// tenant with a phone but no email can still be reached.
+// ---------------------------------------------------------------------------
+const WA_TOGGLE_MAP = {
+  'Invoice-Tenant': 'wa_tenant_posted',
+  'Overdue-Tenant': 'wa_tenant_overdue',
+  'Deposit-Tenant': 'wa_tenant_deposit_posted',
+  'Checkin-Tenant': 'wa_tenant_checkin',
+  'Checkout-Tenant': 'wa_tenant_checkout',
+  'Renewal-Tenant': 'wa_tenant_renewal',
+};
+
+async function shouldSendWhatsApp(pool, leaseId, templateType) {
+  const column = WA_TOGGLE_MAP[templateType];
+  // Fail closed: a notice with no WhatsApp switch, or no lease to read it from,
+  // is not sent on WhatsApp by this path.
+  if (!leaseId || !column) return false;
+  try {
+    const [rows] = await pool.execute(
+      `SELECT \`${column}\` AS toggled FROM leasing WHERE id = ?`,
+      [leaseId]
+    );
+    return rows.length > 0 && bitToBool(rows[0].toggled);
+  } catch (err) {
+    console.error(`[EmailService] Error checking WhatsApp toggle ${column}:`, err.message);
+    return false;
+  }
+}
+
+/**
+ * Send one tenant notice on each channel the lease has ticked, independently.
+ *
+ * Returns the email result if the email went, otherwise `{ whatsapp }` if only the
+ * WhatsApp went, otherwise null — so callers that treat null as "skipped" (the
+ * overdue sweep) count a WhatsApp-only send as sent.
+ */
+async function sendTenantNotice(pool, orgId, leaseId, templateType, opts = {}) {
+  const [emailOn, waOn] = await Promise.all([
+    shouldSendEmail(pool, leaseId, templateType),
+    shouldSendWhatsApp(pool, leaseId, templateType),
+  ]);
+  let emailResult = null;
+  if (emailOn) {
+    emailResult = await sendTemplateEmail(pool, orgId, { ...opts, templateType, leaseId, whatsapp: false });
+  }
+  let waResult = null;
+  if (waOn) {
+    try {
+      // Lazy require: whatsappService imports from this file.
+      const { sendTemplateWhatsApp } = require('./whatsappService');
+      waResult = await sendTemplateWhatsApp(pool, orgId, {
+        templateType, leaseId,
+        category: opts.category, dueDate: opts.dueDate, overdueAmount: opts.overdueAmount,
+        invoiceCode: opts.invoiceCode, invoiceId: opts.invoiceId,
+        extraVariables: opts.extraVariables, logType: opts.logType,
+      });
+    } catch (err) {
+      console.error(`[WhatsApp] ${templateType} send failed for lease ${leaseId}:`, err.message);
+    }
+  }
+  if (emailResult) return emailResult;
+  if (waResult && waResult.ok) return { whatsapp: waResult };
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Get recipient email — tenant or landlord
 // ---------------------------------------------------------------------------
 
@@ -739,6 +808,12 @@ async function sendTemplateEmail(pool, orgId, {
   // indistinguishable and the follow-up's dedup check can never tell whether it
   // was the first email or its own that already went.
   logType = null,
+  // Whether to also send this template on WhatsApp, coupled to the email. True
+  // keeps the old behaviour for every caller that has no per-lease WhatsApp
+  // setting (manual sends, landlord notices, receipts). The tenant notices pass
+  // false and send WhatsApp themselves via sendTenantNotice, under the lease's own
+  // WhatsApp tickbox.
+  whatsapp = true,
 } = {}) {
   // 1. Load template
   const template = await loadTemplate(pool, orgId, templateType, templateId);
@@ -885,7 +960,7 @@ async function sendTemplateEmail(pool, orgId, {
   // 8. Parallel WhatsApp send (best-effort, fire-and-forget)
   // Looks up its own template in whatsapp_template — silent skip if none exists.
   // Lazy require avoids a circular dependency (whatsappService imports from this file).
-  try {
+  if (whatsapp) try {
     const { sendTemplateWhatsApp } = require('./whatsappService');
     sendTemplateWhatsApp(pool, orgId, {
       templateType, templateId, leaseId, category,
@@ -936,11 +1011,7 @@ async function previewTemplate(pool, orgId, { templateId, templateType, leaseId,
 // ---------------------------------------------------------------------------
 
 async function sendInvoiceToTenant(pool, orgId, leaseId, { invoiceId, invoiceCode, category, dueDate } = {}) {
-  const shouldSend = await shouldSendEmail(pool, leaseId, 'Invoice-Tenant');
-  if (!shouldSend) return null;
-  return sendTemplateEmail(pool, orgId, {
-    templateType: 'Invoice-Tenant',
-    leaseId,
+  return sendTenantNotice(pool, orgId, leaseId, 'Invoice-Tenant', {
     category,
     dueDate,
     invoiceId,
@@ -962,11 +1033,7 @@ async function sendInvoiceToLandlord(pool, orgId, leaseId, { invoiceId, invoiceC
 }
 
 async function sendOverdueToTenant(pool, orgId, leaseId, { dueDate, overdueAmount, invoiceId, invoiceCode, category } = {}) {
-  const shouldSend = await shouldSendEmail(pool, leaseId, 'Overdue-Tenant');
-  if (!shouldSend) return null;
-  return sendTemplateEmail(pool, orgId, {
-    templateType: 'Overdue-Tenant',
-    leaseId,
+  return sendTenantNotice(pool, orgId, leaseId, 'Overdue-Tenant', {
     // Accepted above and forwarded here. Leaving it out of either half is
     // what made %Category% render blank in every overdue email.
     category,
@@ -994,12 +1061,7 @@ async function sendOverdueToLandlord(pool, orgId, leaseId, { dueDate, overdueAmo
 }
 
 async function sendCheckinToTenant(pool, orgId, leaseId) {
-  const shouldSend = await shouldSendEmail(pool, leaseId, 'Checkin-Tenant');
-  if (!shouldSend) return null;
-  return sendTemplateEmail(pool, orgId, {
-    templateType: 'Checkin-Tenant',
-    leaseId,
-  });
+  return sendTenantNotice(pool, orgId, leaseId, 'Checkin-Tenant');
 }
 
 // The check-in follow-up. Renders the SAME template as the first email — the
@@ -1009,33 +1071,19 @@ async function sendCheckinToTenant(pool, orgId, leaseId) {
 const CHECKIN_FOLLOWUP_TYPE = 'Checkin-Tenant-2';
 
 async function sendCheckinFollowUpToTenant(pool, orgId, leaseId) {
-  // Same per-lease toggle as the first email: switching check-in off must silence
-  // both legs, not just the one the operator happens to think of.
-  const shouldSend = await shouldSendEmail(pool, leaseId, 'Checkin-Tenant');
-  if (!shouldSend) return null;
-  return sendTemplateEmail(pool, orgId, {
-    templateType: 'Checkin-Tenant',
-    leaseId,
+  // Same per-lease toggles as the first message: switching check-in off must
+  // silence both legs, not just the one the operator happens to think of.
+  return sendTenantNotice(pool, orgId, leaseId, 'Checkin-Tenant', {
     logType: CHECKIN_FOLLOWUP_TYPE,
   });
 }
 
 async function sendCheckoutToTenant(pool, orgId, leaseId) {
-  const shouldSend = await shouldSendEmail(pool, leaseId, 'Checkout-Tenant');
-  if (!shouldSend) return null;
-  return sendTemplateEmail(pool, orgId, {
-    templateType: 'Checkout-Tenant',
-    leaseId,
-  });
+  return sendTenantNotice(pool, orgId, leaseId, 'Checkout-Tenant');
 }
 
 async function sendRenewalToTenant(pool, orgId, leaseId) {
-  const shouldSend = await shouldSendEmail(pool, leaseId, 'Renewal-Tenant');
-  if (!shouldSend) return null;
-  return sendTemplateEmail(pool, orgId, {
-    templateType: 'Renewal-Tenant',
-    leaseId,
-  });
+  return sendTenantNotice(pool, orgId, leaseId, 'Renewal-Tenant');
 }
 
 async function sendLeaseExpiryToLandlord(pool, orgId, leaseId) {
@@ -1092,12 +1140,7 @@ async function sendReceiptToTenant(pool, orgId, leaseId, paymentInfo = {}, pdfBu
 }
 
 async function sendDepositToTenant(pool, orgId, leaseId) {
-  const shouldSend = await shouldSendEmail(pool, leaseId, 'Deposit-Tenant');
-  if (!shouldSend) return null;
-  return sendTemplateEmail(pool, orgId, {
-    templateType: 'Deposit-Tenant',
-    leaseId,
-  });
+  return sendTenantNotice(pool, orgId, leaseId, 'Deposit-Tenant');
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,9 +1158,14 @@ async function hasEmailBeenSent(pool, leaseId, templateType) {
   if (!leaseId || !templateType) return false;
   try {
     const [[row]] = await pool.execute(
-      `SELECT COUNT(*) AS cnt FROM email_log
-       WHERE lease_id = ? AND type = ? AND status = 'sent'`,
-      [leaseId, templateType]
+      // Either channel counts. A lease with only WhatsApp ticked writes nothing to
+      // email_log, so checking email alone would re-send its check-in, check-out
+      // or renewal message every morning.
+      `SELECT (SELECT COUNT(*) FROM email_log
+                WHERE lease_id = ? AND type = ? AND status = 'sent')
+            + (SELECT COUNT(*) FROM whatsapp_log
+                WHERE lease_id = ? AND type = ? AND status = 'sent') AS cnt`,
+      [leaseId, templateType, leaseId, templateType]
     );
     return (row.cnt || 0) > 0;
   } catch (err) {
@@ -1141,9 +1189,14 @@ async function lastSentOrgDate(pool, leaseId, templateType) {
   if (!leaseId || !templateType) return null;
   try {
     const [[row]] = await pool.execute(
-      `SELECT DATE(${orgTimeSql('MAX(sent_at)')}) AS d FROM email_log
-       WHERE lease_id = ? AND type = ? AND status = 'sent'`,
-      [leaseId, templateType]
+      `SELECT DATE(${orgTimeSql('MAX(t)')}) AS d FROM (
+         SELECT sent_at AS t FROM email_log
+          WHERE lease_id = ? AND type = ? AND status = 'sent'
+         UNION ALL
+         SELECT COALESCE(sent_at, created_at) FROM whatsapp_log
+          WHERE lease_id = ? AND type = ? AND status = 'sent'
+       ) x`,
+      [leaseId, templateType, leaseId, templateType]
     );
     if (!row || !row.d) return null;
     return row.d instanceof Date ? toCalendarDate(row.d) : String(row.d).slice(0, 10);
@@ -1213,6 +1266,9 @@ module.exports = {
   shouldSendEmail,
   hasEmailBeenSent,
   lastSentOrgDate,
+  shouldSendWhatsApp,
+  sendTenantNotice,
+  WA_TOGGLE_MAP,
   CHECKIN_FOLLOWUP_TYPE,
 
   // Convenience senders

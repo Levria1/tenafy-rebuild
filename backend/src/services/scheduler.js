@@ -603,7 +603,8 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
        AND ${chaseableSql('i.due_on', 'i.created_at', { daysAfterDue: policy.days_after_due, daysAfterIssue: policy.days_after_issue })}
        AND ${repeatDueSql('i.last_chased_at', policy.repeat_days)}
        AND l.status = 1 AND (l.end_date IS NULL OR l.end_date >= ?) AND l.deleted_at IS NULL
-       AND t.email IS NOT NULL AND t.email != '' AND i.org_id = ? AND i.deleted_at IS NULL
+       -- Reachable on either channel: the lease decides which one is used.
+       AND ((t.email IS NOT NULL AND t.email != '') OR (t.phone IS NOT NULL AND t.phone != '')) AND i.org_id = ? AND i.deleted_at IS NULL
      HAVING outstanding > 0
        -- Too small to be worth an automated demand. A tenant who paid HK$17,600
        -- of HK$18,000 was chased exactly like one who paid nothing, and the
@@ -706,7 +707,7 @@ async function sendOverdueRemindersForOrg(pool, orgId) {
     }
   }
 
-  if (skipped > 0) console.log(`[Scheduler][overdueReminders][org:${orgId}] ${skipped} invoice(s) skipped: lease toggle off, whitelist, or no template.`);
+  if (skipped > 0) console.log(`[Scheduler][overdueReminders][org:${orgId}] ${skipped} invoice(s) skipped: lease email/WhatsApp ticks off, whitelist, or no template.`);
   if (sent > 0) await createNotification(pool, { orgId, type: 'warning', title: `${sent} overdue reminder(s) sent`, message: `Sent reminders for ${sent} overdue invoice(s).`, link: '/invoices' });
   if (failures > 0) await createNotification(pool, { orgId, type: 'error', title: `${failures} overdue reminder(s) failed`, message: 'Check tenant email addresses.', link: '/invoices' });
 }
@@ -751,7 +752,7 @@ async function markOverdueInvoicesForOrg(pool, orgId) {
 async function sendCheckinEmailsForOrg(pool, orgId) {
   // Find leases with tenant_checkin enabled, starting today or in the future
   const [leases] = await pool.execute(
-    `SELECT l.id, l.start_date, l.tenant_id, l.lease_state, l.tenant_checkin,
+    `SELECT l.id, l.start_date, l.tenant_id, l.lease_state, l.tenant_checkin, l.wa_tenant_checkin,
        t.first_name AS tenant_first_name, t.last_name AS tenant_last_name,
        p.display_name AS property_name, u.name AS unit_name
      FROM leasing l
@@ -759,9 +760,9 @@ async function sendCheckinEmailsForOrg(pool, orgId) {
      JOIN property p ON u.property_id = p.id
      JOIN tenant t ON l.tenant_id = t.id
      WHERE l.status = 1 AND l.deleted_at IS NULL AND l.lease_state = 'active'
-       AND l.tenant_checkin = 1
+       AND (l.tenant_checkin = 1 OR l.wa_tenant_checkin = 1)
        AND l.start_date >= ?
-       AND t.email IS NOT NULL AND t.email != ''
+       AND ((t.email IS NOT NULL AND t.email != '') OR (t.phone IS NOT NULL AND t.phone != ''))
        AND p.org_id = ?`,
     [orgToday(), orgId]
   );
@@ -799,7 +800,8 @@ async function sendCheckinEmailsForOrg(pool, orgId) {
 
       const decision = shouldSendCheckinFollowUp({
         leaseState: lease.lease_state,
-        tenantCheckin: lease.tenant_checkin,
+        // Either channel ticked counts as "check-in on" for the follow-up.
+        tenantCheckin: bitToBool(lease.tenant_checkin) || bitToBool(lease.wa_tenant_checkin),
         startDate: lease.start_date,
         today,
         followUpDays,
@@ -836,9 +838,9 @@ async function sendCheckoutEmailsForOrg(pool, orgId) {
      JOIN property p ON u.property_id = p.id
      JOIN tenant t ON l.tenant_id = t.id
      WHERE l.status = 1 AND l.deleted_at IS NULL AND l.lease_state = 'active'
-       AND l.tenant_checkout = 1
+       AND (l.tenant_checkout = 1 OR l.wa_tenant_checkout = 1)
        AND l.end_date IS NOT NULL
-       AND t.email IS NOT NULL AND t.email != ''
+       AND ((t.email IS NOT NULL AND t.email != '') OR (t.phone IS NOT NULL AND t.phone != ''))
        AND p.org_id = ?`,
     [orgId]
   );
@@ -918,10 +920,10 @@ async function sendRenewalEmailsForOrg(pool, orgId) {
      JOIN property p ON u.property_id = p.id
      JOIN tenant t ON l.tenant_id = t.id
      WHERE l.status = 1 AND l.deleted_at IS NULL AND l.lease_state = 'active'
-       AND l.tenant_renewal = 1
+       AND (l.tenant_renewal = 1 OR l.wa_tenant_renewal = 1)
        AND l.end_date IS NOT NULL
        AND l.tenant_renewal_days IS NOT NULL AND l.tenant_renewal_days > 0
-       AND t.email IS NOT NULL AND t.email != ''
+       AND ((t.email IS NOT NULL AND t.email != '') OR (t.phone IS NOT NULL AND t.phone != ''))
        AND p.org_id = ?`,
     [orgId]
   );

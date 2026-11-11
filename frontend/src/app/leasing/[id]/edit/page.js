@@ -7,6 +7,7 @@ import { ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined, LogoutOu
 import dayjs from 'dayjs';
 import MainLayout from '../../../../components/Layout';
 import SelectAllCheckbox from '../../../../components/SelectAllCheckbox';
+import WhatsAppNotificationsCard, { whatsappTogglePayload } from '../../../../components/WhatsAppNotificationsCard';
 import TenantEmailPrompt from '../../../../components/TenantEmailPrompt';
 import { leasing, property, tenant as tenantApi, bookingPlatform, salesAgent } from '../../../../lib/api';
 
@@ -254,6 +255,8 @@ export default function LeasingEditPage() {
           landlord_expired_days: d.landlord_expired_days != null ? Number(d.landlord_expired_days) : 30,
           tenant_renewal: !!d.tenant_renewal,
           tenant_renewal_days: d.tenant_renewal_days != null ? Number(d.tenant_renewal_days) : 30,
+          // WhatsApp notifications
+          ...whatsappTogglePayload(d),
           // Access & sharing
           access_setting: d.access_setting != null ? Number(d.access_setting) : undefined,
           all_past: !!d.all_past,
@@ -334,6 +337,8 @@ export default function LeasingEditPage() {
         landlord_expired_days: values.landlord_expired_days || 0,
         tenant_renewal: !!values.tenant_renewal,
         tenant_renewal_days: values.tenant_renewal_days || 0,
+        // WhatsApp notifications — independent of the email ticks
+        ...whatsappTogglePayload(values),
         // Access & sharing
         access_setting: values.access_setting ?? null,
         // The switch, not the old "Share lease with tenant" checkbox. That checkbox
@@ -917,6 +922,8 @@ export default function LeasingEditPage() {
             </Form.Item>
           </div>
         </div>
+
+        <WhatsAppNotificationsCard form={form} sectionStyle={sectionStyle} titleStyle={sectionTitle} />
 
         {/* Access & Sharing */}
         <div style={sectionStyle}>
