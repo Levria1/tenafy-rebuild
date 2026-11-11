@@ -12,6 +12,9 @@ const {
   priorityOf,
   sortByPriority,
   assignBundlesToSlots,
+  rotationDayOf,
+  rotationShifts,
+  rotationKey,
 } = require('../src/utils/advertisingPlan');
 
 const FORUMS = {
@@ -293,9 +296,9 @@ test('assignBundlesToSlots is deterministic', () => {
 
 test('assignBundlesToSlots handles empty bundles and empty slots', () => {
   const slots = [planSlot(1, 'A'), planSlot(2, 'B')];
-  assert.deepEqual(assignBundlesToSlots([], slots), { assignments: [], overflow: [], unfilled: slots });
+  assert.deepEqual(assignBundlesToSlots([], slots), { assignments: [], overflow: [], unfilled: slots, restUsed: new Map() });
   const bundles = [bundle(1), bundle(2)];
-  assert.deepEqual(assignBundlesToSlots(bundles, []), { assignments: [], overflow: bundles, unfilled: [] });
+  assert.deepEqual(assignBundlesToSlots(bundles, []), { assignments: [], overflow: bundles, unfilled: [], restUsed: new Map() });
 });
 
 test('priorityOf accepts a vacant unit whose gap is long enough', () => {
@@ -372,12 +375,61 @@ test('sortByPriority does not mutate its input', () => {
   assert.deepEqual(rows.map(r => r.property_name), ['Other', 'Vacant']);
 });
 
-test('assignBundlesToSlots features tier-1 bundles most', () => {
+test('assignBundlesToSlots repeats one-unit bundles round-robin, vacant first in each round', () => {
   const bundles = [{ ...bundle(1), tier: 1 }, { ...bundle(2), tier: 3 }];
-  const slots = ['A', 'B', 'C', 'D'].map((forum, i) => planSlot(i + 1, forum));
+  const slots = ['A', 'B', 'C', 'D', 'E'].map((forum, i) => planSlot(i + 1, forum));
   const result = assignBundlesToSlots(bundles, slots, { tierOf: b => b.tier });
-  // Vacant units get featured the most, even after the tier-1 bundle has more postings.
-  assert.deepEqual(result.assignments.map(a => a.bundle.tier), [1, 3, 1, 1]);
+  // Owner, 2026-11-10: the vacant property no longer takes every spare slot.
+  assert.deepEqual(result.assignments.map(a => a.bundle.tier), [1, 3, 1, 3, 1]);
+});
+
+function unit(id, tier, days_left) {
+  return { unit_id: id, unit_name: id, tier, days_left };
+}
+
+test('assignBundlesToSlots fills spare slots with single-unit posts, empty units first', () => {
+  // Today's live shape: Poplar has one empty unit and two expiring; FLT three expiring.
+  const poplar = { key: 'poplar', property_id: 'P', tier: 1,
+    units: [unit('1A', 1, -21), unit('1C', 3, 30), unit('5B', 3, 20)] };
+  const flt = { key: 'flt', property_id: 'F', tier: 2,
+    units: [unit('2I', 2, 25), unit('1G', 3, 35), unit('1F', 3, 42)] };
+  const gilman = { key: 'gilman', property_id: 'G', tier: 3, units: [unit('G1', 3, 40)] };
+  const holly = { key: 'holly', property_id: 'H', tier: 3, units: [unit('5A', 3, 40)] };
+  const slots = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map((forum, i) => planSlot(i + 1, forum));
+  const result = assignBundlesToSlots([poplar, flt, gilman, holly], slots, { tierOf: b => b.tier });
+
+  const extras = result.assignments.filter(a => a.extra);
+  assert.deepEqual(extras.map(a => a.bundle.units.map(u => u.unit_id)), [['1A'], ['2I'], ['5B']]);
+  assert.ok(extras.every(a => a.bundle.single_unit === true));
+  // The single-unit post takes its own unit's tier, so the badge and log are right.
+  assert.deepEqual(extras.map(a => a.bundle.tier), [1, 2, 3]);
+  // The first pass is untouched: one combined post per property.
+  assert.deepEqual(result.assignments.filter(a => !a.extra).map(a => a.bundle.key),
+    ['poplar', 'flt', 'gilman', 'holly']);
+  assert.deepEqual(result.unfilled, []);
+});
+
+test('assignBundlesToSlots posts every unit alone once before any unit twice', () => {
+  const p = { key: 'p', property_id: 'P', tier: 1, units: [unit('1A', 1, -5), unit('1B', 3, 30)] };
+  const slots = ['A', 'B', 'C', 'D'].map((forum, i) => planSlot(i + 1, forum));
+  const result = assignBundlesToSlots([p], slots, { tierOf: b => b.tier });
+  assert.deepEqual(result.assignments.filter(a => a.extra).map(a => a.bundle.units[0].unit_id),
+    ['1A', '1B', '1A']);
+});
+
+test('assignBundlesToSlots never sends a split unit to a forum its property already used', () => {
+  const p = { key: 'p', property_id: 'P', tier: 1, units: [unit('1A', 1, -5), unit('1B', 3, 30)] };
+  const result = assignBundlesToSlots([p], [planSlot(1, 'A'), planSlot(2, 'A'), planSlot(3, 'B')],
+    { tierOf: b => b.tier });
+  assert.deepEqual(result.assignments.map(a => a.slot.id), ['slot-1', 'slot-3']);
+  assert.deepEqual(result.unfilled.map(s => s.id), ['slot-2']);
+});
+
+test('assignBundlesToSlots does not mutate the bundles it splits', () => {
+  const p = { key: 'p', property_id: 'P', tier: 1, units: [unit('1A', 1, -5), unit('1B', 3, 30)] };
+  const before = JSON.stringify(p);
+  assignBundlesToSlots([p], ['A', 'B', 'C'].map((f, i) => planSlot(i + 1, f)), { tierOf: b => b.tier });
+  assert.equal(JSON.stringify(p), before);
 });
 
 test('assignBundlesToSlots retains count-first recycling without tierOf', () => {
@@ -396,4 +448,65 @@ test('assignBundlesToSlots still avoids duplicate forums with tierOf', () => {
   );
   assert.deepEqual(result.assignments.map(a => a.slot.id), ['slot-1', 'slot-3']);
   assert.deepEqual(result.unfilled.map(s => s.id), ['slot-2']);
+});
+
+test('assignBundlesToSlots starts the non-empty queue at shiftFor, empty units always first', () => {
+  const p = { key: 'p', property_id: 'P', tier: 1,
+    units: [unit('1A', 1, -5), unit('1C', 3, 30), unit('5B', 3, 20), unit('7D', 3, 40)] };
+  const slots = ['A', 'B', 'C'].map((forum, i) => planSlot(i + 1, forum));
+  const seconds = [0, 1, 2, 3].map(shift => {
+    const r = assignBundlesToSlots([p], slots, { tierOf: b => b.tier, shiftFor: () => shift });
+    const extras = r.assignments.filter(a => a.extra).map(a => a.bundle.units[0].unit_id);
+    assert.equal(extras[0], '1A');
+    assert.equal(r.restUsed.get(rotationKey(p)), 1);
+    return extras[1];
+  });
+  // Soonest first (5B, 1C, 7D), then round again.
+  assert.deepEqual(seconds, ['5B', '1C', '7D', '5B']);
+});
+
+test('rotationShifts gives every unit its turn even when spare slots fall on alternate days', () => {
+  // The live case that broke a plain day-number rotation: Poplar wins a second spare
+  // slot only on some weekdays (here Wed and Fri, two days apart), so a shift of
+  // one per calendar day kept landing on the same unit and 1C never got a post.
+  const p = { key: 'p', property_id: 'P', tier: 1,
+    units: [unit('1A', 1, -5), unit('5B', 3, 20), unit('1C', 3, 30)] };
+  const three = ['A', 'B', 'C'].map((forum, i) => planSlot(i + 1, forum));
+  const two = ['A', 'B'].map((forum, i) => planSlot(i + 1, forum));
+  const byWeekday = w => (w === 3 || w === 5 ? three : two);   // Wed, Fri
+  const tierOf = b => b.tier;
+  const seen = [];
+  const monday = rotationDayOf('2026-11-16');
+  for (let d = monday; d < monday + 14; d++) {
+    const weekday = (((d + 4) % 7) + 7) % 7;
+    const shifts = rotationShifts([p], byWeekday, d, { tierOf });
+    const r = assignBundlesToSlots([p], byWeekday(weekday), { tierOf, shiftFor: b => shifts.get(rotationKey(b)) || 0 });
+    const rest = r.assignments.filter(a => a.extra && a.bundle.units[0].unit_id !== '1A');
+    seen.push(...rest.map(a => a.bundle.units[0].unit_id));
+  }
+  // Four Wed/Fri days in a fortnight: the two units strictly alternate.
+  assert.equal(seen.length, 4);
+  assert.deepEqual(new Set(seen), new Set(['5B', '1C']));
+  for (let i = 1; i < seen.length; i++) assert.notEqual(seen[i], seen[i - 1]);
+});
+
+test('rotationShifts restarts at the start of each 28-day block', () => {
+  const p = { key: 'p', property_id: 'P', tier: 3, units: [unit('a', 3, 20), unit('b', 3, 30)] };
+  const slots = () => [planSlot(1, 'A'), planSlot(2, 'B')];
+  const blockStart = 28 * 1000;
+  assert.equal(rotationShifts([p], slots, blockStart).size, 0);
+  assert.equal(rotationShifts([p], slots, blockStart + 3).get(rotationKey(p)), 3);
+});
+
+test('assignBundlesToSlots puts the higher rent first when availability ties', () => {
+  const u = (id, max) => ({ ...unit(id, 3, 30), rent_price_min: max - 1000, rent_price_max: max });
+  const p = { key: 'p', property_id: 'P', tier: 3, units: [u('cheap', 9000), u('dear', 15000)] };
+  const r = assignBundlesToSlots([p], [planSlot(1, 'A'), planSlot(2, 'B')], { tierOf: b => b.tier });
+  assert.equal(r.assignments[1].bundle.units[0].unit_id, 'dear');
+});
+
+test('rotationDayOf counts whole days and tolerates bad input', () => {
+  assert.equal(rotationDayOf('2026-11-11') - rotationDayOf('2026-11-10'), 1);
+  assert.equal(rotationDayOf('2026-11-10T23:00:00'), rotationDayOf('2026-11-10'));
+  assert.equal(rotationDayOf('nonsense'), 0);
 });
