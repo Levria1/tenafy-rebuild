@@ -369,6 +369,32 @@ function scoreOne(qSquish, qTokens, unit, markedNumbers = new Set(), opts = {}) 
   return { prop, nameProp, nameWordHits, unit: u, viaLetter, total: prop + u, consumed };
 }
 
+// Apply the existing scorer to a second full name. The final normalized token
+// is the unit part ("Studio D", "4/F Studio B" -> d / 4b); preceding words are
+// its website property name. No new fuzzy or distance rule is introduced.
+function scoreWithWebsiteName(qSquish, qTokens, unit, markedNumbers, opts) {
+  const original = scoreOne(qSquish, qTokens, unit, markedNumbers, opts);
+  if (!unit.website_name) return original;
+  const normalized = normalizeFloorUnit(dropDecimalFraction(collapseThousands(joinHyphens(unit.website_name))));
+  const tokens = toTokens(normalized);
+  if (tokens.length < 2) return original;
+  const propertyWords = tokens.slice(0, -1).filter(t => !FLOOR_UNIT_WORDS.has(t) && !['bedroom', 'bedrooms'].includes(t) && !/^\d+$/.test(t));
+  if (!propertyWords.length) return original;
+  const alias = { ...unit, name: tokens.at(-1), property_name: propertyWords.join(' ') };
+  const alternative = scoreOne(qSquish, qTokens, alias, markedNumbers, opts);
+  // Property words cannot also be a partial unit token: "1Bedroom" in the
+  // website property prefix must not name unit 1B, nor "Bonham" unit B.
+  const unitTokens = qTokens.filter(t => !propertyWords.includes(t));
+  const unitScore = scoreOne(qSquish, unitTokens, alias, markedNumbers, opts);
+  alternative.unit = alias.name.length === 1 && !unitTokens.includes(alias.name) ? 0 : unitScore.unit;
+  alternative.viaLetter = unitScore.viaLetter;
+  alternative.total = alternative.prop + alternative.unit;
+  if (alternative.total < original.total ||
+      (alternative.total === original.total && alternative.nameWordHits <= original.nameWordHits)) return original;
+  alternative.consumed.property = [...alternative.consumed.property, ...tokens];
+  return alternative;
+}
+
 function unitOut(u) {
   return {
     unit_id: String(u.id),
@@ -560,7 +586,7 @@ function scoreUnits(text, units) {
 
   const markedNumbers = markedNumericTokens(qTokens);
   const placeTokens = placeNameTokens(units);
-  let rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u, markedNumbers, { placeTokens }) }));
+  let rows = units.map(u => ({ u, s: scoreWithWebsiteName(qSquish, qTokens, u, markedNumbers, { placeTokens }) }));
 
   // The bare letter is a FALLBACK, read from the RAW text (the capital on "A" is
   // the whole signal and norm() destroys it). It is consulted only when nothing at
@@ -571,7 +597,7 @@ function scoreUnits(text, units) {
   // flats 3A and 3B, turning an exact request into a list of three.
   const letters = explicitUnitLetters(text);
   if (letters.size && !rows.some(r => r.s.prop > 0 && r.s.unit === 3)) {
-    rows = units.map(u => ({ u, s: scoreOne(qSquish, qTokens, u, markedNumbers, { placeTokens, letters }) }));
+    rows = units.map(u => ({ u, s: scoreWithWebsiteName(qSquish, qTokens, u, markedNumbers, { placeTokens, letters }) }));
   }
 
   // "More than one unit" intent: the prospect named ≥2 DISTINCT units at a
@@ -642,7 +668,7 @@ function scoreUnits(text, units) {
 // unit, escalating a straightforward booking as multi_unit.
 async function loadUnitsWithMarketable(pool, orgId) {
   const [rows] = await pool.execute(
-    `SELECT u.id, u.name, u.property_id, p.display_name AS property_name, p.district, p.city, p.street_address,
+    `SELECT u.id, u.name, u.property_id, p.display_name AS property_name, p.district, p.city, p.street_address, u.website_name,
             (SELECT l.viewing_enabled FROM leasing l
                WHERE l.unit_id = u.id AND l.deleted_at IS NULL
                  AND l.start_date <= ${orgTodaySql()} AND (l.end_date >= ${orgTodaySql()} OR l.end_date IS NULL)
@@ -665,7 +691,7 @@ async function loadUnitsWithMarketable(pool, orgId) {
   );
   return rows.map(r => ({
     id: r.id, name: r.name, property_id: r.property_id, property_name: r.property_name,
-    district: r.district, city: r.city, street_address: r.street_address,
+    district: r.district, city: r.city, street_address: r.street_address, website_name: r.website_name,
     marketable: (Number(r.has_lease) > 0 && Number(r.cur_ve) === 1) || (Number(r.has_lease) === 0 && Number(r.host_links) > 0),
     vacant_now: Number(r.has_lease) === 0,
     occupied_until: r.cur_end ? toDateStr(r.cur_end) : null,

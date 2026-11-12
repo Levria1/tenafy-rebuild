@@ -1,4 +1,5 @@
 const express = require('express');
+const { websiteBase } = require('../services/websiteProducts');
 const { bitToBool } = require('../utils/mysqlBit');
 const router = express.Router();
 const crypto = require('crypto');
@@ -496,6 +497,27 @@ router.get('/setting/category/list/tenant', authenticate, async (req, res) => {
 
 // ─── LANDLORD / ORGANIZATION SETTINGS ────────────────────────────────────────
 
+// Separate save path: changing website integration settings must not rewrite
+// unrelated landlord fields. Restrict the outbound-host setting to org admins.
+router.get('/setting/website', authenticate, async (req, res) => {
+  try {
+    const [[org]] = await req.pool.execute('SELECT website_base_url FROM organization WHERE id=?', [req.user.orgId]);
+    if (!org) return res.status(404).json({ code: 404, message: 'Organization not found' });
+    res.json({ code: 200, data: { website_base_url: org.website_base_url || '' } });
+  } catch (error) { res.status(500).json({ code: 500, message: 'Failed to load website setting' }); }
+});
+router.put('/setting/website', authenticate, requireSuperAdmin, async (req, res) => {
+  const value = req.body?.website_base_url;
+  if (typeof value !== 'string' || value.length > 500 || (value.trim() && !websiteBase(value))) {
+    return res.status(400).json({ code: 400, message: 'Use a public http(s) base URL without credentials or a custom port, or leave blank' });
+  }
+  try {
+    await req.pool.execute('UPDATE organization SET website_base_url=?,updated_at=NOW() WHERE id=?', [value.trim() || null, req.user.orgId]);
+    await logActivity(req, 'UPDATE', 'settings', req.user.orgId, 'Updated public listings website');
+    res.json({ code: 200, message: 'Website setting saved' });
+  } catch (error) { res.status(500).json({ code: 500, message: 'Failed to save website setting' }); }
+});
+
 // GET /api/setting/landlord - Get landlord/org info
 router.get('/setting/landlord', authenticate, async (req, res) => {
   try {
@@ -519,7 +541,6 @@ router.put('/setting/landlord/update', authenticate, async (req, res) => {
   try {
     const orgId = req.user.orgId;
     const { display_name, address, city, state, country, zip_code, phone, email, currency, invoice_prefix, tax_id } = req.body;
-
     await req.pool.execute(
       `UPDATE organization SET display_name = ?, address = ?, city = ?, state = ?, country = ?,
        zip_code = ?, phone = ?, email = ?, currency = ?, invoice_prefix = ?, tax_id = ?, updated_at = NOW()

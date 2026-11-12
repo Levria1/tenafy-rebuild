@@ -70,6 +70,8 @@ export default function UnitEditPage() {
           bank_details: d.bank_details || '',
           internal_note: d.internal_note || '',
           listing_url: d.listing_url || '',
+          website_name: d.website_name || '',
+          website_products: (d.website_products || []).map(p => ({ ...p, product_id: String(p.product_id) })),
           rent_price_min: d.rent_price_min ? Number(d.rent_price_min) : undefined,
           rent_price_max: d.rent_price_max ? Number(d.rent_price_max) : undefined,
           deposit_price: d.deposit_price ? Number(d.deposit_price) : undefined,
@@ -138,6 +140,7 @@ export default function UnitEditPage() {
         }),
         propertyApi.updateUnitAmenities(unitId, { amenityIds: selectedAmenityIds }),
       ]);
+      await propertyApi.updateUnitWebsiteProducts(unitId, { website_name: values.website_name || null, website_products: values.website_products || [] });
       message.success('Unit updated successfully');
       router.push(`/property/${propertyId}/unit/${unitId}`);
     } catch (error) {
@@ -341,6 +344,21 @@ export default function UnitEditPage() {
             >
               <Input placeholder="https://taneresidence.com/apartments/sun-gardens-3b" />
             </Form.Item>
+            <Form.Item name="website_name" label="Website name" extra="The public name renters may use to identify this unit.">
+              <Input maxLength={255} />
+            </Form.Item>
+            <div style={{ marginBottom: 8 }}>Website products (first entry is primary; add any duplicate website copies)</div>
+            <Form.List name="website_products">
+              {(fields, { add, remove }) => <>
+                {fields.map(field => <div key={field.key} style={{ border: '1px solid #f0f0f0', padding: 12, marginBottom: 8 }}>
+                  <Form.Item name={[field.name, 'product_id']} label="Product number" rules={[{ required: true }, { pattern: /^[1-9][0-9]*$/, message: 'Enter the positive product number' }]}><Input /></Form.Item>
+                  <Form.Item name={[field.name, 'name']} label="Product name" rules={[{ required: true }]}><Input maxLength={255} /></Form.Item>
+                  <Form.Item name={[field.name, 'permalink']} label="Website product link" rules={[{ required: true }, { type: 'url' }]}><Input /></Form.Item>
+                  <Button onClick={() => remove(field.name)} icon={<DeleteOutlined />}>Remove product</Button>
+                </div>)}
+                <Button onClick={() => add({ product_id: '', name: '', permalink: '' })} icon={<PlusOutlined />}>Add website product</Button>
+              </>}
+            </Form.List>
           </div>
 
           {/* PHOTO & GALLERY */}

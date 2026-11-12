@@ -2,7 +2,16 @@
 
 Track all changes made per session. Update at the end of each session.
 
+## Session: Website product identity and directory loader (2026-11-12, PR pending deployment)
+
+- Unit website products have org-unique product numbers, primary/copy mappings, and a website name. Schema is `migrations/045_unit_website_products.sql`, mirrored in idempotent per-org migration `086`.
+- Resolve retains id → exact URL → website product → text precedence. Product lookup uses an optional org website setting, cached public Store API catalogue and bounded same-host redirects; recognised unmapped/inactive products return website metadata. Staff can edit unit names/products and admins can save the host separately from landlord fields.
+- The directory loader defaults to dry run, reports every held row, checks product ownership and updates confirmed rows transactionally only under `--apply`. The separate replay script measures the full checked sheet without loading disputed names.
+- Owner-checked sheet plus a SELECT-only org snapshot and 125 public website products: loaded 103, copies 13, needs staff 43, no unit 9. Website-name replay is **98/109 → 103/109**, with no regressions. Untouched `main` independently gives 98, not the prompt's earlier 85. The six held Tai Yuen A/B and Po Thai rows remain unresolved.
+- Validation: backend 1,962 pass / 4 known baseline failures (reproduced on untouched main); frontend production build passes. No local MySQL server was available, so migration SQL was not executed. No live migration, setting change, loader apply, deployment or tenant message. Workflow and limitations: `docs/website-directory-loading.md`.
+
 ---
+
 
 ## Session: Facebook posting — replacing a lost account; slot editor (2026-11-03)
 

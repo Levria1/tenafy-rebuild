@@ -1,4 +1,5 @@
 const express = require('express');
+const { recogniseWebsiteListing, exactWebsiteListing } = require('../services/websiteProducts');
 const { orgToday, orgTodaySql, orgWallClock, dbDate } = require('../utils/orgTime');
 const { decodeLeasingBits, decodeLeasingBitsAll } = require('../utils/mysqlBit');
 const crypto = require('crypto');
@@ -3013,6 +3014,7 @@ router.post('/units/resolve', async (req, res) => {
       });
     }
 
+    let websiteListing = null;
     if (listingUrl != null) {
       const [listingRows] = await req.pool.execute(
         `SELECT u.id AS unit_id, u.listing_url
@@ -3025,9 +3027,11 @@ router.post('/units/resolve', async (req, res) => {
       if (listingMatch.status === 'match') {
         const unit = byId.get(String(listingMatch.unit_id));
         if (unit) {
+          const websiteListing = await exactWebsiteListing(req.pool, orgId, unit.id, listingUrl);
           return ok(res, {
             status: 'confident',
             resolved_by: 'listing_url',
+            ...(websiteListing ? { website_listing: websiteListing } : {}),
             match: publicUnitOut(unit),
             candidates: [],
             unmatched: [],
@@ -3048,10 +3052,23 @@ router.post('/units/resolve', async (req, res) => {
           unmatched: [],
         });
       }
+      websiteListing = await recogniseWebsiteListing(req.pool, orgId, listingUrl);
+      if (websiteListing) {
+        const [mapped] = await req.pool.execute(
+          'SELECT unit_id FROM unit_website_product WHERE org_id = ? AND product_id = ?',
+          [orgId, websiteListing.product_id]
+        );
+        const unit = mapped.length === 1 ? byId.get(String(mapped[0].unit_id)) : null;
+        if (unit) return ok(res, {
+          status: 'confident', resolved_by: 'listing_url', match: publicUnitOut(unit),
+          candidates: [], unmatched: [], website_listing: websiteListing,
+        });
+      }
       if (!unitText) {
         return ok(res, {
           status: 'none',
           resolved_by: 'listing_url',
+          ...(websiteListing ? { website_listing: websiteListing } : {}),
           match: null,
           candidates: [],
           unmatched: [],
@@ -3063,6 +3080,7 @@ router.post('/units/resolve', async (req, res) => {
     return ok(res, {
       status: out.status,
       resolved_by: 'unit_text',
+      ...(websiteListing ? { website_listing: websiteListing } : {}),
       match: out.status === 'confident' ? out.match : null,
       candidates: out.candidates || [],
       candidate_count: out.candidate_count || 0,

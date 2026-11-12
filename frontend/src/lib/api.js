@@ -93,6 +93,7 @@ export const xero = {
 };
 
 export const property = {
+  updateUnitWebsiteProducts: (id, data) => api.put(`/api/property/unit/${id}/website-products`, data),
   list: (data, params) => api.post('/api/property/list', data, { params }),
   summary: () => api.get('/api/property/summary'),
   getAll: () => api.get('/api/property/all'),
@@ -455,6 +456,8 @@ export const settings = {
   updateLeadSource: (id, data) => api.put(`/api/user/setting/lead-source/update/${id}`, data),
   deleteLeadSource: (id) => api.delete(`/api/user/setting/lead-source/delete/${id}`),
   // Landlord / org settings
+  getWebsiteSettings: () => api.get('/api/user/setting/website'),
+  updateWebsiteSettings: (data) => api.put('/api/user/setting/website', data),
   getLandlord: () => api.get('/api/user/setting/landlord'),
   updateLandlord: (data) => api.put('/api/user/setting/landlord/update', data),
   getCurrency: () => api.get('/api/user/setting/currency'),

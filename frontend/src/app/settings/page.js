@@ -645,6 +645,32 @@ function PersonalSettings({ isMobile }) {
   );
 }
 
+function WebsiteSettings({ isMobile }) {
+  const [form] = Form.useForm();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    settings.getWebsiteSettings().then(r => form.setFieldsValue(r.data.data || {}))
+      .catch(() => message.error('Failed to load website setting')).finally(() => setLoading(false));
+  }, [form]);
+  const save = async values => {
+    setSaving(true);
+    try {
+      await settings.updateWebsiteSettings({ website_base_url: values.website_base_url || '' });
+      message.success('Website setting saved');
+    } catch (error) { message.error(error?.response?.data?.message || 'Failed to save website setting'); }
+    finally { setSaving(false); }
+  };
+  return <Card title="Public listings website" style={{ marginTop: 16 }} loading={loading}>
+    <Form form={form} layout="vertical" onFinish={save} style={{ maxWidth: isMobile ? '100%' : 700 }}>
+      <Form.Item name="website_base_url" label="Website base URL" extra="Use the website that publishes your units. Links on other websites will not be checked. Leave blank to disable. An organization administrator can save this setting." rules={[{ type: 'url' }]}>
+        <Input placeholder="https://your-website.example/" maxLength={500} />
+      </Form.Item>
+      <Button htmlType="submit" type="primary" loading={saving}>Save Website Setting</Button>
+    </Form>
+  </Card>;
+}
+
 function LandlordSettings({ isMobile }) {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
@@ -681,6 +707,7 @@ function LandlordSettings({ isMobile }) {
   };
 
   return (
+    <>
     <Card>
       <Form form={form} layout="vertical" onFinish={onFinish} style={{ maxWidth: isMobile ? '100%' : 700 }}>
         <Row gutter={16}>
@@ -711,6 +738,8 @@ function LandlordSettings({ isMobile }) {
         <Form.Item><Button type="primary" htmlType="submit" loading={loading}>Save Landlord Settings</Button></Form.Item>
       </Form>
     </Card>
+    <WebsiteSettings isMobile={isMobile} />
+    </>
   );
 }
 
