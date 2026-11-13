@@ -55,6 +55,7 @@ const {
   hasActiveManualVacancyOverride,
 } = require('../utils/advertisingPlan');
 const { findUnitByListingUrl, normalizeListingUrl } = require('../utils/listingUrl');
+const { publicLabelFields } = require('../utils/publicPropertyLabel');
 
 // All public routes require a valid API key (see middleware/apiKeyAuth.js).
 // The middleware attaches req.pool (scoped to the caller's org DB) and
@@ -3087,6 +3088,7 @@ router.get('/properties', async (req, res) => {
       `SELECT p.id AS property_id, p.display_name AS property_name,
               p.street_address, p.city, p.state, p.district, p.country, p.zip_code, p.type AS property_type,
               p.currency, p.year_of_built, p.notes, p.payment_instructions, p.status,
+              p.public_label, p.public_building_name, p.public_aliases,
               COUNT(u.id) AS total_units,
               SUM(CASE
                 WHEN u.active_status = 1 AND NOT EXISTS (
@@ -3121,6 +3123,7 @@ router.get('/properties', async (req, res) => {
 
     let result = properties.map(p => ({
       ...p,
+      ...publicLabelFields(p),
       total_units: Number(p.total_units),
       available_units: Number(p.available_units),
       amenities: amenitiesByProp.get(String(p.property_id)) || [],
@@ -3162,7 +3165,12 @@ router.get('/properties/:id', async (req, res) => {
 
     res.json({
       code: 200,
-      data: { ...properties[0], amenity_ids: amenityRows.map(r => r.amenity_id), gallery: galleryRows },
+      data: {
+        ...properties[0],
+        ...publicLabelFields(properties[0]),
+        amenity_ids: amenityRows.map(r => r.amenity_id),
+        gallery: galleryRows,
+      },
     });
   } catch (error) {
     console.error('Public property detail error:', error);
