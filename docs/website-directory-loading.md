@@ -103,7 +103,46 @@ reproduced. The only six unresolved rows after loading are the held Tai Yuen A/B
 and Po Thai rows. It is not possible to identify each duplicated Tai Yuen name
 confidently as two different units without a staff decision.
 
-Migration SQL has not been executed against a local or live MySQL instance in
-this review; transactional loader/editor behavior is covered with fake pools,
-and website behavior uses stubbed HTTP in automated tests. Real-database
-migration/unique-key verification remains a pre-deployment check after approval.
+## PR review validation, 13 November 2026
+
+Website aliases now contribute only when both the website property words and an
+exact unit token are named. The five reported vague phrases are tested against
+the canonical result, including the actual district/city fields in the read-only
+snapshot. All five results are unchanged from untouched `main` at `36d99e9`:
+
+| Phrase | Main and updated result |
+|---|---|
+| studio A | none |
+| Studio B available? | none |
+| do you have a 1 bedroom | none |
+| studio in Central | property_only, 10 candidates |
+| a studio near central station | property_only, 10 candidates |
+
+With real location fields, main already reports `property_only` for those two
+Central phrases; the website aliases add no candidates. All three required
+specific phrases remain confident: `Central 4B`, `Central 1-Bedroom 2A`, and
+`Bonham Strand West Studio D`. The 109-name replay remains 98 → 103, without
+regressions.
+
+Website calls now share one three-second total budget, including catalogue
+pagination, refresh, redirects and waits for a shared fetch. The transport is
+aborted on expiry, and each call still has a two-second maximum (or its remaining
+budget). Failed sites are skipped for three minutes per org/base URL. Automated
+tests use stubbed HTTP, including a real three-second deadline test and concurrent
+failure/cooldown checks.
+
+The schema was executed on a rootless, isolated MySQL **8.0.46** using a local UNIX
+socket with networking disabled. No production connection settings were loaded.
+The reusable checker creates and drops only its own scratch databases:
+
+```bash
+node scripts/checkWebsiteMigrations.js --socket /absolute/scratch/mysql.sock
+```
+
+All three scenarios passed: `045 → 045`, `086 → 086`, and
+`045 → 086 → 045 → 086` (eight migration executions). Repeats preserved both
+schema and seeded data. Real MySQL allowed multiple product copies per unit and
+the same number in a different org, but rejected assigning one product number
+to two units in the same org with `ER_DUP_ENTRY`. The checker dropped its scratch
+databases and the scratch server was shut down. No live migration, apply, merge
+or deployment has run.

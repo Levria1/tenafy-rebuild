@@ -232,7 +232,12 @@ for six hours. `/product/<slug>/`, `?p=<product_id>` and
 catalogue refresh per cache cycle. Previous slugs remain in the in-memory index
 while their product exists; a still-unknown slug may follow up to three explicit
 301 Locations on the same host. Each outbound request has a two-second absolute
-timeout. Other hosts, errors and timeouts fall through to text (or `none`) using
+timeout, and the entire website lookup has one three-second budget across catalogue
+pages, a miss refresh, redirect hops and waits on a shared in-flight fetch. The
+remaining budget limits each request; expiry aborts the transport. A website
+failure is remembered for three minutes per org/base URL, so subsequent lookups
+fall through immediately during an outage. Unknown products and ordinary 404
+redirect misses do not start the failure cooldown. Other hosts, errors and timeouts fall through to text (or `none`) using
 the existing behavior. Tracking parameters, renter text, API keys and cookies
 are never forwarded. There are no Tenafy data writes in this endpoint.
 
@@ -260,11 +265,16 @@ product metadata without contacting the website. An unrecognized link omits the
 field; existing clients can ignore the additive field.
 
 `unit.website_name` supplies a second full name to the existing text scorer;
-normal unit/property names continue to work. The better score is used per unit,
-with the existing score tiers and fuzzy rules. Descriptors such as "Studio" are
-not property identity, and website property words are not also partial unit
-references ("1Bedroom" must not identify unit 1B). Units without a website name
-retain their previous scoring. Only confirmed, unique directory rows should be
+normal unit/property names continue to work. A website alias contributes only
+when the text names both its property words and its exact unit token; partial
+property-only or unit-only alias scores never enter the candidate set. Room-type
+words such as "Studio" and "1Bedroom" are not property identity. An area-only
+website prefix such as "Central" therefore helps "Central 4B", but cannot on its
+own change "studio in Central". Original district/city matching is preserved.
+Articles such as "a" do not name a website unit unless used as a unit reference.
+The better eligible score is used per unit; website property words cannot also
+be partial unit tokens ("1Bedroom" must not identify unit 1B). Units without a
+website name retain their previous scoring. Only confirmed, unique directory rows should be
 loaded; duplicated Tai Yuen A/B assignments and unverified Po Thai names require
 staff decisions. Staff can edit the website name and product list next to the
 unit's listing URL; the first product is primary and product ownership cannot

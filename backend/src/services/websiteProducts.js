@@ -3,6 +3,8 @@ const https = require('node:https');
 const { isIP } = require('node:net');
 
 const SIX_HOURS = 6 * 60 * 60 * 1000;
+const LOOKUP_BUDGET_MS = 3000;
+const FAILURE_COOLDOWN_MS = 3 * 60 * 1000;
 const MAX_ID = 9223372036854775807n;
 function productId(value) {
   if (typeof value === 'number' && !Number.isSafeInteger(value)) return null;
@@ -38,10 +40,10 @@ function decodeName(value) {
 
 // No redirect handling, cookies, API keys, or request-body forwarding. The absolute
 // timer covers DNS/connect/body time, not just inactivity on an open socket.
-function requestWebsite(url) {
+function requestWebsite(url, { timeoutMs = 2000, signal } = {}) {
   return new Promise((resolve, reject) => {
     const client = url.protocol === 'https:' ? https : http;
-    const req = client.get(url, { headers: { Accept: 'application/json', 'User-Agent': 'Tenafy-listing-resolver' } }, res => {
+    const req = client.get(url, { headers: { Accept: 'application/json', 'User-Agent': 'Tenafy-listing-resolver' }, signal }, res => {
       let body = ''; let bytes = 0;
       res.on('data', chunk => {
         bytes += chunk.length;
@@ -49,9 +51,9 @@ function requestWebsite(url) {
         else body += chunk;
       });
       res.on('end', () => { clearTimeout(timer); resolve({ status: res.statusCode, headers: res.headers, body }); });
-      res.on('error', reject);
+      res.on('error', error => { clearTimeout(timer); reject(error); });
     });
-    const timer = setTimeout(() => req.destroy(new Error('Website timeout')), 2000);
+    const timer = setTimeout(() => req.destroy(new Error('Website timeout')), Math.min(2000, timeoutMs));
     req.on('error', error => { clearTimeout(timer); reject(error); });
   });
 }
@@ -77,16 +79,36 @@ async function fetchProducts(baseValue, request = requestWebsite) {
   throw new Error('Website product list exceeds page limit');
 }
 
+// Bound both a live request and a wait on another caller's in-flight catalogue.
+// The transport receives the same abort signal, so timing out stops further I/O.
+function withSignal(promise, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new Error('Website lookup budget exhausted'));
+    Promise.resolve(promise).then(
+      value => { signal.removeEventListener('abort', abort); resolve(value); },
+      error => { signal.removeEventListener('abort', abort); reject(error); }
+    );
+    if (signal.aborted) { abort(); return; }
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
 function createWebsiteResolver({ request = requestWebsite, now = Date.now } = {}) {
   const cache = new Map();
-  async function index(orgId, base, force = false) {
+  function cacheEntry(orgId, base) {
     const key = `${orgId}:${base.href}`;
     let entry = cache.get(key);
-    if (!entry) { entry = { at: -Infinity, products: [], slugs: new Map(), missRefreshed: false }; cache.set(key, entry); }
+    if (!entry) {
+      entry = { at: -Infinity, products: [], slugs: new Map(), missRefreshed: false, failedUntil: -Infinity };
+      cache.set(key, entry);
+    }
+    return entry;
+  }
+  async function index(entry, base, requestInBudget, force = false) {
     if (entry.pending) return entry.pending;
     if (!force && now() - entry.at < SIX_HOURS) return entry;
     entry.pending = (async () => {
-      const products = await fetchProducts(base.href, request);
+      const products = await fetchProducts(base.href, requestInBudget);
       const byId = new Map(products.map(p => [p.product_id, p]));
       const slugs = new Map([...entry.slugs].filter(([, id]) => byId.has(id)));
       for (const p of products) slugs.set(p.slug.toLowerCase(), p.product_id);
@@ -98,35 +120,61 @@ function createWebsiteResolver({ request = requestWebsite, now = Date.now } = {}
     finally { entry.pending = null; }
   }
   return async function recognise(pool, orgId, value) {
+    let entry, timer;
     try {
       const [[setting]] = await pool.execute('SELECT website_base_url FROM organization WHERE id = ?', [orgId]);
       const base = websiteBase(setting?.website_base_url);
       if (!base) return null;
       let incoming = sameWebsite(value, base);
       if (!incoming) return null;
-      let entry = await index(orgId, base);
+      entry = cacheEntry(orgId, base);
+      if (entry.failedUntil > now()) return null;
+      const deadline = now() + LOOKUP_BUDGET_MS;
+      const controller = new AbortController();
+      timer = setTimeout(() => controller.abort(), LOOKUP_BUDGET_MS);
+      const requestInBudget = async url => {
+        const remaining = deadline - now();
+        if (controller.signal.aborted || remaining <= 0) throw new Error('Website lookup budget exhausted');
+        const response = await withSignal(request(url, {
+          timeoutMs: Math.min(2000, remaining), signal: controller.signal,
+        }), controller.signal);
+        if (now() >= deadline) throw new Error('Website lookup budget exhausted');
+        return response;
+      };
+      await withSignal(index(entry, base, requestInBudget), controller.signal);
       function find(url) {
         const id = productId(url.searchParams.get('p')) || productId(url.searchParams.get('product_id'));
         if (id) return entry.byId.get(id);
         const slug = url.pathname.match(/\/product\/([^/]+)\/?$/i)?.[1];
-        return slug ? entry.byId.get(entry.slugs.get(decodeURIComponent(slug).toLowerCase())) : null;
+        if (!slug) return null;
+        // Malformed renter URLs are misses, not a website outage.
+        try { return entry.byId.get(entry.slugs.get(decodeURIComponent(slug).toLowerCase())); }
+        catch { return null; }
       }
       let product = find(incoming);
-      // Only one extra refresh per cache cycle (and shared pending refresh), so
-      // random unknown links cannot make every request re-download the catalogue.
-      if (!product && !entry.missRefreshed) { entry.missRefreshed = true; entry = await index(orgId, base, true); product = find(incoming); }
+      // Only one extra refresh per cache cycle, inside the same total budget.
+      if (!product && !entry.missRefreshed) {
+        entry.missRefreshed = true;
+        await withSignal(index(entry, base, requestInBudget, true), controller.signal);
+        product = find(incoming);
+      }
       for (let hop = 0; !product && hop < 3; hop++) {
         if (!/\/product\/[^/]+\/?$/i.test(incoming.pathname)) break;
-        // Use the configured origin; discard tracking parameters and fragments.
         const target = new URL(incoming.pathname, base.origin);
-        const response = await request(target);
+        const response = await requestInBudget(target);
+        if (response.status >= 500) throw new Error('Website unavailable');
         if (response.status !== 301 || !response.headers.location) break;
         incoming = sameWebsite(response.headers.location, target);
         if (!incoming || !sameWebsite(incoming, base)) break;
         product = find(incoming);
       }
       return product ? { product_id: product.product_id, name: product.name, permalink: product.permalink } : null;
-    } catch { return null; } // Website/settings failures never fail unit resolution.
+    } catch {
+      // Failures belong to the org + configured base URL, never all tenants.
+      // Unknown products/404 redirects are ordinary misses and do not set this.
+      if (entry) entry.failedUntil = now() + FAILURE_COOLDOWN_MS;
+      return null;
+    } finally { clearTimeout(timer); }
   };
 }
 

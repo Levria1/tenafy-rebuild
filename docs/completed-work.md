@@ -2,6 +2,13 @@
 
 Track all changes made per session. Update at the end of each session.
 
+## Session: PR #18 review fixes and scratch MySQL verification (2026-11-13)
+
+- Website aliases contribute only when both their property words and exact unit token are present. Vague studio/bedroom requests retain the canonical result. Real-location snapshot replay and untouched main agree for all five reported phrases: the first three are none; both Central area phrases are already property_only with 10 candidates on main. Central 4B, Central 1-Bedroom 2A and Bonham Strand West Studio D stay confident. Full name replay remains 98/109 → 103/109, no regressions.
+- Website calls share a three-second total budget, including pagination, miss refresh, redirects and shared in-flight fetches. Aborting the budget cancels the HTTP transport. Website failures cause a three-minute cooldown per org/base; normal misses do not mark an outage.
+- `scripts/checkWebsiteMigrations.js` ran on isolated rootless MySQL 8.0.46: 045 twice, 086 twice, and 045/086/045/086 all passed (8 executions). Schema and seeded data survived repeats; copies/cross-org numbers were allowed and duplicate org/product mapping was rejected. Scratch DBs were dropped and the server shut down.
+- Tests: targeted 119 pass / 0 fail; full backend 1,969 pass / same 4 known failures. No frontend code changed in this review. No live migration/apply, merge or deployment.
+
 ## Session: Website product identity and directory loader (2026-11-12, PR pending deployment)
 
 - Unit website products have org-unique product numbers, primary/copy mappings, and a website name. Schema is `migrations/045_unit_website_products.sql`, mirrored in idempotent per-org migration `086`.

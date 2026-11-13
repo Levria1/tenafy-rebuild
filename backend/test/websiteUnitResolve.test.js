@@ -13,7 +13,8 @@ const units = [
   { id:'7',name:'8A',property_id:'4',property_name:'Cleverly',website_name:'Cleverly Studio A' },
   { id:'8',name:'3A',property_id:'5',property_name:'Hollywood',website_name:'Hollywood 3/F Studio A' },
   { id:'9',name:'7B',property_id:'1',property_name:'Nam Pak Hong',website_name:'Bonham Strand West Studio B' },
-].map(u=>({...u,marketable:true}));
+  { id:'10',name:'2A',property_id:'2',property_name:"Gilman's Bazaar",website_name:'Central 1-Bedroom 2A' },
+].map(u=>({...u,marketable:true,city:'Hong Kong',district:u.property_id==='2'?'Central':'Sheung Wan'}));
 
 test('website full names resolve without new fuzzy rules, common descriptors, or 1Bedroom/1B collisions', () => {
   for (const u of units) {
@@ -26,6 +27,18 @@ test('units without a website name retain their full previous result', () => {
   const plain=units.map(({website_name,...u})=>u);
   const empty=plain.map(u=>({...u,website_name:null}));
   for(const q of ['Nam Pak Hong 7D','Cleverly 8A','Central Studio 4B','not found','7D','Tai Yuen flat 26'])assert.deepEqual(scoreUnits(q,empty),scoreUnits(q,plain));
+});
+test('vague room requests retain exactly the canonical result, with real district/city fields', () => {
+  const canonical=units.map(({website_name,...u})=>u);
+  const phrases=['studio A','Studio B available?','do you have a 1 bedroom','studio in Central','a studio near central station','a studio in Cleverly','A studio in Cleverly'];
+  for(const phrase of phrases) assert.deepEqual(scoreUnits(phrase,units),scoreUnits(phrase,canonical),phrase);
+  for(const phrase of phrases.slice(0,3)) assert.equal(scoreUnits(phrase,units).status,'none',phrase);
+  for(const phrase of phrases.slice(3,5)) assert.equal(scoreUnits(phrase,units).status,'property_only',phrase);
+});
+test('specific property and unit references remain confident without the Studio descriptor', () => {
+  for(const [text,id] of [['Central 4B','2'],['Central 1-Bedroom 2A','10'],['Bonham Strand West Studio D','1']]) {
+    const out=scoreUnits(text,units);assert.equal(out.status,'confident',text);assert.equal(out.match.unit_id,id,text);
+  }
 });
 test('database unit load includes website_name and preserves public org scope', async () => {
   const result=await loadUnitsWithMarketable({execute:async(sql,args)=>{

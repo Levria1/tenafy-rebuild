@@ -77,6 +77,67 @@ test('timeout, malformed response, or missing settings column falls through', as
   assert.equal(await resolve(settingPool(BASE), 'org', `${BASE}?p=41`), null);
   assert.equal(await resolve({ execute: async () => { throw Error('missing column'); } }, 'org', `${BASE}?p=41`), null);
 });
+test('one three-second budget covers catalogue pagination, miss refresh and redirect hops', async () => {
+  for (const paginate of [false,true]) {
+    let time=0;const calls=[];
+    const resolve=createWebsiteResolver({now:()=>time,request:async(url,options)=>{
+      calls.push({url,timeout:options.timeoutMs});
+      const catalogue=url.pathname.endsWith('/products');
+      time+=1000;
+      if(catalogue) return {status:200,headers:{},body:JSON.stringify(paginate&&url.searchParams.get('page')==='1'?Array.from({length:100},(_,i)=>product(i+1)):[product(41)])};
+      return {status:301,headers:{location:'/product/still-missing/'},body:''};
+    }});
+    assert.equal(await resolve(settingPool(BASE),'org',`${BASE}product/missing/`),null);
+    assert.equal(time,3000);assert.equal(calls.length,3);
+    assert.deepEqual(calls.map(c=>c.timeout),[2000,2000,1000]);
+    // The total-budget failure is remembered without another website call.
+    assert.equal(await resolve(settingPool(BASE),'org',`${BASE}product/another/`),null);
+    assert.equal(calls.length,3);
+  }
+});
+test('failed websites are skipped for three minutes, then retried; cooldown is per org/base', async () => {
+  let time=0,calls=0,down=true;
+  const pool={execute:async()=>[[{website_base_url:BASE}]]};
+  const resolve=createWebsiteResolver({now:()=>time,request:async()=>{
+    calls++;if(down)throw Error('site down');
+    return {status:200,headers:{},body:JSON.stringify([product(41)])};
+  }});
+  assert.equal(await resolve(pool,'org',`${BASE}?p=41`),null);
+  for(let i=0;i<5;i++)assert.equal(await resolve(pool,'org',`${BASE}?p=41`),null);
+  assert.equal(calls,1);
+  down=false;
+  assert.equal((await resolve(pool,'other-org',`${BASE}?p=41`)).product_id,'41');
+  assert.equal(calls,2);
+  time=180001;
+  assert.equal((await resolve(pool,'org',`${BASE}?p=41`)).product_id,'41');
+  assert.equal(calls,3);
+});
+test('a stalled catalogue is aborted by the real total budget and a later lookup returns immediately', async () => {
+  let calls=0,aborted=false;
+  const resolve=createWebsiteResolver({request:async(url,{signal})=>{
+    calls++;signal.addEventListener('abort',()=>{aborted=true;},{once:true});
+    return new Promise(()=>{}); // Stub transport ignores timeoutMs; total budget still bounds the await.
+  }});
+  const start=Date.now();
+  assert.equal(await resolve(settingPool(BASE),'org',`${BASE}?p=41`),null);
+  assert.ok(Date.now()-start>=2800&&Date.now()-start<5000);
+  assert.equal(aborted,true);
+  const next=Date.now();
+  assert.equal(await resolve(settingPool(BASE),'org',`${BASE}?p=41`),null);
+  assert.ok(Date.now()-next<500);assert.equal(calls,1);
+});
+test('concurrent website lookups share a failing request and all use the cooldown', async () => {
+  let calls=0;
+  const resolve=createWebsiteResolver({request:async()=>{calls++;await new Promise(r=>setTimeout(r,10));throw Error('offline');}});
+  assert.deepEqual(await Promise.all(Array.from({length:5},()=>resolve(settingPool(BASE),'org',`${BASE}?p=41`))),[null,null,null,null,null]);
+  assert.equal(calls,1);
+  assert.equal(await resolve(settingPool(BASE),'org',`${BASE}?p=41`),null);assert.equal(calls,1);
+});
+test('an invalid escaped slug is an ordinary miss and does not put a healthy website in cooldown', async () => {
+  const f=fixture();
+  assert.equal(await f.resolve(settingPool(BASE),'org',`${BASE}product/bad%/`),null);
+  assert.equal((await f.resolve(settingPool(BASE),'org',`${BASE}?p=41`)).product_id,'41');
+});
 test('Store API pagination, entity names, and product ids are validated', async () => {
   const calls = [];
   const products = await fetchProducts(BASE, async u => {
