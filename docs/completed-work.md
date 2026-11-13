@@ -2,7 +2,23 @@
 
 Track all changes made per session. Update at the end of each session.
 
+## Session: PR #18 review fixes and scratch MySQL verification (2026-11-13)
+
+- Website aliases contribute only when both their property words and exact unit token are present. Vague studio/bedroom requests retain the canonical result. Real-location snapshot replay and untouched main agree for all five reported phrases: the first three are none; both Central area phrases are already property_only with 10 candidates on main. Central 4B, Central 1-Bedroom 2A and Bonham Strand West Studio D stay confident. Full name replay remains 98/109 → 103/109, no regressions.
+- Website calls share a three-second total budget, including pagination, miss refresh, redirects and shared in-flight fetches. Aborting the budget cancels the HTTP transport. Website failures cause a three-minute cooldown per org/base; normal misses do not mark an outage.
+- `scripts/checkWebsiteMigrations.js` ran on isolated rootless MySQL 8.0.46: 045 twice, 086 twice, and 045/086/045/086 all passed (8 executions). Schema and seeded data survived repeats; copies/cross-org numbers were allowed and duplicate org/product mapping was rejected. Scratch DBs were dropped and the server shut down.
+- Tests: targeted 119 pass / 0 fail; full backend 1,969 pass / same 4 known failures. No frontend code changed in this review. No live migration/apply, merge or deployment.
+
+## Session: Website product identity and directory loader (2026-11-12, PR pending deployment)
+
+- Unit website products have org-unique product numbers, primary/copy mappings, and a website name. Schema is `migrations/045_unit_website_products.sql`, mirrored in idempotent per-org migration `086`.
+- Resolve retains id → exact URL → website product → text precedence. Product lookup uses an optional org website setting, cached public Store API catalogue and bounded same-host redirects; recognised unmapped/inactive products return website metadata. Staff can edit unit names/products and admins can save the host separately from landlord fields.
+- The directory loader defaults to dry run, reports every held row, checks product ownership and updates confirmed rows transactionally only under `--apply`. The separate replay script measures the full checked sheet without loading disputed names.
+- Owner-checked sheet plus a SELECT-only org snapshot and 125 public website products: loaded 103, copies 13, needs staff 43, no unit 9. Website-name replay is **98/109 → 103/109**, with no regressions. Untouched `main` independently gives 98, not the prompt's earlier 85. The six held Tai Yuen A/B and Po Thai rows remain unresolved.
+- Validation: backend 1,962 pass / 4 known baseline failures (reproduced on untouched main); frontend production build passes. No local MySQL server was available, so migration SQL was not executed. No live migration, setting change, loader apply, deployment or tenant message. Workflow and limitations: `docs/website-directory-loading.md`.
+
 ---
+
 
 ## Session: Facebook posting — replacing a lost account; slot editor (2026-11-03)
 

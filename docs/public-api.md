@@ -212,11 +212,77 @@ Precedence is fixed and matches `/viewing-negotiation/start`:
 | Order | Field | Behavior |
 |---:|---|---|
 | 1 | `unit_id` | Active unit in the caller's org only |
-| 2 | `listing_url` / `listing_link` | Exact listing URL match after URL normalization |
-| 3 | `unit_text` | Shared fuzzy unit resolver |
+| 2 | `listing_url` / `listing_link` | Exact listing URL match first, then org website product number (including copies and old slugs) |
+| 3 | `unit_text` | Shared unit resolver, also scoring each stored website name as a second full name |
 
 If `listing_url` is not found and `unit_text` is also present, the endpoint
 falls through and resolves by text. If `unit_id` is present, it always wins.
+
+After the exact link check, only links on the caller organization's configured
+`organization.website_base_url` host are eligible for website product lookup.
+Set **Settings → Landlord → Public listings website** to the site's base URL;
+it is unset by default, and an unset/invalid setting makes no outbound request.
+The setting accepts public HTTP(S) hostnames without credentials or custom ports.
+No site hostname is hard-coded in the resolver.
+
+The resolver reads the public WooCommerce Store API catalogue
+(`wp-json/wc/store/v1/products`, pages of 100) and caches it per org and base URL
+for six hours. `/product/<slug>/`, `?p=<product_id>` and
+`?product_id=<product_id>` identify a website product. A miss permits one extra
+catalogue refresh per cache cycle. Previous slugs remain in the in-memory index
+while their product exists; a still-unknown slug may follow up to three explicit
+301 Locations on the same host. Each outbound request has a two-second absolute
+timeout, and the entire website lookup has one three-second budget across catalogue
+pages, a miss refresh, redirect hops and waits on a shared in-flight fetch. The
+remaining budget limits each request; expiry aborts the transport. A website
+failure is remembered for three minutes per org/base URL, so subsequent lookups
+fall through immediately during an outage. Unknown products and ordinary 404
+redirect misses do not start the failure cooldown. Other hosts, errors and timeouts fall through to text (or `none`) using
+the existing behavior. Tracking parameters, renter text, API keys and cookies
+are never forwarded. There are no Tenafy data writes in this endpoint.
+
+Product numbers map through `unit_website_product`, uniquely per org. A primary
+product and any same-name website copies may all map to one unit. Only active,
+non-deleted, publicly eligible units/properties in the caller's org can be
+returned, using the same scope as text matching. An unknown or inactive mapping
+never returns a unit. A successful product lookup keeps
+`resolved_by: "listing_url"` for partner compatibility.
+
+When a product is recognized, the response also includes:
+
+```json
+"website_listing": {
+  "product_id": "1234",
+  "name": "Bonham Strand West Studio D",
+  "permalink": "https://your-website.example/product/current-studio-d/"
+}
+```
+
+Product numbers are strings (BIGINT-safe). This metadata is included even when
+no active unit maps to the product, and remains present when a supplied
+`unit_text` resolves instead. A current exact link can return locally stored
+product metadata without contacting the website. An unrecognized link omits the
+field; existing clients can ignore the additive field.
+
+`unit.website_name` supplies a second full name to the existing text scorer;
+normal unit/property names continue to work. A website alias contributes only
+when the text names both its property words and its exact unit token; partial
+property-only or unit-only alias scores never enter the candidate set. Room-type
+words such as "Studio" and "1Bedroom" are not property identity. An area-only
+website prefix such as "Central" therefore helps "Central 4B", but cannot on its
+own change "studio in Central". Original district/city matching is preserved.
+Articles such as "a" do not name a website unit unless used as a unit reference.
+The better eligible score is used per unit; website property words cannot also
+be partial unit tokens ("1Bedroom" must not identify unit 1B). Units without a
+website name retain their previous scoring. Only confirmed, unique directory rows should be
+loaded; duplicated Tai Yuen A/B assignments and unverified Po Thai names require
+staff decisions. Staff can edit the website name and product list next to the
+unit's listing URL; the first product is primary and product ownership cannot
+be transferred silently to another unit.
+
+See [Website directory loading](website-directory-loading.md) for migration,
+dry-run, apply and replay instructions.
+
 
 Response:
 

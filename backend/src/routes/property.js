@@ -1,4 +1,5 @@
 const express = require('express');
+const { saveUnitWebsiteProducts } = require('../services/unitWebsiteDirectory');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
@@ -318,11 +319,15 @@ router.get('/unit/:unit_id', authenticate, async (req, res) => {
     if (units.length === 0) {
       return res.status(404).json({ code: 404, message: 'Unit not found' });
     }
+    const [websiteProducts] = await req.pool.execute(
+      'SELECT product_id, permalink, name, is_primary FROM unit_website_product WHERE org_id=? AND unit_id=? ORDER BY is_primary DESC, product_id',
+      [orgId, unit_id]
+    );
     // Attach gallery
     const [galleryRows] = await req.pool.execute(
       'SELECT file_id, `order` FROM object_gallery WHERE object_id = ? ORDER BY `order`', [unit_id]
     );
-    res.json({ code: 200, data: { ...units[0], gallery: galleryRows } });
+    res.json({ code: 200, data: { ...units[0], gallery: galleryRows, website_products: websiteProducts } });
   } catch (error) {
     console.error('Get unit error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get unit' });
@@ -347,6 +352,20 @@ router.get('/unit/tenant/:id', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Get unit by tenant error:', error);
     res.status(500).json({ code: 500, message: 'Failed to get unit' });
+  }
+});
+
+// The website fields are saved atomically, including removal of a copy.
+router.put('/unit/:unit_id/website-products', authenticate, async (req, res) => {
+  try {
+    await saveUnitWebsiteProducts(req.pool, req.user.orgId, req.params.unit_id,
+      req.body.website_name ?? null, req.body.website_products);
+    await logActivity(req, 'UPDATE', 'unit', req.params.unit_id, 'Updated unit website products');
+    res.json({ code: 200, message: 'Website products updated' });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ code: error.status, message: error.message });
+    console.error('Update unit website products error:', error.code);
+    res.status(500).json({ code: 500, message: 'Failed to update website products' });
   }
 });
 
