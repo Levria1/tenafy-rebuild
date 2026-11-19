@@ -1,8 +1,10 @@
 # Xero Chrome helper: read-only Tenafy lookup
 
 Status: implemented locally on `feat/xero-browser-lookup`. Not pushed, deployed,
-migrated live or connected to the working Chrome helper. Its source location and
-actual organisation/account identifiers have been requested from the owner.
+migrated live. The owner supplied the working `tenafy-toolbar-fix.zip`; it is now
+in `extensions/xero-side-panel` and extended to version 0.2 with a staff-tab bridge,
+account setup and read-only suggestions. Actual organisation/account/currency
+identifiers and the controlled staff-PC runtime test remain pending.
 
 This is the first backend slice of the owner's 2026-11-19 handoff. It supplies
 ranked evidence for staff review. It neither writes payments nor calls a Xero
@@ -55,13 +57,18 @@ sessions without a selected staff organisation, and callers without permission
 are refused. Scope comes from the authenticated organisation, never a posted
 org ID. Responses are `Cache-Control: no-store`, limited to 30 operations per
 minute per staff user/organisation. No new browser credentials or CORS exceptions
-are added; the helper's authentication flow/trusted origin still needs integration.
+are added. The helper optionally requests host access only to platform.tenafy.com
+and performs two fixed same-origin operations inside an isolated script on a
+signed-in staff tab. Cookies stay in that browser session; no token is extracted.
+The bridge was tested with synthetic endpoints/cookies and intercepted Chrome APIs;
+the real extension permission prompt/runtime still needs staff-PC verification.
 Never put backend or Switchboard service credentials in the extension.
 
 Request (synthetic identifiers, **not live mappings**):
 
 ```json
 {
+  "expected_org_id": "1",
   "ui_org_slug": "verified-org",
   "xero_account_id": "12345678-abcd-1234-abcd-123456789abc",
   "statement": {
@@ -77,6 +84,8 @@ Request (synthetic identifiers, **not live mappings**):
 }
 ```
 
+The helper supplies `expected_org_id` as a consistency assertion; a mismatch
+returns 409 before searching, without changing the authenticated scope.
 Amounts must be positive integers in minor units, with direction separate.
 Dates must be real YYYY-MM-DD dates. Currency is mandatory; no HKD/default-org
 fallback. Zero- and two-decimal currencies are supported according to Node's
@@ -123,7 +132,8 @@ twice on scratch MySQL. Live migration/deployment needs owner approval.
    independently observe its UI slug. Superadmins can explicitly save the pair
    through `PUT /api/integrations/xero/browser/binding` with
    `{ ui_org_slug, xero_tenant_id }`. The tenant ID must match the existing connection.
-   Read with `GET .../binding`. Changing a connection invalidates the old binding.
+   Read with `GET .../binding`, which also returns the authenticated `org_id`.
+   Changing a connection invalidates the old binding.
 2. Reuse Settings → Integrations → Xero → Account Mapping. A selected bank needs
    one active, non-ignored mapping to both a Tenafy account and an active bank.
    Preserve the complete existing mapping set; the old mapping save API replaces
@@ -161,10 +171,12 @@ review, a diff against prefilled fields, real picker selection, committed-value
 verification and then dependent tracking/tax fields. Re-read after filling and
 report unresolved fields. Never automatically click OK, Save or Reconcile.
 
-Remaining integration inputs: existing helper repo/path and request format,
-actual verified UI slug/account ID/currency, controlled picker tests, larger-page
-pagination/row-removal tests, category/ledger/tax/tracking mappings, and a reviewed
-staff authentication/origin flow. No live autofill has been tested or enabled.
+Remaining integration inputs: actual verified UI slug/account ID/currency,
+controlled staff-PC Chrome permission/runtime and picker tests, larger-page
+pagination/row-removal tests, and category/ledger/tax/tracking mappings. The helper
+request contract and staff-tab bridge are implemented. No live autofill has been
+tested or enabled. The Chrome panel performs suggestions only; no Xero fields
+are edited, and no Find & Match or final confirmation control is clicked.
 
 ## Verification
 
@@ -173,7 +185,11 @@ mapping/currency conflicts, exact money/date validation and existing reconciliat
 regression checks. Scratch MySQL verifies migration twice and real org/bank/currency,
 direction, remaining-balance and copied-message isolation. Full backend: 1,953 tests,
 1,947 pass, four known failures, two optional MySQL tests skipped (browser integration
-run separately on scratch).
+run separately on scratch). Six helper unit tests and two synthetic browser flows
+also pass. The browser checks cover account setup, same-origin staff-cookie fetch,
+plaintext evidence, row disappearance, delayed stale responses and tab switching.
+They intercept Chrome APIs and HTTPS endpoints; they do not claim a live runtime
+or live mapping test.
 
 ```bash
 cd backend

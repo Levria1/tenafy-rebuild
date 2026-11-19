@@ -74,13 +74,16 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   const request = async (claims, body = input(), path = '/lookup', method = 'POST') => {
     const token = claims ? jwt.sign({ id: '99', orgId: '1', ...claims }, config.jwtSecret, { expiresIn: '1m' }) : '';
     return fetch(`http://127.0.0.1:${server.address().port}/browser${path}`, { method,
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: JSON.stringify(body) });
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, ...(method !== 'GET' ? { body: JSON.stringify(body) } : {}) });
   };
   assert.equal((await request(null)).status, 401);
   assert.equal((await request({ permissions: [] })).status, 403);
   assert.equal((await request({ role: 'tenant', permissions: ['*'] })).status, 401);
   assert.equal((await request({ isMasterAdmin: true, permissions: ['*'] })).status, 403);
   assert.equal((await request({ orgId: '2', permissions: ['*'] }, { ...input(), org_id: '1' })).status, 409);
+  assert.equal((await request({ permissions: ['*'] }, { ...input(), expected_org_id: '2' })).status, 409);
+  const binding = await request({ permissions: ['*'] }, null, '/binding', 'GET');
+  assert.equal((await binding.json()).data.org_id, '1');
   assert.equal((await request({ permissions: ['LANDLORD/ACCOUNTING_CREATE'] }, { ui_org_slug: 'verified-org' }, '/binding', 'PUT')).status, 403);
   const response = await request({ permissions: ['LANDLORD/ACCOUNTING_CREATE'] }, { ...input(), org_id: '2', bank_account_id: '999' });
   assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');

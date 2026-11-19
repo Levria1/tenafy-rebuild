@@ -155,6 +155,10 @@ async function copiedEvidence(pool, orgId, mapping, statement) {
 }
 
 async function lookup(pool, orgId, body) {
+  if (body?.expected_org_id != null) {
+    if (typeof body.expected_org_id !== 'string' || !/^\d{1,20}$/.test(body.expected_org_id)) fail('expected_org_id must be an organisation ID string.');
+    if (body.expected_org_id !== String(orgId)) fail('The signed-in Tenafy organisation changed. Reconnect before looking up payments.', 409);
+  }
   const uiSlug = slug(body?.ui_org_slug), accountId = normalizeAccountId(body?.xero_account_id);
   const statement = validateStatement(body?.statement);
   const mapping = await resolveMapping(pool, orgId, uiSlug, accountId, statement);

@@ -25,7 +25,7 @@ function error(res, err) {
 router.get('/binding', async (req, res) => {
   try {
     const [[binding]] = await req.pool.execute('SELECT ui_org_slug,xero_tenant_id,updated_at FROM xero_browser_binding WHERE org_id=?', [req.user.orgId]);
-    res.json({ code: 200, data: binding || null });
+    res.json({ code: 200, data: binding ? { ...binding, org_id: String(req.user.orgId) } : null });
   } catch (err) { error(res, err); }
 });
 

@@ -4,6 +4,30 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Connect supplied Xero helper source (2026-11-19, local only)
+
+- Owner supplied Drive file 1qNAwPqLmi1N7-fb5dP27YJ1IV_GQv8Ct,
+  `tenafy-toolbar-fix.zip`. Inspected/imported into `extensions/xero-side-panel`;
+  original Drive archive unchanged. Provenance/SHA recorded in helper README.
+- Version 0.2 adds explicit account/currency setup using non-secret local storage,
+  optional access only to platform.tenafy.com, and a same-origin staff-tab bridge
+  for GET binding / POST lookup. No token extraction, new CORS exceptions, cookies
+  permission, Xero field editing, candidate selection or final confirmation.
+- Backend returns authenticated org ID with the binding and checks optional
+  expected_org_id before searching. Client validates every returned identity,
+  discards stale/removed/cancelled proposals, renders evidence as plaintext, and
+  keeps original read-only row discovery and pagination labels.
+- Tests: six helper units, 16 focused backend checks and two synthetic browser
+  flows pass. Browser tests use the real panel/bridge modules and fake HTTPS staff
+  cookie, with Chrome APIs and endpoints intercepted. Actual Chrome permissions,
+  staff-PC runtime, live mapping values and Xero picker behaviour remain unverified.
+  Full backend stays at 1,953 tests/1,947 pass/four known failures/two optional skips.
+- Updated helper draft is packaged separately. Backend/migration 089 and this
+  feature are still not pushed or deployed. Actual org/account/currency mappings
+  and separate release approval are needed before live suggestions can work.
+
+---
+
 ## Session: Xero Chrome-helper lookup API (2026-11-19, local only)
 
 - Implemented the first restricted backend slice from the owner's DOM handoff on
