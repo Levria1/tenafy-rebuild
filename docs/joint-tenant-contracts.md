@@ -111,9 +111,12 @@ subject to the owner's separate approval for that change.
   explicit unsaved conversion, version snapshots, stale-save rejection, duplication
   and historical-row preservation.
 - Three production-rendered cases (one tenant, two tenants, longer names/emails)
-  match all 11 contract pages of their approved previews pixel-for-pixel. The
-  normal completion certificate is page 12. The other nine contract pages remain
-  unchanged between cases.
+  preserve the approved layout, with the requested signature-underline correction.
+  Markers occupy zero width in upgraded layouts so the underline begins beneath
+  the signature. Ten single-tenant baseline pages are pixel-identical; only the
+  signature page changes. The normal completion certificate is page 12. The other
+  nine contract pages remain unchanged between cases. Real PDF geometry checks
+  verify that every tenant signature aligns with its underline.
 - Local Chromium smoke checks use intercepted synthetic APIs only: both tenants
   prefill, required rows cannot be removed, blank extras cannot be silently
   dropped, send includes both tenant IDs/snapshot, Quill-normalised source converts,

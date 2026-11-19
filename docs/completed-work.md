@@ -4,6 +4,22 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Align signature underlines (2026-11-19, local only)
+
+- Owner noted the underline was right of the signature. Invisible marker text
+  consumed horizontal space before the underscores. Upgraded layouts now use a
+  zero-width marker wrapper, keeping its extractable PDF anchor and placing the
+  underline beneath the signature. Applies to tenant and landlord anchors in
+  upgraded templates; legacy template rendering stays unchanged.
+- Re-rendered one/two/long-name production examples and visually inspected the
+  corrected page. Real PDF checks require each signature and underline to start
+  at the same x coordinate, with the line beneath the signature. All cases remain
+  11 contract pages plus completion. Ten single-tenant pages match the baseline;
+  nine pages match across tenant counts. Focused contract/request/stamper tests
+  pass. No live changes, push or deployment.
+
+---
+
 ## Session: Joint-tenant contracts and signing (2026-11-19, local only)
 
 - Implemented the approved formatting proof on `feat/joint-tenant-contracts`.

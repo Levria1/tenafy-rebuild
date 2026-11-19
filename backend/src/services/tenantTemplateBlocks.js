@@ -34,7 +34,7 @@ function renderBlock(kind,ctx,substitute){
     // The source already contains labelled signature lines. Use production-size
     // anchors in editor previews too; legacy 160px dashed placeholders can wrap
     // a two-column signature line and misrepresent its actual pagination.
-    return substitute(html,{...ctx,realRender:kind==='signatures'?true:ctx.realRender,tenant:t,tenants:[],additionalTenants:[],tenantLayout:null,escapeTemplateValues:true});
+    return substitute(html,{...ctx,realRender:kind==='signatures'?true:ctx.realRender,alignSignatureLines:kind==='signatures',tenant:t,tenants:[],additionalTenants:[],tenantLayout:null,escapeTemplateValues:true});
   });
   if(tenants.length===1)return rendered[0]||'';
   if(kind==='parties')return rendered.map(h=>`<div style="break-inside:avoid;page-break-inside:avoid">${h}</div>`).join('');

@@ -398,7 +398,12 @@ const VARIABLES = [
 function sigAnchor(ctx, marker, label) {
   if (ctx && ctx.realRender) {
     // White + small but reliably extractable; line-height:0 so it adds no height.
-    return `<span style="color:#ffffff;font-size:8px;line-height:0;">${marker}</span>`;
+    const anchor = `<span style="color:#ffffff;font-size:8px;line-height:0;">${marker}</span>`;
+    // Upgraded layouts put the marker immediately before an underline. Keep
+    // its PDF text position, but reserve no width so the line starts below ink.
+    return ctx.tenantLayout || ctx.alignSignatureLines
+      ? `<span style="display:inline-block;width:0;overflow:visible;white-space:nowrap;">${anchor}</span>`
+      : anchor;
   }
   return `<span style="display:inline-block;min-width:160px;border-bottom:1px dashed #999;color:#999;font-size:11px;text-align:center;">${label}</span>`;
 }

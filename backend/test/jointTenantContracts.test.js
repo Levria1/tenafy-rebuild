@@ -11,10 +11,13 @@ const tenants=()=>[alice,bob].map(t=>({...t,display_name:personOrCompanyName(t)}
 const input=()=>tenants().map(t=>({tenant_id:t.id,signer_name:t.display_name,signer_email:t.email,role:'tenant'}));
 const ctx=list=>({...vars.sampleContext(),tenant:list[0],additionalTenants:list.slice(1),tenants:list,realRender:true});
 
-test('template conversion preserves the entire one-tenant HTML and its layout metadata across JSON storage',()=>{
+test('template conversion preserves one-tenant content and metadata while overlaying signature markers',()=>{
  const converted=blocks.upgradeTemplate(fixture.body_html);
  const c=ctx([alice]);c.tenantLayout=JSON.stringify(converted.tenant_layout);
- assert.equal(vars.substitute(converted.body_html,c),vars.substitute(fixture.body_html,c));
+ const html=vars.substitute(converted.body_html,c);
+ const unwrap=s=>s.replace(/<span style="display:inline-block;width:0;overflow:visible;white-space:nowrap;">(<span[^>]*>SIGANCHOR[A-Z0-9]+<\/span>)<\/span>/g,'$1');
+ assert.equal(unwrap(html),vars.substitute(fixture.body_html,{...c,tenantLayout:null}));
+ assert.match(html,/width:0;overflow:visible/);
  assert.equal(converted.tenant_layout.parties.includes('{{TENANT_ID_CARD}}'),true);
  assert.throws(()=>blocks.upgradeTemplate(converted.body_html),/manual/);
  assert.throws(()=>blocks.upgradeTemplate('<p>{{TENANT_NAME}}</p>'),/manual/);
