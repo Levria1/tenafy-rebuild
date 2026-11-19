@@ -138,10 +138,11 @@ Deposit refunds are regular invoices with `type=1` (Outflow) and the Deposit cat
 
 ## Current Status
 
-Local branch `feat/xero-browser-lookup` adds the first read-only Chrome-helper
-matching API (not deployed). It needs migration 089 and explicit org/bank/currency
-mappings. The supplied helper is extended in `extensions/xero-side-panel` with
-a staff-tab bridge and account setup. Staff-PC runtime/picker tests remain pending;
+Xero Chrome-helper lookup API released on 2026-11-19 via PR #22 (code `6e0f0c7`).
+Migration 089 is applied to all three active org databases; explicit UI-org and
+currency bindings remain empty until verified. Bank/property links are also pending
+setup. The supplied helper v0.2 is in `extensions/xero-side-panel`; it uses a staff-tab
+bridge and account setup. Actual staff-PC runtime/picker tests remain pending;
 autofill is disabled. See `docs/xero-browser-lookup.md`.
 See `docs/completed-work.md` for detailed progress tracking.
 

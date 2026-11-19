@@ -1,12 +1,26 @@
 # Tenafy reconciliation review
 
 Version 0.2 adds read-only Tenafy suggestions to the owner's working toolbar helper.
-The matching backend and migration 089 are implemented locally, but have not been
-released. Local Xero reading works independently; suggestions require that release
-and verified server-side organisation/bank/currency mappings. This package never
+The matching backend was released on 2026-11-19 via PR #22 and migration 089.
+Local Xero reading works independently; suggestions require verified server-side
+organisation/bank/currency mappings. Those mappings are not automatically seeded. This package never
 edits a Xero field or clicks OK, Save or Reconcile.
 
-## Staff setup (after the backend release)
+## First: send the mapping identity (no connection needed)
+
+Open the bank's Reconcile tab in Xero, click the helper toolbar icon, then click
+**Read this Xero tab**. Copy the panel's **Xero organisation: … · Bank account: …**
+line (or send a screenshot of that line). It contains the observed UI slug and
+normalised account UUID. This reading step works before Connect Tenafy is set up.
+The API organisation ID and ACJ HSBC S* (April Eve) account UUID are already known
+from Tenafy's connection; Xero's read-only Accounts API confirms ACJ Savings is HKD.
+We still need to verify the observed UI slug/account pair and configure bank links.
+
+If the organisation reads "unverified", copy the active organisation's settings
+link containing `/app/!<slug>/settings`. Never send passwords, session cookies or
+login tokens. Do not infer currency from a bare dollar symbol.
+
+## Staff setup (once server mappings are configured)
 
 1. Extract the ZIP into a new folder. In Chrome's extension management page, load
    that folder with **Load unpacked**. Disable the old helper to avoid duplicate

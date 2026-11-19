@@ -1,10 +1,28 @@
 # Xero Chrome helper: read-only Tenafy lookup
 
-Status: implemented locally on `feat/xero-browser-lookup`. Not pushed, deployed,
-migrated live. The owner supplied the working `tenafy-toolbar-fix.zip`; it is now
-in `extensions/xero-side-panel` and extended to version 0.2 with a staff-tab bridge,
-account setup and read-only suggestions. Actual organisation/account/currency
-identifiers and the controlled staff-PC runtime test remain pending.
+Status: code deployed on 2026-11-19 via [PR #22](https://github.com/Levria1/tenafy-rebuild/pull/22),
+merge commit `6e0f0c7`. Owner approval: Discord 1572898459990884415. Migration 089
+applied successfully to all three active org databases; both new binding tables
+were verified empty. Health/login returned 200 internally and over public HTTPS;
+anonymous binding access returned 401. Authenticated binding read passed, missing
+or changed-organisation mappings returned 409, and missing currency returned 400.
+No mappings or financial entries were written by smoke verification.
+
+The Chrome helper v0.2 is in `extensions/xero-side-panel`. Installation on the staff
+PC, actual UI slug verification, bank/property/currency setup and controlled Chrome
+runtime tests remain pending. Staff can use Read this Xero tab before connecting
+to display the UI slug/account ID. ACJ Savings' HKD currency and account UUID were
+confirmed through the existing read-only Xero API connection.
+
+CodeQL JavaScript/Python and aggregate security checks passed. An IP gate (120/min)
+now precedes authentication/session/permission DB reads; the per-staff/org limit
+is 30/min. The burst test verifies rejected traffic never resolves an org pool.
+
+Live suite: 1,909 tests, 1,902 pass, five failures identical to its immediately
+preceding baseline, two optional MySQL skips. Six helper tests passed on the live
+host. Local results are below. No app frontend code changed, so the running Next
+build was preserved. Backup: `/home/ubuntu/backups/tenafy-deploy-20261119-xero-6e0f0c7`.
+
 
 This is the first backend slice of the owner's 2026-11-19 handoff. It supplies
 ranked evidence for staff review. It neither writes payments nor calls a Xero
@@ -126,7 +144,8 @@ leads use `create_review`; bare lease leads and unsynced accounting history use
 
 Migration `089_xero_browser_binding.sql` adds empty organisation/currency metadata tables; it does
 not alter existing bank mappings, seed guessed data or enable autofill. It passed
-twice on scratch MySQL. Live migration/deployment needs owner approval.
+twice on scratch MySQL. It was applied in the owner-approved 2026-11-19 release. Future releases or mapping
+changes require their own applicable approval/verified setup values.
 
 1. Verify the Xero API organisation ID using the existing Xero connection and
    independently observe its UI slug. Superadmins can explicitly save the pair

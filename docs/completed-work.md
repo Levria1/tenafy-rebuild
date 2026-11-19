@@ -4,6 +4,35 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Deploy Xero read-only Chrome helper backend (2026-11-19)
+
+- Owner approved push/merge/deploy (Discord 1572898459990884415). PR #22 merged
+  as `6e0f0c7` after CodeQL JavaScript/Python and aggregate checks passed. Applied
+  migration 089 to all three active org databases and restarted the backend.
+  Existing frontend build was retained because app frontend code is unchanged.
+- Live baseline/release failure sets match: release 1,909 tests, 1,902 pass, five
+  existing failures (known four plus missing acorn UTC detector), two optional
+  skips. Six helper tests passed on-host. Local focused/scratch/browser checks
+  already passed. No security alerts were dismissed; the pre-auth limiter fixed
+  the two findings before merge.
+- Public/internal health/login are 200. Anonymous binding GET is 401, authenticated
+  binding GET works, unconfigured/foreign-org lookups are 409, missing currency is
+  400. Both new binding tables verified empty across all orgs; no mappings or
+  payments were written by verification. Backup:
+  `/home/ubuntu/backups/tenafy-deploy-20261119-xero-6e0f0c7`.
+- Read-only Xero Accounts confirmed the cached ACJ HSBC S* (April Eve) UUID and
+  HKD currency. API tenant is saved already; requested only the helper's observed
+  UI-organisation/account line from the owner. Structured bank records, property
+  bank links, explicit legacy amount-currency attestation and UI binding still
+  need verified setup. Existing Xero mapping UI does not expose bank-account links;
+  its full-set save must not be used blindly after bank links are configured.
+- Updated helper release instructions explain that Read this Xero tab works before
+  Connect Tenafy for collecting the UI slug/account ID. Actual staff-PC extension
+  permissions/runtime and picker/row-removal tests remain pending. No Xero edits,
+  match selection, paid-status writes or final confirmation are enabled.
+
+---
+
 ## Session: Xero release preflight currency compatibility (2026-11-19)
 
 - Owner authorised push/merge/deploy and requested mapping instructions in Discord
