@@ -4,6 +4,28 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Joint-tenant formatting proof (2026-11-19, local only)
+
+- Created a sanitised test fixture from Tane Residence Contract Template v22,
+  the most-used contract template in the live organisation. Read through the
+  SELECT-only connection; no live template or lease was modified.
+- A preview-only script expands proposed TENANT_PARTIES / TENANT_SIGNATURES
+  blocks into the existing PDF renderer. It does not add production token support,
+  signer prefill, endpoints or migrations. Only the two tenant sections change.
+- Generated one-tenant, two-tenant and longer-name cases with synthetic IDs,
+  emails and simulated TEST signatures. Masked static registration/contact/bank
+  digits and marked every page as a formatting test.
+- Verification: the proposed single-tenant PDF matches all 11 baseline pages
+  pixel-for-pixel. All three cases remain 11 contract pages; the existing completion
+  certificate adds page 12. Both signatures are anchored on page 4. The other 9
+  pages are pixel-identical between cases. Visually inspected Schedule I and both
+  joint-tenant signature layouts. A 7-page review PDF contains the relevant pages.
+- Reproduce: `node scripts/render-joint-tenant-preview.cjs`, then Python with
+  `pymupdf` installed: `python scripts/check-joint-tenant-preview.py`.
+- Awaiting layout feedback. Nothing pushed, deployed, migrated or sent to tenants.
+
+---
+
 ## Session: Facebook posting — replacing a lost account; slot editor (2026-11-03)
 
 - tane.joanne@gmail.com was lost; tanesignature@gmail.com replaces it. Live data change, approved by the

@@ -32,3 +32,6 @@ backend/uploads/
 # Python bytecode (scripts/tenafy_posting_plan.py)
 __pycache__/
 *.pyc
+
+# Reproducible local contract layout proofs (see scripts/render-joint-tenant-preview.cjs)
+artifacts/joint-tenant-preview/
