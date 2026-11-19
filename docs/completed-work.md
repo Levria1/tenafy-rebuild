@@ -15,7 +15,8 @@ Track all changes made per session. Update at the end of each session.
   corrected page. Real PDF checks require each signature and underline to start
   at the same x coordinate, with the line beneath the signature. All cases remain
   11 contract pages plus completion. Ten single-tenant pages match the baseline;
-  nine pages match across tenant counts. Focused contract/request/stamper tests
+  nine pages match across tenant counts. Release checks also exercise synthetic
+  landlord signatures in every case. Focused contract/request/stamper tests
   pass. No live changes, push or deployment.
 
 ---

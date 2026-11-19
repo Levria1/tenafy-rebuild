@@ -116,7 +116,8 @@ subject to the owner's separate approval for that change.
   the signature. Ten single-tenant baseline pages are pixel-identical; only the
   signature page changes. The normal completion certificate is page 12. The other
   nine contract pages remain unchanged between cases. Real PDF geometry checks
-  verify that every tenant signature aligns with its underline.
+  verify that every tenant and landlord signature aligns with its underline.
+  Synthetic landlord signatures are exercised in all three cases.
 - Local Chromium smoke checks use intercepted synthetic APIs only: both tenants
   prefill, required rows cannot be removed, blank extras cannot be silently
   dropped, send includes both tenant IDs/snapshot, Quill-normalised source converts,

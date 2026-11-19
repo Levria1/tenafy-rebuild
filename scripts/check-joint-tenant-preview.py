@@ -25,8 +25,8 @@ for name,names in [
  assert all(d[i].get_pixmap().samples==single[i].get_pixmap().samples for i in range(11) if i not in (2,3))
  # Every simulated signature must be anchored on the intended page, with no
  # extra fallback Signatures page. The normal completion certificate adds one.
- images=signed[3].get_image_info()
- assert len(images)==len(names),(name,len(images))
+ images=[im for im in signed[3].get_image_info() if im['bbox'][2]-im['bbox'][0]>100]
+ assert len(images)==len(names)+1,(name,len(images))
  underlines=[span for block in signed[3].get_text('dict')['blocks'] for line in block.get('lines',[]) for span in line['spans'] if span['text'].strip().startswith('________________')]
  assert len(underlines)==len(names)+1  # landlord plus tenant lines
  for im in images:
@@ -39,7 +39,7 @@ for name,names in [
   assert 'TEST-P10002' not in ''.join(p.get_text() for p in d)
  for p in [2,3]:
   signed[p].get_pixmap(matrix=fitz.Matrix(1.4,1.4)).save(str(root/(name+f'-page-{p+1}.png')))
- results['cases'].append({'case':name,'contract_pages':len(d),'with_completion_certificate':len(signed),'anchored_signatures_on_page_4':len(images),'unchanged_other_pages':9})
+ results['cases'].append({'case':name,'contract_pages':len(d),'with_completion_certificate':len(signed),'anchored_signatures_including_landlord_on_page_4':len(images),'unchanged_other_pages':9})
 (root/'validation.json').write_text(json.dumps(results,indent=2)+'\n')
 
 review=fitz.open()

@@ -40,7 +40,8 @@ async function run(){
      const signature=await canvas.evaluate(label=>{const c=document.createElement('canvas');c.width=440;c.height=110;const p=c.getContext('2d');p.fillStyle='#194a99';p.font='italic 32px serif';p.fillText(label,8,60);return c.toDataURL('image/png');},'TEST '+t.first_name);
      parties.push({id:String(i+1),role:'tenant',sort_order:i,status:2,signature_png:signature,signer_name:t.first_name+' '+t.last_name,typed_name:t.first_name+' '+t.last_name,signer_email:t.email,signed_at:new Date('2026-11-19T04:00:00Z')});
     }
-    const signed=await stampLease({unsignedPdf:bytes,parties,landlordSig:null,request:{id:'FORMAT-TEST-ONLY',lease_id:'SYNTHETIC',created_at:new Date('2026-11-19T04:00:00Z')}});
+    const landlordImage=await canvas.evaluate(()=>{const c=document.createElement('canvas');c.width=440;c.height=110;const p=c.getContext('2d');p.fillStyle='#194a99';p.font='italic 32px serif';p.fillText('TEST Landlord',8,60);return c.toDataURL('image/png');});
+    const signed=await stampLease({unsignedPdf:bytes,parties,landlordSig:{label:'TEST Landlord',signature_png:landlordImage},request:{id:'FORMAT-TEST-ONLY',lease_id:'SYNTHETIC',created_at:new Date('2026-11-19T04:00:00Z')}});
     fs.writeFileSync(path.join(out,name+'-simulated-signatures.pdf'),signed);
    }
    console.log('Rendered',name);
