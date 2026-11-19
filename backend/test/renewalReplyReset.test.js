@@ -47,15 +47,17 @@ function call(fn, { pool, params = { id: LEASE }, body = {} }) {
 // reads as "no rows" (SELECT) or "one row changed" (writes).
 function fakeDb(handlers = []) {
   const calls = [];
-  const execute = async (sql, params = []) => {
-    calls.push({ sql, params });
+  // `via` tells a statement run on the transaction's connection from one run on the pool.
+  const run = (via) => async (sql, params = []) => {
+    calls.push({ sql, params, via });
     for (const [pattern, fn] of handlers) {
       if (pattern.test(sql)) return fn(params, sql);
     }
     return /^\s*(UPDATE|INSERT|DELETE)/i.test(sql) ? [{ affectedRows: 1 }] : [[]];
   };
+  const execute = run('pool');
   const conn = {
-    execute,
+    execute: run('conn'),
     beginTransaction: async () => { calls.push({ sql: 'BEGIN' }); },
     commit: async () => { calls.push({ sql: 'COMMIT' }); },
     rollback: async () => { calls.push({ sql: 'ROLLBACK' }); },
@@ -161,6 +163,7 @@ test('recording a move-out sets Leaving, inside the move-out transaction', async
   const order = pool.calls.map(c => c.sql);
   assert.ok(order.indexOf(write.sql) < order.indexOf('COMMIT'), 'written before the commit');
   assert.ok(order.indexOf('BEGIN') < order.indexOf(write.sql), 'written after the transaction opens');
+  assert.equal(write.via, 'conn', 'on the transaction, not the pool');
 });
 
 test('undoing a move-out withdraws the Leaving it recorded, and only that', async () => {
@@ -178,6 +181,7 @@ test('undoing a move-out withdraws the Leaving it recorded, and only that', asyn
   assert.match(write.sql, /AND l\.renewal_reply = \?$/);
   const order = pool.calls.map(c => c.sql);
   assert.ok(order.indexOf(write.sql) < order.indexOf('COMMIT'));
+  assert.equal(write.via, 'conn', 'on the transaction, not the pool');
 });
 
 // ── 3. Staff can set or clear the answer ────────────────────────────────────
@@ -214,7 +218,7 @@ test('extend and unsure map to their codes', async () => {
 });
 
 test('an unknown answer is refused and writes nothing', async () => {
-  for (const reply of ['yes', 4, 'staying please', undefined]) {
+  for (const reply of ['yes', 4, 'staying please', undefined, 'constructor', '__proto__', 'toString']) {
     const pool = fakeDb([OWNED]);
     const r = await call(setReply, { pool, body: { reply } });
     assert.equal(r.statusCode, 400, String(reply));

@@ -2264,7 +2264,9 @@ router.put('/:id/renewal-reply', authenticate, requirePermission('LANDLORD/LEASI
     if (raw === null || raw === '' || raw === 'clear') {
       reply = null;
     } else {
-      reply = RENEWAL_REPLY_BY_NAME[String(raw).toLowerCase()];
+      // Own keys only: "constructor" or "__proto__" must not pass as a reply.
+      const name = String(raw).toLowerCase();
+      reply = Object.hasOwn(RENEWAL_REPLY_BY_NAME, name) ? RENEWAL_REPLY_BY_NAME[name] : undefined;
       if (reply === undefined) {
         return res.status(400).json({ code: 400, message: 'reply must be one of: extend, leaving, unsure, or null to clear' });
       }
