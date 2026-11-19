@@ -419,6 +419,7 @@ export const signature = {
 // Lease templates — Quill HTML stored with {{VARIABLES}} substituted server-side
 // at preview/generate time via Puppeteer (services/leasePdfRenderer.js).
 export const leaseTemplate = {
+  upgradeTenantBlocks: (payload) => api.post('/api/lease-template/tenant-upgrade', payload),
   list: () => api.get('/api/lease-template/list'),
   get: (id) => api.get(`/api/lease-template/${id}`),
   create: (data) => api.post('/api/lease-template', data),

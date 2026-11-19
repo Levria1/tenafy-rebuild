@@ -17,6 +17,7 @@
 
 const { personOrCompanyName, sanitiseNamePart } = require('../utils/personName');
 const { fullAddress } = require('../utils/propertyAddress');
+const tenantBlocks = require('./tenantTemplateBlocks');
 
 // ───────────────────────────────────────────────────────────────────────────
 // Formatters — keep money/dates consistent across every template.
@@ -206,6 +207,10 @@ function joinName(first, middle, last, company, type) {
 //   }
 
 const VARIABLES = [
+  { key: 'TENANT_PARTIES', group: 'Tenant', label: 'All tenant names and identification details',
+    sample: 'Alice Wong / Bob Wong', resolve: ctx => tenantBlocks.renderBlock('parties',ctx,substitute) },
+  { key: 'TENANT_SIGNATURES', group: 'Signature', label: 'All tenant signature blocks (automatic count)',
+    sample: 'One signature space per tenant', resolve: ctx => tenantBlocks.renderBlock('signatures',ctx,substitute) },
   // ── Tenant ─────────────────────────────────────────────────────────────
   { key: 'TENANT_NAME',       group: 'Tenant', label: 'Tenant full name',
     sample: 'Alice Wong',
@@ -391,9 +396,14 @@ const VARIABLES = [
  * marker the pdfAnchorFinder can locate. Preview → visible dashed placeholder.
  */
 function sigAnchor(ctx, marker, label) {
-  if (ctx && ctx.realRender) {
+  if (ctx && (ctx.realRender || ctx.tenantLayout || ctx.alignSignatureLines)) {
     // White + small but reliably extractable; line-height:0 so it adds no height.
-    return `<span style="color:#ffffff;font-size:8px;line-height:0;">${marker}</span>`;
+    const anchor = `<span style="color:#ffffff;font-size:8px;line-height:0;">${marker}</span>`;
+    // Upgraded layouts put the marker immediately before an underline. Keep
+    // its PDF text position, but reserve no width so the line starts below ink.
+    return ctx.tenantLayout || ctx.alignSignatureLines
+      ? `<span style="display:inline-block;width:0;overflow:visible;white-space:nowrap;">${anchor}</span>`
+      : anchor;
   }
   return `<span style="display:inline-block;min-width:160px;border-bottom:1px dashed #999;color:#999;font-size:11px;text-align:center;">${label}</span>`;
 }
@@ -407,16 +417,29 @@ const BY_KEY = Object.fromEntries(VARIABLES.map(v => [v.key, v]));
  */
 function substitute(html, ctx) {
   if (!html) return '';
-  return String(html).replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (full, key) => {
+  const expandedBlocks=new Map();
+  // Quill wraps standalone tokens in paragraphs. Remove the entire wrapper
+  // before expanding block HTML; <div> inside <p> would alter PDF spacing.
+  const expanded=String(html).replace(/<p\b[^>]*>([\s\S]*?)<\/p>/gi,(full,inner)=>{
+    const text=blockText(inner).trim();
+    if(!/^\{\{(?:TENANT_PARTIES|TENANT_SIGNATURES)\}\}$/.test(text))return full;
+    const marker=`TENAFYBLOCK${require('crypto').randomUUID()}`;
+    expandedBlocks.set(marker,BY_KEY[text.slice(2,-2)].resolve(ctx));
+    return marker;
+  });
+  let result=expanded.replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (full, key) => {
     const v = BY_KEY[key];
     if (!v) return full;       // leave unknown placeholders visible
     try {
       const val = v.resolve(ctx);
-      return val == null ? '' : String(val);
+      return val == null ? '' : ctx.escapeTemplateValues&&!key.startsWith('SIGNATURE')&&key!=='PAGE_BREAK'
+        ? tenantBlocks.escapeValue(val):String(val);
     } catch {
       return full;
     }
   });
+  for(const [marker,value] of expandedBlocks)result=result.split(marker).join(value);
+  return result;
 }
 
 /**
@@ -443,6 +466,14 @@ function findEmptyPlaceholders(htmlParts, ctx) {
       let val;
       try { val = v.resolve(ctx); } catch { continue; }
       if (val == null || String(val).trim() === '') empty.push({ key, label: v.label });
+    }
+  }
+  const all=(Array.isArray(htmlParts)?htmlParts:[htmlParts]).join('\n');
+  if(/\{\{\s*TENANT_(?:PARTIES|SIGNATURES)\s*\}\}/.test(all)){
+    for(const [i,t] of tenantBlocks.tenantsFor(ctx).entries()){
+      for(const [field,label,value] of [['NAME','legal name',personOrCompanyName(t)],['ID_CARD','identification number',t.id_card],['EMAIL','email',t.email]]){
+        if(!String(value||'').trim())empty.push({key:`TENANT_${i+1}_${field}`,label:`Tenant ${i+1}: ${label}`});
+      }
     }
   }
   return empty;

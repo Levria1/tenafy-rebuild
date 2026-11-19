@@ -21,7 +21,7 @@ import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import {
   Card, Form, Input, Button, Space, message, Select, Switch, Row, Col,
-  Dropdown, Empty, Spin,
+  Dropdown, Empty, Spin, Modal, Alert,
 } from 'antd';
 import {
   SaveOutlined, EyeOutlined, ThunderboltOutlined, ArrowLeftOutlined,
@@ -59,6 +59,11 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
   const [bodyHtml, setBodyHtml] = useState('');
   const [headerHtml, setHeaderHtml] = useState('');
   const [footerHtml, setFooterHtml] = useState('');
+  const [tenantLayout,setTenantLayout]=useState(null);
+  const [templateVersion,setTemplateVersion]=useState(null);
+  const [tenantCount,setTenantCount]=useState(1);
+  const [upgradeReview,setUpgradeReview]=useState(null);
+  const [upgrading,setUpgrading]=useState(false);
   const [variables, setVariables] = useState([]);
   const [properties, setProperties] = useState([]);
   const quillRef = useRef(null);
@@ -95,11 +100,30 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
           setBodyHtml(t.body_html || '');
           setHeaderHtml(t.header_html || '');
           setFooterHtml(t.footer_html || '');
+          setTenantLayout(t.tenant_layout||null);
+          setTemplateVersion(t.version);
         }
       })
       .catch(() => message.error('Failed to load template'))
       .finally(() => setLoading(false));
-  }, [mode, templateId]);
+  }, [mode, templateId, form]);
+
+  useEffect(()=>()=>{for(const url of upgradeReview?.urls||[])URL.revokeObjectURL(url);},[upgradeReview]);
+
+  const previewUpgrade=async()=>{
+    setUpgrading(true);
+    const urls=[];
+    try{
+      const r=await leaseTemplate.upgradeTenantBlocks({body_html:bodyHtml});
+      const candidate=r.data.data;
+      for(const count of [1,2]){
+        const pdf=await leaseTemplate.previewInline({...candidate,header_html:headerHtml,footer_html:footerHtml,page_size:form.getFieldValue('page_size')||'A4',tenant_count:count});
+        urls.push(URL.createObjectURL(new Blob([pdf.data],{type:'application/pdf'})));
+      }
+      setUpgradeReview({...candidate,urls});
+    }catch(e){urls.forEach(url=>URL.revokeObjectURL(url));message.error(e.response?.data?.message||'Unable to prepare this layout upgrade. No changes were saved.');}
+    finally{setUpgrading(false);}
+  };
 
   // Grouped, SEARCHABLE options for the "Insert variable" select. A plain
   // dropdown menu of ~40 variables is taller than the viewport and the top
@@ -148,6 +172,7 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
         header_html: headerHtml,
         footer_html: footerHtml,
         page_size: form.getFieldValue('page_size') || 'A4',
+        tenant_layout:tenantLayout,tenant_count:tenantCount,
       });
       const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
       // Revoke prior blob URL to avoid leaking memory across previews.
@@ -176,6 +201,8 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
         body_html: bodyHtml,
         header_html: headerHtml || '',
         footer_html: footerHtml || '',
+        tenant_layout:tenantLayout,
+        ...(mode==='edit'?{expected_version:templateVersion}:{}),
       };
       const r = mode === 'edit'
         ? await leaseTemplate.update(templateId, payload)
@@ -248,6 +275,10 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
                   />
                 </Form.Item>
 
+                <Alert style={{marginBottom:16}} type="info" showIcon
+                  message={tenantLayout?'Automatic tenant blocks enabled':'Use one template for single and joint tenants'}
+                  description={tenantLayout?'The original paragraph formatting is preserved in this template. Choose 1 or 2 sample tenants to check the layout.':'Preview an upgrade of the existing tenant sections. Nothing is saved until you choose Save changes.'}
+                  action={!tenantLayout&&<Button size="small" loading={upgrading} onClick={previewUpgrade}>Preview tenant-block upgrade</Button>} />
                 <Form.Item label={
                   <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
                     <span>Body</span>
@@ -302,6 +333,8 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
                     <Button icon={<EyeOutlined />} onClick={onPreview} loading={previewLoading}>
                       Refresh Preview
                     </Button>
+                    <Select aria-label="Sample tenant count" value={tenantCount} onChange={setTenantCount} style={{width:150}}
+                      options={[{value:1,label:'1 sample tenant'},{value:2,label:'2 sample tenants'}]} />
                     <Button onClick={() => router.push('/settings/lease-templates')}>Cancel</Button>
                   </Space>
                 </Form.Item>
@@ -336,6 +369,17 @@ export default function LeaseTemplateEditor({ mode, templateId }) {
           </Col>
         </Row>
       </Spin>
+      <Modal open={!!upgradeReview} width={1200} title="Compare automatic tenant layouts" okText="Use this upgrade in the editor"
+        onCancel={()=>setUpgradeReview(null)} onOk={()=>{
+          setBodyHtml(upgradeReview.body_html);setTenantLayout(upgradeReview.tenant_layout);setUpgradeReview(null);
+          message.info('Upgrade staged. Save changes to create a new template version.');
+        }}>
+        <p>Check both layouts. Applying this preview updates the editor only; it does not alter sent documents.</p>
+        <Row gutter={16}>{(upgradeReview?.urls||[]).map((url,i)=><Col span={12} key={url}>
+          <strong>{i+1} tenant{i?'s':''}</strong>
+          <iframe src={url} title={`${i+1} tenant layout`} style={{width:'100%',height:'65vh',border:'1px solid #ddd'}} />
+        </Col>)}</Row>
+      </Modal>
     </div>
   );
 }

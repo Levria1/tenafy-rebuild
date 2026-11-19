@@ -4,6 +4,71 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Align signature underlines (2026-11-19, local only)
+
+- Owner noted the underline was right of the signature. Invisible marker text
+  consumed horizontal space before the underscores. Upgraded layouts now use a
+  zero-width marker wrapper, keeping its extractable PDF anchor and placing the
+  underline beneath the signature. Applies to tenant and landlord anchors in
+  upgraded templates; legacy template rendering stays unchanged.
+- Re-rendered one/two/long-name production examples and visually inspected the
+  corrected page. Real PDF checks require each signature and underline to start
+  at the same x coordinate, with the line beneath the signature. All cases remain
+  11 contract pages plus completion. Ten single-tenant pages match the baseline;
+  nine pages match across tenant counts. Release checks also exercise synthetic
+  landlord signatures in every case. Focused contract/request/stamper tests
+  pass. No live changes, push or deployment.
+
+---
+
+## Session: Joint-tenant contracts and signing (2026-11-19, local only)
+
+- Implemented the approved formatting proof on `feat/joint-tenant-contracts`.
+  `TENANT_PARTIES` and `TENANT_SIGNATURES` expand from one canonical tenant list:
+  primary first, then additional IDs in numeric order, deduplicated and org scoped.
+  One tenant has one block; two tenants retain the approved side-by-side layout.
+- Template editor offers an explicit upgrade with one/two-tenant PDF previews.
+  Saving versions the original HTML and layout recipe together; stale saves fail.
+  No templates are automatically converted. Existing signing files stay unchanged.
+- Review & Send requires every lease tenant, with names/emails tied to contact
+  records. Server rejects missing/duplicate/foreign tenants and stale previews.
+  Guarantors/other signers remain separate. New signing PDFs are private.
+- Migration 088 adds nullable layout metadata and signer tenant IDs. Ran twice on
+  disposable MySQL; verified org fencing, historical rows, versioning and copies.
+  No live migration, tenant email, template change, push, merge or deployment.
+- Validation: 45 focused tests pass; full backend 1,948 tests, 1,943 pass, four
+  known failures reproduced on unchanged main, one optional MySQL test skipped
+  (passed separately). Frontend production build, targeted ESLint and two local
+  Chromium UI flows pass using synthetic intercepted APIs. All 11 contract pages
+  in each production-rendered case match the approved PDFs pixel-for-pixel.
+- Staff workflow, rollout constraints and reproduction commands:
+  `docs/joint-tenant-contracts.md`. Release needs separate owner approval; apply
+  migration before the backend, then preview/save each intended template upgrade.
+
+---
+
+## Session: Joint-tenant formatting proof (2026-11-19, local only)
+
+- Created a sanitised test fixture from Tane Residence Contract Template v22,
+  the most-used contract template in the live organisation. Read through the
+  SELECT-only connection; no live template or lease was modified.
+- A preview-only script expands proposed TENANT_PARTIES / TENANT_SIGNATURES
+  blocks into the existing PDF renderer. It does not add production token support,
+  signer prefill, endpoints or migrations. Only the two tenant sections change.
+- Generated one-tenant, two-tenant and longer-name cases with synthetic IDs,
+  emails and simulated TEST signatures. Masked static registration/contact/bank
+  digits and marked every page as a formatting test.
+- Verification: the proposed single-tenant PDF matches all 11 baseline pages
+  pixel-for-pixel. All three cases remain 11 contract pages; the existing completion
+  certificate adds page 12. Both signatures are anchored on page 4. The other 9
+  pages are pixel-identical between cases. Visually inspected Schedule I and both
+  joint-tenant signature layouts. A 7-page review PDF contains the relevant pages.
+- Reproduce: `node scripts/render-joint-tenant-preview.cjs`, then Python with
+  `pymupdf` installed: `python scripts/check-joint-tenant-preview.py`.
+- Awaiting layout feedback. Nothing pushed, deployed, migrated or sent to tenants.
+
+---
+
 ## Session: Facebook posting — replacing a lost account; slot editor (2026-11-03)
 
 - tane.joanne@gmail.com was lost; tanesignature@gmail.com replaces it. Live data change, approved by the

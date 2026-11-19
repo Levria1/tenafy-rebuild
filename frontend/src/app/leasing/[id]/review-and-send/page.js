@@ -56,6 +56,8 @@ export default function ReviewAndSendPage() {
   const [paperworkReason, setPaperworkReason] = useState(null);
   const [periodIsGuess, setPeriodIsGuess] = useState(false);
   const [emptyFields, setEmptyFields] = useState([]);
+  const [jointTemplateReady,setJointTemplateReady]=useState(false);
+  const [documentSnapshot,setDocumentSnapshot]=useState(null);
   const [termTo, setTermTo] = useState(null);
   const [stampLonger, setStampLonger] = useState(false);
   const [termStampEnd, setTermStampEnd] = useState(null);
@@ -90,13 +92,7 @@ export default function ReviewAndSendPage() {
         const defaultSig = sigs.find(s => s.is_default) || sigs[0];
         if (defaultSig) setSelectedLandlordSigId(String(defaultSig.id));
 
-        // Pre-fill primary signer from lease tenant
-        const tenantName = [l.tenant_first_name, l.tenant_last_name].filter(Boolean).join(' ');
-        setParties([{
-          signer_name: tenantName || '',
-          signer_email: l.tenant_email || '',
-          role: 'tenant',
-        }]);
+        setParties(l.signing_tenants || []);
 
         // Prefill the period from the server's uncovered stretch, so an extension
         // defaults to the new period rather than the whole tenancy.
@@ -129,6 +125,8 @@ export default function ReviewAndSendPage() {
   const refreshPreview = async () => {
     if (!selectedTemplateId) return;
     setPreviewLoading(true);
+    setJointTemplateReady(false);
+    setDocumentSnapshot(null);
     try {
       // THIS lease's real data rendered against the chosen template. Previously
       // this called leaseTemplate.previewSaved(), which renders the template's
@@ -146,6 +144,8 @@ export default function ReviewAndSendPage() {
       const blanks = (r.headers?.['x-empty-placeholders'] || '')
         .split(',').map(x => x.trim()).filter(Boolean);
       setEmptyFields(blanks);
+      setJointTemplateReady(r.headers?.['x-tenant-template-ready']==='true');
+      setDocumentSnapshot(r.headers?.['x-document-snapshot']||null);
 
       const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
@@ -163,25 +163,27 @@ export default function ReviewAndSendPage() {
   };
 
   const addParty = () => {
-    setParties(prev => [...prev, { signer_name: '', signer_email: '', role: 'tenant' }]);
+    setParties(prev => [...prev, { signer_name: '', signer_email: '', role: 'other' }]);
   };
 
   const removeParty = (idx) => {
-    setParties(prev => prev.filter((_, i) => i !== idx));
+    setParties(prev => prev.filter((p, i) => i !== idx || p.tenant_id));
   };
 
   const onSend = async () => {
     if (!selectedTemplateId) return message.warning('Pick a template first.');
+    if(!documentSnapshot)return message.warning('Refresh the contract preview before sending.');
+    if((lease?.signing_tenants?.length||0)>1&&!jointTemplateReady)return message.warning('Upgrade the template to show every tenant, then refresh the preview.');
     const cleanParties = parties
-      .map(p => ({ ...p, signer_name: (p.signer_name || '').trim(), signer_email: (p.signer_email || '').trim() }))
-      .filter(p => p.signer_name && p.signer_email);
-    if (!cleanParties.length) return message.warning('Add at least one signer with name and email.');
+      .map(p => ({ ...p, signer_name: (p.signer_name || '').trim(), signer_email: (p.signer_email || '').trim() }));
+    if (!cleanParties.length || cleanParties.some(p=>!p.signer_name||!p.signer_email)) return message.warning('Every signer needs a full name and email. No tenant can be omitted.');
 
     const payload = {
       lease_id: leaseId,
       template_id: selectedTemplateId,
       landlord_signature_id: selectedLandlordSigId || null,
       parties: cleanParties,
+      document_snapshot:documentSnapshot,
       message: form.getFieldValue('message') || null,
       expires_in_days: form.getFieldValue('expires_in_days') || 14,
       term_start: termFrom ? termFrom.format('YYYY-MM-DD') : null,
@@ -293,6 +295,8 @@ export default function ReviewAndSendPage() {
               )}
             </Card>
 
+            {(lease?.signing_tenants?.length||0)>1&&!jointTemplateReady&&!previewLoading && <Alert type="warning" showIcon style={{marginBottom:12}}
+              message="This template needs joint-tenant blocks" description="Open this template in Settings → Lease Templates and preview the automatic tenant-block upgrade before saving. Refresh this signing preview afterward." />}
             {emptyFields.length > 0 && (
               <Alert
                 type="warning" showIcon style={{ marginBottom: 12 }}
@@ -350,7 +354,7 @@ export default function ReviewAndSendPage() {
                   <div style={{ marginTop: 8 }}>
                     <DatePicker value={termStampEnd} onChange={setTermStampEnd} />
                     <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
-                      Prints as the Term of Tenancy on this document only. The lease's own
+                      Prints as the Term of Tenancy on this document only. The lease&apos;s own
                       stamped term is left untouched.
                     </div>
                   </div>
@@ -362,9 +366,11 @@ export default function ReviewAndSendPage() {
               {parties.map((p, i) => (
                 <Row key={i} gutter={8} style={{ marginBottom: 8 }}>
                   <Col span={10}>
+                    {p.tenant_id && <Tag>Required lease tenant</Tag>}
                     <Input
                       placeholder="Full name"
                       value={p.signer_name}
+                      readOnly={!!p.tenant_id}
                       onChange={e => updateParty(i, 'signer_name', e.target.value)}
                     />
                   </Col>
@@ -372,11 +378,12 @@ export default function ReviewAndSendPage() {
                     <Input
                       placeholder="email@example.com"
                       value={p.signer_email}
+                      readOnly={!!p.tenant_id}
                       onChange={e => updateParty(i, 'signer_email', e.target.value)}
                     />
                   </Col>
                   <Col span={3}>
-                    {parties.length > 1 && (
+                    {!p.tenant_id && (
                       <Tooltip title="Remove signer">
                         <Button danger icon={<DeleteOutlined />} onClick={() => removeParty(i)} />
                       </Tooltip>
@@ -385,8 +392,14 @@ export default function ReviewAndSendPage() {
                 </Row>
               ))}
               <Button size="small" icon={<PlusOutlined />} onClick={addParty}>
-                Add another signer
+                Add non-tenant signer
               </Button>
+              {parties.filter(p=>!p.tenant_id).map((p,i)=><div key={i} style={{marginTop:8}}>
+                <span>Role for {p.signer_name || 'additional signer'}: </span>
+                <Select value={p.role} style={{width:150}} options={[{value:'guarantor',label:'Guarantor'},{value:'other',label:'Other'}]}
+                  onChange={role=>updateParty(parties.indexOf(p),'role',role)} />
+              </div>)}
+              <div style={{fontSize:12,marginTop:8}}>Tenant names and emails come from the contact records and must match the PDF. Correct them on the contact record, then reload this page.</div>
               <div style={{ fontSize: 11, color: '#888', marginTop: 8 }}>
                 All signers get an email simultaneously. The lease is auto-stamped with the landlord signature once everyone signs.
               </div>

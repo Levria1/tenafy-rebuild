@@ -53,6 +53,15 @@ function loadPuppeteer() {
 const {
   substitute, sampleContext, applyTermOverride, applyPageBreakMarkers, findEmptyPlaceholders,
 } = require('./leaseTemplateVariables');
+const {loadLeaseTenants}=require('./leaseTenants');
+const {parseLayout,jointTemplateProblems,emptyTenantFields}=require('./tenantTemplateBlocks');
+const {orgToday}=require('../utils/orgTime');
+
+function documentSnapshot(ctx,tpl){
+  return require('crypto').createHash('sha256').update(JSON.stringify({lease:ctx.lease,tenants:ctx.tenants,
+    unit:ctx.unit,property:ctx.property,currency:ctx.currency,printed_on:orgToday(),
+    template:{id:String(tpl.id),version:tpl.version,body:tpl.body_html,header:tpl.header_html,footer:tpl.footer_html,layout:ctx.tenantLayout}})).digest('hex');
+}
 
 let _browserPromise = null;
 
@@ -166,10 +175,10 @@ function wrapHeaderFooter(html, kind) {
 // ───────────────────────────────────────────────────────────────────────────
 // Real-data renderer
 // ───────────────────────────────────────────────────────────────────────────
-async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = true, term = null }) {
+async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = true, term = null, context, requireAllTenants = false, expectedSnapshot }) {
   // Fetch the template
   const [[tpl]] = await pool.execute(
-    `SELECT id, name, body_html, header_html, footer_html, page_size, version
+    `SELECT id, name, body_html, header_html, footer_html, page_size, version, tenant_layout
        FROM lease_template
       WHERE id = ? AND org_id = ? AND deleted_at IS NULL
       LIMIT 1`,
@@ -178,10 +187,21 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = tr
   if (!tpl) throw new Error('Template not found');
 
   // Fetch the full lease context
-  const ctx = await loadLeaseContext(pool, orgId, leaseId);
+  const ctx = context || await loadLeaseContext(pool, orgId, leaseId);
+  ctx.tenantLayout=parseLayout(tpl.tenant_layout);
+  const templateParts=[tpl.body_html,tpl.header_html,tpl.footer_html];
+  const tenantWarnings=jointTemplateProblems(templateParts,ctx.tenants.length);
+  if(requireAllTenants){
+    const errors=[...tenantWarnings];
+    if(templateParts.some(h=>/\{\{\s*TENANT_(PARTIES|SIGNATURES)\s*\}\}/.test(h||'')))errors.push(...emptyTenantFields(ctx));
+    if(errors.length)throw Object.assign(new Error(errors.join(' ')),{status:400});
+  }
   // Documents that cover ONE period of the tenancy print that period, not the
   // lease's own dates. No-op when no term is supplied.
   applyTermOverride(ctx, term);
+  const snapshot=documentSnapshot(ctx,tpl);
+  if(requireAllTenants&&ctx.tenants.length>1&&!expectedSnapshot)throw Object.assign(new Error('Refresh the joint-tenant preview before sending.'),{status:400});
+  if(expectedSnapshot&&expectedSnapshot!==snapshot)throw Object.assign(new Error('Contract or tenant details changed after preview. Refresh the preview before sending.'),{status:409});
   // Real render: signature anchors emit invisible markers (not the visible
   // dashed preview placeholders) so the stamper can locate them after signing.
   ctx.realRender = true;
@@ -210,7 +230,7 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = tr
     );
   }
 
-  return { pdfBuffer, templateId: tpl.id, version: tpl.version, emptyPlaceholders };
+  return { pdfBuffer, templateId: tpl.id, version: tpl.version, emptyPlaceholders, tenantWarnings, snapshot };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -218,7 +238,7 @@ async function renderFromTemplate({ pool, orgId, leaseId, templateId, stamp = tr
 // ───────────────────────────────────────────────────────────────────────────
 async function renderTemplatePreview({ pool, orgId, templateId }) {
   const [[tpl]] = await pool.execute(
-    `SELECT name, body_html, header_html, footer_html, page_size
+    `SELECT name, body_html, header_html, footer_html, page_size, tenant_layout
        FROM lease_template
       WHERE id = ? AND org_id = ? AND deleted_at IS NULL
       LIMIT 1`,
@@ -227,6 +247,8 @@ async function renderTemplatePreview({ pool, orgId, templateId }) {
   if (!tpl) throw new Error('Template not found');
 
   const ctx = sampleContext();
+  ctx.tenantLayout=parseLayout(tpl.tenant_layout);
+  ctx.tenants=[ctx.tenant];
   // Same page-break handling as the real render, so the editor's Preview button
   // shows the pagination staff will actually get.
   const body   = applyPageBreakMarkers(substitute(tpl.body_html || '', ctx));
@@ -238,8 +260,11 @@ async function renderTemplatePreview({ pool, orgId, templateId }) {
 
 // Preview without saving — caller passes the editor's current HTML directly.
 // Used so staff can see changes BEFORE clicking Save.
-async function renderInlinePreview({ body_html, header_html, footer_html, page_size }) {
+async function renderInlinePreview({ body_html, header_html, footer_html, page_size, tenant_layout, tenant_count = 1 }) {
   const ctx = sampleContext();
+  ctx.tenantLayout=parseLayout(tenant_layout);
+  ctx.tenants=tenant_count===2?[ctx.tenant,{...ctx.additionalTenants[0],id_card:'TEST-P10002',email:'bob@example.invalid',phone:'+852 0000 0001'}]:[ctx.tenant];
+  ctx.additionalTenants=ctx.tenants.slice(1);
   // Markers must convert here too, or "Preview" before saving would show
   // different pagination from the saved template.
   const body   = applyPageBreakMarkers(substitute(body_html || '', ctx));
@@ -260,22 +285,16 @@ async function loadLeaseContext(pool, orgId, leaseId) {
             p.id   AS property_id_row, p.display_name AS property_name,
             p.street_address, p.district, p.city
        FROM leasing l
-       LEFT JOIN tenant   t ON l.tenant_id  = t.id
+       LEFT JOIN tenant   t ON l.tenant_id  = t.id AND t.org_id = ? AND t.deleted_at IS NULL
        LEFT JOIN unit     u ON l.unit_id    = u.id
        LEFT JOIN property p ON u.property_id = p.id
-      WHERE l.id = ? AND p.org_id = ?
+      WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL
       LIMIT 1`,
-    [leaseId, orgId]
+    [orgId,leaseId, orgId]
   );
   if (!lease) throw new Error('Lease not found');
 
-  const [additionalTenants] = await pool.execute(
-    `SELECT t.first_name, t.middle_name, t.last_name, t.company_name, t.type
-       FROM leasing_additional_tenant lat
-       JOIN tenant t ON t.id = lat.tenant_id
-      WHERE lat.leasing_id = ?`,
-    [leaseId]
-  );
+  const tenants=await loadLeaseTenants(pool,orgId,leaseId);
 
   // `org_setting` does not exist in any org DB (no migration ever created it), so
   // this query always threw and the `.catch` always produced {} — every LANDLORD_*
@@ -292,17 +311,9 @@ async function loadLeaseContext(pool, orgId, leaseId) {
 
   return {
     lease,
-    tenant: {
-      first_name:  lease.first_name,
-      middle_name: lease.middle_name,
-      last_name:   lease.last_name,
-      company_name: lease.company_name,
-      email:       lease.email,
-      phone:       lease.phone,
-      id_card:     lease.id_card,
-      type:        lease.tenant_type,
-    },
-    additionalTenants,
+    tenant: tenants[0],
+    additionalTenants: tenants.slice(1),
+    tenants,
     unit: {
       name:  lease.unit_name,
       beds:  lease.beds,
@@ -351,6 +362,8 @@ module.exports = {
   renderTemplatePreview,
   renderInlinePreview,
   applyTermOverride,
+  loadLeaseContext,
+  documentSnapshot,
 };
 
 // Exported for tests: proves the ESM loader resolves to something with launch(),

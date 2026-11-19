@@ -170,7 +170,9 @@ test('company tenant SQL falls back to the person name when company is blank', (
   // Every place that turns a company-type tenant into a display name must fall back
   // to the person's name; checking for one occurrence let any of the others regress.
   const branches = [...source.matchAll(/CASE\s+(?:WHEN t\.type = 1|t\.type WHEN 1)\s+THEN\s+([^\n]+)/g)];
-  assert.ok(branches.length >= 4, `expected at least 4 company-name branches, found ${branches.length}`);
+  // Additional tenants now use the shared leaseTenants loader and the tested
+  // personOrCompanyName helper; three SQL branches remain in this route.
+  assert.ok(branches.length >= 3, `expected at least 3 company-name branches, found ${branches.length}`);
   for (const [, then] of branches) {
     assert.match(then, /^COALESCE\(NULLIF\(TRIM\(t\.company_name\), ''\), TRIM\(CONCAT\(COALESCE\(t\.first_name/);
   }

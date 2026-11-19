@@ -12,6 +12,7 @@
  */
 
 const express = require('express');
+const {validateSigners}=require('../services/leaseTenants');
 const router = express.Router();
 const crypto = require('crypto');
 const path = require('path');
@@ -280,16 +281,16 @@ router.post('/request', authenticate, async (req, res) => {
     const orgId = req.user.orgId;
     const userId = req.user.id;
     const { lease_id, template_id, landlord_signature_id,
-            parties, message, expires_in_days,
+            parties: submittedParties, message, expires_in_days,
             term_start, term_end, term_stamp_end } = req.body || {};
     if (!lease_id || !template_id) return fail(res, 'lease_id and template_id are required', 400);
-    if (!Array.isArray(parties) || parties.length === 0) return fail(res, 'At least one signer is required', 400);
+    if (!Array.isArray(submittedParties) || submittedParties.length === 0) return fail(res, 'At least one signer is required', 400);
 
     // Every signer needs an email — the invite is delivered ONLY by email. Without
     // this the request is created and the invite silently no-ops (sendSignatureInvite
     // returns early on a missing signer_email), leaving a lease that looks "sent"
     // but that nobody was ever asked to sign. Fail loudly instead.
-    const unreachable = parties.filter(p => !p || !String(p.signer_email || '').trim());
+    const unreachable = submittedParties.filter(p => !p || !String(p.signer_email || '').trim());
     if (unreachable.length) {
       const names = unreachable.map((p, i) => (p && p.signer_name) || `Signer ${i + 1}`).join(', ');
       return fail(
@@ -322,6 +323,10 @@ router.post('/request', authenticate, async (req, res) => {
       [lease_id, orgId]
     );
     if (!lease) return fail(res, 'Lease not found', 404);
+    const context=await renderer.loadLeaseContext(req.pool,orgId,lease_id);
+    const parties=validateSigners(context.tenants,submittedParties);
+    // The PDF and signer rows use this same snapshot; editing a contact later
+    // cannot change the original PDF or the recipient/name on this request.
     const [openRequests] = await req.pool.execute(
       `SELECT id, status, expires_at, sent_at,
               DATE_FORMAT(term_start, '%Y-%m-%d') AS term_start,
@@ -344,6 +349,7 @@ router.post('/request', authenticate, async (req, res) => {
     // since the file is gated by the unique party token).
     const { pdfBuffer, templateId, version } = await renderer.renderFromTemplate({
       pool: req.pool, orgId, leaseId: lease_id, templateId: template_id,
+      context, requireAllTenants:true,expectedSnapshot:req.body.document_snapshot,
       term: termStart && termEnd
         ? { start_date: termStart, end_date: termEnd, stamp_end_date: termStampEnd }
         : null,
@@ -355,8 +361,8 @@ router.post('/request', authenticate, async (req, res) => {
     fs.writeFileSync(path.join(UPLOADS_DIR, savedName), pdfBuffer);
     const fileId = newId();
     await req.pool.execute(
-      `INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at)
-       VALUES (?, ?, ?, 'pdf', 'APPLICATION/PDF', ?, 'local', ?, NOW())`,
+      `INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, is_private, created_at)
+       VALUES (?, ?, ?, 'pdf', 'APPLICATION/PDF', ?, 'local', ?, 1, NOW())`,
       [fileId, savedName, `lease-for-signing-${lease_id}.pdf`, pdfBuffer.length, orgId]
     );
 
@@ -407,12 +413,12 @@ router.post('/request', authenticate, async (req, res) => {
       const partyToken = newToken();
       await req.pool.execute(
         `INSERT INTO signature_party
-           (id, request_id, party_token, signer_name, signer_email, role, sort_order, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+           (id, request_id, party_token, signer_name, signer_email, role, sort_order, status,tenant_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0,?)`,
         [partyId, requestId, partyToken,
          String(p.signer_name || '').trim() || 'Signer',
          (p.signer_email || '').trim().toLowerCase() || null,
-         p.role || 'tenant', i]
+         p.role || 'tenant', i,p.tenant_id]
       );
       inserted.push({ id: partyId, party_token: partyToken, signer_name: p.signer_name, signer_email: p.signer_email });
     }
@@ -450,7 +456,7 @@ router.post('/request', authenticate, async (req, res) => {
     ok(res, { id: requestId, token, parties: inserted });
   } catch (err) {
     console.error('[signature] create request error:', err);
-    fail(res, err.message || 'Failed to create signature request');
+    fail(res, err.message || 'Failed to create signature request',err.status||500);
   }
 });
 
@@ -590,7 +596,7 @@ router.get('/request/:id', authenticate, async (req, res) => {
     );
     if (!r) return fail(res, 'Not found', 404);
     const [parties] = await req.pool.execute(
-      `SELECT id, signer_name, signer_email, role, status, viewed_at, signed_at, declined_at, party_token
+      `SELECT id, signer_name, signer_email, role, status, viewed_at, signed_at, declined_at, party_token,tenant_id
          FROM signature_party WHERE request_id = ? ORDER BY sort_order ASC`,
       [req.params.id]
     );
@@ -1079,8 +1085,8 @@ async function finalizeRequest(pool, orgId, requestId) {
   fs.writeFileSync(path.join(UPLOADS_DIR, signedName), finalPdf);
   const signedFileId = newId();
   await pool.execute(
-    `INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, created_at)
-     VALUES (?, ?, ?, 'pdf', 'APPLICATION/PDF', ?, 'local', ?, NOW())`,
+    `INSERT INTO file (id, item_name, filename, extension, mime_type, file_size, storage_engine, org_id, is_private, created_at)
+     VALUES (?, ?, ?, 'pdf', 'APPLICATION/PDF', ?, 'local', ?, 1, NOW())`,
     [signedFileId, signedName, `signed-lease-${r.lease_id}.pdf`, finalPdf.length, orgId]
   );
 
