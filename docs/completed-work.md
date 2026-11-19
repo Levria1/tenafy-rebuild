@@ -17,7 +17,10 @@ Track all changes made per session. Update at the end of each session.
 - Accounting history checks currency_type as well as currency_id. Invoices with
   unknown/foreign-currency allocations are excluded. Scratch tests now exercise a
   real-shaped FX snapshot, same-ID USD/unknown rows, guarded setup, and conflicts.
-  Migration twice and the 16 focused tests pass. No live mappings seeded.
+  Migration twice and the 16 focused tests pass. CodeQL caught pre-auth DB access
+  preceding the limiter; an additional IP gate now runs before auth/permission
+  queries, with a burst test proving excess requests never resolve an org pool.
+  No live mappings seeded.
 
 ---
 

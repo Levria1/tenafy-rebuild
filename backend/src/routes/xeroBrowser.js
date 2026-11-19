@@ -5,6 +5,10 @@ const { logActivity } = require('../utils/activityLog');
 const service = require('../services/xeroBrowserLookup');
 const router = express.Router();
 
+// Bound unauthenticated traffic before auth/session and permission DB reads.
+// Express trusts only the local reverse proxy; use the library's IP key here.
+router.use(rateLimit({ windowMs: 60000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false,
+  message: { code: 429, message: 'Too many requests. Please wait before retrying.' } }));
 router.use(authenticate);
 router.use((req, res, next) => {
   if (!req.pool || !req.user?.id || !req.user.orgId || req.user.isMasterAdmin) return res.status(403).json({ code: 403, message: 'An authorised staff organisation is required.' });

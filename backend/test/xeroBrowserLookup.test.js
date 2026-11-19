@@ -64,7 +64,8 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
     if (sql.includes('FROM invoice i')) return [[{ id: '100', invoice_code: 'TEST-INV', amount: '13800', outstanding: '13800', first_name: 'Sample', last_name: 'Tenant', days_from_date: 0 }]];
     return [[]];
   } };
-  t.mock.method(registry, 'getOrgPool', async () => pool);
+  let resolvedPools = 0;
+  t.mock.method(registry, 'getOrgPool', async () => { resolvedPools++; return pool; });
   // auth destructures the pool resolver on first load.
   delete require.cache[require.resolve('../src/middleware/auth')];
   delete require.cache[require.resolve('../src/routes/xeroBrowser')];
@@ -115,4 +116,15 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   assert.equal((await request(adminClaims, { currency_id: '30', currency_code: 'USD', confirm_invoice_lease_currency: true }, '/currency', 'PUT')).status, 409);
   assert.equal(calls.filter(c => /^\s*INSERT INTO xero_browser_currency_binding/.test(c.sql)).length, 1);
   assert.ok(calls.every(c => !/^\s*UPDATE currency\b/i.test(c.sql)), 'Legacy rate-table JSON must remain untouched');
+  const beforeBurst = resolvedPools;
+  let blockedBeforeAuth = false;
+  for (let i = 0; i < 121; i++) {
+    const burst = await request({ id: String(10000 + i), permissions: ['*'] }, {});
+    if (burst.status === 429) {
+      const body = await burst.json();
+      if (body.message === 'Too many requests. Please wait before retrying.') blockedBeforeAuth = true;
+    } else assert.equal(burst.status, 400);
+  }
+  assert.equal(blockedBeforeAuth, true);
+  assert.ok(resolvedPools - beforeBurst < 121, 'IP limiter must stop the burst before auth resolves an org pool');
 });
