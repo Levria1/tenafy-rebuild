@@ -1,4 +1,4 @@
-// Visual prototype only. No database access, API writes, signing requests or sends.
+// Exercise the production dynamic-block renderer with synthetic data. No database writes or sends.
 const fs=require('fs');
 const path=require('path');
 const root=path.resolve(__dirname,'..');
@@ -7,32 +7,17 @@ const {substitute,sampleContext}=require('../backend/src/services/leaseTemplateV
 const {stampLease}=require('../backend/src/services/signatureStamper');
 const base=require('../backend/test-support/joint-tenant-preview/base-template.json');
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const paragraphs=[...base.body_html.matchAll(/<p\b[^>]*>[\s\S]*?<\/p>/g)];
-if(!paragraphs[27][0].includes('{{TENANT_NAME}}')||!paragraphs[76][0].includes('{{SIGNATURE_TENANT}}'))throw Error('Source template layout changed');
-const partySource=base.body_html.slice(paragraphs[27].index,paragraphs[28].index+paragraphs[28][0].length);
-const signatureSource=base.body_html.slice(paragraphs[76].index,paragraphs[82].index+paragraphs[82][0].length);
-const prototype=base.body_html.replace(partySource,'{{TENANT_PARTIES}}').replace(signatureSource,'{{TENANT_SIGNATURES}}');
+const {upgradeTemplate}=require('../backend/src/services/tenantTemplateBlocks');
+const converted=upgradeTemplate(base.body_html);
+const prototype=converted.body_html;
 const alice={first_name:'Alice',last_name:'Wong',id_card:'TEST-P10001',email:'alice@example.invalid',phone:'+852 0000 0000',type:0};
 const bob={first_name:'Bob',last_name:'Chan',id_card:'TEST-P10002',email:'bob@example.invalid',phone:'+852 0000 0001',type:0};
 function ctxFor(tenant){const ctx=sampleContext();ctx.tenant=Object.fromEntries(Object.entries(tenant).map(([k,v])=>[k,typeof v==='string'?escape(v):v]));ctx.additionalTenants=[];ctx.today=new Date('2026-11-19T04:00:00Z');ctx.realRender=true;ctx.property={...ctx.property,street_address:'15 Example Street',display_name:'Sample Building',district:'Wan Chai',city:'Hong Kong'};return ctx;}
 function expand(tenants){
- const party=tenants.map((t,i)=>{
-  let html=substitute(partySource,ctxFor(t));
-  if(tenants.length>1)html=html.replace('The&nbsp;Tenant','Tenant&nbsp;'+(i+1));
-  return `<div style="break-inside:avoid;page-break-inside:avoid">${html}</div>`;
- }).join('');
- const signatures=tenants.map((t,i)=>{
-  let html=signatureSource;
-  if(i)html=html.replace('{{SIGNATURE_TENANT}}',`{{SIGNATURE_TENANT_${i+1}}}`);
-  if(tenants.length>1){
-   html=html.replace(/<p>\{\{SIGNATURE_TENANT(?:_\d+)?\}\}[\s\S]*?<\/p>/,m=>m.replace(/_{20,}/,'________________________').replace(/<span[\s\S]*?<\/span>/g,''));
-  }
-  return substitute(html,ctxFor(t));
- });
- // Preserve the existing one-tenant HTML byte-for-byte in both sections.
- const partyHtml=tenants.length===1?substitute(partySource,ctxFor(tenants[0])):party;
- const signatureHtml=tenants.length===1?signatures[0]:`<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;break-inside:avoid;page-break-inside:avoid">${signatures.map(s=>`<div style="min-width:0;overflow-wrap:anywhere">${s}</div>`).join('')}</div>`;
- return substitute(prototype.replace('{{TENANT_PARTIES}}',partyHtml).replace('{{TENANT_SIGNATURES}}',signatureHtml),ctxFor(tenants[0]));
+ const ctx=ctxFor(tenants[0]);
+ ctx.tenantLayout=converted.tenant_layout;
+ ctx.tenants=tenants;ctx.additionalTenants=tenants.slice(1);
+ return substitute(prototype,ctx);
 }
 async function run(){
  const out=path.resolve(process.argv[2]||path.join(root,'artifacts/joint-tenant-preview'));

@@ -4,6 +4,32 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Joint-tenant contracts and signing (2026-11-19, local only)
+
+- Implemented the approved formatting proof on `feat/joint-tenant-contracts`.
+  `TENANT_PARTIES` and `TENANT_SIGNATURES` expand from one canonical tenant list:
+  primary first, then additional IDs in numeric order, deduplicated and org scoped.
+  One tenant has one block; two tenants retain the approved side-by-side layout.
+- Template editor offers an explicit upgrade with one/two-tenant PDF previews.
+  Saving versions the original HTML and layout recipe together; stale saves fail.
+  No templates are automatically converted. Existing signing files stay unchanged.
+- Review & Send requires every lease tenant, with names/emails tied to contact
+  records. Server rejects missing/duplicate/foreign tenants and stale previews.
+  Guarantors/other signers remain separate. New signing PDFs are private.
+- Migration 088 adds nullable layout metadata and signer tenant IDs. Ran twice on
+  disposable MySQL; verified org fencing, historical rows, versioning and copies.
+  No live migration, tenant email, template change, push, merge or deployment.
+- Validation: 45 focused tests pass; full backend 1,948 tests, 1,943 pass, four
+  known failures reproduced on unchanged main, one optional MySQL test skipped
+  (passed separately). Frontend production build, targeted ESLint and two local
+  Chromium UI flows pass using synthetic intercepted APIs. All 11 contract pages
+  in each production-rendered case match the approved PDFs pixel-for-pixel.
+- Staff workflow, rollout constraints and reproduction commands:
+  `docs/joint-tenant-contracts.md`. Release needs separate owner approval; apply
+  migration before the backend, then preview/save each intended template upgrade.
+
+---
+
 ## Session: Joint-tenant formatting proof (2026-11-19, local only)
 
 - Created a sanitised test fixture from Tane Residence Contract Template v22,

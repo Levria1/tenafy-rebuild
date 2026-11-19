@@ -335,15 +335,17 @@ router.get('/lease/:id', authenticate, async (req, res) => {
     try {
       const templateId = await resolveLeaseTemplateId(req.pool, orgId, lease, requestedTemplateId);
       if (templateId) {
-        const { pdfBuffer, emptyPlaceholders } = await renderFromTemplate({
+        const { pdfBuffer, emptyPlaceholders, tenantWarnings=[],snapshot } = await renderFromTemplate({
           pool: req.pool, orgId, leaseId: id, templateId, stamp: false, term: previewTerm,
         });
         // The body is a PDF, so the warning rides on a header the preview caller can read
         // without a second request. Names only — never the values.
         if (emptyPlaceholders && emptyPlaceholders.length) {
           res.setHeader('X-Empty-Placeholders', emptyPlaceholders.map(e => e.key).join(','));
-          res.setHeader('Access-Control-Expose-Headers', 'X-Empty-Placeholders');
         }
+        res.setHeader('X-Tenant-Template-Ready',tenantWarnings.length?'false':'true');
+        if(snapshot)res.setHeader('X-Document-Snapshot',snapshot);
+        res.setHeader('Access-Control-Expose-Headers','X-Empty-Placeholders, X-Tenant-Template-Ready, X-Document-Snapshot');
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="lease-${id}.pdf"`);
         return res.end(pdfBuffer);

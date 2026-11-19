@@ -127,9 +127,13 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   // ── Map each signature target → its marker token ─────────────────────────
   // Tenants (role != landlord) in sort_order → TENANT_1/2/3. Landlord (the
   // auto sig, or a party flagged role=landlord) → LANDLORD.
-  const tenantParties = parties
+  const signingParties = parties
     .filter(p => p.role !== 'landlord')
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  // Historical requests keep their original role-to-anchor behaviour. New
+  // requests bind every required tenant to a tenant_id; extras use fallback pages.
+  const mappedRequest=signingParties.some(p=>p.tenant_id!=null);
+  const tenantParties=mappedRequest?signingParties.filter(p=>!p.role||p.role==='tenant'):signingParties;
   const tenantMarkers = [SIGNATURE_MARKERS.TENANT_1, SIGNATURE_MARKERS.TENANT_2, SIGNATURE_MARKERS.TENANT_3];
 
   // ── Locate anchors in the unsigned PDF ───────────────────────────────────
@@ -147,7 +151,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   const anchorByToken = Object.fromEntries(anchors.map(a => [a.token, a]));
 
   // ── Draw a signature image at an anchor position ─────────────────────────
-  const placedTenantIdx = new Set();
+  const placedTenantParties = new Set();
   let landlordPlacedAtAnchor = false;
 
   async function drawSigAtAnchor(anchor, pngData) {
@@ -172,7 +176,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     const anchor = anchorByToken[tenantMarkers[i]];
     if (anchor) {
       const ok = await drawSigAtAnchor(anchor, p.signature_png);
-      if (ok) placedTenantIdx.add(i);
+      if (ok) placedTenantParties.add(p);
     }
   }
 
@@ -185,7 +189,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   // ── Initials on every content page (bottom-right, stacked) ───────────────
   // Build the list of (image) initials once, then stamp on each page.
   const initialImgs = [];
-  for (const p of tenantParties) {
+  for (const p of signingParties) {
     if (p.status !== 2) continue;
     const src = p.initials_png || null;   // dedicated initials, if captured
     if (!src) continue;
@@ -216,14 +220,11 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   }
 
   // ── Appended "Signatures" page for anything not placed at an anchor ───────
-  const unplacedTenants = tenantParties
-    .map((p, i) => ({ p, i }))
-    .filter(({ p, i }) => p.status === 2 && p.signature_png && !placedTenantIdx.has(i))
-    .map(({ p }) => p);
+  const unplacedTenants = signingParties.filter(p=>p.status===2&&p.signature_png&&!placedTenantParties.has(p));
   const landlordNeedsAppend = landlordSig && landlordSig.signature_png && !landlordPlacedAtAnchor;
 
   if (unplacedTenants.length || landlordNeedsAppend) {
-    const sigPage = pdfDoc.addPage();
+    let sigPage = pdfDoc.addPage();
     const { height } = sigPage.getSize();
     let y = height - PAGE_PADDING;
 
@@ -235,7 +236,12 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     y -= 30;
 
     for (const party of unplacedTenants) {
-      drawSafe(sigPage, 'TENANT SIGNATURE', { x: PAGE_PADDING, y, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
+      if(y<200){
+        sigPage=pdfDoc.addPage();y=sigPage.getHeight()-PAGE_PADDING;
+        drawSafe(sigPage,'Signatures (continued)',{x:PAGE_PADDING,y,size:18,font:helvBold});y-=40;
+      }
+      const label=party.role==='guarantor'?'GUARANTOR SIGNATURE':party.role==='other'?'ADDITIONAL SIGNATURE':'TENANT SIGNATURE';
+      drawSafe(sigPage, label, { x: PAGE_PADDING, y, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
       y -= 8;
       const png = await embedImageSafe(pdfDoc, party.signature_png);
       if (png) {
@@ -261,6 +267,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     }
 
     if (landlordNeedsAppend) {
+      if(y<200){sigPage=pdfDoc.addPage();y=sigPage.getHeight()-PAGE_PADDING;}
       drawSafe(sigPage, 'LANDLORD SIGNATURE', { x: PAGE_PADDING, y, size: 9, font: helvBold, color: rgb(0.3, 0.3, 0.3) });
       y -= 8;
       const png = await embedImageSafe(pdfDoc, landlordSig.signature_png);
@@ -281,7 +288,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   }
 
   // ── Certificate of Completion (always appended) ──────────────────────────
-  const cert = pdfDoc.addPage();
+  let cert = pdfDoc.addPage();
   const { height: certH } = cert.getSize();
   let cy = certH - PAGE_PADDING;
   drawSafe(cert, 'Certificate of Completion', { x: PAGE_PADDING, y: cy, size: 18, font: helvBold, color: rgb(0.1, 0.24, 0.56) });
@@ -305,6 +312,10 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
   drawSafe(cert, 'Signers', { x: PAGE_PADDING, y: cy, size: 12, font: helvBold });
   cy -= 16;
   for (const party of parties) {
+    if(cy<130){
+      cert=pdfDoc.addPage();cy=cert.getHeight()-PAGE_PADDING;
+      drawSafe(cert,'Certificate of Completion (continued)',{x:PAGE_PADDING,y:cy,size:18,font:helvBold});cy-=35;
+    }
     drawSafe(cert, `• ${party.signer_name}${party.signer_email ? ` <${party.signer_email}>` : ''}`, {
       x: PAGE_PADDING, y: cy, size: 10, font: helvBold,
     });
@@ -328,6 +339,7 @@ async function stampLease({ unsignedPdf, parties, landlordSig, request }) {
     cy -= 6;
   }
   if (landlordSig && landlordSig.signature_png) {
+    if(cy<70){cert=pdfDoc.addPage();cy=cert.getHeight()-PAGE_PADDING;}
     drawSafe(cert, `• ${landlordSig.label} (Landlord)`, { x: PAGE_PADDING, y: cy, size: 10, font: helvBold });
     cy -= 16;
   }

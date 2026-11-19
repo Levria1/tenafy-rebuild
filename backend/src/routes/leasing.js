@@ -1,4 +1,5 @@
 const express = require('express');
+const {loadLeaseTenants}=require('../services/leaseTenants');
 const router = express.Router();
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
@@ -651,15 +652,9 @@ router.get('/:id', authenticate, requirePermission('LANDLORD/LEASING_DETAIL'), a
     const lease = leases[0];
 
     // Fetch additional tenants
-    const [additionalTenants] = await req.pool.execute(
-      `SELECT t.id, t.first_name, t.last_name, t.company_name, t.type,
-        CASE t.type WHEN 1 THEN COALESCE(NULLIF(TRIM(t.company_name), ''), TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,'')))) ELSE TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) END as display_name
-       FROM leasing_additional_tenant lat
-       LEFT JOIN tenant t ON t.id = lat.tenant_id
-       WHERE lat.leasing_id = ?`,
-      [id]
-    );
-    lease.additional_tenants = additionalTenants;
+    const signingTenants=await loadLeaseTenants(req.pool,req.user.orgId,id);
+    lease.additional_tenants = signingTenants.slice(1);
+    lease.signing_tenants=signingTenants.map(t=>({tenant_id:t.id,signer_name:t.display_name,signer_email:t.email||'',role:'tenant'}));
     lease.lease_status = computeLeaseStatus(lease);
 
     // The recorded move-out, if any. Drives the detail page's "Move out" button

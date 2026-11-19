@@ -139,6 +139,11 @@ Deposit refunds are regular invoices with `type=1` (Outflow) and the Deposit cat
 ## Current Status
 See `docs/completed-work.md` for detailed progress tracking.
 
+Local branch `feat/joint-tenant-contracts` implements dynamic tenant blocks,
+automatic required signers and a previewed template upgrade. Not deployed;
+migration 088 and explicit template upgrades are release steps. See
+`docs/joint-tenant-contracts.md` before enabling it.
+
 ### What's Working
 - Dashboard with 9-widget layout
 - Properties with card layout + expandable units
