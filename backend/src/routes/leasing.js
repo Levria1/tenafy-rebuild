@@ -28,13 +28,14 @@ const {
 } = require('../services/emailService');
 const { notifyLeaseBlocked, notifyLeaseCancelled } = require('../services/wpCalendarWebhook');
 const { loadResolutionData, resolveWithData, resolveLeaseTemplateId, derivePdfStatus, hasTemplateSql } = require('../services/leaseTemplateResolver');
-const { orgToday, orgTodaySql, orgTimeSql } = require('../utils/orgTime');
+const { orgToday, orgTodaySql, orgTimeSql, orgWallClock } = require('../utils/orgTime');
 const { shouldSendCheckinNow } = require('../utils/checkinWindow');
 const { prepareInvite } = require('../utils/tenantPortalInvite');
 const { tenantPortalEnabled } = require('../middleware/tenantAuth');
 const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
 const { checkTermination } = require('../utils/leaseTermination');
+const { REPLY_EXTEND, REPLY_LEAVING, REPLY_UNSURE } = require('../utils/renewalAsk');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
@@ -123,6 +124,59 @@ function calendarDate(value) {
     return s;
   }
   return null;
+}
+
+// ── The tenant's renewal answer (leasing.renewal_reply) ─────────────────────
+// 1 = Extend, 2 = Leaving, 3 = Unsure (utils/renewalAsk.js). Extend takes the unit off
+// every customer-facing path (computeVacancies in advertising.js), and a definite
+// answer stops the renewal dispatcher asking again — so an answer that outlives the
+// end date it was given about hides a home nobody is staying in. Real case,
+// 2026-11-19: "Hi yes" in September was recorded as Extend, staff then moved the SAME
+// lease row's end date out two months, and when the tenant later gave notice for the
+// new end date the unit was still withheld from every customer.
+//
+// An answer is about one end date. renewalAsk.applyRenewalReply already treats a reply
+// as stale once the end date moves ('lease_end_changed'); these keep the lease's own
+// copy of the answer to the same rule.
+const RENEWAL_REPLY_BY_NAME = { extend: REPLY_EXTEND, leaving: REPLY_LEAVING, unsure: REPLY_UNSURE };
+const RENEWAL_REPLY_LABEL = { [REPLY_EXTEND]: 'Extend', [REPLY_LEAVING]: 'Leaving', [REPLY_UNSURE]: 'Unsure' };
+
+// True only when the stored end date and the requested one name different days. The
+// edit page sends end_date on EVERY save, so "was it in the body" is not the test: a
+// save that only changes the rent must leave a staying tenant's answer alone, or the
+// unit reappears to customers and the dispatcher (which picks renewal_reply NULL or 3)
+// asks the tenant again.
+function endDateChanged(storedEnd, requestedEnd) {
+  return calendarDate(storedEnd) !== calendarDate(requestedEnd || null);
+}
+
+// Orgs not yet on migration 067 have no renewal_reply column. Editing a lease or
+// recording a move-out matters more than the flag, so those carry on without it — the
+// same fallback the vacancy feed uses (runWithRenewalFallback in advertising.js).
+function missingRenewalColumns(e) {
+  return !!(e && e.code === 'ER_BAD_FIELD_ERROR' && /renewal_reply/.test(e.message || ''));
+}
+
+// Write the answer on one lease of this org. `onlyIf` narrows it to a lease still
+// holding that value, so an undo withdraws only what its own action put there.
+// Returns the driver's result, or { affectedRows: 0, missingColumns: true } on an
+// un-migrated org.
+async function writeRenewalReply(conn, { leaseId, orgId, reply, onlyIf = null }) {
+  const at = reply == null ? null : orgWallClock(new Date());
+  try {
+    const [result] = await conn.execute(
+      `UPDATE leasing l
+         JOIN unit u ON l.unit_id = u.id
+         JOIN property p ON u.property_id = p.id
+          SET l.renewal_reply = ?, l.renewal_reply_at = ?
+        WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL${onlyIf != null ? ' AND l.renewal_reply = ?' : ''}`,
+      [reply, at, leaseId, orgId, ...(onlyIf != null ? [onlyIf] : [])]
+    );
+    return result;
+  } catch (e) {
+    if (missingRenewalColumns(e)) return { affectedRows: 0, missingColumns: true };
+    throw e;
+  }
 }
 
 function isMovedOutEarly(moveOutDate, originalEndDate) {
@@ -1717,11 +1771,36 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), asy
     if (req.body.lease_state !== undefined && (req.body.lease_state === 'pending' || req.body.lease_state === 'active')) {
       fields.push('lease_state = ?'); params.push(req.body.lease_state);
     }
+    // A new end date makes the tenant's renewal answer stale (see endDateChanged).
+    // Cleared in the SAME statement as the date, so no reader sees the new end date
+    // with the old answer still withholding the unit.
+    const RENEWAL_CLEAR = ['renewal_reply = NULL', 'renewal_reply_at = NULL'];
+    let clearsRenewalReply = false;
+    if (end_date !== undefined) {
+      const [[stored]] = await req.pool.execute(
+        `SELECT DATE_FORMAT(l.end_date, '%Y-%m-%d') AS end_date
+           FROM leasing l
+           JOIN unit u ON l.unit_id = u.id
+           JOIN property p ON u.property_id = p.id
+          WHERE l.id = ? AND p.org_id = ? AND l.deleted_at IS NULL`,
+        [id, orgId]
+      );
+      if (stored && endDateChanged(stored.end_date, end_date)) {
+        fields.push(...RENEWAL_CLEAR);
+        clearsRenewalReply = true;
+      }
+    }
     fields.push('updated_at = NOW()');
     params.push(id);
 
     if (fields.length > 1) {
-      await req.pool.execute(`UPDATE leasing SET ${fields.join(', ')} WHERE id = ?`, params);
+      try {
+        await req.pool.execute(`UPDATE leasing SET ${fields.join(', ')} WHERE id = ?`, params);
+      } catch (e) {
+        if (!clearsRenewalReply || !missingRenewalColumns(e)) throw e;
+        const kept = fields.filter(f => !RENEWAL_CLEAR.includes(f));
+        await req.pool.execute(`UPDATE leasing SET ${kept.join(', ')} WHERE id = ?`, params);
+      }
     }
 
     // Replace additional tenants
@@ -2032,6 +2111,12 @@ router.post('/:id/move-out', authenticate, requirePermission('LANDLORD/LEASING_E
       [moveOutDate, id, orgId]
     );
 
+    // A recorded move-out IS the tenant's answer: they are leaving. Written in the same
+    // transaction as the new end date, so a stale Extend can never outlive the move-out
+    // and keep the unit away from customers. Leaving withdraws nothing by itself
+    // (only Extend does) and stops the dispatcher asking a departing tenant to renew.
+    await writeRenewalReply(conn, { leaseId: id, orgId, reply: REPLY_LEAVING });
+
     await conn.commit();
     await logActivity(req, 'MOVE_OUT', 'lease', id,
       `Moved out lease ${id} on ${moveOutDate || 'the stored end date'}`);
@@ -2116,6 +2201,15 @@ router.post('/:id/move-out/undo', authenticate, requirePermission('LANDLORD/LEAS
       );
     }
 
+    // Withdraw the Leaving the move-out recorded — back to NULL, not to whatever stood
+    // before. The earlier value is not stored anywhere, and the likeliest one is exactly
+    // the stale Extend this rule exists to clear; NULL never hides a unit from
+    // customers. Its cost is that the dispatcher may ask the tenant again, and only
+    // when no definite answer sits in the renewal_ask history for the restored end
+    // date (the dispatcher checks that history per cycle). Narrowed to a lease still
+    // on Leaving, so an answer staff set after the move-out is left alone.
+    await writeRenewalReply(conn, { leaseId: id, orgId, reply: null, onlyIf: REPLY_LEAVING });
+
     const [del] = await conn.execute(
       `UPDATE lease_moveout_request
           SET deleted_at = NOW()
@@ -2150,6 +2244,53 @@ router.post('/:id/move-out/undo', authenticate, requirePermission('LANDLORD/LEAS
     res.status(500).json({ code: 500, message: 'Failed to undo move-out' });
   } finally {
     conn.release();
+  }
+});
+
+// PUT /api/leasing/:id/renewal-reply — staff set or clear the tenant's renewal answer.
+// Body: { reply: 'extend' | 'leaving' | 'unsure' | null }  (null clears it)
+//
+// The answer otherwise only arrives through a renewal ask (services/renewalReply.js),
+// which deliberately refuses to overwrite a definite answer, and the Vacancy page's
+// answer buttons only show while an ask is open. So a wrong or outdated Extend had no
+// way off the lease, and the unit stayed hidden from customers. Staff deciding is a
+// different thing from a relayed message: they can overwrite.
+router.put('/:id/renewal-reply', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    const raw = (req.body || {}).reply;
+    let reply;
+    if (raw === null || raw === '' || raw === 'clear') {
+      reply = null;
+    } else {
+      reply = RENEWAL_REPLY_BY_NAME[String(raw).toLowerCase()];
+      if (reply === undefined) {
+        return res.status(400).json({ code: 400, message: 'reply must be one of: extend, leaving, unsure, or null to clear' });
+      }
+    }
+
+    if (!(await verifyLeaseOwnership(req.pool, id, orgId))) {
+      return res.status(404).json({ code: 404, message: 'Lease not found' });
+    }
+
+    const result = await writeRenewalReply(req.pool, { leaseId: id, orgId, reply });
+    if (result.missingColumns) {
+      return res.status(409).json({ code: 409, message: 'Renewal answers are not set up for this organisation yet' });
+    }
+
+    const label = reply == null ? 'cleared' : RENEWAL_REPLY_LABEL[reply];
+    await logActivity(req, 'UPDATE', 'lease', id, `Renewal answer on lease ${id} set to ${label}`,
+      { renewal_reply: reply });
+
+    res.json({
+      code: 200,
+      message: 'Renewal answer saved',
+      data: { lease_id: String(id), renewal_reply: reply, label },
+    });
+  } catch (error) {
+    console.error('Set renewal reply error:', error);
+    res.status(500).json({ code: 500, message: 'Failed to save renewal answer' });
   }
 });
 
@@ -2785,3 +2926,4 @@ router.delete('/:id/revisions/:rid', authenticate, requirePermission('LANDLORD/L
 module.exports = router;
 module.exports.isMovedOutEarly = isMovedOutEarly;
 module.exports.effectiveOriginalEndDate = effectiveOriginalEndDate;   // exported for tests
+module.exports.endDateChanged = endDateChanged;                       // exported for tests
