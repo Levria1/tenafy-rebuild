@@ -4,6 +4,31 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Xero Chrome-helper lookup API (2026-11-19, local only)
+
+- Implemented the first restricted backend slice from the owner's DOM handoff on
+  `feat/xero-browser-lookup`. New `/api/integrations/xero/browser/lookup` uses staff
+  authentication/reconciliation permission, a per-user/org rate limit and no-store
+  responses. Posted org/bank IDs cannot override authenticated scope.
+- Requires an explicit UI slug ↔ existing Xero API tenant binding plus one active
+  bank/account map and matching ISO currency record. New additive migration 089
+  starts empty; superadmin binding configuration is separate from lookup.
+- Reuses trace_amount ranking with strict organisation/bank/currency/direction
+  queries. Returns exact-amount invoice/lease/history leads, remaining balances,
+  ambiguity and bounded tenant-linked copied Switchboard evidence. No live Xero
+  calls, sync, ledger writes, payment confirmation or automatic field filling.
+- Verified DOM bindings and API contract in `docs/xero-browser-lookup.md`. Existing
+  helper source/location, real slug/account/currency, authentication/origin flow,
+  category/tracking/tax maps and controlled picker/row-removal tests still needed.
+- Tests: 16 focused pass; scratch MySQL migration twice and real cross-org/bank/
+  currency/direction/balance/message isolation pass. Full backend 1,953 tests,
+  1,947 pass, four known failures, two optional MySQL skips (browser run separately).
+- No frontend changes or live changes. Not pushed, merged, deployed or migrated
+  live. Earlier joint-tenant release approval does not authorise this feature's
+  release. The working Chrome helper was not found in local project manifests.
+
+---
+
 ## Session: Release joint-tenant contracts (2026-11-19)
 
 - Owner authorised push/merge/deploy, including single/joint tenants and landlord
