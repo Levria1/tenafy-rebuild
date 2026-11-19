@@ -4,6 +4,18 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Build stored Switchboard history search for Xero review (2026-11-19)
+
+- Added full retained-text amount/reference search, inquiry/unlinked scope proof,
+  message context, signed pagination and staff conversation links. No migration.
+- Helper 0.3 uses a fixed same-origin history endpoint and discards stale pages.
+  Staff confirmation remains in Xero; attachment OCR and external archive search
+  are not included. See `docs/xero-stored-history.md` for tests and release steps.
+- Six focused backend checks, scratch MySQL, seven helper units and three synthetic
+  browser flows pass. Full backend 1,955: 1,949 pass, same four known failures, two
+  optional skips. Read-only production probe searched 43,678 messages in ~1.1 s.
+- Build only: not pushed, merged or deployed; release requires owner approval.
+
 ## Session: Deploy Xero read-only Chrome helper backend (2026-11-19)
 
 - Owner approved push/merge/deploy (Discord 1572898459990884415). PR #22 merged

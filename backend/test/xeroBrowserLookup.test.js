@@ -40,22 +40,11 @@ test('mapping mismatches refuse lookup before financial or message queries', asy
   }
 });
 
-test('copied evidence normalises amounts, bounds snippets and preserves provenance without claiming currency', async () => {
-  const rows = ['Transferred HK$13,800.00 today', 'sent 13.8k', 'Not 113800 or 138000.', 'Phone 13800xxxx', 'x'.repeat(500) + ' 13800'];
-  const pool = { execute: async (sql, params) => {
-    assert.ok(sql.includes('ct.org_id=?')); assert.ok(sql.includes('p.bank_account_id=?'));
-    assert.deepEqual(params.slice(0, 5), ['1', '2026-11-19', '2026-11-19', '10', '30']);
-    return [rows.map((content, i) => ({ id: String(i), session_id: '100', content, timestamp: '2026-11-19', channel: 'whatsapp' }))];
-  } };
-  const result = await service.copiedEvidence(pool, '1', { bank_account_id: '10', currency_id: '30' }, service.validateStatement(input().statement));
-  assert.equal(result.hits.length, 3);
-  assert.ok(result.hits.every(h => h.source === 'copied_switchboard' && h.currency_verified === false && h.snippet.length <= 300));
-});
-
 test('HTTP lookup enforces staff authentication/permission and never trusts a request organisation', async t => {
   const calls = [];
   const pool = { execute: async (sql, params) => {
     calls.push({ sql, params });
+    if (sql.includes('COUNT(*) AS messages')) return [[{ messages: 0, earliest: null, latest: null }]];
     if (sql.includes('password_changed_at')) return [[{ changed: null }]];
     if (sql.includes('FROM role_permission')) return [[]];
     if (sql.includes('FROM xero_browser_binding')) return params[0] === '1' ? [[{ ui_org_slug: 'verified-org', xero_tenant_id: TENANT, connected_tenant_id: TENANT }]] : [[]];
@@ -65,6 +54,7 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
     return [[]];
   } };
   let resolvedPools = 0;
+  t.mock.method(registry, 'getMasterPool', () => ({ execute: async () => [[]] }));
   t.mock.method(registry, 'getOrgPool', async () => { resolvedPools++; return pool; });
   // auth destructures the pool resolver on first load.
   delete require.cache[require.resolve('../src/middleware/auth')];
@@ -78,6 +68,15 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, ...(method !== 'GET' ? { body: JSON.stringify(body) } : {}) });
   };
   assert.equal((await request(null)).status, 401);
+  assert.equal((await request(null, input(), '/history')).status, 401);
+  assert.equal((await request({ permissions: [] }, input(), '/history')).status, 403);
+  assert.equal((await request({ permissions: ['*'] }, {...input(), cursor: 'forged'}, '/history')).status, 400);
+  const history = await request({ permissions: ['*'] }, {...input(), allowUnlinked:true, org_id:'2'}, '/history');
+  assert.equal(history.status, 200);
+  const historyData=(await history.json()).data;
+  assert.equal(historyData.evidence.search_scope, 'retained_tenafy_history');
+  assert.equal(historyData.evidence.unlinked_included,false,'Payload cannot enable unlinked access');
+  assert.equal(historyData.identity.org_id,'1');
   assert.equal((await request({ permissions: [] })).status, 403);
   assert.equal((await request({ role: 'tenant', permissions: ['*'] })).status, 401);
   assert.equal((await request({ isMasterAdmin: true, permissions: ['*'] })).status, 403);

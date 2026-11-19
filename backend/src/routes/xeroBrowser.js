@@ -3,6 +3,8 @@ const rateLimit = require('express-rate-limit');
 const { authenticate, requirePermission, requireSuperAdmin } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const service = require('../services/xeroBrowserLookup');
+const { resolveHistoryScope } = require('../services/switchboardHistorySearch');
+const { getMasterPool } = require('../config/poolRegistry');
 const router = express.Router();
 
 // Bound unauthenticated traffic before auth/session and permission DB reads.
@@ -94,7 +96,18 @@ router.put('/binding', requireSuperAdmin, async (req, res) => {
 router.post('/lookup', async (req, res) => {
   try {
     // org_id and bank/currency IDs in a browser payload never select scope.
-    const result = await service.lookup(req.pool, String(req.user.orgId), req.body);
+    const result = await service.lookup(req.pool, String(req.user.orgId), req.body, {
+      getHistoryScope: () => resolveHistoryScope(req.pool, String(req.user.orgId), getMasterPool()),
+    });
+    res.json({ code: 200, data: result });
+  } catch (err) { error(res, err); }
+});
+
+router.post('/history', async (req, res) => {
+  try {
+    const result = await service.searchHistory(req.pool, String(req.user.orgId), req.body, {
+      getHistoryScope: () => resolveHistoryScope(req.pool, String(req.user.orgId), getMasterPool()),
+    });
     res.json({ code: 200, data: result });
   } catch (err) { error(res, err); }
 });

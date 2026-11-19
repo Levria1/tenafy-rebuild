@@ -1,7 +1,7 @@
 import { accounts } from './accounts.js';
 import { updateQueue } from './statement.mjs';
 import { lookupRequest, fingerprint, validResult } from './lookup.mjs';
-import { tenafyRequest, TENAFY_PATTERN } from './tenafy.mjs';
+import { tenafyRequest, TENAFY_PATTERN, TENAFY_ORIGIN } from './tenafy.mjs';
 
 const status = document.querySelector('#status');
 const pagination = document.querySelector('#pagination');
@@ -93,7 +93,43 @@ function appendResults(item, state, request) {
     candidates.append(li);
   }
   box.append(candidates);
-  for (const hit of (data.evidence?.hits || []).slice(0, 10)) addText(box, `Copied ${hit.channel} · ${hit.timestamp} · message ${hit.message_id}: ${hit.snippet}`);
+  const evidence = data.evidence;
+  if (evidence && !evidence.unavailable) {
+    addText(box, `Stored Switchboard history · page ${(state.pageIndex || 0) + 1}. Amount matches are leads; currency is unverified.`);
+    if (evidence.coverage) addText(box, `${evidence.coverage.messages} retained messages searched · ${evidence.coverage.earliest || 'unknown start'} to ${evidence.coverage.latest || 'unknown end'}.`);
+    if (evidence.unlinked_included === false) addText(box, 'Search is incomplete: unlinked conversations could not be safely scoped.');
+    for (const hit of (evidence.hits || []).slice(0, 10)) {
+      const entry = document.createElement('article'); entry.className = 'history-hit';
+      const contact = hit.contact || {};
+      addText(entry, [contact.name, contact.phone, contact.email].filter(Boolean).join(' · ') || 'Contact not linked');
+      addText(entry, `Copied ${hit.channel} · ${hit.timestamp} · ${hit.role || 'message'} · message ${hit.message_id}`);
+      addText(entry, (hit.reasons || []).join('; '));
+      addText(entry, hit.snippet);
+      for (const nearby of (hit.context || []).slice(0, 2)) addText(entry, `Nearby ${nearby.role} · ${nearby.timestamp}: ${nearby.snippet}`);
+      if (hit.context_unavailable) addText(entry, 'Nearby messages unavailable.');
+      if (/^\d{1,20}$/.test(String(hit.session_id || ''))) {
+        const link = document.createElement('a');
+        link.href = `${TENAFY_ORIGIN}/chatbot/sessions/${hit.session_id}`;
+        link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = 'Open conversation in Tenafy'; entry.append(link);
+      }
+      box.append(entry);
+    }
+    if (!(evidence.hits || []).length) addText(box, 'No matching stored text on this page. This does not rule out a payment or an image-only receipt.');
+    addText(box, 'Slip images, attachments and history not copied into Tenafy are not searched.');
+    const controls = document.createElement('div'); controls.className = 'history-pages';
+    const pageIndex = state.pageIndex || 0;
+    for (const [label, target, cursor, enabled] of [
+      ['Previous messages', pageIndex - 1, state.cursors?.[pageIndex - 1], pageIndex > 0],
+      ['More messages', pageIndex + 1, evidence.next_cursor, Boolean(evidence.next_cursor)],
+    ]) {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
+      button.disabled = !enabled || state.historyPending === true;
+      button.addEventListener('click', () => historyPage(request.statement.id_suffix, request, target, cursor)); controls.append(button);
+    }
+    box.append(controls);
+    if (state.historyPending) addText(box, 'Searching more stored messages…');
+    if (state.historyError) addText(box, state.historyError);
+  }
   if (data.evidence?.unavailable) addText(box, 'Copied message evidence is unavailable.');
   for (const notice of data.notices || []) addText(box, notice);
   item.append(box);
@@ -106,7 +142,7 @@ async function findLeads(suffix, request) {
   try {
     const data = await tenafyRequest('lookup', request);
     if (!validResult(data, request)) throw Error('Tenafy returned an expired or mismatched proposal. Reconnect and retry.');
-    state = { key, data };
+    state = { key, data, cursors: [null], pageIndex: 0 };
   } catch (error) { state = { key, error: error.message }; }
   if (attempt !== generation || !snapshot || !binding || results.get(suffix)?.token !== token) return;
   try {
@@ -114,6 +150,26 @@ async function findLeads(suffix, request) {
     if (fingerprint(current) !== key) return;
   } catch { return; }
   results.set(suffix, state); render(snapshot);
+}
+
+async function historyPage(suffix, request, pageIndex, cursor) {
+  const previous = results.get(suffix), key = fingerprint(request), attempt = generation;
+  if (!previous?.data || previous.key !== key || previous.historyPending || !validResult(previous.data, request)) return;
+  const token = Symbol('history');
+  results.set(suffix, { ...previous, token, historyPending: true, historyError: null }); render(snapshot);
+  let next;
+  try {
+    const data = await tenafyRequest('history', { ...request, ...(cursor ? { cursor } : {}) });
+    if (!validResult(data, request) || !data.evidence || !validResult(previous.data, request)) throw Error('Suggestion expired or changed. Look up again.');
+    const cursors = previous.cursors.slice(0, pageIndex + 1); cursors[pageIndex] = cursor || null;
+    // A message page must not extend the lifetime of the financial proposal.
+    next = { ...previous, data: { ...previous.data, evidence: data.evidence }, cursors, pageIndex };
+  } catch (error) { next = { ...previous, historyError: error.message }; }
+  if (attempt !== generation || !snapshot || !binding || results.get(suffix)?.token !== token) return;
+  try {
+    if (fingerprint(lookupRequest(snapshot, currentMapping(snapshot), queue.get(suffix))) !== key) return;
+  } catch { return; }
+  results.set(suffix, next); render(snapshot);
 }
 
 function clear(message) {

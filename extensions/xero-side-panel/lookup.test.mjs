@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { statementDate, lookupRequest, fingerprint, validResult } from './lookup.mjs';
-import { staffRequest } from './tenafy.mjs';
+import { staffRequest, tenafyRequest } from './tenafy.mjs';
 
 const snapshot = { organisation: 'verified-org', account: 'a'.repeat(32) };
 const mapping = { xeroOrganisation: snapshot.organisation, xeroAccount: snapshot.account, tenafyOrganisation: '1', currency: 'HKD' };
@@ -46,14 +46,42 @@ test('staff bridge only uses allowlisted same-origin endpoints without reading o
   t.after(() => { if (previous === undefined) delete globalThis.location; else globalThis.location = previous; });
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async (url, options) => {
-    calls++; assert.equal(url, '/api/integrations/xero/browser/lookup');
+    calls++; assert.ok(['/api/integrations/xero/browser/lookup','/api/integrations/xero/browser/history'].includes(url));
     assert.equal(options.credentials, 'same-origin'); assert.equal(options.redirect, 'error');
     assert.equal(options.headers.Authorization, undefined);
     assert.deepEqual(JSON.parse(options.body), request());
     return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, data: 'sample' }) };
   });
   assert.deepEqual(await staffRequest('lookup', request()), { data: 'sample' });
-  assert.ok((await staffRequest('https://untrusted.test/', {})).error); assert.equal(calls, 1);
+  assert.deepEqual(await staffRequest('history', request()), { data: 'sample' });
+  assert.ok((await staffRequest('https://untrusted.test/', {})).error); assert.equal(calls, 2);
   globalThis.location.origin = 'https://untrusted.test';
-  assert.ok((await staffRequest('lookup', request())).error); assert.equal(calls, 1);
+  assert.ok((await staffRequest('lookup', request())).error); assert.equal(calls, 2);
+});
+
+test('binding omits the optional payload so real Chrome can serialize script arguments', async t => {
+  const previous = globalThis.chrome;
+  const injections = [];
+  function assertSerializable(value) {
+    assert.notEqual(value, undefined, 'Chrome rejects undefined script arguments');
+    if (Array.isArray(value)) value.forEach(assertSerializable);
+    else if (value && typeof value === 'object') Object.values(value).forEach(assertSerializable);
+  }
+  globalThis.chrome = {
+    permissions: { contains: async () => true },
+    tabs: { query: async () => [{ id: 77, url: 'https://platform.tenafy.com/accounting' }] },
+    scripting: { executeScript: async injection => {
+      assertSerializable(injection.args); injections.push(injection);
+      return [{ result: { data: injection.args[0] === 'binding' ? { org_id: '1' } : 'sample' } }];
+    } },
+  };
+  t.after(() => { if (previous === undefined) delete globalThis.chrome; else globalThis.chrome = previous; });
+  assert.deepEqual(await tenafyRequest('binding'), { org_id: '1' });
+  assert.deepEqual(injections[0].args, ['binding']);
+  assert.equal(await tenafyRequest('lookup', request()), 'sample');
+  assert.deepEqual(injections[1].args, ['lookup', request()]);
+  assert.equal(await tenafyRequest('history', { ...request(), cursor: 'page-token' }), 'sample');
+  assert.deepEqual(injections[2].args, ['history', { ...request(), cursor: 'page-token' }]);
+  await assert.rejects(tenafyRequest('lookup'), /payload is required/);
+  await assert.rejects(tenafyRequest('history'), /payload is required/);
 });

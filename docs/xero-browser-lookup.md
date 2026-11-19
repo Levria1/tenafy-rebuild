@@ -1,6 +1,11 @@
 # Xero Chrome helper: read-only Tenafy lookup
 
-Status: code deployed on 2026-11-19 via [PR #22](https://github.com/Levria1/tenafy-rebuild/pull/22),
+The expanded history search is built but not deployed; see
+[xero-stored-history.md](xero-stored-history.md). The retained text search and
+pagination described there supersede the original copied-evidence limits below.
+ACJ Savings is already configured in HKD for Hillier, Mercer, Jervois and Fuk Lo Tsun.
+
+Original release status: code deployed on 2026-11-19 via [PR #22](https://github.com/Levria1/tenafy-rebuild/pull/22),
 merge commit `6e0f0c7`. Owner approval: Discord 1572898459990884415. Migration 089
 applied successfully to all three active org databases; both new binding tables
 were verified empty. Health/login returned 200 internally and over public HTTPS;
@@ -76,7 +81,7 @@ are refused. Scope comes from the authenticated organisation, never a posted
 org ID. Responses are `Cache-Control: no-store`, limited to 30 operations per
 minute per staff user/organisation. No new browser credentials or CORS exceptions
 are added. The helper optionally requests host access only to platform.tenafy.com
-and performs two fixed same-origin operations inside an isolated script on a
+and performs three fixed same-origin operations inside an isolated script on a
 signed-in staff tab. Cookies stay in that browser session; no token is extracted.
 The bridge was tested with synthetic endpoints/cookies and intercepted Chrome APIs;
 the real extension permission prompt/runtime still needs staff-PC verification.
@@ -109,7 +114,7 @@ Dates must be real YYYY-MM-DD dates. Currency is mandatory; no HKD/default-org
 fallback. Zero- and two-decimal currencies are supported according to Node's
 currency metadata. Currencies requiring more than the ledger's two decimal places
 are refused. Reference/description/payee are bounded text retained as optional
-input for future matching; this first version does not rank on those fields.
+input; the history search can match explicit references but financial ranking is unchanged.
 
 Response envelope: `{ code: 200, data: ... }`, containing:
 
@@ -188,14 +193,12 @@ combined payouts, fees and missing bank/currency metadata require manual review
 and future matcher work. A missing lead is not proof no payment exists. Accounting
 history with no property/bank association is intentionally excluded.
 
-Copied Switchboard evidence is limited to WhatsApp/email sessions linked to a
-tenant with a lease in the selected bank/currency. No `chat_session.org_id` or
-`unit.deleted_at` column is assumed: ownership is established through scoped
-tenant/property records. Unlinked contacts, other banks and internal staff chats
-are excluded. Search scans up to 200 messages, at most the first 4,000 characters
-each, within date ±14 days; flags and notices expose incomplete coverage. Common
-amount spellings such as `13,800.00` and `13.8k` are recognised. No direct live
-Switchboard search is enabled or required by this endpoint.
+Expanded copied Switchboard evidence searches full retained authorised WhatsApp/email
+text, including positively owned inquiry contacts and safely verified unlinked
+sessions, with signed pagination and bounded context. It is separate from the
+bank-scoped financial candidate scan. See [stored-history details](xero-stored-history.md)
+for ownership proof, coverage, limits and verification. No direct live Switchboard
+search or attachment/OCR search is enabled.
 
 The extension must render evidence as plain text. Use a MutationObserver/rescan
 queue for dynamic rows, deduplicate by organisation+account+suffix, and discard
