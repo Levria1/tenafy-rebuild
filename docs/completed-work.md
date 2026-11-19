@@ -4,6 +4,23 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Xero release preflight currency compatibility (2026-11-19)
+
+- Owner authorised push/merge/deploy and requested mapping instructions in Discord
+  1572898459990884415. Preflight confirmed saved Xero connection/account metadata,
+  but no structured Tenafy bank records or property-to-bank links. Actual UI slug,
+  bank currency and property/account assignments still need verification.
+- Production currency.detail is a legacy FX snapshot without a code. Migration 089
+  now creates a separate empty currency-binding table as well as the UI-org table.
+  Superadmin configuration explicitly attests stored invoice/lease denomination;
+  never edits the rate JSON or infers a code from the available exchange-rate keys.
+- Accounting history checks currency_type as well as currency_id. Invoices with
+  unknown/foreign-currency allocations are excluded. Scratch tests now exercise a
+  real-shaped FX snapshot, same-ID USD/unknown rows, guarded setup, and conflicts.
+  Migration twice and the 16 focused tests pass. No live mappings seeded.
+
+---
+
 ## Session: Connect supplied Xero helper source (2026-11-19, local only)
 
 - Owner supplied Drive file 1qNAwPqLmi1N7-fb5dP27YJ1IV_GQv8Ct,

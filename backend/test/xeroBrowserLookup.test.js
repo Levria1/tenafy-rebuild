@@ -25,14 +25,14 @@ test('statement identity requires an exact date, currency, safe minor amount and
 });
 
 test('mapping mismatches refuse lookup before financial or message queries', async () => {
-  for (const mode of ['slug', 'reconnected', 'duplicate-bank', 'wrong-currency', 'missing-currency', 'duplicate-currency']) {
+  for (const mode of ['slug', 'reconnected', 'duplicate-bank', 'wrong-currency', 'missing-currency', 'duplicate-currency', 'rate-table-unbound']) {
     const calls = [];
     const pool = { execute: async (sql) => {
       calls.push(sql);
       if (sql.includes('FROM xero_browser_binding')) return [[{ ui_org_slug: mode === 'slug' ? 'other' : 'verified-org',
         xero_tenant_id: TENANT, connected_tenant_id: mode === 'reconnected' ? 'other' : TENANT }]];
       if (sql.includes('FROM xero_account_map')) return [[...Array(mode === 'duplicate-bank' ? 2 : 1)].map(() => ({ bank_account_id: '10', tenafy_account_setting_id: '20', currency: mode === 'wrong-currency' ? 'USD' : 'HKD' }))];
-      if (sql.includes('FROM currency')) return [[...Array(mode === 'missing-currency' ? 0 : mode === 'duplicate-currency' ? 2 : 1)].map((_, i) => ({ id: String(i), detail: { code: 'HKD' } }))];
+      if (sql.includes('FROM currency')) return [[...Array(mode === 'missing-currency' ? 0 : mode === 'duplicate-currency' ? 2 : 1)].map((_, i) => ({ id: String(i), detail: mode === 'rate-table-unbound' ? { HKD: 7.8, USD: 1 } : { code: 'HKD' } }))];
       throw Error('Financial query should not run');
     } };
     await assert.rejects(service.lookup(pool, '1', input()), e => e.status === 409);
@@ -85,6 +85,7 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   const binding = await request({ permissions: ['*'] }, null, '/binding', 'GET');
   assert.equal((await binding.json()).data.org_id, '1');
   assert.equal((await request({ permissions: ['LANDLORD/ACCOUNTING_CREATE'] }, { ui_org_slug: 'verified-org' }, '/binding', 'PUT')).status, 403);
+  assert.equal((await request({ permissions: ['LANDLORD/ACCOUNTING_CREATE'] }, { currency_id: '30', currency_code: 'HKD', confirm_invoice_lease_currency: true }, '/currency', 'PUT')).status, 403);
   const response = await request({ permissions: ['LANDLORD/ACCOUNTING_CREATE'] }, { ...input(), org_id: '2', bank_account_id: '999' });
   assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
   const { data } = await response.json();
@@ -93,10 +94,15 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   assert.deepEqual(data.capabilities, { read_only: true, live_autofill: false, final_confirmation: 'staff' });
   assert.ok(calls.every(c => /^\s*SELECT\b/.test(c.sql)));
   let commits = 0, rollbacks = 0;
+  const currencyBindings = [];
   pool.getConnection = async () => ({
     beginTransaction: async () => {}, commit: async () => { commits++; }, rollback: async () => { rollbacks++; }, release() {},
     execute: async (sql, params) => { calls.push({ sql, params });
-      return sql.includes('FROM xero_connection') ? [[{ xero_tenant_id: TENANT }]] : [[]]; },
+      if (sql.includes('FROM xero_connection')) return [[{ xero_tenant_id: TENANT }]];
+      if (sql.includes('FROM currency WHERE')) return [[{ id: '30', detail: { HKD: 7.8, USD: 1 } }]];
+      if (sql.includes('FROM xero_browser_currency_binding')) return [currencyBindings];
+      if (sql.includes('INSERT INTO xero_browser_currency_binding')) currencyBindings.push({ currency_id: params[1], currency_code: params[2] });
+      return [[]]; },
   });
   const adminClaims = { permissions: ['*'], isSuperAdmin: true };
   const wrong = await request(adminClaims, { ui_org_slug: 'verified-org', xero_tenant_id: 'ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee' }, '/binding', 'PUT');
@@ -104,4 +110,9 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   const bound = await request(adminClaims, { ui_org_slug: 'verified-org', xero_tenant_id: TENANT.toUpperCase() }, '/binding', 'PUT');
   assert.equal(bound.status, 200); assert.equal(commits, 1);
   assert.equal(calls.filter(c => /^\s*INSERT INTO xero_browser_binding/.test(c.sql)).length, 1);
+  assert.equal((await request(adminClaims, { currency_id: '30', currency_code: 'HKD' }, '/currency', 'PUT')).status, 400);
+  assert.equal((await request(adminClaims, { currency_id: '30', currency_code: 'HKD', confirm_invoice_lease_currency: true }, '/currency', 'PUT')).status, 200);
+  assert.equal((await request(adminClaims, { currency_id: '30', currency_code: 'USD', confirm_invoice_lease_currency: true }, '/currency', 'PUT')).status, 409);
+  assert.equal(calls.filter(c => /^\s*INSERT INTO xero_browser_currency_binding/.test(c.sql)).length, 1);
+  assert.ok(calls.every(c => !/^\s*UPDATE currency\b/i.test(c.sql)), 'Legacy rate-table JSON must remain untouched');
 });

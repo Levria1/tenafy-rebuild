@@ -57,9 +57,15 @@ async function resolveMapping(pool, orgId, uiSlug, accountId, statement) {
   if (maps.length !== 1) fail('Configure one active, unambiguous Xero bank-account mapping first.', 409);
   const mapping = maps[0];
   if (String(mapping.currency || '').trim().toUpperCase() !== statement.currency) fail('Statement currency does not match the configured bank currency.', 409);
-  const [currencies] = await pool.execute('SELECT id,detail FROM currency WHERE org_id=?', [orgId]);
+  const [currencies] = await pool.execute(`SELECT c.id,c.detail,b.currency_code AS bound_currency_code
+    FROM currency c LEFT JOIN xero_browser_currency_binding b ON b.org_id=c.org_id AND b.currency_id=c.id
+    WHERE c.org_id=?`, [orgId]);
   const matches = currencies.filter(c => {
-    try { const detail = typeof c.detail === 'string' ? JSON.parse(c.detail) : c.detail; return detail?.code === statement.currency; }
+    try {
+      const detail = typeof c.detail === 'string' ? JSON.parse(c.detail) : c.detail;
+      if (detail?.code && c.bound_currency_code && detail.code !== c.bound_currency_code) return false;
+      return (detail?.code || c.bound_currency_code) === statement.currency;
+    }
     catch { return false; }
   });
   if (matches.length !== 1) fail('Configure one unambiguous Tenafy currency record for this bank.', 409);
@@ -84,8 +90,14 @@ function sourcesFor(mapping, statement) {
         LEFT JOIN tenant t ON t.id=i.tenant_id AND t.org_id=i.org_id AND t.deleted_at IS NULL
         LEFT JOIN category_setting c ON c.id=i.category AND c.org_id=i.org_id
         WHERE i.org_id=? AND i.deleted_at IS NULL AND i.status IN (0,2) AND i.currency_id=? AND i.type=? AND i.amount=?
+          AND NOT EXISTS (SELECT 1 FROM accounting_line other_line
+            JOIN accounting other_payment ON other_payment.id=other_line.accounting_id
+              AND other_payment.org_id=i.org_id AND other_payment.deleted_at IS NULL
+            WHERE other_line.invoice_code=i.invoice_code AND other_line.deleted_at IS NULL
+              AND (other_payment.currency_id IS NULL OR other_payment.currency_id<>i.currency_id
+                OR other_payment.currency_type IS NULL OR UPPER(TRIM(other_payment.currency_type))<>?))
         HAVING outstanding>=? ORDER BY ABS(days_from_date),i.id LIMIT 10`,
-      [row.date, bank, orgId, currency, row.direction === 'received' ? 0 : 1, statement.amount, statement.amount]);
+      [row.date, bank, orgId, currency, row.direction === 'received' ? 0 : 1, statement.amount, statement.currency, statement.amount]);
       return rows.map(r => ({ id: String(r.id), code: r.invoice_code, amount: Number(r.amount),
         outstanding_minor: decimalMinor(r.outstanding, statement.digits), due_on: r.due_on,
         tenant_name: personOrCompanyName(r) || null, unit_name: r.unit_name, property_name: r.property_name,
@@ -112,9 +124,10 @@ function sourcesFor(mapping, statement) {
         JOIN property p ON p.id=a.property_id AND p.org_id=a.org_id AND p.deleted_at IS NULL AND p.bank_account_id=?
         LEFT JOIN tenant t ON t.id=a.tenant_id AND t.org_id=a.org_id AND t.deleted_at IS NULL
         LEFT JOIN category_setting c ON c.id=a.category AND c.org_id=a.org_id
-        WHERE a.org_id=? AND a.deleted_at IS NULL AND a.account_setting_id=? AND a.currency_id=? AND a.type=? AND a.amount=?
+        WHERE a.org_id=? AND a.deleted_at IS NULL AND a.account_setting_id=? AND a.currency_id=?
+          AND UPPER(TRIM(a.currency_type))=? AND a.type=? AND a.amount=?
         ORDER BY ABS(DATEDIFF(a.payment_date,?)),a.id LIMIT 10`,
-      [bank, orgId, account, currency, row.direction === 'received' ? 0 : 1, statement.amount, row.date]);
+      [bank, orgId, account, currency, statement.currency, row.direction === 'received' ? 0 : 1, statement.amount, row.date]);
       return rows.map(r => ({ id: String(r.id), xero_transaction_id: r.xero_transaction_id || null,
         transaction_code: r.transaction_code, payment_date: r.payment_date, category: r.category,
         tenant_name: personOrCompanyName(r) || null, note: String(r.note || '').slice(0, 300) }));
@@ -188,8 +201,9 @@ async function lookup(pool, orgId, body) {
     notices: ['Scores rank leads; they are not probabilities or payment confirmation.',
       'Only exact gross-amount financial leads in the mapped bank/currency are searched. Split and partial payments require further review.',
       'Copied messages cover linked tenants only, may be incomplete, and do not establish payment identity or currency.',
+      'Accounting history with missing or conflicting currency_type is excluded, even when it shares the same legacy rate-table ID.',
       'Account/category, tracking and tax autofill mappings are not enabled.'],
   };
 }
 
-module.exports = { lookup, normalizeAccountId, validateStatement, decimalMinor, sourcesFor, copiedEvidence, slug };
+module.exports = { lookup, normalizeAccountId, validateStatement, decimalMinor, sourcesFor, copiedEvidence, slug, currencyDigits };

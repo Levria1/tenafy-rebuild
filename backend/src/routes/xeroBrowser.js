@@ -29,6 +29,37 @@ router.get('/binding', async (req, res) => {
   } catch (err) { error(res, err); }
 });
 
+// Currency_id can point to a historical FX table. This explicit attestation
+// concerns the denomination of invoice/lease amounts, not an FX conversion.
+router.put('/currency', requireSuperAdmin, async (req, res) => {
+  let conn;
+  try {
+    const { currency_id: id, currency_code: code, confirm_invoice_lease_currency: confirmed } = req.body || {};
+    if (typeof id !== 'string' || !/^\d{1,20}$/.test(id) || typeof code !== 'string' || !/^[A-Z]{3}$/.test(code) || confirmed !== true) {
+      throw Object.assign(new Error('Supply currency_id, an ISO currency_code, and confirm_invoice_lease_currency=true after verifying the stored amounts.'), { status: 400 });
+    }
+    service.currencyDigits(code);
+    conn = await req.pool.getConnection(); await conn.beginTransaction();
+    const [[row]] = await conn.execute('SELECT id,detail FROM currency WHERE id=? AND org_id=? FOR UPDATE', [id, req.user.orgId]);
+    if (!row) throw Object.assign(new Error('Currency record is not in this organisation.'), { status: 404 });
+    let detail;
+    try { detail = typeof row.detail === 'string' ? JSON.parse(row.detail) : row.detail; }
+    catch { throw Object.assign(new Error('Currency record needs review.'), { status: 409 }); }
+    if (detail?.code && detail.code !== code) throw Object.assign(new Error('Currency code conflicts with this record.'), { status: 409 });
+    const [existing] = await conn.execute(`SELECT currency_id,currency_code FROM xero_browser_currency_binding
+      WHERE org_id=? AND (currency_id=? OR currency_code=?) FOR UPDATE`, [req.user.orgId, id, code]);
+    if (existing.some(b => String(b.currency_id) !== id || b.currency_code !== code)) throw Object.assign(new Error('An existing currency binding conflicts. Review it before changing denominations.'), { status: 409 });
+    await conn.execute(`INSERT INTO xero_browser_currency_binding (org_id,currency_id,currency_code,updated_by)
+      VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE updated_by=VALUES(updated_by)`, [req.user.orgId, id, code, req.user.id]);
+    await conn.commit();
+    await logActivity(req, { action: 'UPDATE', entityType: 'XERO_BROWSER_CURRENCY', entityId: id,
+      description: 'Verified invoice/lease amount currency for browser reconciliation.' });
+    res.json({ code: 200, data: { currency_id: id, currency_code: code } });
+  } catch (err) {
+    if (conn) await conn.rollback(); error(res, err);
+  } finally { if (conn) conn.release(); }
+});
+
 // Explicit configuration only. A UI slug is never inferred from a display name
 // or treated as the API tenant ID. This does not create/refresh a Xero connection.
 router.put('/binding', requireSuperAdmin, async (req, res) => {

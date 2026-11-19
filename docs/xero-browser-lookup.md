@@ -124,7 +124,7 @@ leads use `create_review`; bare lease leads and unsynced accounting history use
 
 ## Explicit setup before use
 
-Migration `089_xero_browser_binding.sql` adds an empty metadata table; it does
+Migration `089_xero_browser_binding.sql` adds empty organisation/currency metadata tables; it does
 not alter existing bank mappings, seed guessed data or enable autofill. It passed
 twice on scratch MySQL. Live migration/deployment needs owner approval.
 
@@ -138,9 +138,29 @@ twice on scratch MySQL. Live migration/deployment needs owner approval.
    one active, non-ignored mapping to both a Tenafy account and an active bank.
    Preserve the complete existing mapping set; the old mapping save API replaces
    the full set, so never send just one entry blindly.
-3. Verify the bank's explicit ISO currency code and one matching org-scoped
-   `currency.detail.code` record. Missing, conflicting or duplicate metadata blocks
-   lookup. No currency conversion is attempted.
+3. Verify the bank's explicit ISO currency code and its Tenafy currency ID.
+   Legacy `currency.detail` often contains an FX-rate snapshot, not a currency code.
+   Never overwrite that JSON or infer denomination from its list of rate keys.
+   For such records, a superadmin can explicitly attest the denomination of stored
+   invoice/lease amounts with `PUT .../currency` and
+   `{ currency_id, currency_code, confirm_invoice_lease_currency: true }`.
+   This writes only the separate `xero_browser_currency_binding` metadata table.
+   A binding conflicting with an existing denomination is refused. Missing,
+   conflicting or duplicate mappings block lookup. No conversion is attempted.
+   Accounting history additionally needs a matching explicit `currency_type`;
+   unknown currency types are excluded even if they share the same FX snapshot ID.
+   Invoices with foreign/unknown-currency allocations are excluded because their
+   remaining balance cannot be verified in the requested denomination.
+
+### Production readiness checks (2026-11-19)
+
+The existing Xero connection/cache identifies the Tane Residence API tenant and
+ACJ HSBC S* (April Eve) bank UUID. A read-only Xero Accounts API call confirmed that ACJ Savings is HKD and its
+UUID matches the saved cache. The UI slug relationship still requires explicit
+verification. At preflight there were no structured Tenafy bank records and none
+of the 19 active properties had bank links. The one current currency row was an
+FX-rate snapshot. Deployment does not guess or seed these mappings; lookup stays
+unavailable until owner-verified setup is completed.
 
 ## Current limits and next work
 
