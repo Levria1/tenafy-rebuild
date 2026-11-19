@@ -139,10 +139,11 @@ Deposit refunds are regular invoices with `type=1` (Outflow) and the Deposit cat
 ## Current Status
 See `docs/completed-work.md` for detailed progress tracking.
 
-Local branch `feat/joint-tenant-contracts` implements dynamic tenant blocks,
-automatic required signers and a previewed template upgrade. Not deployed;
-migration 088 and explicit template upgrades are release steps. See
-`docs/joint-tenant-contracts.md` before enabling it.
+Joint-tenant contracts shipped on 2026-11-19 via PR #21 (code `b183960`).
+Migration 088 is applied to all three active org databases. The reviewed Tane
+Residence Contract Template is upgraded to v23, with v22 retained. Other templates
+can be explicitly previewed/upgraded in the editor. See
+`docs/joint-tenant-contracts.md` for workflow and release details.
 
 ### What's Working
 - Dashboard with 9-widget layout

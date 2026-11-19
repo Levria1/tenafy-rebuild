@@ -4,6 +4,26 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Release joint-tenant contracts (2026-11-19)
+
+- Owner authorised push/merge/deploy, including single/joint tenants and landlord
+  alignment (Discord 1572854113039949905). PR #21 merged as `b183960` and deployed.
+- Migration 088 applied to all three active org databases; no unrelated migrations
+  were pending. Production frontend build passed and both PM2 apps restarted.
+  Internal and public HTTPS health/login returned 200.
+- Live suite introduced no new failures: 1,904 tests, 1,898 pass, five existing
+  failures reproduced in the immediately preceding baseline, one scratch test
+  skipped. Existing fifth live failure is missing acorn in the UTC detector test.
+- Actual Tane Residence template v22 converted without saving first; live one/two
+  previews both have 11 pages and aligned tenant/landlord anchors. Saved through
+  the version-checked API as v23; v22 remains in history. Private original and
+  previews in `/home/ubuntu/backups/tenafy-deploy-20261119-joint-b183960`.
+- Synthetic signed PDF checks also cover landlord placement in all three cases;
+  45 focused tests pass. Other templates were not automatically converted. No
+  signing requests or tenant messages created by deployment/verification.
+
+---
+
 ## Session: Align signature underlines (2026-11-19, local only)
 
 - Owner noted the underline was right of the signature. Invisible marker text

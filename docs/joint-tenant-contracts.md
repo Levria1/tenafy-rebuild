@@ -1,5 +1,28 @@
 # Automatic tenant sections and signing setup
 
+## Released 2026-11-19
+
+Owner authorised push, merge and deployment in Discord 1572854113039949905.
+[PR #21](https://github.com/Levria1/tenafy-rebuild/pull/21) merged as code commit
+`b183960`. Migration 088 applied successfully to all three active organisation
+databases. Backend/frontend restarted with the new production build; internal
+health/login and public HTTPS health/login returned 200.
+
+The reviewed Tane Residence Contract Template was explicitly previewed with one
+and two tenants through the live endpoints, then saved as version 23. Version 22
+is retained in history, with an additional private release backup. Actual preview
+geometry confirms tenant and landlord marker/underline alignment; both PDFs have
+11 pages. Other templates were not automatically converted. No signing requests
+or tenant messages were created by the release workflow.
+
+Live tests: 1,904 total, 1,898 pass, five failures identical to the pre-release
+baseline, one optional scratch-MySQL test skipped. The five include the four
+known fixture failures plus the existing missing `acorn` dependency in the UTC
+detector test. Local results below use the complete local dependency installation.
+
+Release backup: `/home/ubuntu/backups/tenafy-deploy-20261119-joint-b183960`.
+
+
 Implemented locally on `feat/joint-tenant-contracts`, based on main `f0667a6` and
 the approved formatting proof `2ede873`. Not deployed. No live templates,
 contacts, leases, signing requests or tenant messages were changed.
@@ -92,7 +115,8 @@ Migration `088_joint_tenant_templates.sql` adds only:
 
 It was run twice on disposable MySQL. Existing rows retain their old values.
 Apply it through the normal organisation migration process only in an approved
-release, before starting the new backend. No live migration was run here.
+release, before starting the new backend. It was applied to all three active
+organisation databases in the approved 2026-11-19 release.
 
 After release, upgrade each intended template through the preview/save workflow.
 Do not roll the code back after adopting new variables without first planning
