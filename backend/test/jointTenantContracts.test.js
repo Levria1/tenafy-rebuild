@@ -18,6 +18,10 @@ test('template conversion preserves one-tenant content and metadata while overla
  const unwrap=s=>s.replace(/<span style="display:inline-block;width:0;overflow:visible;white-space:nowrap;">(<span[^>]*>SIGANCHOR[A-Z0-9]+<\/span>)<\/span>/g,'$1');
  assert.equal(unwrap(html),vars.substitute(fixture.body_html,{...c,tenantLayout:null}));
  assert.match(html,/width:0;overflow:visible/);
+ const landlordPreview=vars.substitute('{{SIGNATURE_LANDLORD}}________________',{...c,realRender:false});
+ assert.match(landlordPreview,/width:0;overflow:visible/);
+ assert.match(landlordPreview,/SIGANCHORLANDLORD/);
+ assert.doesNotMatch(landlordPreview,/min-width:160px/);
  assert.equal(converted.tenant_layout.parties.includes('{{TENANT_ID_CARD}}'),true);
  assert.throws(()=>blocks.upgradeTemplate(converted.body_html),/manual/);
  assert.throws(()=>blocks.upgradeTemplate('<p>{{TENANT_NAME}}</p>'),/manual/);

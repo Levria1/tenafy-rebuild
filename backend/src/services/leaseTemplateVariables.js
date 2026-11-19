@@ -396,7 +396,7 @@ const VARIABLES = [
  * marker the pdfAnchorFinder can locate. Preview → visible dashed placeholder.
  */
 function sigAnchor(ctx, marker, label) {
-  if (ctx && ctx.realRender) {
+  if (ctx && (ctx.realRender || ctx.tenantLayout || ctx.alignSignatureLines)) {
     // White + small but reliably extractable; line-height:0 so it adds no height.
     const anchor = `<span style="color:#ffffff;font-size:8px;line-height:0;">${marker}</span>`;
     // Upgraded layouts put the marker immediately before an underline. Keep
