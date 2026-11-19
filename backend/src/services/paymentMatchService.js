@@ -249,10 +249,13 @@ async function traceOne({ pool, orgId, taneChat }, row, opts = {}) {
   const empty = { rows: [], error: null };
   const wrap = (fn) => fn().then(rows => ({ rows, error: null })).catch(e => ({ ...empty, error: e.message || String(e) }));
 
+  // Browser reconciliation supplies stricter currency/bank-scoped read sources.
+  // These are internal functions, never request-supplied SQL or source names.
+  const sources = opts.sources || { fetchInvoices, fetchLeases, fetchAccounting };
   const [invoiceResult, leaseResult, accountingResult, whatsapp] = await Promise.all([
-    wrap(() => fetchInvoices(pool, orgId, row, options)),
-    wrap(() => fetchLeases(pool, orgId, row, options)),
-    wrap(() => fetchAccounting(pool, orgId, row, options)),
+    wrap(() => sources.fetchInvoices(pool, orgId, row, options)),
+    wrap(() => sources.fetchLeases(pool, orgId, row, options)),
+    wrap(() => sources.fetchAccounting(pool, orgId, row, options)),
     fetchWhatsApp(taneChat, row, options),
   ]);
 

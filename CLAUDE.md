@@ -137,6 +137,12 @@ Deposit refunds are regular invoices with `type=1` (Outflow) and the Deposit cat
 `id`, `invoice_code`, `property_id`, `unit_id`, `leasing_id`, `tenant_id`, `currency_id`, `due_on`, `category` (bigint FK to category_setting), `amount`, `note`, `type`, `status`, `file`, `tag_id`, `deleted_at`
 
 ## Current Status
+
+Local branch `feat/xero-browser-lookup` adds the first read-only Chrome-helper
+matching API (not deployed). It needs migration 089 and explicit org/bank/currency
+mappings. The supplied helper is extended in `extensions/xero-side-panel` with
+a staff-tab bridge and account setup. Staff-PC runtime/picker tests remain pending;
+autofill is disabled. See `docs/xero-browser-lookup.md`.
 See `docs/completed-work.md` for detailed progress tracking.
 
 Joint-tenant contracts shipped on 2026-11-19 via PR #21 (code `b183960`).

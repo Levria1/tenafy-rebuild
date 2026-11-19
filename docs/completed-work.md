@@ -4,6 +4,75 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Xero release preflight currency compatibility (2026-11-19)
+
+- Owner authorised push/merge/deploy and requested mapping instructions in Discord
+  1572898459990884415. Preflight confirmed saved Xero connection/account metadata,
+  but no structured Tenafy bank records or property-to-bank links. Actual UI slug,
+  bank currency and property/account assignments still need verification.
+- Production currency.detail is a legacy FX snapshot without a code. Migration 089
+  now creates a separate empty currency-binding table as well as the UI-org table.
+  Superadmin configuration explicitly attests stored invoice/lease denomination;
+  never edits the rate JSON or infers a code from the available exchange-rate keys.
+- Accounting history checks currency_type as well as currency_id. Invoices with
+  unknown/foreign-currency allocations are excluded. Scratch tests now exercise a
+  real-shaped FX snapshot, same-ID USD/unknown rows, guarded setup, and conflicts.
+  Migration twice and the 16 focused tests pass. CodeQL caught pre-auth DB access
+  preceding the limiter; an additional IP gate now runs before auth/permission
+  queries, with a burst test proving excess requests never resolve an org pool.
+  No live mappings seeded.
+
+---
+
+## Session: Connect supplied Xero helper source (2026-11-19, local only)
+
+- Owner supplied Drive file 1qNAwPqLmi1N7-fb5dP27YJ1IV_GQv8Ct,
+  `tenafy-toolbar-fix.zip`. Inspected/imported into `extensions/xero-side-panel`;
+  original Drive archive unchanged. Provenance/SHA recorded in helper README.
+- Version 0.2 adds explicit account/currency setup using non-secret local storage,
+  optional access only to platform.tenafy.com, and a same-origin staff-tab bridge
+  for GET binding / POST lookup. No token extraction, new CORS exceptions, cookies
+  permission, Xero field editing, candidate selection or final confirmation.
+- Backend returns authenticated org ID with the binding and checks optional
+  expected_org_id before searching. Client validates every returned identity,
+  discards stale/removed/cancelled proposals, renders evidence as plaintext, and
+  keeps original read-only row discovery and pagination labels.
+- Tests: six helper units, 16 focused backend checks and two synthetic browser
+  flows pass. Browser tests use the real panel/bridge modules and fake HTTPS staff
+  cookie, with Chrome APIs and endpoints intercepted. Actual Chrome permissions,
+  staff-PC runtime, live mapping values and Xero picker behaviour remain unverified.
+  Full backend stays at 1,953 tests/1,947 pass/four known failures/two optional skips.
+- Updated helper draft is packaged separately. Backend/migration 089 and this
+  feature are still not pushed or deployed. Actual org/account/currency mappings
+  and separate release approval are needed before live suggestions can work.
+
+---
+
+## Session: Xero Chrome-helper lookup API (2026-11-19, local only)
+
+- Implemented the first restricted backend slice from the owner's DOM handoff on
+  `feat/xero-browser-lookup`. New `/api/integrations/xero/browser/lookup` uses staff
+  authentication/reconciliation permission, a per-user/org rate limit and no-store
+  responses. Posted org/bank IDs cannot override authenticated scope.
+- Requires an explicit UI slug ↔ existing Xero API tenant binding plus one active
+  bank/account map and matching ISO currency record. New additive migration 089
+  starts empty; superadmin binding configuration is separate from lookup.
+- Reuses trace_amount ranking with strict organisation/bank/currency/direction
+  queries. Returns exact-amount invoice/lease/history leads, remaining balances,
+  ambiguity and bounded tenant-linked copied Switchboard evidence. No live Xero
+  calls, sync, ledger writes, payment confirmation or automatic field filling.
+- Verified DOM bindings and API contract in `docs/xero-browser-lookup.md`. Existing
+  helper source/location, real slug/account/currency, authentication/origin flow,
+  category/tracking/tax maps and controlled picker/row-removal tests still needed.
+- Tests: 16 focused pass; scratch MySQL migration twice and real cross-org/bank/
+  currency/direction/balance/message isolation pass. Full backend 1,953 tests,
+  1,947 pass, four known failures, two optional MySQL skips (browser run separately).
+- No frontend changes or live changes. Not pushed, merged, deployed or migrated
+  live. Earlier joint-tenant release approval does not authorise this feature's
+  release. The working Chrome helper was not found in local project manifests.
+
+---
+
 ## Session: Release joint-tenant contracts (2026-11-19)
 
 - Owner authorised push/merge/deploy, including single/joint tenants and landlord

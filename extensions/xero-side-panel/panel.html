@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tenafy reconciliation review</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <main>
+    <h1>Reconciliation review</h1>
+    <button id="connect" type="button">Connect Tenafy</button>
+    <p><a href="https://platform.tenafy.com/login" target="_blank" rel="noopener noreferrer">Open Tenafy sign-in</a></p>
+    <p id="connection" role="status">Suggestions require a signed-in Tenafy tab. No login tokens are copied.</p>
+    <button id="scan" type="button">Read this Xero tab</button>
+    <p id="status" role="status">Open Xero’s Reconcile tab, then select Read this Xero tab.</p>
+    <p id="scope"></p>
+    <form id="mapping">
+      <label>Tenafy organisation <input id="organisation" readonly required></label>
+      <label>Bank currency (ISO code) <input id="currency" placeholder="e.g. HKD" maxlength="3" pattern="[A-Z]{3}" required></label>
+      <button id="save-mapping" type="submit" disabled>Map current account</button>
+    </form>
+    <p id="pagination"></p>
+    <ul id="lines" aria-label="Discovered statement lines"></ul>
+  </main>
+  <script type="module" src="panel.js"></script>
+</body>
+</html>
