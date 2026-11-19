@@ -95,7 +95,7 @@ function appendResults(item, state, request) {
   box.append(candidates);
   const evidence = data.evidence;
   if (evidence && !evidence.unavailable) {
-    const windowLabel = [6,30].includes(evidence.lookback_days) ? `${evidence.lookback_days} days ending on the bank date` : 'window unverified';
+    const windowLabel = evidence.lookback_days === 'all' ? 'All stored history' : [6,30].includes(evidence.lookback_days) ? `${evidence.lookback_days} days ending on the bank date` : 'window unverified';
     addText(box, `Stored Switchboard history · ${windowLabel} · page ${(state.pageIndex || 0) + 1}. Amount matches are leads; currency is unverified.`);
     if (evidence.expanded_from_days === 6) addText(box, 'No matches in six days; search expanded to 30 days.');
     if (evidence.coverage?.date_window) addText(box, `Search dates: ${evidence.coverage.date_window.start} to ${evidence.coverage.date_window.end}, inclusive.`);
@@ -129,10 +129,11 @@ function appendResults(item, state, request) {
       button.disabled = !enabled || state.historyPending === true;
       button.addEventListener('click', () => historyPage(request.statement.id_suffix, request, target, cursor)); controls.append(button);
     }
-    if (evidence.lookback_days === 6) {
-      const expand = document.createElement('button'); expand.type = 'button'; expand.textContent = 'Search 30 days';
-      expand.disabled = state.historyPending === true;
-      expand.addEventListener('click', () => historyPage(request.statement.id_suffix, request, 0, null, 30)); controls.append(expand);
+    for (const [days, label] of [[30, 'Search 30 days'], ['all', 'Search all history']]) {
+      if (evidence.lookback_days === days) continue;
+      const choose = document.createElement('button'); choose.type = 'button'; choose.textContent = label;
+      choose.disabled = state.historyPending === true;
+      choose.addEventListener('click', () => historyPage(request.statement.id_suffix, request, 0, null, days)); controls.append(choose);
     }
     box.append(controls);
     if (state.historyPending) addText(box, 'Searching more stored messages…');

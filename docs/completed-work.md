@@ -13,13 +13,17 @@ Track all changes made per session. Update at the end of each session.
   are not included. See `docs/xero-stored-history.md` for tests and release steps.
 - Owner then limited message search to six days ending on the bank date, expanding
   to thirty on no hits or through an explicit button (Discord 1573000477317275720).
-  Only those two windows are accepted; matching/context/coverage queries enforce
-  their dates, pagination tokens bind the window, and expansion resets the page.
+  Bounded matching/context/coverage queries enforce their dates. The owner then
+  requested an explicit All history option (Discord 1573005916624781404); it removes
+  only the date restriction, retaining org/channel/role checks. Staff can switch
+  back to thirty days. Cursors bind the mode; changes reset the page. Search uses
+  SQL/local ranking and consumes no LLM tokens. Build/commit/push is authorised;
+  merge and deployment remain pending.
 - Seven focused backend checks, scratch MySQL, seven helper units and four synthetic
   browser flows pass. Full backend 1,956: 1,950 pass, same four known failures, two
   optional skips. Windowed read-only probe covered 8,594 messages in ~374 ms;
   the sample amount had no hits. Nineteen focused/regression checks pass.
-- Build only: not pushed, merged or deployed; release requires owner approval.
+- Built and pushed on the feature branches; merge/deployment require owner approval.
 
 ## Session: Deploy Xero read-only Chrome helper backend (2026-11-19)
 

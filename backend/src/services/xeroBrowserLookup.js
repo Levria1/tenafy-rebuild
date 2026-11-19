@@ -193,7 +193,7 @@ function envelope(orgId, uiSlug, accountId, mapping, statement, result) {
     capabilities: { read_only: true, live_autofill: false, final_confirmation: 'staff' },
     notices: ['Scores rank leads; they are not probabilities or payment confirmation.',
       'Financial leads still require exact gross amounts in the mapped bank/currency; split and partial payments need review.',
-      'Stored Switchboard text is searched in a six-day window ending on the bank date, expandable to thirty days, across authorised conversations.',
+      'Stored Switchboard text is searched in a six-day window ending on the bank date, expandable to thirty days or explicitly to all retained history, across authorised conversations.',
       'Only text copied into Tenafy is searchable here; external history, slip images and attachments are not searched.',
       'Messages are evidence to review, not payment or currency confirmation.',
       'Accounting history with missing or conflicting currency_type is excluded.',

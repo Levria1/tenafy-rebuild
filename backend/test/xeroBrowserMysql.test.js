@@ -140,6 +140,15 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
     assert.equal(fallback.expanded_from_days,6); assert.equal(fallback.lookback_days,30);
     const empty = await searchStoredHistory(pool,'1',mapping,{...statement,amount_minor:7770000},{scope:dedicated});
     assert.equal(empty.lookback_days,30); assert.deepEqual(empty.hits,[]);
+    let allCursor, allIds=[];
+    do {
+      const all=await searchStoredHistory(pool,'1',mapping,statement,{scope:dedicated,lookbackDays:'all',cursor:allCursor});
+      assert.equal(all.lookback_days,'all'); assert.equal(all.coverage.date_window,null);
+      allIds.push(...all.hits.map(h=>h.message_id)); allCursor=all.next_cursor;
+    } while(allCursor);
+    assert.equal(allIds.length,13);assert.equal(new Set(allIds).size,13);
+    for(const id of ['623','624','627']) assert.ok(allIds.includes(id),'Explicit all history includes older and later messages');
+    for(const id of ['602','603','614','615','617']) assert.ok(!allIds.includes(id),'All history preserves org/channel/role boundaries');
     const old = expanded.hits.find(h => h.message_id === '611');
     assert.equal(old.contact.inquiry_id, '700'); assert.equal(old.role, 'assistant');
     assert.deepEqual(old.context.map(c => c.message_id), ['610','612']);
@@ -164,6 +173,7 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
     assert.equal(pages,2); assert.equal(seen.length,20); assert.equal(new Set(seen).size,20);
     assert.equal(cursor,null);
     const first = await searchStoredHistory(pool,'1',mapping,statement,{scope:dedicated});
+    await assert.rejects(searchStoredHistory(pool,'1',mapping,statement,{cursor:first.next_cursor,lookbackDays:'all'}),e=>e.status===400);
     await assert.rejects(searchStoredHistory(pool,'1',mapping,statement,{cursor:first.next_cursor,lookbackDays:30}),e=>e.status===400);
     await assert.rejects(searchStoredHistory(pool,'2',mapping,statement,{cursor:first.next_cursor}), e=>e.status===400);
     await assert.rejects(searchStoredHistory(pool,'1',mapping,{...statement,amount_minor:100},{cursor:first.next_cursor}), e=>e.status===400);

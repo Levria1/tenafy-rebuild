@@ -1,7 +1,7 @@
 # Xero Chrome helper: read-only Tenafy lookup
 
 The expanded history search is built but not deployed; see
-[xero-stored-history.md](xero-stored-history.md). The six-to-thirty-day retained text search and
+[xero-stored-history.md](xero-stored-history.md). The six/thirty-day and explicitly selected all-history search and
 pagination described there supersede the original copied-evidence limits below.
 ACJ Savings is already configured in HKD for Hillier, Mercer, Jervois and Fuk Lo Tsun.
 
@@ -194,7 +194,7 @@ and future matcher work. A missing lead is not proof no payment exists. Accounti
 history with no property/bank association is intentionally excluded.
 
 Expanded copied Switchboard evidence searches full retained authorised WhatsApp/email
-text within six days ending on the bank date, expandable to thirty, including positively owned inquiry contacts and safely verified unlinked
+text within six days ending on the bank date, expandable to thirty or explicitly all history, including positively owned inquiry contacts and safely verified unlinked
 sessions, with signed pagination and bounded context. It is separate from the
 bank-scoped financial candidate scan. See [stored-history details](xero-stored-history.md)
 for ownership proof, coverage, limits and verification. No direct live Switchboard

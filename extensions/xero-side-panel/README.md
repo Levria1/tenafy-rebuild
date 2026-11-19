@@ -86,7 +86,11 @@ Supporting evidence searches six calendar days ending on the bank transaction
 date, including owned inquiry contacts and safely scoped unlinked sessions. For
 19 November this is 14–19 November. With no hits it automatically widens to thirty
 days (21 October–19 November). Click Search 30 days to widen when recent hits
-exist but none is right. No message/context outside the selected dates is shown.
+exist but none is right. The six/thirty-day modes exclude messages/context
+outside the selected dates. Search all history explicitly removes that date
+filter; Search 30 days narrows it again. Automatic expansion never selects all
+history. These database searches use zero LLM tokens; OCR or AI assessment would
+be a separate future feature.
 The panel shows contacts, one preceding/following reply and a conversation link.
 More messages/Previous messages replace the displayed page. Coverage shows the
 stored message count and date range. Foreign/internally scoped messages are

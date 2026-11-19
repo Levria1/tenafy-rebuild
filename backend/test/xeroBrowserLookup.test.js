@@ -78,6 +78,8 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   assert.equal(historyData.evidence.search_scope, 'retained_tenafy_history');
   assert.equal(historyData.evidence.unlinked_included,false,'Payload cannot enable unlinked access');
   assert.equal(historyData.identity.org_id,'1');
+  const all=await request({ permissions: ['*'] },{...input(),lookback_days:'all'},'/history');
+  assert.equal(all.status,200);assert.equal((await all.json()).data.evidence.lookback_days,'all');
   assert.equal((await request({ permissions: [] })).status, 403);
   assert.equal((await request({ role: 'tenant', permissions: ['*'] })).status, 401);
   assert.equal((await request({ isMasterAdmin: true, permissions: ['*'] })).status, 403);

@@ -138,7 +138,7 @@ Deposit refunds are regular invoices with `type=1` (Outflow) and the Deposit cat
 
 ## Current Status
 
-Expanded stored Switchboard history search (six days, expandable to thirty) and helper 0.3 are built in
+Expanded stored Switchboard history search (six days, expandable to thirty or explicitly all history) and helper 0.3 are built in
 `feat/xero-stored-history`, not deployed. See `docs/xero-stored-history.md`.
 ACJ Savings setup is complete in HKD for Hillier, Mercer, Jervois and Fuk Lo Tsun.
 

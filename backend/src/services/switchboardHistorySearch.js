@@ -59,13 +59,16 @@ function ownership(orgId, scope) {
   };
 }
 function messageWindow(statement, days = 6) {
-  if (![6, 30].includes(days)) throw Object.assign(new Error('Message search supports only 6 or 30 days.'), { status: 400 });
+  if (![6, 30, 'all'].includes(days)) throw Object.assign(new Error('Message search supports only 6 days, 30 days or all history.'), { status: 400 });
+  if (days === 'all') return { days, start: null, end: null, end_exclusive: null };
   // Calendar-day window ending on the bank date, inclusive. No future messages.
   const end = new Date(statement.date + 'T00:00:00Z');
   const start = new Date(end); start.setUTCDate(start.getUTCDate() - days + 1);
   const exclusive = new Date(end); exclusive.setUTCDate(exclusive.getUTCDate() + 1);
   return { days, start: start.toISOString().slice(0,10), end: statement.date, end_exclusive: exclusive.toISOString().slice(0,10) };
 }
+const timeFilter = window => window.days === 'all' ? '' : ' AND m.created_at>=? AND m.created_at<?';
+const timeParams = window => window.days === 'all' ? [] : [window.start, window.end_exclusive];
 function queryScope(orgId, mapping, statement, lookbackDays = 6) {
   return crypto.createHash('sha256').update(JSON.stringify({ orgId: String(orgId), bank: String(mapping.bank_account_id),
     currencyId: String(mapping.currency_id), lookbackDays, statement: { id: statement.id_suffix, date: statement.date,
@@ -116,10 +119,10 @@ async function nearby(pool, orgId, scope, hit, row, window) {
       FROM chat_message m JOIN chat_session s ON s.id=m.session_id
       LEFT JOIN tenant t ON t.id=s.contact_id LEFT JOIN inquiry q ON q.id=s.inquiry_id
       WHERE ${owned.sql} AND m.role IN ('user','assistant') AND m.session_id=?
-        AND m.created_at>=? AND m.created_at<?
+        ${timeFilter(window)}
         AND (m.created_at ${op} ? OR (m.created_at=? AND m.id ${op} ?))
       ORDER BY m.created_at ${order},m.id ${order} LIMIT 1`,
-    [...owned.params, hit.session_id, window.start, window.end_exclusive, row.created_sql, row.created_sql, hit.message_id]);
+    [...owned.params, hit.session_id, ...timeParams(window), row.created_sql, row.created_sql, hit.message_id]);
     return rows.map(r => ({ message_id: String(r.id), role: r.role, timestamp: r.timestamp, snippet: String(r.snippet || '').slice(0, 300) }));
   };
   try {
@@ -145,9 +148,9 @@ async function searchStoredHistory(pool, orgId, mapping, statement, options = {}
       s.channel,s.channel_user_id,s.viewer_name,s.viewer_phone,s.viewer_email,s.contact_id,s.inquiry_id
     FROM chat_message m JOIN chat_session s ON s.id=m.session_id
     LEFT JOIN tenant t ON t.id=s.contact_id LEFT JOIN inquiry q ON q.id=s.inquiry_id
-    WHERE ${owned.sql} AND m.role IN ('user','assistant') AND m.created_at>=? AND m.created_at<? AND REGEXP_LIKE(m.content,?,'i')
+    WHERE ${owned.sql} AND m.role IN ('user','assistant')${timeFilter(window)} AND REGEXP_LIKE(m.content,?,'i')
     ${cursorSql} ORDER BY distance ASC,created_sql DESC,m.id DESC LIMIT ${PAGE_SIZE + 1}`,
-  [statement.date, pattern, amount, ...(reference ? [reference] : []), ...owned.params, window.start, window.end_exclusive, pattern,
+  [statement.date, pattern, amount, ...(reference ? [reference] : []), ...owned.params, ...timeParams(window), pattern,
     ...(cursor ? [cursor.distance, cursor.distance, cursor.created, cursor.created, cursor.id] : [])]);
   // Widen once only when the first six-day page has no matching text. Explicit
   // expansion remains available when recent hits exist but none is the right one.
@@ -164,13 +167,13 @@ async function searchStoredHistory(pool, orgId, mapping, statement, options = {}
       MIN(m.created_at) AS earliest,MAX(m.created_at) AS latest
     FROM chat_message m JOIN chat_session s ON s.id=m.session_id
     LEFT JOIN tenant t ON t.id=s.contact_id LEFT JOIN inquiry q ON q.id=s.inquiry_id
-    WHERE ${owned.sql} AND m.role IN ('user','assistant') AND m.created_at>=? AND m.created_at<?`, [...owned.params, window.start, window.end_exclusive]);
+    WHERE ${owned.sql} AND m.role IN ('user','assistant')${timeFilter(window)}`, [...owned.params, ...timeParams(window)]);
   return { hits, next_cursor: rows.length > PAGE_SIZE ? encodeCursor(page[page.length - 1], hash) : null,
     limited: false, linked_contacts_only: !scope.allowUnlinked, search_scope: 'retained_tenafy_history',
     scope_verification: scope.verification, unlinked_included: scope.allowUnlinked === true,
-    coverage: { messages: Number(coverage.messages), earliest: coverage.earliest, latest: coverage.latest, date_window: window },
+    coverage: { messages: Number(coverage.messages), earliest: coverage.earliest, latest: coverage.latest, date_window: window.days === 'all' ? null : window },
     lookback_days: window.days, attachments_searchable: false, reference_searched: Boolean(reference),
-    notices: [`Only the ${window.days} calendar days ending on the bank date are searched; results are ordered by proximity to that date.`,
+    notices: [window.days === 'all' ? 'All retained authorised history is searched, including messages outside the thirty-day window; results are ordered by proximity to the bank date.' : `Only the ${window.days} calendar days ending on the bank date are searched; results are ordered by proximity to that date.`,
       'Messages are leads, not proof that money moved or that a currency matches. Attachments/slip images are not stored as searchable documents here.',
       ...(scope.allowUnlinked ? [] : ['Unlinked sessions were omitted because exclusive database ownership could not be verified.'])] };
 }
