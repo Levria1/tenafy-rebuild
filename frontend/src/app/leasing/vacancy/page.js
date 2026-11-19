@@ -6,7 +6,7 @@ import { Table, Card, Tag, Typography, Space, Input, Select, message, Tooltip, M
 import { HomeOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import Link from 'next/link';
 import MainLayout from '../../../components/Layout';
-import { advertisingApi } from '../../../lib/api';
+import { advertisingApi, leasing as leasingApi } from '../../../lib/api';
 
 const { Title, Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -19,6 +19,12 @@ const INTENT_META = {
   MTM: { color: 'purple', label: 'MTM · Month-to-Month' },
   Unset: { color: 'default', label: 'Unset' },
 };
+
+// Said in two places (the lease's own answer, and an ask's status), so written once.
+// Changing the lease end date clears the answer; so does recording a move-out, which
+// records Leaving instead. If neither applies, staff change it on the row.
+const EXTEND_HELP = 'The tenant chose Extend, so this unit is not offered to customers. '
+  + 'Changing the lease end date clears this. If the tenant has changed their mind, set their answer here.';
 
 // One place decides how a renewal sequence reads, so the row and the off-page card can
 // never describe the same state differently.
@@ -36,7 +42,7 @@ const ASK_STATUS_META = {
   },
   could_not_reach_them:        { color: 'orange', label: () => 'Could not reach them',        help: () => 'We tried, but nothing was delivered. Check the phone number or email on the tenant.' },
   no_answer_call_them:         { color: 'red',    label: () => 'No answer · call them',        help: () => 'Three asks, no reply. Someone should phone the tenant.' },
-  extend_pending_paperwork:    { color: 'gold',   label: () => 'Extend · paperwork due',      help: () => 'The tenant chose Extend. Not offered to customers. Extend the lease to clear this.' },
+  extend_pending_paperwork:    { color: 'gold',   label: () => 'Extend · paperwork due',      help: () => EXTEND_HELP },
   // The relay captured a message it could not attribute safely — a group thread, a
   // forward, wording that only reads as an answer in context. Asking again is paused
   // for a week so we do not nag someone who has replied; nothing has acted. Someone
@@ -65,6 +71,28 @@ function RenewalReplyControls({ ask, onRecord, busy }) {
           okText="Record"
           onConfirm={() => onRecord(ask.latest_ask_id, value)}
         >
+          <a style={{ fontSize: 12, pointerEvents: busy ? 'none' : undefined, opacity: busy ? 0.5 : 1 }}>{label}</a>
+        </Popconfirm>
+      ))}
+    </Space>
+  );
+}
+
+// The answer stored on the LEASE (leasing.renewal_reply), which is what decides whether
+// customers see the unit. Unlike RenewalReplyControls this does not need an open ask:
+// an Extend that outlived its end date otherwise had no way off the lease.
+const LEASE_REPLY_OPTIONS = [
+  ['leaving', 'Leaving', 'Record that the tenant is leaving? The unit is no longer held back from customers, and the tenant is not asked again.'],
+  [null, 'Clear', 'Clear the tenant\u2019s answer? The unit is no longer held back from customers. If renewal asks are on, the tenant may be asked again.'],
+];
+function LeaseReplyControl({ row, onSet, busy }) {
+  const current = Number(row.renewal_reply);
+  const options = LEASE_REPLY_OPTIONS.filter(([value]) => !(value === 'leaving' && current === 2));
+  return (
+    <Space size={4} wrap>
+      <Text type="secondary" style={{ fontSize: 12 }}>Change:</Text>
+      {options.map(([value, label, title]) => (
+        <Popconfirm key={label} title={title} okText={label} onConfirm={() => onSet(row.lease_id, value)}>
           <a style={{ fontSize: 12, pointerEvents: busy ? 'none' : undefined, opacity: busy ? 0.5 : 1 }}>{label}</a>
         </Popconfirm>
       ))}
@@ -153,7 +181,14 @@ export default function VacancyPage() {
   const overrideById = new Map(overrideRows.map(o => [String(o.id), o]));
   // Keyed by lease: a renewal sequence belongs to the lease we asked about, and the same
   // unit may have had an earlier one.
-  const askByLease = new Map(renewalAsks.map(a => [String(a.lease_id), a]));
+  // Only the cycle for the lease's CURRENT end date labels its row. A cycle asked about an
+  // earlier end date is over: its "Extend · paperwork due" would read as still owed after
+  // the lease was extended. A reply that arrived after the change still shows, because
+  // that one needs a person.
+  const askByLease = new Map(renewalAsks
+    .filter(a => !a.current_lease_end || a.lease_end === a.current_lease_end
+      || a.status === 'replied_but_stale_check_lease')
+    .map(a => [String(a.lease_id), a]));
   // Sequences whose lease never reaches this page — too far out, or the unit is re-let.
   // Without surfacing them here they would run entirely unobserved.
   // Settled asks (lease renewed, ended or gone) are history, not "in flight".
@@ -221,6 +256,19 @@ export default function VacancyPage() {
       await load(openingRange);
     } catch (e) {
       message.error(e.response?.data?.message || 'Failed to record the reply');
+    } finally {
+      setRecordingReply(false);
+    }
+  };
+
+  const setLeaseReply = async (leaseId, reply) => {
+    setRecordingReply(true);
+    try {
+      await leasingApi.setRenewalReply(leaseId, reply);
+      message.success(reply ? 'Saved. The unit is no longer held back from customers.' : 'Cleared. The unit is no longer held back from customers.');
+      await load(openingRange);
+    } catch (e) {
+      message.error(e.response?.data?.message || 'Failed to save the answer');
     } finally {
       setRecordingReply(false);
     }
@@ -321,9 +369,24 @@ export default function VacancyPage() {
           return (
             <Space direction="vertical" size={4}>
               <div>{expiring}</div>
-              <Tooltip title="The tenant chose Extend. Not offered to customers. Extend the lease to clear this.">
+              <Tooltip title={EXTEND_HELP}>
                 <Tag color="gold" style={{ fontWeight: 600 }}>Extend · paperwork due</Tag>
               </Tooltip>
+              <LeaseReplyControl row={r} onSet={setLeaseReply} busy={recordingReply} />
+            </Space>
+          );
+        }
+        // Leaving withholds nothing, but a wrong one stops the renewal asks, so it is shown
+        // and can be cleared.
+        if (Number(r.renewal_reply) === 2) {
+          return (
+            <Space direction="vertical" size={4}>
+              <div>{expiring}</div>
+              <Tooltip title="The lease records that the tenant is leaving (their reply, a recorded move-out, or staff). The unit is offered to customers and the tenant is not asked to renew.">
+                <Tag>Leaving</Tag>
+              </Tooltip>
+              {askTag}
+              <LeaseReplyControl row={r} onSet={setLeaseReply} busy={recordingReply} />
             </Space>
           );
         }
