@@ -1,6 +1,6 @@
 # Tenafy reconciliation review
 
-Version 0.3.0 adds full retained Switchboard text search, contact details, nearby
+Version 0.3.0 adds date-bounded Switchboard text search, contact details, nearby
 replies, conversation links and paginated results. The original lookup backend is
 live through PR #22; this history-search increment is built but not deployed.
 Wait for its approved backend release before updating staff to this helper.
@@ -82,8 +82,11 @@ expected organisation against its authenticated session; client mappings grant n
 access. See [Chrome host permissions](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions)
 and [content-script request origins](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests).
 
-Supporting evidence searches WhatsApp/email text retained in Tenafy across its
-history, including owned inquiry contacts and safely scoped unlinked sessions.
+Supporting evidence searches six calendar days ending on the bank transaction
+date, including owned inquiry contacts and safely scoped unlinked sessions. For
+19 November this is 14–19 November. With no hits it automatically widens to thirty
+days (21 October–19 November). Click Search 30 days to widen when recent hits
+exist but none is right. No message/context outside the selected dates is shown.
 The panel shows contacts, one preceding/following reply and a conversation link.
 More messages/Previous messages replace the displayed page. Coverage shows the
 stored message count and date range. Foreign/internally scoped messages are

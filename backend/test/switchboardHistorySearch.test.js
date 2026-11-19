@@ -24,7 +24,7 @@ test('history pagination tokens reject tampering, expiry and another org/bank/ro
   const hash=h.queryScope('1',mapping,statement), row={id:'9007199254740994',created_sql:'2026-11-19 12:00:00',distance:43200};
   const token=h.encodeCursor(row,hash);
   assert.equal(h.decodeCursor(token,hash).id,row.id);
-  for(const scope of [h.queryScope('2',mapping,statement),h.queryScope('1',{...mapping,bank_account_id:'11'},statement),
+  for(const scope of [h.queryScope('1',mapping,statement,30),h.queryScope('2',mapping,statement),h.queryScope('1',{...mapping,bank_account_id:'11'},statement),
     h.queryScope('1',mapping,{...statement,id_suffix:'b'.repeat(32)}),h.queryScope('1',mapping,{...statement,reference:'PAY123456'})]) {
     assert.throws(()=>h.decodeCursor(token,scope),e=>e.status===400);
   }
@@ -36,4 +36,12 @@ test('history pagination tokens reject tampering, expiry and another org/bank/ro
 test('reference search excludes generic words and escapes punctuation before generating regex', () => {
   for(const reference of ['rent','payment','12345','x'.repeat(100)]) assert.equal(h.referencePattern({reference}),null);
   assert.ok(h.referencePattern({reference:'PAY-ABC-123456'}).includes('P[[:space:]-]*A'));
+});
+
+
+test('message windows allow only six or thirty calendar days ending on the bank date', () => {
+  assert.deepEqual(h.messageWindow(statement), {days:6,start:'2026-11-14',end:'2026-11-19',end_exclusive:'2026-11-20'});
+  assert.equal(h.messageWindow(statement,30).start,'2026-10-21');
+  assert.equal(h.messageWindow({...statement,date:'2024-03-01'},6).start,'2024-02-25');
+  for(const days of [0,1,7,31,365,'30',{},-1]) assert.throws(()=>h.messageWindow(statement,days),e=>e.status===400);
 });

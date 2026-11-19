@@ -152,7 +152,7 @@ async function searchHistory(pool, orgId, body, options = {}) {
   const uiSlug = slug(body?.ui_org_slug), accountId = normalizeAccountId(body?.xero_account_id);
   const statement = validateStatement(body?.statement);
   const mapping = await resolveMapping(pool, orgId, uiSlug, accountId, statement);
-  const evidence = await copiedEvidence(pool, orgId, mapping, statement, { scope: await historyScope(options), cursor: body?.cursor });
+  const evidence = await copiedEvidence(pool, orgId, mapping, statement, { scope: await historyScope(options), cursor: body?.cursor, lookbackDays: body?.lookback_days });
   return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates: [], evidence, status: 'evidence', source_status: {} });
 }
 
@@ -193,7 +193,7 @@ function envelope(orgId, uiSlug, accountId, mapping, statement, result) {
     capabilities: { read_only: true, live_autofill: false, final_confirmation: 'staff' },
     notices: ['Scores rank leads; they are not probabilities or payment confirmation.',
       'Financial leads still require exact gross amounts in the mapped bank/currency; split and partial payments need review.',
-      'Stored Switchboard history is searched separately across authorised conversations, including prospects and safely scoped unlinked contacts.',
+      'Stored Switchboard text is searched in a six-day window ending on the bank date, expandable to thirty days, across authorised conversations.',
       'Only text copied into Tenafy is searchable here; external history, slip images and attachments are not searched.',
       'Messages are evidence to review, not payment or currency confirmation.',
       'Accounting history with missing or conflicting currency_type is excluded.',

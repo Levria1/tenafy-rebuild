@@ -95,7 +95,10 @@ function appendResults(item, state, request) {
   box.append(candidates);
   const evidence = data.evidence;
   if (evidence && !evidence.unavailable) {
-    addText(box, `Stored Switchboard history · page ${(state.pageIndex || 0) + 1}. Amount matches are leads; currency is unverified.`);
+    const windowLabel = [6,30].includes(evidence.lookback_days) ? `${evidence.lookback_days} days ending on the bank date` : 'window unverified';
+    addText(box, `Stored Switchboard history · ${windowLabel} · page ${(state.pageIndex || 0) + 1}. Amount matches are leads; currency is unverified.`);
+    if (evidence.expanded_from_days === 6) addText(box, 'No matches in six days; search expanded to 30 days.');
+    if (evidence.coverage?.date_window) addText(box, `Search dates: ${evidence.coverage.date_window.start} to ${evidence.coverage.date_window.end}, inclusive.`);
     if (evidence.coverage) addText(box, `${evidence.coverage.messages} retained messages searched · ${evidence.coverage.earliest || 'unknown start'} to ${evidence.coverage.latest || 'unknown end'}.`);
     if (evidence.unlinked_included === false) addText(box, 'Search is incomplete: unlinked conversations could not be safely scoped.');
     for (const hit of (evidence.hits || []).slice(0, 10)) {
@@ -126,6 +129,11 @@ function appendResults(item, state, request) {
       button.disabled = !enabled || state.historyPending === true;
       button.addEventListener('click', () => historyPage(request.statement.id_suffix, request, target, cursor)); controls.append(button);
     }
+    if (evidence.lookback_days === 6) {
+      const expand = document.createElement('button'); expand.type = 'button'; expand.textContent = 'Search 30 days';
+      expand.disabled = state.historyPending === true;
+      expand.addEventListener('click', () => historyPage(request.statement.id_suffix, request, 0, null, 30)); controls.append(expand);
+    }
     box.append(controls);
     if (state.historyPending) addText(box, 'Searching more stored messages…');
     if (state.historyError) addText(box, state.historyError);
@@ -152,16 +160,17 @@ async function findLeads(suffix, request) {
   results.set(suffix, state); render(snapshot);
 }
 
-async function historyPage(suffix, request, pageIndex, cursor) {
+async function historyPage(suffix, request, pageIndex, cursor, lookbackDays) {
   const previous = results.get(suffix), key = fingerprint(request), attempt = generation;
   if (!previous?.data || previous.key !== key || previous.historyPending || !validResult(previous.data, request)) return;
+  const days = lookbackDays || previous.data.evidence.lookback_days || 6;
   const token = Symbol('history');
   results.set(suffix, { ...previous, token, historyPending: true, historyError: null }); render(snapshot);
   let next;
   try {
-    const data = await tenafyRequest('history', { ...request, ...(cursor ? { cursor } : {}) });
+    const data = await tenafyRequest('history', { ...request, lookback_days: days, ...(cursor ? { cursor } : {}) });
     if (!validResult(data, request) || !data.evidence || !validResult(previous.data, request)) throw Error('Suggestion expired or changed. Look up again.');
-    const cursors = previous.cursors.slice(0, pageIndex + 1); cursors[pageIndex] = cursor || null;
+    const cursors = days === previous.data.evidence.lookback_days ? previous.cursors.slice(0, pageIndex + 1) : [null]; cursors[pageIndex] = cursor || null;
     // A message page must not extend the lifetime of the financial proposal.
     next = { ...previous, data: { ...previous.data, evidence: data.evidence }, cursors, pageIndex };
   } catch (error) { next = { ...previous, historyError: error.message }; }

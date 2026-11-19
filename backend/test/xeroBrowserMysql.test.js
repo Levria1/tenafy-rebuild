@@ -103,23 +103,44 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
         (504,NULL,'whatsapp',700,'Prospect'),(505,NULL,'email',NULL,'Vendor'),
         (506,NULL,'whatsapp',701,'Foreign inquiry'),(507,60,'whatsapp',701,'Conflicting links');
       INSERT INTO chat_message VALUES
-        (610,504,'previous context','user','2026-06-01 09:00:00'),
-        (611,504,'paid 13.8k','assistant','2026-06-01 10:00:00'),
-        (612,504,'next context','user','2026-06-01 11:00:00'),
+        (610,504,'previous context','user','2026-10-25 09:00:00'),
+        (611,504,'paid 13.8k','assistant','2026-10-25 10:00:00'),
+        (612,504,'next context','user','2026-10-25 11:00:00'),
         (613,505,'vendor 13 800.00','user','2026-11-19 12:00:00'),
         (614,506,'foreign inquiry 13800','user','2026-11-19 12:00:00'),
         (615,507,'conflict 13800','user','2026-11-19 12:00:00'),
         (616,504,'113800 138000 13800.01 13800xxxx','user','2026-11-19 12:00:00'),
         (617,504,'13800 system only','system','2026-11-19 12:00:00'),
-        (618,504,'reference PAY-ABC-123456 only','user','2026-11-19 12:00:00');`);
+        (618,504,'reference PAY-ABC-123456 only','user','2026-11-19 12:00:00'),
+        (620,504,'paid 13800','user','2026-11-14 00:00:00'),
+        (621,504,'paid 13800','user','2026-11-13 00:00:00'),
+        (622,504,'paid 13800','user','2026-10-21 00:00:00'),
+        (623,504,'paid 13800','user','2026-10-20 23:59:59'),
+        (624,504,'paid 13800','user','2026-11-20 00:00:00'),
+        (625,504,'paid 13800','user','2026-11-19 23:59:59'),
+        (626,504,'paid 13800','user','2026-11-13 23:59:59'),
+        (627,504,'paid 13800','user','2026-06-01 00:00:00'),
+        (630,504,'paid 99900','user','2026-10-25 12:00:00');`);
     await pool.execute('INSERT INTO chat_message VALUES(619,504,?,?,?)', ['x'.repeat(5000)+' paid HKD13800 today','user','2026-11-19 13:00:00']);
     const statement = validateStatement(body.statement), mapping = { bank_account_id: '10', currency_id: '30' };
     const dedicated = { allowUnlinked: true, verification: 'dedicated_org_database' };
     const history = await searchStoredHistory(pool, '1', mapping, statement, { scope: dedicated });
-    assert.deepEqual(history.hits.map(h => h.message_id).sort(), ['600','601','611','613','619']);
-    assert.equal(history.coverage.messages, 9);
-    assert.equal(history.coverage.date_window, null);
-    const old = history.hits.find(h => h.message_id === '611');
+    assert.deepEqual(history.hits.map(h => h.message_id).sort(), ['600','601','613','619','620','625']);
+    assert.equal(history.coverage.messages, 8);
+    assert.equal(history.lookback_days, 6);
+    assert.equal(history.coverage.date_window.start,'2026-11-14');
+    const expanded = await searchStoredHistory(pool,'1',mapping,statement,{scope:dedicated,lookbackDays:30});
+    assert.deepEqual(expanded.hits.map(h=>h.message_id).sort(),['600','601','611','613','619','620','621','622','625','626']);
+    assert.equal(expanded.coverage.date_window.start,'2026-10-21');
+    for (const hit of expanded.hits) for(const context of hit.context) {
+      assert.ok(context.timestamp>='2026-10-21' && context.timestamp<'2026-11-20','context obeys the same window');
+    }
+    const fallback = await searchStoredHistory(pool,'1',mapping,{...statement,amount_minor:9990000},{scope:dedicated});
+    assert.deepEqual(fallback.hits.map(h=>h.message_id),['630']);
+    assert.equal(fallback.expanded_from_days,6); assert.equal(fallback.lookback_days,30);
+    const empty = await searchStoredHistory(pool,'1',mapping,{...statement,amount_minor:7770000},{scope:dedicated});
+    assert.equal(empty.lookback_days,30); assert.deepEqual(empty.hits,[]);
+    const old = expanded.hits.find(h => h.message_id === '611');
     assert.equal(old.contact.inquiry_id, '700'); assert.equal(old.role, 'assistant');
     assert.deepEqual(old.context.map(c => c.message_id), ['610','612']);
     assert.match(history.hits.find(h => h.message_id === '619').snippet, /HKD13800/);
@@ -140,9 +161,10 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
       const page = await searchStoredHistory(pool,'1',mapping,statement,{scope:dedicated,cursor});
       seen.push(...page.hits.map(h=>h.message_id)); cursor=page.next_cursor; pages++;
     } while(cursor && pages<5);
-    assert.equal(pages,2); assert.equal(seen.length,19); assert.equal(new Set(seen).size,19);
+    assert.equal(pages,2); assert.equal(seen.length,20); assert.equal(new Set(seen).size,20);
     assert.equal(cursor,null);
     const first = await searchStoredHistory(pool,'1',mapping,statement,{scope:dedicated});
+    await assert.rejects(searchStoredHistory(pool,'1',mapping,statement,{cursor:first.next_cursor,lookbackDays:30}),e=>e.status===400);
     await assert.rejects(searchStoredHistory(pool,'2',mapping,statement,{cursor:first.next_cursor}), e=>e.status===400);
     await assert.rejects(searchStoredHistory(pool,'1',mapping,{...statement,amount_minor:100},{cursor:first.next_cursor}), e=>e.status===400);
     // Registry proof is evaluated against the actual selected database.

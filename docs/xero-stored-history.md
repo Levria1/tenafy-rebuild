@@ -7,18 +7,22 @@ No new migration or configuration change is needed for the history search.
 
 ## What staff see
 
-Find Tenafy leads now searches the WhatsApp/email text retained in Tenafy across
-its history, alongside the existing exact-amount financial leads. Message results
+Find Tenafy leads searches retained WhatsApp/email text in a six-calendar-day
+window ending on the bank transaction date, alongside existing exact-amount
+financial leads. For 19 November, this means 14–19 November inclusive. If no
+message hits exist, it automatically searches 30 calendar days (21 October–19
+November). When recent hits exist but none is right, staff can click Search 30
+days. No older or future-dated stored messages or nearby context are returned. Message results
 include the contact name/phone/email when available, timestamp, author role,
 matching excerpt, one preceding/following message, and an Open conversation link.
 The helper displays ten hits per page with More messages and Previous messages.
 Results are ordered by distance from the statement date, then message time/ID.
-A coverage count and first/last stored timestamps describe what was searched.
+The selected dates, coverage count and first/last stored timestamps describe what was searched.
 
 Search recognises exact numeric amount spellings, including `13,800.00`,
 `13 800`, `HKD13800` and `13.8k`, without confusing `113800`, `13800.01` or
 `13800xxxx` with `13800`. It searches the full message before selecting a bounded
-excerpt, including old messages and amounts after character 4,000. SQL runs have
+excerpt, including amounts after character 4,000, within the selected dates. SQL runs have
 execution time limits; failures show unavailable rather than an empty search.
 
 An explicitly supplied bank reference of 6–64 alphanumeric characters containing
@@ -42,6 +46,11 @@ If this proof fails, only positively owned tenant/inquiry sessions are returned
 and the helper labels the search incomplete. A request cannot enable this scope.
 No ownership backfill, schema migration or customer-message write is performed.
 
+The date filter uses Tenafy's stored message timestamps, not today's date. The
+current chat logger dates copies at ingestion; historical backfills must preserve
+original sent timestamps before claiming exact source-date coverage. No backfill
+is performed by this change.
+
 This searches only text already copied into Tenafy. It does not query the external
 Switchboard archive, download attachments, perform OCR on deposit slips, or infer
 payment confirmation. Missing results do not prove that a payment did not happen.
@@ -53,10 +62,11 @@ work. No Xero field editing or final confirmation is enabled.
 The existing staff-authenticated, permission-checked and rate-limited `POST
 /api/integrations/xero/browser/lookup` now returns the first history page.
 `POST /api/integrations/xero/browser/history` accepts the same validated identity
-and an optional `cursor`, revalidates org/bank/currency bindings, and returns only
+and optional `cursor`/`lookback_days` (only numeric 6 or 30), revalidates org/bank/currency bindings, and returns only
 history in the common version-1 envelope. No financial scan is repeated for pages.
 Cursors are signed, expire after ten minutes, and are bound to organisation,
-bank, currency, statement identity, amount and reference. They are keyset pages,
+bank, currency, statement identity, amount, reference and selected date window.
+Expanding the window restarts at page one; pagination preserves that window. They are keyset pages,
 not a frozen snapshot; newly copied messages may require refreshing the lookup.
 
 The optional Tenafy host permission and same-origin staff-tab bridge now allow
@@ -70,20 +80,26 @@ stale results. Staff alone confirm entries in Xero.
 
 ## Verification
 
-- Six focused backend checks pass for identity, HTTP auth/permission, forged
+- Seven focused backend checks pass for identity, HTTP auth/permission, forged
   scope, ownership proof, references and cursor expiry/tampering/query binding.
 - Real scratch MySQL passes with migration 089 twice, financial isolation,
-  inquiry/unlinked ownership, foreign/conflicting anchors, old and long messages,
+  inquiry/unlinked ownership, foreign/conflicting anchors, long messages,
+  six/thirty-day boundaries, future-message exclusion, automatic empty-result
+  expansion, explicit expansion, context date limits and cross-window cursors,
   numeric boundaries, reference-only hits, surrounding context and two pages
   without duplicates. No financial rows change.
-- Seven helper unit checks and three synthetic browser flows pass, including
+- Seven helper unit checks and four synthetic browser flows pass, including
   contact/context links, pagination, stale message pages, plain-text rendering,
-  same-origin cookies, removed rows, row amount changes and tab switching.
-- Full backend: 1,955 tests, 1,949 pass, the same four known failures and two
+  same-origin cookies, removed rows, row amount changes, tab switching, window
+  expansion/page reset and retention of the selected window across pages.
+- Full backend: 1,956 tests, 1,950 pass, the same four known failures and two
   optional MySQL skips. The MySQL fixture was run separately.
-- Read-only production probe: 43,678 retained messages searched, 10 + 1 matching
-  excerpts across two pages, zero duplicate IDs; first page about 1,066 ms.
-  Only aggregate counts were printed. No code files, rows or processes changed.
+- Read-only production probe after the window limit: the sample amount had no
+  hits in six days, so expanded to thirty, covering 8,594 stored messages in
+  approximately 374 ms. No hits in that window. Only aggregate counts were
+  printed; no production files, rows or processes changed.
+- Nineteen focused checks including existing matcher/payment regressions pass.
+
 
 Synthetic browser checks intercept Chrome APIs and endpoints. Real staff-PC
 extension runtime and live Xero picker behaviour are not claimed tested.

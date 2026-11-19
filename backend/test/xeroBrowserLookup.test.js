@@ -71,6 +71,7 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   assert.equal((await request(null, input(), '/history')).status, 401);
   assert.equal((await request({ permissions: [] }, input(), '/history')).status, 403);
   assert.equal((await request({ permissions: ['*'] }, {...input(), cursor: 'forged'}, '/history')).status, 400);
+  assert.equal((await request({ permissions: ['*'] }, {...input(),lookback_days:365}, '/history')).status,400);
   const history = await request({ permissions: ['*'] }, {...input(), allowUnlinked:true, org_id:'2'}, '/history');
   assert.equal(history.status, 200);
   const historyData=(await history.json()).data;
