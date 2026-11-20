@@ -22,3 +22,6 @@ button:disabled { cursor: default; opacity: .6; }
 .suggestions { margin-top: 10px; border-top: 1px solid GrayText; padding-top: 8px; }
 .suggestions li { font-size: .9rem; }
 #scope { font-size: .85rem; overflow-wrap: anywhere; }
+
+#connection[data-state="error"] { color: #a32121; font-weight: 600; border-left: 3px solid #a32121; padding-left: 8px; }
+#connection[data-state="connected"] { color: #166534; }

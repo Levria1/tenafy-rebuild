@@ -1,6 +1,7 @@
 const { traceAmounts } = require('./paymentMatchService');
 const { personOrCompanyName } = require('../utils/personName');
 const history = require('./switchboardHistorySearch');
+const bankCatalog = require('./xeroBankCatalog');
 
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const UUID = /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
@@ -46,17 +47,23 @@ function validateStatement(input) {
     reference: text('reference'), description: text('description'), payee: text('payee') };
 }
 
-async function resolveMapping(pool, orgId, uiSlug, accountId, statement) {
+async function resolveMapping(pool, orgId, uiSlug, accountId, statement, options = {}) {
   const [[binding]] = await pool.execute(`SELECT b.ui_org_slug, b.xero_tenant_id, c.xero_tenant_id AS connected_tenant_id
     FROM xero_browser_binding b JOIN xero_connection c ON c.org_id=b.org_id WHERE b.org_id=?`, [orgId]);
   if (!binding || binding.ui_org_slug !== uiSlug || binding.xero_tenant_id !== binding.connected_tenant_id) fail('Xero UI organisation mapping is missing or no longer matches the connection.', 409);
   const [maps] = await pool.execute(`SELECT m.id, m.tenafy_account_setting_id, m.bank_account_id, ba.currency
     FROM xero_account_map m
-    JOIN bank_account ba ON ba.id=m.bank_account_id AND ba.org_id=m.org_id AND ba.deleted_at IS NULL AND ba.status=1
+    LEFT JOIN bank_account ba ON ba.id=m.bank_account_id AND ba.org_id=m.org_id AND ba.deleted_at IS NULL AND ba.status=1
     JOIN account_setting ac ON ac.id=m.tenafy_account_setting_id AND ac.org_id=m.org_id AND ac.enabled=b'1'
-    WHERE m.org_id=? AND m.ignored=0 AND LOWER(REPLACE(m.xero_account_id,'-',''))=?`, [orgId, accountId]);
+    WHERE m.org_id=? AND m.ignored=0 AND (m.bank_account_id IS NULL OR ba.id IS NOT NULL) AND LOWER(REPLACE(m.xero_account_id,'-',''))=?`, [orgId, accountId]);
   if (maps.length !== 1) fail('Configure one active, unambiguous Xero bank-account mapping first.', 409);
   const mapping = maps[0];
+  if (mapping.bank_account_id == null) {
+    const catalogue = await (options.getCatalog || bankCatalog.getCatalog)(pool, orgId);
+    const account = catalogue.accounts.find(a => a.xero_account_id === accountId);
+    if (catalogue.org_id !== String(orgId) || catalogue.ui_org_slug !== uiSlug || !account || account.account_setting_id !== String(mapping.tenafy_account_setting_id)) fail('Bank catalogue no longer agrees with the enabled ledger mapping.', 409);
+    mapping.currency = account.currency;
+  }
   if (String(mapping.currency || '').trim().toUpperCase() !== statement.currency) fail('Statement currency does not match the configured bank currency.', 409);
   const [currencies] = await pool.execute(`SELECT c.id,c.detail,b.currency_code AS bound_currency_code
     FROM currency c LEFT JOIN xero_browser_currency_binding b ON b.org_id=c.org_id AND b.currency_id=c.id
@@ -70,12 +77,16 @@ async function resolveMapping(pool, orgId, uiSlug, accountId, statement) {
     catch { return false; }
   });
   if (matches.length !== 1) fail('Configure one unambiguous Tenafy currency record for this bank.', 409);
-  return { ...mapping, currency_id: String(matches[0].id), bank_account_id: String(mapping.bank_account_id),
+  return { ...mapping, currency_id: String(matches[0].id), bank_account_id: mapping.bank_account_id == null ? null : String(mapping.bank_account_id), xero_account_id: accountId,
     account_setting_id: String(mapping.tenafy_account_setting_id) };
 }
 
 function sourcesFor(mapping, statement) {
   const { bank_account_id: bank, account_setting_id: account, currency_id: currency } = mapping;
+  const propertyScope = bank != null ? 'p.bank_account_id=?' : `EXISTS (SELECT 1 FROM accounting bank_history
+    WHERE bank_history.org_id=p.org_id AND bank_history.property_id=p.id AND bank_history.deleted_at IS NULL
+      AND bank_history.account_setting_id=? AND UPPER(TRIM(bank_history.currency_type))=?)`;
+  const propertyParams = bank != null ? [bank] : [account, statement.currency];
   const paid = `(SELECT COALESCE(SUM(al.amount),0) FROM accounting_line al
     JOIN accounting a ON a.id=al.accounting_id AND a.org_id=i.org_id AND a.deleted_at IS NULL
     WHERE al.invoice_code=i.invoice_code AND al.deleted_at IS NULL)`;
@@ -86,7 +97,7 @@ function sourcesFor(mapping, statement) {
         t.first_name,t.middle_name,t.last_name,t.company_name,t.type, u.name AS unit_name,
         p.display_name AS property_name, c.name AS category
         FROM invoice i
-        JOIN property p ON p.id=i.property_id AND p.org_id=i.org_id AND p.deleted_at IS NULL AND p.bank_account_id=?
+        JOIN property p ON p.id=i.property_id AND p.org_id=i.org_id AND p.deleted_at IS NULL AND ${propertyScope}
         LEFT JOIN unit u ON u.id=i.unit_id AND u.property_id=p.id
         LEFT JOIN tenant t ON t.id=i.tenant_id AND t.org_id=i.org_id AND t.deleted_at IS NULL
         LEFT JOIN category_setting c ON c.id=i.category AND c.org_id=i.org_id
@@ -98,7 +109,7 @@ function sourcesFor(mapping, statement) {
               AND (other_payment.currency_id IS NULL OR other_payment.currency_id<>i.currency_id
                 OR other_payment.currency_type IS NULL OR UPPER(TRIM(other_payment.currency_type))<>?))
         HAVING outstanding>=? ORDER BY ABS(days_from_date),i.id LIMIT 10`,
-      [row.date, bank, orgId, currency, row.direction === 'received' ? 0 : 1, statement.amount, statement.currency, statement.amount]);
+      [row.date, ...propertyParams, orgId, currency, row.direction === 'received' ? 0 : 1, statement.amount, statement.currency, statement.amount]);
       return rows.map(r => ({ id: String(r.id), code: r.invoice_code, amount: Number(r.amount),
         outstanding_minor: decimalMinor(r.outstanding, statement.digits), due_on: r.due_on,
         tenant_name: personOrCompanyName(r) || null, unit_name: r.unit_name, property_name: r.property_name,
@@ -109,11 +120,11 @@ function sourcesFor(mapping, statement) {
       const [rows] = await pool.execute(`SELECT l.id,l.lease_no,l.amount,l.price,l.deposit,
         t.first_name,t.middle_name,t.last_name,t.company_name,t.type,u.name AS unit_name
         FROM leasing l JOIN unit u ON u.id=l.unit_id
-        JOIN property p ON p.id=u.property_id AND p.org_id=? AND p.deleted_at IS NULL AND p.bank_account_id=?
+        JOIN property p ON p.id=u.property_id AND p.org_id=? AND p.deleted_at IS NULL AND ${propertyScope}
         LEFT JOIN tenant t ON t.id=l.tenant_id AND t.org_id=p.org_id AND t.deleted_at IS NULL
         WHERE l.deleted_at IS NULL AND l.currency_id=? AND ${spent ? 'l.deposit=?' : '(l.amount=? OR l.price=? OR l.deposit=?)'}
         ORDER BY ABS(DATEDIFF(l.start_date,?)),l.id LIMIT 10`,
-      [orgId, bank, currency, statement.amount, ...(!spent ? [statement.amount, statement.amount] : []), row.date]);
+      [orgId, ...propertyParams, currency, statement.amount, ...(!spent ? [statement.amount, statement.amount] : []), row.date]);
       return rows.map(r => ({ id: String(r.id), lease_no: r.lease_no, tenant_name: personOrCompanyName(r) || null,
         unit_name: r.unit_name, matched_field: Number(r.deposit) === row.amount ? 'deposit' : 'rent' }));
     },
@@ -122,13 +133,13 @@ function sourcesFor(mapping, statement) {
         DATE_FORMAT(a.payment_date,'%Y-%m-%d') AS payment_date,
         t.first_name,t.middle_name,t.last_name,t.company_name,t.type,c.name AS category
         FROM accounting a
-        JOIN property p ON p.id=a.property_id AND p.org_id=a.org_id AND p.deleted_at IS NULL AND p.bank_account_id=?
+        JOIN property p ON p.id=a.property_id AND p.org_id=a.org_id AND p.deleted_at IS NULL ${bank != null ? 'AND p.bank_account_id=?' : ''}
         LEFT JOIN tenant t ON t.id=a.tenant_id AND t.org_id=a.org_id AND t.deleted_at IS NULL
         LEFT JOIN category_setting c ON c.id=a.category AND c.org_id=a.org_id
         WHERE a.org_id=? AND a.deleted_at IS NULL AND a.account_setting_id=? AND a.currency_id=?
           AND UPPER(TRIM(a.currency_type))=? AND a.type=? AND a.amount=?
         ORDER BY ABS(DATEDIFF(a.payment_date,?)),a.id LIMIT 10`,
-      [bank, orgId, account, currency, statement.currency, row.direction === 'received' ? 0 : 1, statement.amount, row.date]);
+      [...(bank != null ? [bank] : []), orgId, account, currency, statement.currency, row.direction === 'received' ? 0 : 1, statement.amount, row.date]);
       return rows.map(r => ({ id: String(r.id), xero_transaction_id: r.xero_transaction_id || null,
         transaction_code: r.transaction_code, payment_date: r.payment_date, category: r.category,
         tenant_name: personOrCompanyName(r) || null, note: String(r.note || '').slice(0, 300) }));
@@ -151,7 +162,7 @@ async function searchHistory(pool, orgId, body, options = {}) {
   }
   const uiSlug = slug(body?.ui_org_slug), accountId = normalizeAccountId(body?.xero_account_id);
   const statement = validateStatement(body?.statement);
-  const mapping = await resolveMapping(pool, orgId, uiSlug, accountId, statement);
+  const mapping = await resolveMapping(pool, orgId, uiSlug, accountId, statement, options);
   const evidence = await copiedEvidence(pool, orgId, mapping, statement, { scope: await historyScope(options), cursor: body?.cursor, lookbackDays: body?.lookback_days });
   return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates: [], evidence, status: 'evidence', source_status: {} });
 }
@@ -163,7 +174,7 @@ async function lookup(pool, orgId, body, options = {}) {
   }
   const uiSlug = slug(body?.ui_org_slug), accountId = normalizeAccountId(body?.xero_account_id);
   const statement = validateStatement(body?.statement);
-  const mapping = await resolveMapping(pool, orgId, uiSlug, accountId, statement);
+  const mapping = await resolveMapping(pool, orgId, uiSlug, accountId, statement, options);
   const [traced, evidence] = await Promise.all([
     traceAmounts({ pool, orgId, taneChat: null }, [{ amount: Number(statement.amount), date: statement.date, direction: statement.direction }],
       { sources: sourcesFor(mapping, statement) }),
@@ -187,7 +198,7 @@ function envelope(orgId, uiSlug, accountId, mapping, statement, result) {
     version: 1, proposal_key: `${orgId}:${accountId}:${statement.id_suffix}`,
     issued_at: issued.toISOString(), expires_at: new Date(issued.getTime() + 5 * 60000).toISOString(),
     identity: { org_id: String(orgId), ui_org_slug: uiSlug, xero_account_id: accountId, bank_account_id: mapping.bank_account_id,
-      currency_id: mapping.currency_id, statement: { id_suffix: statement.id_suffix, date: statement.date,
+      currency_id: mapping.currency_id, account_setting_id: mapping.account_setting_id, bank_scope: mapping.bank_account_id == null ? 'ledger_history' : 'property_bank', statement: { id_suffix: statement.id_suffix, date: statement.date,
         direction: statement.direction, currency: statement.currency, amount_minor: statement.amount_minor } },
     ...result, ambiguity: result.candidates.length > 1,
     capabilities: { read_only: true, live_autofill: false, final_confirmation: 'staff' },

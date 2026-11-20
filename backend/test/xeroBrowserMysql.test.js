@@ -96,6 +96,22 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
     assert.equal(result.capabilities.live_autofill, false);
     const spent = await lookup(pool, '1', { ...body, statement: { ...body.statement, direction: 'spent' } });
     assert.deepEqual(spent.candidates.map(c => c.id), ['106']);
+    // Another enabled bank has no property-default bank record. Its existing
+    // ledger mapping and Xero-verified currency identify the account; property
+    // eligibility is established by actual posted activity on that ledger.
+    const secondAccount='87654321-abcd-1234-abcd-123456789abc';
+    await pool.query("INSERT INTO account_setting VALUES(21,1,b'1')");
+    await pool.execute('INSERT INTO xero_account_map VALUES(2,1,?,21,NULL,0)',[secondAccount]);
+    await pool.query('UPDATE accounting SET account_setting_id=21 WHERE id=301');
+    const catalog={org_id:'1',ui_org_slug:'verified-org',accounts:[{xero_account_id:secondAccount.replace(/-/g,''),account_setting_id:'21',currency:'HKD'}]};
+    const bankless=await lookup(pool,'1',{...body,xero_account_id:secondAccount},{getCatalog:async()=>catalog});
+    assert.deepEqual(bankless.candidates.map(c=>c.id).sort(),['101','201','301']);
+    assert.deepEqual(bankless.source_status,{invoices:'ok',leases:'ok',accounting:'ok'});
+    assert.equal(bankless.identity.bank_account_id,null);assert.equal(bankless.identity.account_setting_id,'21');
+    await assert.rejects(lookup(pool,'1',{...body,xero_account_id:secondAccount},{getCatalog:async()=>({...catalog,org_id:'2'})}),e=>e.status===409);
+    await pool.query('UPDATE xero_account_map SET ignored=1 WHERE id=2');
+    await assert.rejects(lookup(pool,'1',{...body,xero_account_id:secondAccount},{getCatalog:async()=>catalog}),e=>e.status===409);
+    await pool.query('UPDATE xero_account_map SET ignored=0 WHERE id=2');
     // Wider history includes same-org inquiry contacts, old text, long messages,
     // outbound staff replies and proven unlinked conversations; never foreign anchors.
     await pool.query(`INSERT INTO inquiry VALUES(700,1),(701,2);

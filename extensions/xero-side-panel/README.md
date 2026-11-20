@@ -1,15 +1,16 @@
 # Tenafy reconciliation review
 
-Version 0.3.0 adds date-bounded Switchboard text search, contact details, nearby
-replies, conversation links and paginated results. The history backend was
-released on 2026-11-20 through PR #23. Staff can now update to this helper.
+Version0.4.0 adds automatic setup for the ten enabled Xero bank accounts. It loads
+verified account/currency mappings from Tenafy instead of asking each staff member
+to enter bank settings. This backend/helper increment is built but not deployed;
+wait for its approved release before installing it. The released package is0.3.
 No Xero fields or final confirmation controls are edited.
 
 ## Updating the helper
 
 Extract the new ZIP, open its inner folder containing manifest.json, and copy the
 files over the contents of the existing loaded helper folder. Click Reload in
-chrome://extensions, reopen the panel, and verify version 0.3.0. Keeping the same
+chrome://extensions, reopen the panel, and verify version 0.4.0. Keeping the same
 folder retains the extension ID and local mapping settings.
 
 ## First: send the mapping identity (no connection needed)
@@ -38,9 +39,8 @@ login tokens. Do not infer currency from a bare dollar symbol.
    `https://platform.tenafy.com/*`. The helper retrieves the verified organisation
    binding through the signed-in Tenafy tab; it never reads/copies the login token.
 4. Click **Read this Xero tab**. The panel shows the observed UI slug and account
-   UUID. Enter the verified ISO bank currency and click **Map current account**.
-   This stores only non-secret mapping metadata locally. It does not change the
-   server mapping; mismatches are rejected by the backend.
+   UUID. The bank and currency load automatically from the verified enabled mapping.
+   A bank outside that set remains blocked until its server setup is reviewed.
 5. Click **Find Tenafy leads** on a current line. Review alternatives, source
    availability and copied evidence. Staff perform any matching/creation directly
    in Xero; this version does not offer field filling or candidate selection.
@@ -50,8 +50,8 @@ lines. Reattach after a full navigation/reload. Switching away from the attached
 Xero tab clears the queue. Results are discarded if row identity changes or a
 request was cancelled/superseded; expired proposals require another lookup.
 
-The old `accounts.js` mapping list remains a fallback for local reading. Saved
-panel mappings take precedence. Amounts accept unsigned digits with valid comma
+Server-verified enabled mappings are authoritative. Old per-staff saved mappings
+do not override them. Amounts accept unsigned digits with valid comma
 grouping and a decimal point. Currency is explicit, never inferred from an amount.
 Lookup supports the backend's zero/two-decimal currencies and unambiguous ISO or
 English named-month dates; unsupported formats remain for manual review.
@@ -73,8 +73,8 @@ The supplied read-only inspection covered two lines in one account, one Spent an
 
 ## Connection and review limits
 
-The staff-tab bridge has three fixed operations: GET the browser binding, POST a
-read-only lookup, and POST a read-only history page. It uses same-origin browser credentials inside an isolated script
+The staff-tab bridge has four fixed operations: GET the browser binding and bank catalogue,
+POST a read-only lookup, and POST a read-only history page. It uses same-origin browser credentials inside an isolated script
 on the exact Tenafy origin. No arbitrary URL/path, token extraction, cookie API,
 external key storage or backend CORS relaxation is added. The backend verifies the
 expected organisation against its authenticated session; client mappings grant no

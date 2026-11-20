@@ -71,7 +71,7 @@ const timeFilter = window => window.days === 'all' ? '' : ' AND m.created_at>=? 
 const timeParams = window => window.days === 'all' ? [] : [window.start, window.end_exclusive];
 function queryScope(orgId, mapping, statement, lookbackDays = 6) {
   return crypto.createHash('sha256').update(JSON.stringify({ orgId: String(orgId), bank: String(mapping.bank_account_id),
-    currencyId: String(mapping.currency_id), lookbackDays, statement: { id: statement.id_suffix, date: statement.date,
+    currencyId: String(mapping.currency_id), ledger:String(mapping.account_setting_id || ''), xeroAccount:String(mapping.xero_account_id || ''), lookbackDays, statement: { id: statement.id_suffix, date: statement.date,
       direction: statement.direction, currency: statement.currency, amount: statement.amount_minor, reference: statement.reference || '' } })).digest('hex');
 }
 const signature = raw => crypto.createHmac('sha256', config.jwtSecret).update('history-page:' + raw).digest('base64url');

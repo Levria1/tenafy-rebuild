@@ -82,6 +82,20 @@ test('binding omits the optional payload so real Chrome can serialize script arg
   assert.deepEqual(injections[1].args, ['lookup', request()]);
   assert.equal(await tenafyRequest('history', { ...request(), cursor: 'page-token' }), 'sample');
   assert.deepEqual(injections[2].args, ['history', { ...request(), cursor: 'page-token' }]);
+  assert.equal(await tenafyRequest('accounts'), 'sample');
+  assert.deepEqual(injections[3].args, ['accounts']);
   await assert.rejects(tenafyRequest('lookup'), /payload is required/);
   await assert.rejects(tenafyRequest('history'), /payload is required/);
+});
+
+
+test('account catalogue is a fixed same-origin GET without a payload or copied token', async t => {
+  const previous=globalThis.location;globalThis.location={origin:'https://platform.tenafy.com'};
+  t.after(()=>{if(previous===undefined)delete globalThis.location;else globalThis.location=previous;});
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    assert.equal(url,'/api/integrations/xero/browser/accounts');assert.equal(options.method,'GET');
+    assert.equal(options.credentials,'same-origin');assert.equal(options.body,undefined);assert.equal(options.headers.Authorization,undefined);
+    return {ok:true,status:200,text:async()=>JSON.stringify({code:200,data:{accounts:[]}})};
+  });
+  assert.deepEqual(await staffRequest('accounts'),{data:{accounts:[]}});
 });

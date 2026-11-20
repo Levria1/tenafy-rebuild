@@ -3,6 +3,7 @@ const rateLimit = require('express-rate-limit');
 const { authenticate, requirePermission, requireSuperAdmin } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const service = require('../services/xeroBrowserLookup');
+const { getCatalog } = require('../services/xeroBankCatalog');
 const { resolveHistoryScope } = require('../services/switchboardHistorySearch');
 const { getMasterPool } = require('../config/poolRegistry');
 const router = express.Router();
@@ -35,6 +36,11 @@ router.get('/binding', async (req, res) => {
     const [[binding]] = await req.pool.execute('SELECT ui_org_slug,xero_tenant_id,updated_at FROM xero_browser_binding WHERE org_id=?', [req.user.orgId]);
     res.json({ code: 200, data: binding ? { ...binding, org_id: String(req.user.orgId) } : null });
   } catch (err) { error(res, err); }
+});
+
+router.get('/accounts', async (req, res) => {
+  try { res.json({ code:200, data:await getCatalog(req.pool, String(req.user.orgId)) }); }
+  catch (err) { error(res, err); }
 });
 
 // Currency_id can point to a historical FX table. This explicit attestation

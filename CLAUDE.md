@@ -138,6 +138,10 @@ Deposit refunds are regular invoices with `type=1` (Outflow) and the Deposit cat
 
 ## Current Status
 
+Helper0.4 support for ten enabled bank accounts is built in feat/xero-bank-catalog,
+not deployed. Automatic server-verified mapping; no bank-instruction rewrite.
+See `docs/xero-ten-bank-catalog.md`.
+
 Stale renewal/Vacancy status fix deployed on 2026-11-20 via PR #25 (`c42ca96`),
 including rebuilt frontend. Historical asks no longer override current Leaving;
 lease edits reconcile replies with the current term/intent. Gilman 5A verified live.

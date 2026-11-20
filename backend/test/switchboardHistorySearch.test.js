@@ -24,7 +24,7 @@ test('history pagination tokens reject tampering, expiry and another org/bank/ro
   const hash=h.queryScope('1',mapping,statement), row={id:'9007199254740994',created_sql:'2026-11-19 12:00:00',distance:43200};
   const token=h.encodeCursor(row,hash);
   assert.equal(h.decodeCursor(token,hash).id,row.id);
-  for(const scope of [h.queryScope('1',mapping,statement,'all'),h.queryScope('1',mapping,statement,30),h.queryScope('2',mapping,statement),h.queryScope('1',{...mapping,bank_account_id:'11'},statement),
+  for(const scope of [h.queryScope('1',mapping,statement,'all'),h.queryScope('1',{...mapping,account_setting_id:'different-bank'},statement),h.queryScope('1',mapping,statement,30),h.queryScope('2',mapping,statement),h.queryScope('1',{...mapping,bank_account_id:'11'},statement),
     h.queryScope('1',mapping,{...statement,id_suffix:'b'.repeat(32)}),h.queryScope('1',mapping,{...statement,reference:'PAY123456'})]) {
     assert.throws(()=>h.decodeCursor(token,scope),e=>e.status===400);
   }
