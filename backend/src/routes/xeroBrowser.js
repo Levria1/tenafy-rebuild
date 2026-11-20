@@ -17,7 +17,9 @@ router.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   next();
 });
-router.use(requirePermission('LANDLORD/ACCOUNTING_CREATE'));
+// Lookup/history/binding reads do not create or approve payments. Accounting
+// viewers can use them; configuration writes below still require Super Admin.
+router.use(requirePermission('LANDLORD/ACCOUNTING_LIST', 'LANDLORD/ACCOUNTING_CREATE'));
 router.use(rateLimit({ windowMs: 60000, limit: 30, standardHeaders: 'draft-7', legacyHeaders: false,
   keyGenerator: req => `${req.user.orgId}:${req.user.id}`,
   message: { code: 429, message: 'Too many reconciliation lookups. Please wait.' } }));

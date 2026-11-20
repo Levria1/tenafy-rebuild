@@ -17,6 +17,32 @@ Track all changes made per session. Update at the end of each session.
   actual-page synthetic browser scenarios pass. Full backend 1,959/1,952 pass/four
   unchanged known failures/three optional MySQL skips (new fixture run separately).
 
+## Session: Release helper access for accounting viewers (2026-11-20)
+
+- Owner approved push/merge/deploy (Discord 1573185159572889662). PR #24 merged
+  `07adcc5` after all CodeQL checks passed; connector PR #2 merged `be4e9de`.
+- Deployed/restarted backend only. Shared Tane Team profile now passes public
+  binding/lookup/history/pagination reads. Payment-create permission remains absent,
+  configuration writes remain refused, and all org/cursor/no-store guards pass.
+- Live suite 1,912 / 1,905 pass / five failures identical to fresh baseline / two
+  optional skips. Health/login 200. No schema, role grants, financial writes,
+  frontend build or extension package changes. Existing v0.3 can reconnect now.
+- Rollback: `/home/ubuntu/backups/tenafy-deploy-20261120-035735-helper-access`.
+  See `docs/xero-helper-accounting-view-access.md`. Renewal-state code remains a
+  separate pending release; its one-lease data correction is already live.
+
+## Session: Diagnose helper connection denied for accounting viewers (2026-11-20)
+
+- Screenshot/profile/role checks identify the shared Tane Team profile: accounting
+  view allowed, payment create denied. Helper incorrectly gates read-only access
+  on create permission. Owner and existing manager connection requests pass.
+- Built `fix/helper-read-access`: allow accounting view OR create for helper reads;
+  configuration remains Super Admin and other financial write guards are untouched.
+  Seven focused API/history checks pass, including viewer read success/write refusal.
+- No live account permissions/code changed. Backend-only fix ready for separate
+  push/merge/deploy approval; no extension reinstall is needed after release.
+  See `docs/xero-helper-accounting-view-access.md`.
+
 ## Session: Release stored Switchboard search and helper 0.3 (2026-11-20)
 
 - Owner approved merge/deploy (Discord 1573155172493037669). Tenafy PR #23 merged
