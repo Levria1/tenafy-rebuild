@@ -1,4 +1,3 @@
-import { accounts } from './accounts.js';
 import { updateQueue } from './statement.mjs';
 import { lookupRequest, fingerprint, validResult } from './lookup.mjs';
 import { tenafyRequest, TENAFY_PATTERN, TENAFY_ORIGIN } from './tenafy.mjs';
@@ -15,7 +14,7 @@ let attachedWindow;
 let generation = 0;
 let snapshot;
 let binding;
-let storedAccounts = [];
+let bankCatalog;
 const results = new Map();
 const connection = document.querySelector('#connection');
 const connect = document.querySelector('#connect');
@@ -23,50 +22,40 @@ const organisation = document.querySelector('#organisation');
 const currencyInput = document.querySelector('#currency');
 const saveMapping = document.querySelector('#save-mapping');
 
-chrome.storage.local.get('tenafyAccounts').then(value => {
-  storedAccounts = Array.isArray(value.tenafyAccounts) ? value.tenafyAccounts.filter(a => a && typeof a === 'object') : [];
-  if (snapshot) render(snapshot);
-}).catch(() => { connection.textContent = 'Saved account mappings could not be loaded.'; });
-
 connect.addEventListener('click', async () => {
   connect.disabled = true;
+  connect.textContent = 'Connecting…';
+  connection.dataset.state = 'pending';
+  connection.textContent = 'Checking your Tenafy session and enabled banks…';
   binding = undefined;
+  bankCatalog = undefined;
   results.clear();
   try {
     if (!await chrome.permissions.request({ origins: [TENAFY_PATTERN] })) throw Error('Tenafy access was not granted. Local reading still works.');
     const next = await tenafyRequest('binding');
     if (!next?.org_id || !next.ui_org_slug) throw Error('The server-side Xero organisation binding needs configuration first.');
+    const catalog = await tenafyRequest('accounts');
+    if (catalog?.org_id !== next.org_id || catalog.ui_org_slug !== next.ui_org_slug || catalog.read_only !== true || !Array.isArray(catalog.accounts)) throw Error('Bank catalogue does not match the signed-in Tenafy organisation.');
+    bankCatalog = catalog;
     binding = next;
+    connection.dataset.state = 'connected';
     organisation.value = next.org_id;
-    connection.textContent = `Connected to Tenafy organisation ${next.org_id}. Suggestions only; staff confirm in Xero.`;
-  } catch (error) { organisation.value = ''; connection.textContent = error.message; }
-  finally { connect.disabled = false; if (snapshot) render(snapshot); }
+    connection.textContent = `Connected to Tenafy organisation ${next.org_id}. ${catalog.accounts.length} enabled bank account(s) verified. Staff confirm in Xero.`;
+  } catch (error) { organisation.value = ''; connection.dataset.state = 'error'; connection.textContent = error.message; }
+  finally { connect.disabled = false; connect.textContent = binding ? 'Reconnect Tenafy' : 'Connect Tenafy'; if (snapshot) render(snapshot); }
 });
 
-currencyInput.addEventListener('input', () => { currencyInput.value = currencyInput.value.toUpperCase(); });
-document.querySelector('#mapping').addEventListener('submit', async event => {
+document.querySelector('#mapping').addEventListener('submit', event => {
   event.preventDefault();
-  const currency = currencyInput.value.trim();
-  if (!binding || !snapshot?.organisation || binding.ui_org_slug !== snapshot.organisation || !Intl.supportedValuesOf('currency').includes(currency)) {
-    connection.textContent = 'Connect the matching Tenafy organisation and supply the verified bank currency.';
-    return;
-  }
-  const entry = { xeroOrganisation: snapshot.organisation, xeroAccount: snapshot.account,
-    tenafyOrganisation: binding.org_id, currency };
-  const next = storedAccounts.filter(a => a.xeroOrganisation !== entry.xeroOrganisation || a.xeroAccount !== entry.xeroAccount);
-  next.push(entry);
-  try {
-    await chrome.storage.local.set({ tenafyAccounts: next });
-    storedAccounts = next;
-    results.clear();
-    render(snapshot);
-  } catch { connection.textContent = 'Account mapping could not be saved. Retry before requesting suggestions.'; }
+  if (!snapshot || !currentMapping(snapshot)) connection.textContent = 'This bank needs a verified enabled mapping in Tenafy.';
 });
 
 function currentMapping(value) {
-  const saved = storedAccounts.filter(a => a.xeroOrganisation === value.organisation && a.xeroAccount === value.account);
-  const matching = saved.length ? saved : accounts.filter(a => a.xeroOrganisation === value.organisation && a.xeroAccount === value.account);
-  return matching.length === 1 ? matching[0] : null;
+  if (!binding || !bankCatalog || binding.org_id !== bankCatalog.org_id || binding.ui_org_slug !== value.organisation) return null;
+  const found = bankCatalog.accounts.filter(a => a.xero_account_id === value.account);
+  if (found.length !== 1) return null;
+  return { xeroOrganisation: value.organisation, xeroAccount: value.account,
+    tenafyOrganisation: bankCatalog.org_id, currency: found[0].currency, name: found[0].name };
 }
 
 function addText(parent, text) {
@@ -82,6 +71,10 @@ function appendResults(item, state, request) {
   const box = document.createElement('section'); box.className = 'suggestions';
   addText(box, data.status === 'unavailable' ? 'Financial sources unavailable; this is not a no-match result.' :
     `${data.candidates.length} possible lead(s). ${data.ambiguity ? 'Multiple leads need review.' : 'Staff review required.'}`);
+  if (data.matching) {
+    addText(box, data.matching.amount_only_fallback ? 'Amount-only leads: no usable name or reference was available. Identity is unverified.' : `Identity filter: ${[data.matching.payee, ...(data.matching.references || [])].filter(Boolean).join(' · ') || 'Bank identity needs manual review'}. Unrelated amount-only leads are hidden.`);
+    if (data.status === 'no_identity_match') addText(box, 'No financial match for the bank identity. No fallback to other people with the same amount.');
+  }
   if (data.status === 'partial') addText(box, 'Some financial sources are unavailable. Results are incomplete.');
   const candidates = document.createElement('ul');
   for (const candidate of data.candidates.slice(0, 30)) {
@@ -192,6 +185,8 @@ function clear(message) {
   status.textContent = message;
   document.querySelector('#scope').textContent = '';
   saveMapping.disabled = true;
+  saveMapping.textContent = 'Select a Xero bank tab';
+  currencyInput.value = '';
 }
 
 function render(snapshot) {
@@ -201,6 +196,9 @@ function render(snapshot) {
   }
   const mapping = snapshot.organisation ? currentMapping(snapshot) : null;
   const currency = mapping?.currency || null;
+  if (currency) currencyInput.value = currency;
+  currencyInput.readOnly = true;
+  if (!currency) currencyInput.value = '';
   const nextScope = JSON.stringify([
     snapshot.organisation, snapshot.account, mapping?.tenafyOrganisation,
   ]);
@@ -209,10 +207,11 @@ function render(snapshot) {
 
   updateQueue(queue, snapshot.rows, currency);
   pagination.textContent = snapshot.pagination || '';
-  const ready = currency ? '' : ' Configure the organisation and bank account currency to parse amounts.';
+  const ready = currency ? ` Bank: ${mapping.name} (${currency}).` : bankCatalog ? ' This bank is not in the verified enabled account list. Review its server mapping.' : ' Connect Tenafy to load enabled banks and currencies.';
   status.textContent = `${queue.size} statement line(s) discovered. Suggestions only; no Xero fields are edited.${ready}`;
   document.querySelector('#scope').textContent = `Xero organisation: ${snapshot.organisation || 'unverified'} · Bank account: ${snapshot.account}`;
-  saveMapping.disabled = !binding || binding.ui_org_slug !== snapshot.organisation;
+  saveMapping.disabled = true;
+  saveMapping.textContent = mapping ? 'Mapped automatically' : 'Bank setup needed';
 
   const entries = Array.from(queue.values(), (row) => {
     const item = document.createElement('li');

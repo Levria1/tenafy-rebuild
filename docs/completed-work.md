@@ -4,6 +4,20 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Build helper support for ten enabled bank accounts (2026-11-20)
+
+- Owner selected the ten enabled Xero mappings; twenty Ignore entries untouched.
+  Verified all ten ACTIVE/HKD. Account-number conflicts are not guessed or copied.
+- Built server account catalogue and ledger-based fallback for banks without a
+  structured property bank record, plus automatic helper account/currency setup.
+  No new bank records/property/payment instructions/migrations or financial writes.
+- Thirteen focused tests, real MySQL isolation, eight helper units, six synthetic
+  browser flows and a read-only ten-account production-data probe pass. Full suite
+  1,965/1,958 pass/four known failures/three optional MySQL skips; MySQL run separately.
+- Built only, not pushed/deployed. Helper0.4 and backend need a coordinated approved
+  release. Name matching/session persistence/autofill remain separate requirements.
+  See `docs/xero-ten-bank-catalog.md`.
+
 ## Session: Release stale renewal/Vacancy fix (2026-11-20)
 
 - Owner approved push/merge/deploy (Discord 1573187576079061003). PR #25 merged

@@ -17,8 +17,8 @@
     <p id="scope"></p>
     <form id="mapping">
       <label>Tenafy organisation <input id="organisation" readonly required></label>
-      <label>Bank currency (ISO code) <input id="currency" placeholder="e.g. HKD" maxlength="3" pattern="[A-Z]{3}" required></label>
-      <button id="save-mapping" type="submit" disabled>Map current account</button>
+      <label>Verified bank currency <input id="currency" placeholder="Loaded from Tenafy" readonly maxlength="3" pattern="[A-Z]{3}" required></label>
+      <button id="save-mapping" type="submit" disabled>Bank setup needed</button>
     </form>
     <p id="pagination"></p>
     <ul id="lines" aria-label="Discovered statement lines"></ul>

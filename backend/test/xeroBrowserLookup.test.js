@@ -54,6 +54,7 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
     return [[]];
   } };
   let resolvedPools = 0;
+  t.mock.method(require('../src/services/xeroBankCatalog'), 'getCatalog', async (_pool,org)=>({org_id:String(org),ui_org_slug:'verified-org',accounts:[],unavailable:[],read_only:true}));
   t.mock.method(registry, 'getMasterPool', () => ({ execute: async () => [[]] }));
   t.mock.method(registry, 'getOrgPool', async () => { resolvedPools++; return pool; });
   // auth destructures the pool resolver on first load.
@@ -68,6 +69,8 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, ...(method !== 'GET' ? { body: JSON.stringify(body) } : {}) });
   };
   assert.equal((await request(null)).status, 401);
+  assert.equal((await request(null,null,'/accounts','GET')).status,401);
+  assert.equal((await request({permissions:[]},null,'/accounts','GET')).status,403);
   assert.equal((await request(null, input(), '/history')).status, 401);
   assert.equal((await request({ permissions: [] }, input(), '/history')).status, 403);
   assert.equal((await request({ permissions: ['*'] }, {...input(), cursor: 'forged'}, '/history')).status, 400);
@@ -98,13 +101,13 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   // The staff Chrome helper only reads. A viewer must be able to connect,
   // look up and page history without being granted payment-writing permission.
   const viewer = { permissions: ['LANDLORD/ACCOUNTING_LIST'] };
-  for (const [path, method, body] of [['/binding','GET',null],['/lookup','POST',input()],['/history','POST',{...input(),lookback_days:'all'}]]) {
+  for (const [path, method, body] of [['/binding','GET',null],['/accounts','GET',null],['/lookup','POST',input()],['/history','POST',{...input(),lookback_days:'all'}]]) {
     const read = await request(viewer, body, path, method);
     assert.equal(read.status, 200, `Accounting viewer can use ${path}`);
     assert.equal(read.headers.get('cache-control'), 'no-store');
     const data = (await read.json()).data;
     assert.equal(data.org_id || data.identity.org_id, '1');
-    if (path !== '/binding') assert.deepEqual(data.capabilities, {read_only:true,live_autofill:false,final_confirmation:'staff'});
+    if (!['/binding','/accounts'].includes(path)) assert.deepEqual(data.capabilities, {read_only:true,live_autofill:false,final_confirmation:'staff'});
   }
   assert.equal((await request(viewer, {ui_org_slug:'verified-org',xero_tenant_id:TENANT},'/binding','PUT')).status,403);
   assert.equal((await request(viewer, {currency_id:'30',currency_code:'HKD',confirm_invoice_lease_currency:true},'/currency','PUT')).status,403);

@@ -96,6 +96,22 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
     assert.equal(result.capabilities.live_autofill, false);
     const spent = await lookup(pool, '1', { ...body, statement: { ...body.statement, direction: 'spent' } });
     assert.deepEqual(spent.candidates.map(c => c.id), ['106']);
+    // Another enabled bank has no property-default bank record. Its existing
+    // ledger mapping and Xero-verified currency identify the account; property
+    // eligibility is established by actual posted activity on that ledger.
+    const secondAccount='87654321-abcd-1234-abcd-123456789abc';
+    await pool.query("INSERT INTO account_setting VALUES(21,1,b'1')");
+    await pool.execute('INSERT INTO xero_account_map VALUES(2,1,?,21,NULL,0)',[secondAccount]);
+    await pool.query('UPDATE accounting SET account_setting_id=21 WHERE id=301');
+    const catalog={org_id:'1',ui_org_slug:'verified-org',accounts:[{xero_account_id:secondAccount.replace(/-/g,''),account_setting_id:'21',currency:'HKD'}]};
+    const bankless=await lookup(pool,'1',{...body,xero_account_id:secondAccount},{getCatalog:async()=>catalog});
+    assert.deepEqual(bankless.candidates.map(c=>c.id).sort(),['101','201','301']);
+    assert.deepEqual(bankless.source_status,{invoices:'ok',leases:'ok',accounting:'ok'});
+    assert.equal(bankless.identity.bank_account_id,null);assert.equal(bankless.identity.account_setting_id,'21');
+    await assert.rejects(lookup(pool,'1',{...body,xero_account_id:secondAccount},{getCatalog:async()=>({...catalog,org_id:'2'})}),e=>e.status===409);
+    await pool.query('UPDATE xero_account_map SET ignored=1 WHERE id=2');
+    await assert.rejects(lookup(pool,'1',{...body,xero_account_id:secondAccount},{getCatalog:async()=>catalog}),e=>e.status===409);
+    await pool.query('UPDATE xero_account_map SET ignored=0 WHERE id=2');
     // Wider history includes same-org inquiry contacts, old text, long messages,
     // outbound staff replies and proven unlinked conversations; never foreign anchors.
     await pool.query(`INSERT INTO inquiry VALUES(700,1),(701,2);
@@ -184,4 +200,47 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
     assert.equal((await resolveHistoryScope(pool,'1',master)).allowUnlinked,true);
     const [[counts]] = await pool.query('SELECT (SELECT COUNT(*) FROM accounting) AS payments,(SELECT COUNT(*) FROM invoice) AS invoices');
     assert.equal(Number(counts.payments),7); assert.equal(Number(counts.invoices),9);
+    // More than ten nearer amount matches must not hide the identified payer.
+    await pool.query(`INSERT INTO tenant VALUES
+      (63,1,'Rhea',NULL,'Maheswari',NULL,0,NULL),
+      (64,1,'Jo',NULL,'Ann',NULL,0,NULL),
+      (65,1,'José',NULL,'García',NULL,0,NULL),
+      (66,1,NULL,NULL,NULL,'Example Company Limited',1,NULL);
+      INSERT INTO invoice VALUES
+      (900,1,40,50,63,70,30,0,'TRIV35671',7500,'2026-10-01',0,NULL),
+      (901,1,40,50,65,70,30,0,'TRIV35672',7500,'2026-10-01',0,NULL),
+      (902,1,40,50,66,70,30,0,'TRIV35673',7500,'2026-10-01',0,NULL);
+      INSERT INTO chat_session(id,contact_id,channel) VALUES(510,63,'whatsapp'),(511,64,'whatsapp');
+      INSERT INTO chat_message VALUES
+      (950,510,'paid 7500','user','2026-11-19 10:00:00'),
+      (951,511,'paid 7500','user','2026-11-19 10:00:00'),
+      (952,510,'paid TRIV35671','user','2026-11-19 11:00:00');`);
+    for(let n=0;n<12;n++) await pool.execute(`INSERT INTO invoice VALUES(?,1,40,50,64,70,30,0,?,7500,'2026-11-19',0,NULL)`,[1000+n,'OTHER'+n]);
+    const identified={...body,statement:{...body.statement,amount_minor:750000,description:'/ORDP/MAHESWARI RHEA/BREF/123/REMI/Nov rent'}};
+    const named=await lookup(pool,'1',identified);
+    assert.deepEqual(named.source_status,{invoices:'ok',leases:'ok',accounting:'ok'});
+    assert.equal(named.evidence.unavailable,undefined);
+    assert.equal(named.matching.mode,'name');
+    assert.deepEqual(named.candidates.map(c=>c.id),['900']);
+    assert.deepEqual(named.evidence.hits.map(h=>h.message_id),['950']);
+    assert.equal(named.candidates[0]._identity_names,undefined);
+    const runIdentity=extra=>lookup(pool,'1',{...identified,statement:{...identified.statement,description:'',...extra}});
+    const unknown=await runIdentity({payee:'Unknown Real Person'});
+    assert.deepEqual(unknown.candidates,[]);assert.deepEqual(unknown.evidence.hits,[]);assert.equal(unknown.status,'no_identity_match');
+    const refOnly=await runIdentity({reference:'TRIV-35671'});
+    assert.deepEqual(refOnly.candidates.map(c=>c.id),['900']);
+    assert.deepEqual(refOnly.evidence.hits.map(h=>h.message_id),['952']);
+    const conflict=await runIdentity({payee:'Jo Ann',reference:'TRIV35671'});
+    assert.deepEqual(conflict.candidates,[]);assert.deepEqual(conflict.evidence.hits,[]);
+    const accent=await runIdentity({payee:'GARCIA JOSE'});
+    assert.deepEqual(accent.candidates.map(c=>c.id),['901']);
+    const company=await runIdentity({payee:'Example Company Limited'});
+    assert.deepEqual(company.candidates.map(c=>c.id),['902']);
+    const incomplete=await runIdentity({identity_incomplete:true});
+    assert.deepEqual(incomplete.candidates,[]);assert.deepEqual(incomplete.evidence.hits,[]);
+    const fallbackAmount=await runIdentity({});
+    assert.equal(fallbackAmount.matching.amount_only_fallback,true);
+    assert.equal(fallbackAmount.candidates.length,10);
+    assert.ok(fallbackAmount.evidence.hits.some(h=>h.message_id==='951'));
+
   });
