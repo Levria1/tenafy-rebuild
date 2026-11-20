@@ -1,3 +1,17 @@
+## Session: Release ten-bank helper0.4 and identity-first matching (2026-11-20)
+
+- Owner approved push/merge/deploy in Discord1573222962729852971. Merged hostPR26
+  (2c990f6) and connectorPR3 (e240747); deployed/restarted backend only.
+- Public viewer-cookie smoke: all ten catalogue/account/source lookups pass, named
+  results exclude unrelated same-amount people, unknown identity has no fallback,
+  history pages/ownership/no-store and401/403 controls pass. No financial writes.
+- Live suite1923 total1915 pass5 unchanged baseline failures3 skips. CodeQL passed.
+- First smoke had a misspelled test name and triggered automatic rollback. Corrected
+  the verification input after read-only record inspection; same release now passes.
+- Helper0.4 ZIP shared with Alex, Christopher and techasiastaff4; update via replacing
+  the loaded extension folder and Chrome Reload. Session/tab/autofill remain future work.
+- See docs/xero-ten-bank-catalog.md for backup and verification details.
+
 # Tenafy Rebuild — Completed Work Log
 
 Track all changes made per session. Update at the end of each session.

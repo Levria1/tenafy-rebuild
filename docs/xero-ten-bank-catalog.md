@@ -1,9 +1,9 @@
 # Ten enabled accounts in the Xero helper — 0.4 build
 
 Owner selected the ten currently enabled accounts in Discord1573217841350582455.
-The twenty Ignore entries must remain unchanged. This increment is built and
-verified, not pushed or deployed. Live helper remains v0.3 until this release is
-approved. No new migration or financial configuration rewrite is needed.
+The twenty Ignore entries must remain unchanged. Released on 2026-11-20 after owner approval in Discord1573222962729852971.
+Host PR26 (2c990f6) and connector PR3 (e240747) are merged. The backend is live;
+staff must update their local Chrome helper to0.4.0. No new migration or financial configuration rewrite is needed.
 
 ## Scope and verified source
 
@@ -113,13 +113,29 @@ probabilities. The helper does not edit Xero fields or click OK/Save/Reconcile.
 
 ## Release
 
-Review/deploy the backend and distribute helper0.4 together; existing0.3 still
+The backend and helper0.4 are released together; existing0.3 still
 works with ACJ Savings, and can manually map supported banks after backend release.
-No application frontend rebuild or live migration is required. The owner's standing
-rule requires explicit permission for this change's push/merge/deploy. Keep the
-current released Drive package untouched until the new build is approved.
+No application frontend rebuild or live migration was required. Only the backend
+was restarted. The previous0.3 package remains available, and the new0.4 package
+is shared with the same three authorised readers.
 
 After release, copy the ZIP inner folder over the existing loaded helper folder,
 Reload in chrome://extensions, reopen panel and verify0.4.0. Keep Tenafy signed in,
 Connect Tenafy, then Read this Xero tab. Mapping is automatic for the ten selected
 accounts. Twenty ignored accounts remain ignored.
+
+## Live release verification
+
+Live suite:1,923 total /1,915 pass /five unchanged baseline failures /three skips.
+Both CodeQL analyses passed. Public cookie-authenticated checks using the existing
+accounting viewer passed: catalogue10, lookups on all10, named/reference policy,
+no unrelated amount fallback, retained-history pages, no-store, anonymous401 and
+configuration-write403. The viewer's payment-create permission stays absent.
+No financial records, Ignore entries, environment or schema were changed.
+
+The first smoke run used a misspelled name and incorrectly expected a positive
+match; the release rolled back automatically. A read-only record check established
+the input error. Corrected verification found only the expected person's three
+records, and the same tested release was redeployed successfully.
+Backup: /home/ubuntu/backups/tenafy-deploy-20261120-xero-v04.
+Runtime code:2c990f68408cb6af97944f38f85107d54249a130.

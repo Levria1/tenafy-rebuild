@@ -2,7 +2,7 @@
 
 Version0.4.0 adds automatic setup for the ten enabled Xero bank accounts and identity-first matching. It loads
 verified account/currency mappings from Tenafy instead of asking each staff member
-to enter bank settings. This backend/helper increment is built but not deployed;
+to enter bank settings. This backend/helper increment was released on 2026-11-20;
 wait for its approved release before installing it. The released package is0.3.
 No Xero fields or final confirmation controls are edited.
 
@@ -120,7 +120,7 @@ node --test extensions/xero-side-panel/statement.test.mjs extensions/xero-side-p
 python scripts/check-xero-helper-ui.py  # playwright, synthetic endpoints only
 ```
 
-## Identity-first matching in the pending 0.4 build
+## Identity-first matching in the 0.4 release
 
 Named bank lines filter by payer/beneficiary name, and recognised business references
 filter exact reference tokens. Both must match when both are present. A failed
