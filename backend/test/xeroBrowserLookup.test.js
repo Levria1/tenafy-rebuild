@@ -95,6 +95,20 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   assert.equal(data.identity.org_id, '1'); assert.equal(data.identity.bank_account_id, '10');
   assert.equal(data.candidates[0].id, '100'); assert.equal(data.candidates[0].outstanding_minor, 1380000);
   assert.deepEqual(data.capabilities, { read_only: true, live_autofill: false, final_confirmation: 'staff' });
+  // The staff Chrome helper only reads. A viewer must be able to connect,
+  // look up and page history without being granted payment-writing permission.
+  const viewer = { permissions: ['LANDLORD/ACCOUNTING_LIST'] };
+  for (const [path, method, body] of [['/binding','GET',null],['/lookup','POST',input()],['/history','POST',{...input(),lookback_days:'all'}]]) {
+    const read = await request(viewer, body, path, method);
+    assert.equal(read.status, 200, `Accounting viewer can use ${path}`);
+    assert.equal(read.headers.get('cache-control'), 'no-store');
+    const data = (await read.json()).data;
+    assert.equal(data.org_id || data.identity.org_id, '1');
+    if (path !== '/binding') assert.deepEqual(data.capabilities, {read_only:true,live_autofill:false,final_confirmation:'staff'});
+  }
+  assert.equal((await request(viewer, {ui_org_slug:'verified-org',xero_tenant_id:TENANT},'/binding','PUT')).status,403);
+  assert.equal((await request(viewer, {currency_id:'30',currency_code:'HKD',confirm_invoice_lease_currency:true},'/currency','PUT')).status,403);
+  assert.equal((await request({permissions:['LANDLORD/INVOICE_LIST']})).status,403,'Unrelated view permission does not grant access');
   assert.ok(calls.every(c => /^\s*SELECT\b/.test(c.sql)));
   let commits = 0, rollbacks = 0;
   const currencyBindings = [];
