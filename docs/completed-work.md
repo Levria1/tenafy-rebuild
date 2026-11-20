@@ -4,6 +4,19 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Correct stale renewal reply for Gilman 5A (2026-11-20)
+
+- Owner approved fixing the mismatch (Discord 1573180908280873012). Corrected
+  LEA2748's current reply from old Extend to Leaving; NR, dates, financial data and
+  historical September ask preserved. Private backup and explicit automation audit.
+  Read-only verification restores both inquiry and advertising availability.
+- Built an atomic lease-edit reconciliation and Vacancy status correction in
+  `fix/stale-renewal-state`. See `docs/stale-renewal-replies.md`. This code is not
+  pushed/deployed yet; the live UI can still show the historical ask until release.
+- Two behaviour checks, real MySQL route tests, production frontend build and four
+  actual-page synthetic browser scenarios pass. Full backend 1,959/1,952 pass/four
+  unchanged known failures/three optional MySQL skips (new fixture run separately).
+
 ## Session: Release helper access for accounting viewers (2026-11-20)
 
 - Owner approved push/merge/deploy (Discord 1573185159572889662). PR #24 merged

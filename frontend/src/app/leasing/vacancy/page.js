@@ -1,5 +1,7 @@
 'use client';
 
+import { currentRenewalAsks, renewalAskForRow } from '../../../lib/renewalStatus.mjs';
+
 import { useEffect, useState } from 'react';
 import dayjs from 'dayjs';
 import { Table, Card, Tag, Typography, Space, Input, Select, message, Tooltip, Modal, Form, DatePicker, Checkbox, Popconfirm } from 'antd';
@@ -153,7 +155,7 @@ export default function VacancyPage() {
   const overrideById = new Map(overrideRows.map(o => [String(o.id), o]));
   // Keyed by lease: a renewal sequence belongs to the lease we asked about, and the same
   // unit may have had an earlier one.
-  const askByLease = new Map(renewalAsks.map(a => [String(a.lease_id), a]));
+  const askByLease = currentRenewalAsks(renewalAsks);
   // Sequences whose lease never reaches this page — too far out, or the unit is re-let.
   // Without surfacing them here they would run entirely unobserved.
   // Settled asks (lease renewed, ended or gone) are history, not "in flight".
@@ -312,7 +314,7 @@ export default function VacancyPage() {
           return <Tag color="red" style={{ fontWeight: 600 }}>Vacant {r.days_vacant}d</Tag>;
         }
         const expiring = <Tag color={daysColor(r.days_left)} style={{ fontWeight: 600 }}>Expiring · {r.days_left}d</Tag>;
-        const ask = r.lease_id ? askByLease.get(String(r.lease_id)) : null;
+        const ask = renewalAskForRow(r, r.lease_id ? askByLease.get(String(r.lease_id)) : null);
         const askTag = ask ? <RenewalAskTag ask={ask} /> : null;
         // The tenant told us they are staying, so this is off the market for customers
         // already — but the lease still has to be extended, and this page is where that
@@ -326,6 +328,9 @@ export default function VacancyPage() {
               </Tooltip>
             </Space>
           );
+        }
+        if (Number(r.renewal_reply) === 2) {
+          return <Space direction="vertical" size={4}><div>{expiring}</div><Tag color="purple">Leaving</Tag></Space>;
         }
         if (askTag) {
           return (
