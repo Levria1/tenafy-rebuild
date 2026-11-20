@@ -4,6 +4,18 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Diagnose helper connection denied for accounting viewers (2026-11-20)
+
+- Screenshot/profile/role checks identify the shared Tane Team profile: accounting
+  view allowed, payment create denied. Helper incorrectly gates read-only access
+  on create permission. Owner and existing manager connection requests pass.
+- Built `fix/helper-read-access`: allow accounting view OR create for helper reads;
+  configuration remains Super Admin and other financial write guards are untouched.
+  Seven focused API/history checks pass, including viewer read success/write refusal.
+- No live account permissions/code changed. Backend-only fix ready for separate
+  push/merge/deploy approval; no extension reinstall is needed after release.
+  See `docs/xero-helper-accounting-view-access.md`.
+
 ## Session: Release stored Switchboard search and helper 0.3 (2026-11-20)
 
 - Owner approved merge/deploy (Discord 1573155172493037669). Tenafy PR #23 merged
