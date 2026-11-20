@@ -2,6 +2,7 @@ const { traceAmounts } = require('./paymentMatchService');
 const { personOrCompanyName } = require('../utils/personName');
 const history = require('./switchboardHistorySearch');
 const bankCatalog = require('./xeroBankCatalog');
+const identity = require('../utils/xeroStatementIdentity');
 
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const UUID = /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
@@ -41,10 +42,11 @@ function validateStatement(input) {
     if (typeof input[key] !== 'string' || input[key].length > 1000) fail(`${key} must be text of at most 1000 characters.`);
     return input[key].trim();
   };
+  if(input.identity_incomplete != null && typeof input.identity_incomplete !== 'boolean') fail('identity_incomplete must be boolean.');
   const base = String(amount_minor).padStart(digits + 1, '0');
   const amount = digits ? base.slice(0, -digits) + '.' + base.slice(-digits) : base;
   return { id_suffix: id_suffix.toLowerCase(), date, direction, currency, amount_minor, amount, digits,
-    reference: text('reference'), description: text('description'), payee: text('payee') };
+    reference: text('reference'), description: text('description'), payee: text('payee'), identity_incomplete:input.identity_incomplete===true };
 }
 
 async function resolveMapping(pool, orgId, uiSlug, accountId, statement, options = {}) {
@@ -87,11 +89,14 @@ function sourcesFor(mapping, statement) {
     WHERE bank_history.org_id=p.org_id AND bank_history.property_id=p.id AND bank_history.deleted_at IS NULL
       AND bank_history.account_setting_id=? AND UPPER(TRIM(bank_history.currency_type))=?)`;
   const propertyParams = bank != null ? [bank] : [account, statement.currency];
+  const policy = identity.identityFor(statement);
+  const names = identity.tenantNameColumns();
   const paid = `(SELECT COALESCE(SUM(al.amount),0) FROM accounting_line al
     JOIN accounting a ON a.id=al.accounting_id AND a.org_id=i.org_id AND a.deleted_at IS NULL
     WHERE al.invoice_code=i.invoice_code AND al.deleted_at IS NULL)`;
   return {
     async fetchInvoices(pool, orgId, row) {
+      const gate = identity.identitySql(policy,{names,references:['i.invoice_code']});
       const [rows] = await pool.execute(`SELECT i.id, i.invoice_code, i.amount, i.amount-${paid} AS outstanding,
         DATE_FORMAT(i.due_on,'%Y-%m-%d') AS due_on, DATEDIFF(i.due_on,?) AS days_from_date,
         t.first_name,t.middle_name,t.last_name,t.company_name,t.type, u.name AS unit_name,
@@ -108,27 +113,31 @@ function sourcesFor(mapping, statement) {
             WHERE other_line.invoice_code=i.invoice_code AND other_line.deleted_at IS NULL
               AND (other_payment.currency_id IS NULL OR other_payment.currency_id<>i.currency_id
                 OR other_payment.currency_type IS NULL OR UPPER(TRIM(other_payment.currency_type))<>?))
+          AND ${gate.sql}
         HAVING outstanding>=? ORDER BY ABS(days_from_date),i.id LIMIT 10`,
-      [row.date, ...propertyParams, orgId, currency, row.direction === 'received' ? 0 : 1, statement.amount, statement.currency, statement.amount]);
-      return rows.map(r => ({ id: String(r.id), code: r.invoice_code, amount: Number(r.amount),
+      [row.date, ...propertyParams, orgId, currency, row.direction === 'received' ? 0 : 1, statement.amount, statement.currency, ...gate.params, statement.amount]);
+      return rows.map(r => ({ _identity_names:identity.candidateNames(r), id: String(r.id), code: r.invoice_code, amount: Number(r.amount),
         outstanding_minor: decimalMinor(r.outstanding, statement.digits), due_on: r.due_on,
         tenant_name: personOrCompanyName(r) || null, unit_name: r.unit_name, property_name: r.property_name,
         category: r.category, days_from_date: r.days_from_date }));
     },
     async fetchLeases(pool, orgId, row) {
       const spent = row.direction === 'spent';
+      const gate = identity.identitySql(policy,{names,references:['l.lease_no']});
       const [rows] = await pool.execute(`SELECT l.id,l.lease_no,l.amount,l.price,l.deposit,
         t.first_name,t.middle_name,t.last_name,t.company_name,t.type,u.name AS unit_name
         FROM leasing l JOIN unit u ON u.id=l.unit_id
         JOIN property p ON p.id=u.property_id AND p.org_id=? AND p.deleted_at IS NULL AND ${propertyScope}
         LEFT JOIN tenant t ON t.id=l.tenant_id AND t.org_id=p.org_id AND t.deleted_at IS NULL
         WHERE l.deleted_at IS NULL AND l.currency_id=? AND ${spent ? 'l.deposit=?' : '(l.amount=? OR l.price=? OR l.deposit=?)'}
+          AND ${gate.sql}
         ORDER BY ABS(DATEDIFF(l.start_date,?)),l.id LIMIT 10`,
-      [orgId, ...propertyParams, currency, statement.amount, ...(!spent ? [statement.amount, statement.amount] : []), row.date]);
-      return rows.map(r => ({ id: String(r.id), lease_no: r.lease_no, tenant_name: personOrCompanyName(r) || null,
+      [orgId, ...propertyParams, currency, statement.amount, ...(!spent ? [statement.amount, statement.amount] : []), ...gate.params, row.date]);
+      return rows.map(r => ({ _identity_names:identity.candidateNames(r), id: String(r.id), lease_no: r.lease_no, tenant_name: personOrCompanyName(r) || null,
         unit_name: r.unit_name, matched_field: Number(r.deposit) === row.amount ? 'deposit' : 'rent' }));
     },
     async fetchAccounting(pool, orgId, row) {
+      const gate = identity.identitySql(policy,{names,references:['a.transaction_code','a.xero_transaction_id','a.note']});
       const [rows] = await pool.execute(`SELECT a.id,a.xero_transaction_id,a.transaction_code,a.note,
         DATE_FORMAT(a.payment_date,'%Y-%m-%d') AS payment_date,
         t.first_name,t.middle_name,t.last_name,t.company_name,t.type,c.name AS category
@@ -137,10 +146,10 @@ function sourcesFor(mapping, statement) {
         LEFT JOIN tenant t ON t.id=a.tenant_id AND t.org_id=a.org_id AND t.deleted_at IS NULL
         LEFT JOIN category_setting c ON c.id=a.category AND c.org_id=a.org_id
         WHERE a.org_id=? AND a.deleted_at IS NULL AND a.account_setting_id=? AND a.currency_id=?
-          AND UPPER(TRIM(a.currency_type))=? AND a.type=? AND a.amount=?
+          AND UPPER(TRIM(a.currency_type))=? AND a.type=? AND a.amount=? AND ${gate.sql}
         ORDER BY ABS(DATEDIFF(a.payment_date,?)),a.id LIMIT 10`,
-      [...(bank != null ? [bank] : []), orgId, account, currency, statement.currency, row.direction === 'received' ? 0 : 1, statement.amount, row.date]);
-      return rows.map(r => ({ id: String(r.id), xero_transaction_id: r.xero_transaction_id || null,
+      [...(bank != null ? [bank] : []), orgId, account, currency, statement.currency, row.direction === 'received' ? 0 : 1, statement.amount, ...gate.params, row.date]);
+      return rows.map(r => ({ _identity_names:identity.candidateNames(r), _identity_reference:r.note, id: String(r.id), xero_transaction_id: r.xero_transaction_id || null,
         transaction_code: r.transaction_code, payment_date: r.payment_date, category: r.category,
         tenant_name: personOrCompanyName(r) || null, note: String(r.note || '').slice(0, 300) }));
     },
@@ -181,14 +190,18 @@ async function lookup(pool, orgId, body, options = {}) {
     historyScope(options).then(scope => copiedEvidence(pool, orgId, mapping, statement, { scope })).catch(() => ({ hits: [], unavailable: true, search_scope: 'retained_tenafy_history' })),
   ]);
   const trace = traced.rows[0];
+  const policy = identity.identityFor(statement);
   const candidates = [
     ...trace.invoices.map(c => ({ ...c, kind: 'invoice', review_path: 'create_review' })),
     ...trace.leases.map(c => ({ ...c, kind: 'lease', review_path: 'staff_review' })),
     ...trace.accounting.map(c => ({ ...c, kind: 'accounting', review_path: c.xero_transaction_id ? 'find_and_match_review' : 'staff_review' })),
-  ].sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  ].filter(c=>identity.matchesCandidate(policy,c)).map(c=>{
+    const {_identity_names,_identity_reference,...publicCandidate}=c;
+    return {...publicCandidate,match_basis:policy.mode,reasons:[...c.reasons,...(policy.payee?['payer/payee name matches']:[]),...(policy.references.length?['reference matches']:[])]};
+  }).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
   const failures = Object.values(trace.errors).filter(Boolean).length;
-  return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates, evidence,
-    status: failures === 3 ? 'unavailable' : failures ? 'partial' : candidates.length ? 'leads' : 'no_financial_lead',
+  return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates, evidence, matching:{mode:policy.mode,payee:policy.payee,references:policy.references,amount_only_fallback:policy.mode==='amount_only'},
+    status: failures === 3 ? 'unavailable' : failures ? 'partial' : candidates.length ? 'leads' : policy.mode !== 'amount_only' ? 'no_identity_match' : 'no_financial_lead',
     source_status: Object.fromEntries(Object.entries(trace.errors).map(([k, v]) => [k, v ? 'unavailable' : 'ok'])) });
 }
 
@@ -199,7 +212,7 @@ function envelope(orgId, uiSlug, accountId, mapping, statement, result) {
     issued_at: issued.toISOString(), expires_at: new Date(issued.getTime() + 5 * 60000).toISOString(),
     identity: { org_id: String(orgId), ui_org_slug: uiSlug, xero_account_id: accountId, bank_account_id: mapping.bank_account_id,
       currency_id: mapping.currency_id, account_setting_id: mapping.account_setting_id, bank_scope: mapping.bank_account_id == null ? 'ledger_history' : 'property_bank', statement: { id_suffix: statement.id_suffix, date: statement.date,
-        direction: statement.direction, currency: statement.currency, amount_minor: statement.amount_minor } },
+        direction: statement.direction, currency: statement.currency, amount_minor: statement.amount_minor, payee:statement.payee, reference:statement.reference, description:statement.description, identity_incomplete:statement.identity_incomplete } },
     ...result, ambiguity: result.candidates.length > 1,
     capabilities: { read_only: true, live_autofill: false, final_confirmation: 'staff' },
     notices: ['Scores rank leads; they are not probabilities or payment confirmation.',

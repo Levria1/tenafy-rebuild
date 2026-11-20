@@ -29,10 +29,25 @@ export function lookupRequest(snapshot, mapping, row) {
   if (!['Spent', 'Received'].includes(row.direction) || !Number.isSafeInteger(row.minorUnits) || row.minorUnits <= 0 || row.currency !== mapping.currency) throw Error('Statement amount, direction or currency needs review.');
   const digits = new Intl.NumberFormat('en', { style: 'currency', currency: row.currency }).resolvedOptions().maximumFractionDigits;
   if (digits > 2) throw Error('This currency exceeds Tenafy’s supported decimal precision.');
+  const identity = {};
+  for (const key of ['payee','reference','description']) {
+    if (typeof row[key] === 'string' && row[key].trim()) {
+      if (row[key].length > 1000) throw Error('Bank identity text is too long; review this line manually.');
+      identity[key] = row[key].trim();
+    }
+  }
+  // Summary spans have no reliable field labels. Only forward recognised bank
+  // identity formats; do not guess which arbitrary span is a person's name.
+  const recognised = (row.summary || []).filter(text => typeof text === 'string' && /\/(?:ORDP|BENM|BENE|BENEFICIARY)\/|\b(?:TRIV|LEA|INV|BILL|RCPT|PAY)[\s#:-]*[A-Z0-9-]*\d/i.test(text));
+  if (!identity.description && recognised.length) {
+    identity.description = recognised.join(' ');
+    if(identity.description.length > 1000) throw Error('Bank identity text is too long; review this line manually.');
+  }
+  if (!identity.payee && !identity.reference && !identity.description && (row.summary || []).some(text => String(text).trim() && !/^(?:rent|payment|transfer|deposit|refund|fps|money transfer)$/i.test(String(text).trim()))) identity.identity_incomplete = true;
   return {
     expected_org_id: mapping.tenafyOrganisation,
     ui_org_slug: snapshot.organisation, xero_account_id: snapshot.account,
-    statement: { id_suffix: row.suffix, date, direction: row.direction.toLowerCase(), currency: row.currency, amount_minor: row.minorUnits },
+    statement: { id_suffix: row.suffix, date, direction: row.direction.toLowerCase(), currency: row.currency, amount_minor: row.minorUnits, ...identity },
   };
 }
 export const fingerprint = request => JSON.stringify(request);
@@ -44,5 +59,7 @@ export function validResult(result, request, now = Date.now()) {
   const id = result.identity, statement = id?.statement;
   return id?.org_id === request.expected_org_id && id.ui_org_slug === request.ui_org_slug &&
     id.xero_account_id === request.xero_account_id && statement &&
-    ['id_suffix', 'date', 'direction', 'currency', 'amount_minor'].every(key => statement[key] === request.statement[key]);
+    ['id_suffix', 'date', 'direction', 'currency', 'amount_minor'].every(key => statement[key] === request.statement[key]) &&
+    ['payee','reference','description'].every(key => (statement[key] || '') === (request.statement[key] || '')) &&
+    (statement.identity_incomplete === true) === (request.statement.identity_incomplete === true);
 }

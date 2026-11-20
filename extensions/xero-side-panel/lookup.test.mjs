@@ -99,3 +99,14 @@ test('account catalogue is a fixed same-origin GET without a payload or copied t
   });
   assert.deepEqual(await staffRequest('accounts'),{data:{accounts:[]}});
 });
+
+test('recognised bank identity is forwarded and pinned against stale same-amount responses',()=>{
+  const req=lookupRequest(snapshot,mapping,{...row,summary:['/ORDP/MAHESWARI RHEA/BREF/123/REMI/Nov rent']});
+  assert.match(req.statement.description,/MAHESWARI RHEA/);
+  const unclassified=lookupRequest(snapshot,mapping,{...row,summary:['unclassified span']});
+  assert.equal(unclassified.statement.description,undefined);
+  assert.equal(unclassified.statement.identity_incomplete,true);
+  const res=result();res.identity.statement=req.statement;
+  assert.equal(validResult(res,req,Date.parse('2026-11-19T10:00:00Z')),true);
+  assert.equal(validResult(res,{...req,statement:{...req.statement,description:'/ORDP/Other Person/BREF/123'}},Date.parse('2026-11-19T10:00:00Z')),false);
+});

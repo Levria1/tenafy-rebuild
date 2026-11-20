@@ -65,28 +65,50 @@ cannot override the server. Connection progress is explicit and errors are
 highlighted. Only a fixed same-origin catalogue GET is added; no credential is
 read/copied by the extension. The installed website session is still used.
 
-This increment only covers bank support. Name-aware matching, calibrated
-confidence, automatic session/tab resume, longer sign-in and field autofill remain
-separate requirements. Current financial ranking remains amount/date based, and
-the helper does not edit Xero fields or click OK/Save/Reconcile.
+This increment also implements the owner's identity-first rule from Discord
+1573217966592495718. A usable bank payer/beneficiary name filters financial records
+and stored-message contacts before the result limit. Name comparison supports
+case, accents and reordered full-name words; it does not use fuzzy similarity.
+Recognised invoice/lease/payment references filter exact reference tokens. If both
+are supplied, both must match. A named/reference lookup with no result never
+widens to unrelated same-amount records. Amount-only leads are allowed only when
+there is no usable name/reference, and are labelled unverified.
+
+The reader forwards recognised structured bank text such as /ORDP/ for received
+payments and beneficiary tags for spent payments. It does not treat an outgoing
+ORDP sender as the beneficiary. Unclassified summary spans, truncated identity or
+conflicting names block amount-only fallback and require manual review. No raw
+unclassified summary is sent to the matching API. Stored-message matches require
+the matching session/tenant name or reference; nearby context stays in that same
+session and date window. This conservative rule can omit aliases, third-party
+payers or contacts whose name is not recorded; staff must review those manually.
+Identity text is pinned in responses and signed page cursors, so changed bank
+text cannot reuse a prior proposal or page.
+
+Calibrated confidence, automatic session/tab resume, longer sign-in and field
+autofill remain separate requirements. Scores rank filtered leads, not payment
+probabilities. The helper does not edit Xero fields or click OK/Save/Reconcile.
 
 ## Verification
 
-- Thirteen focused backend API/history/catalogue tests pass, including viewer
+- Fifteen focused backend API/history/catalogue tests pass, including viewer
   access, no configuration-write access, bank/currency/tenant changes, disabled/
   duplicate/shared ledgers, ignored mappings, caching, bounded waits and failures.
 - Scratch MySQL passes existing migration089 twice and real financial/history
   isolation. Added another enabled bank with no property bank record: it resolves
   through its exact ledger, returns only that ledger's eligible leads, and refuses
-  another org/ignored mapping. No financial fixture rows are created by lookups.
-- Eight helper units and six synthetic browser flows pass. The real panel/modules
+  another org/ignored mapping. Identity cases find the correct payer behind twelve
+  nearer unrelated amount matches, handle reversed/accented/company names and
+  exact references, reject name/reference conflicts and unreadable identity, and
+  preserve explicit amount-only fallback. No financial rows are written by lookups.
+- Nine helper units and seven synthetic browser flows pass. The real panel/modules
   load ten fake accounts, detect/switch HKD and USD banks, block an unconfigured
   bank, reject changed-organisation catalogues, paginate and discard stale rows.
   Endpoints/Chrome APIs are intercepted; staff-PC Chrome runtime is not claimed.
 - A source-in-memory read-only probe against production records/Xero metadata
   resolves all ten enabled banks with matching source status and read-only
   capabilities. No code/configuration/payment records are installed or changed.
-- Full backend1,965 tests /1,958 pass /four unchanged known failures /three optional
+- Full backend1,967 tests /1,960 pass /four unchanged known failures /three optional
   MySQL skips. Real MySQL fixture ran separately.
 
 ## Release

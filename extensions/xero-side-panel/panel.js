@@ -71,6 +71,10 @@ function appendResults(item, state, request) {
   const box = document.createElement('section'); box.className = 'suggestions';
   addText(box, data.status === 'unavailable' ? 'Financial sources unavailable; this is not a no-match result.' :
     `${data.candidates.length} possible lead(s). ${data.ambiguity ? 'Multiple leads need review.' : 'Staff review required.'}`);
+  if (data.matching) {
+    addText(box, data.matching.amount_only_fallback ? 'Amount-only leads: no usable name or reference was available. Identity is unverified.' : `Identity filter: ${[data.matching.payee, ...(data.matching.references || [])].filter(Boolean).join(' · ') || 'Bank identity needs manual review'}. Unrelated amount-only leads are hidden.`);
+    if (data.status === 'no_identity_match') addText(box, 'No financial match for the bank identity. No fallback to other people with the same amount.');
+  }
   if (data.status === 'partial') addText(box, 'Some financial sources are unavailable. Results are incomplete.');
   const candidates = document.createElement('ul');
   for (const candidate of data.candidates.slice(0, 30)) {

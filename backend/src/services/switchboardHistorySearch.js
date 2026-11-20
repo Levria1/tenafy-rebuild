@@ -2,6 +2,7 @@
 // network calls, OCR, financial writes or AI execution of message contents.
 const crypto = require('crypto');
 const config = require('../config');
+const identity = require('../utils/xeroStatementIdentity');
 const PAGE_SIZE = 10;
 const escapeRegex = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -72,7 +73,7 @@ const timeParams = window => window.days === 'all' ? [] : [window.start, window.
 function queryScope(orgId, mapping, statement, lookbackDays = 6) {
   return crypto.createHash('sha256').update(JSON.stringify({ orgId: String(orgId), bank: String(mapping.bank_account_id),
     currencyId: String(mapping.currency_id), ledger:String(mapping.account_setting_id || ''), xeroAccount:String(mapping.xero_account_id || ''), lookbackDays, statement: { id: statement.id_suffix, date: statement.date,
-      direction: statement.direction, currency: statement.currency, amount: statement.amount_minor, reference: statement.reference || '' } })).digest('hex');
+      direction: statement.direction, currency: statement.currency, amount: statement.amount_minor, reference: statement.reference || '', payee:statement.payee||'', description:statement.description||'', identity_incomplete:statement.identity_incomplete===true } })).digest('hex');
 }
 const signature = raw => crypto.createHmac('sha256', config.jwtSecret).update('history-page:' + raw).digest('base64url');
 function encodeCursor(row, scopeHash) {
@@ -136,7 +137,9 @@ async function searchStoredHistory(pool, orgId, mapping, statement, options = {}
   const window = messageWindow(statement, options.lookbackDays ?? 6);
   const owned = ownership(orgId, scope), hash = queryScope(orgId, mapping, statement, window.days);
   const cursor = decodeCursor(options.cursor, hash);
-  const amount = amountPattern(statement), reference = referencePattern(statement);
+  const policy=identity.identityFor(statement);
+  const gate=identity.identitySql(policy,{names:['s.viewer_name',...identity.tenantNameColumns()],references:['m.content']});
+  const amount = amountPattern(statement), reference = policy.reference_pattern || referencePattern(statement);
   const pattern = reference ? `(?:${amount}|${reference})` : amount;
   const distance = 'ABS(TIMESTAMPDIFF(SECOND,m.created_at,?))';
   const cursorSql = cursor ? 'HAVING distance>? OR (distance=? AND (created_sql<? OR (created_sql=? AND cursor_id<?)))' : '';
@@ -148,9 +151,9 @@ async function searchStoredHistory(pool, orgId, mapping, statement, options = {}
       s.channel,s.channel_user_id,s.viewer_name,s.viewer_phone,s.viewer_email,s.contact_id,s.inquiry_id
     FROM chat_message m JOIN chat_session s ON s.id=m.session_id
     LEFT JOIN tenant t ON t.id=s.contact_id LEFT JOIN inquiry q ON q.id=s.inquiry_id
-    WHERE ${owned.sql} AND m.role IN ('user','assistant')${timeFilter(window)} AND REGEXP_LIKE(m.content,?,'i')
+    WHERE ${owned.sql} AND m.role IN ('user','assistant')${timeFilter(window)} AND REGEXP_LIKE(m.content,?,'i') AND ${gate.sql}
     ${cursorSql} ORDER BY distance ASC,created_sql DESC,m.id DESC LIMIT ${PAGE_SIZE + 1}`,
-  [statement.date, pattern, amount, ...(reference ? [reference] : []), ...owned.params, ...timeParams(window), pattern,
+  [statement.date, pattern, amount, ...(reference ? [reference] : []), ...owned.params, ...timeParams(window), pattern, ...gate.params,
     ...(cursor ? [cursor.distance, cursor.distance, cursor.created, cursor.created, cursor.id] : [])]);
   // Widen once only when the first six-day page has no matching text. Explicit
   // expansion remains available when recent hits exist but none is the right one.
@@ -172,7 +175,7 @@ async function searchStoredHistory(pool, orgId, mapping, statement, options = {}
     limited: false, linked_contacts_only: !scope.allowUnlinked, search_scope: 'retained_tenafy_history',
     scope_verification: scope.verification, unlinked_included: scope.allowUnlinked === true,
     coverage: { messages: Number(coverage.messages), earliest: coverage.earliest, latest: coverage.latest, date_window: window.days === 'all' ? null : window },
-    lookback_days: window.days, attachments_searchable: false, reference_searched: Boolean(reference),
+    matching_mode:policy.mode, lookback_days: window.days, attachments_searchable: false, reference_searched: Boolean(reference),
     notices: [window.days === 'all' ? 'All retained authorised history is searched, including messages outside the thirty-day window; results are ordered by proximity to the bank date.' : `Only the ${window.days} calendar days ending on the bank date are searched; results are ordered by proximity to that date.`,
       'Messages are leads, not proof that money moved or that a currency matches. Attachments/slip images are not stored as searchable documents here.',
       ...(scope.allowUnlinked ? [] : ['Unlinked sessions were omitted because exclusive database ownership could not be verified.'])] };
