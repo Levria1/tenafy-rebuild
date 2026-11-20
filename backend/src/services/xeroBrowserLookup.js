@@ -1,5 +1,6 @@
 const { traceAmounts } = require('./paymentMatchService');
 const { personOrCompanyName } = require('../utils/personName');
+const history = require('./switchboardHistorySearch');
 
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const UUID = /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
@@ -135,39 +136,27 @@ function sourcesFor(mapping, statement) {
   };
 }
 
-async function copiedEvidence(pool, orgId, mapping, statement) {
-  // Only tenant-linked copied WhatsApp/email messages for the selected bank.
-  // Unlinked contacts and other banks' conversations are not searched here.
-  const [rows] = await pool.execute(`SELECT m.id,m.session_id,LEFT(m.content,4000) AS content,CHAR_LENGTH(m.content)>4000 AS truncated,
-      DATE_FORMAT(m.created_at,'%Y-%m-%dT%H:%i:%sZ') AS timestamp,s.channel
-    FROM chat_message m JOIN chat_session s ON s.id=m.session_id
-    JOIN tenant ct ON ct.id=s.contact_id AND ct.org_id=? AND ct.deleted_at IS NULL
-    WHERE s.channel IN ('whatsapp','email') AND m.role IN ('user','assistant')
-      AND m.created_at>=DATE_SUB(?,INTERVAL 14 DAY) AND m.created_at<DATE_ADD(?,INTERVAL 15 DAY)
-      AND EXISTS (SELECT 1 FROM leasing l JOIN unit u ON u.id=l.unit_id
-        JOIN property p ON p.id=u.property_id AND p.org_id=ct.org_id AND p.deleted_at IS NULL AND p.bank_account_id=?
-        WHERE l.tenant_id=s.contact_id AND l.deleted_at IS NULL AND l.currency_id=?)
-    ORDER BY ABS(TIMESTAMPDIFF(SECOND,m.created_at,?)),m.id LIMIT 200`,
-  [orgId, statement.date, statement.date, mapping.bank_account_id, mapping.currency_id, statement.date]);
-  const hits = [];
-  for (const row of rows) {
-    const text = String(row.content || '');
-    const matches = [...text.matchAll(/(?<![\w\d.])[0-9][0-9,]*(?:\.[0-9]+)?(?:[kK](?!\w))?(?![\w\d.])/g)];
-    const found = matches.find(m => {
-      let number = m[0].replace(/,/g, '');
-      if (/[kK]$/.test(number)) number = String(Number(number.slice(0, -1)) * 1000);
-      return decimalMinor(number, statement.digits) === statement.amount_minor;
-    });
-    if (!found) continue;
-    const start = Math.max(0, found.index - 100);
-    hits.push({ message_id: String(row.id), session_id: String(row.session_id), timestamp: row.timestamp,
-      channel: row.channel, snippet: text.slice(start, start + 300), source: 'copied_switchboard', currency_verified: false });
-    if (hits.length === 10) break;
-  }
-  return { hits, limited: rows.length === 200 || rows.some(r => Number(r.truncated) === 1), linked_contacts_only: true };
+async function copiedEvidence(pool, orgId, mapping, statement, options = {}) {
+  return history.searchStoredHistory(pool, orgId, mapping, statement, options);
 }
 
-async function lookup(pool, orgId, body) {
+async function historyScope(options) {
+  return options.getHistoryScope ? options.getHistoryScope() : { allowUnlinked: false, verification: 'linked_records_only' };
+}
+
+async function searchHistory(pool, orgId, body, options = {}) {
+  if (body?.expected_org_id != null) {
+    if (typeof body.expected_org_id !== 'string' || !/^\d{1,20}$/.test(body.expected_org_id)) fail('expected_org_id must be an organisation ID string.');
+    if (body.expected_org_id !== String(orgId)) fail('The signed-in Tenafy organisation changed. Reconnect before searching.', 409);
+  }
+  const uiSlug = slug(body?.ui_org_slug), accountId = normalizeAccountId(body?.xero_account_id);
+  const statement = validateStatement(body?.statement);
+  const mapping = await resolveMapping(pool, orgId, uiSlug, accountId, statement);
+  const evidence = await copiedEvidence(pool, orgId, mapping, statement, { scope: await historyScope(options), cursor: body?.cursor, lookbackDays: body?.lookback_days });
+  return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates: [], evidence, status: 'evidence', source_status: {} });
+}
+
+async function lookup(pool, orgId, body, options = {}) {
   if (body?.expected_org_id != null) {
     if (typeof body.expected_org_id !== 'string' || !/^\d{1,20}$/.test(body.expected_org_id)) fail('expected_org_id must be an organisation ID string.');
     if (body.expected_org_id !== String(orgId)) fail('The signed-in Tenafy organisation changed. Reconnect before looking up payments.', 409);
@@ -178,7 +167,7 @@ async function lookup(pool, orgId, body) {
   const [traced, evidence] = await Promise.all([
     traceAmounts({ pool, orgId, taneChat: null }, [{ amount: Number(statement.amount), date: statement.date, direction: statement.direction }],
       { sources: sourcesFor(mapping, statement) }),
-    copiedEvidence(pool, orgId, mapping, statement).catch(() => ({ hits: [], unavailable: true, linked_contacts_only: true })),
+    historyScope(options).then(scope => copiedEvidence(pool, orgId, mapping, statement, { scope })).catch(() => ({ hits: [], unavailable: true, search_scope: 'retained_tenafy_history' })),
   ]);
   const trace = traced.rows[0];
   const candidates = [
@@ -186,24 +175,30 @@ async function lookup(pool, orgId, body) {
     ...trace.leases.map(c => ({ ...c, kind: 'lease', review_path: 'staff_review' })),
     ...trace.accounting.map(c => ({ ...c, kind: 'accounting', review_path: c.xero_transaction_id ? 'find_and_match_review' : 'staff_review' })),
   ].sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
-  const issued = new Date();
   const failures = Object.values(trace.errors).filter(Boolean).length;
+  return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates, evidence,
+    status: failures === 3 ? 'unavailable' : failures ? 'partial' : candidates.length ? 'leads' : 'no_financial_lead',
+    source_status: Object.fromEntries(Object.entries(trace.errors).map(([k, v]) => [k, v ? 'unavailable' : 'ok'])) });
+}
+
+function envelope(orgId, uiSlug, accountId, mapping, statement, result) {
+  const issued = new Date();
   return {
     version: 1, proposal_key: `${orgId}:${accountId}:${statement.id_suffix}`,
     issued_at: issued.toISOString(), expires_at: new Date(issued.getTime() + 5 * 60000).toISOString(),
-    status: failures === 3 ? 'unavailable' : failures ? 'partial' : candidates.length ? 'leads' : 'no_financial_lead',
     identity: { org_id: String(orgId), ui_org_slug: uiSlug, xero_account_id: accountId, bank_account_id: mapping.bank_account_id,
       currency_id: mapping.currency_id, statement: { id_suffix: statement.id_suffix, date: statement.date,
         direction: statement.direction, currency: statement.currency, amount_minor: statement.amount_minor } },
-    candidates, ambiguity: candidates.length > 1, evidence,
-    source_status: Object.fromEntries(Object.entries(trace.errors).map(([k, v]) => [k, v ? 'unavailable' : 'ok'])),
+    ...result, ambiguity: result.candidates.length > 1,
     capabilities: { read_only: true, live_autofill: false, final_confirmation: 'staff' },
     notices: ['Scores rank leads; they are not probabilities or payment confirmation.',
-      'Only exact gross-amount financial leads in the mapped bank/currency are searched. Split and partial payments require further review.',
-      'Copied messages cover linked tenants only, may be incomplete, and do not establish payment identity or currency.',
-      'Accounting history with missing or conflicting currency_type is excluded, even when it shares the same legacy rate-table ID.',
+      'Financial leads still require exact gross amounts in the mapped bank/currency; split and partial payments need review.',
+      'Stored Switchboard text is searched in a six-day window ending on the bank date, expandable to thirty days or explicitly to all retained history, across authorised conversations.',
+      'Only text copied into Tenafy is searchable here; external history, slip images and attachments are not searched.',
+      'Messages are evidence to review, not payment or currency confirmation.',
+      'Accounting history with missing or conflicting currency_type is excluded.',
       'Account/category, tracking and tax autofill mappings are not enabled.'],
   };
 }
 
-module.exports = { lookup, normalizeAccountId, validateStatement, decimalMinor, sourcesFor, copiedEvidence, slug, currencyDigits };
+module.exports = { lookup, normalizeAccountId, validateStatement, decimalMinor, sourcesFor, copiedEvidence, searchHistory, slug, currencyDigits };

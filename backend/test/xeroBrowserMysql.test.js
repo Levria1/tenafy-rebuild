@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
-const { lookup } = require('../src/services/xeroBrowserLookup');
+const { searchStoredHistory, resolveHistoryScope } = require('../src/services/switchboardHistorySearch');
+const { validateStatement, lookup } = require('../src/services/xeroBrowserLookup');
 const socket = process.env.STAMP_TEST_SOCKET;
 const ACCOUNT = '12345678-abcd-1234-abcd-123456789abc';
 const TENANT = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -34,7 +35,8 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
       CREATE TABLE leasing(id BIGINT PRIMARY KEY,unit_id BIGINT,tenant_id BIGINT,currency_id BIGINT,lease_no VARCHAR(100),amount DECIMAL(15,2),price DECIMAL(15,2),deposit DECIMAL(15,2),start_date DATE,deleted_at DATETIME NULL);
       CREATE TABLE accounting(id BIGINT PRIMARY KEY,org_id BIGINT,property_id BIGINT,tenant_id BIGINT,category BIGINT,account_setting_id BIGINT,currency_id BIGINT,type INT,xero_transaction_id VARCHAR(64),transaction_code VARCHAR(100),note TEXT,payment_date DATE,amount DECIMAL(15,2),deleted_at DATETIME NULL,currency_type VARCHAR(8));
       CREATE TABLE accounting_line(id BIGINT PRIMARY KEY,accounting_id BIGINT,invoice_code VARCHAR(100),amount DECIMAL(15,2),deleted_at DATETIME NULL);
-      CREATE TABLE chat_session(id BIGINT PRIMARY KEY,contact_id BIGINT,channel VARCHAR(20));
+      CREATE TABLE inquiry(id BIGINT PRIMARY KEY,org_id BIGINT);
+      CREATE TABLE chat_session(id BIGINT PRIMARY KEY,contact_id BIGINT,channel VARCHAR(20),inquiry_id BIGINT NULL,channel_user_id VARCHAR(100),viewer_name VARCHAR(100),viewer_phone VARCHAR(100),viewer_email VARCHAR(100));
       CREATE TABLE chat_message(id BIGINT PRIMARY KEY,session_id BIGINT,content TEXT,role VARCHAR(20),created_at DATETIME);
       INSERT INTO bank_account VALUES(10,1,'HKD',1,NULL),(11,1,'HKD',1,NULL),(12,2,'HKD',1,NULL);
       INSERT INTO account_setting VALUES(20,1,b'1');
@@ -68,7 +70,7 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
         (306,1,40,60,70,20,30,0,'unknown-type','UNCONFIRMED CURRENCY',NULL,'2026-11-18',13800,NULL,NULL);
       INSERT INTO accounting_line VALUES(400,304,'PARTPAID',100,NULL),
         (401,305,'FOREIGN-ALLOCATION',-100,NULL),(402,306,'UNKNOWN-ALLOCATION',-100,NULL);
-      INSERT INTO chat_session VALUES(500,60,'whatsapp'),(501,61,'whatsapp'),(502,62,'email'),(503,60,'staff-internal');
+      INSERT INTO chat_session(id,contact_id,channel) VALUES(500,60,'whatsapp'),(501,61,'whatsapp'),(502,62,'email'),(503,60,'staff-internal');
       INSERT INTO chat_message VALUES
         (600,500,'Transferred HK$13,800.00 today','user','2026-11-19 10:00:00'),
         (601,501,'Other bank 13800','user','2026-11-19 10:00:00'),
@@ -88,11 +90,98 @@ test('scratch MySQL: migration twice and lookup excludes other orgs, banks, curr
     assert.deepEqual(result.candidates.map(c => c.id).sort(), ['100', '200', '300']);
     assert.equal(result.candidates[0].tenant_name, 'Sample Mei Tenant');
     assert.equal(result.candidates.find(c => c.id === '300').review_path, 'find_and_match_review');
-    assert.deepEqual(result.evidence.hits.map(h => h.message_id), ['600']);
+    assert.deepEqual(result.evidence.hits.map(h => h.message_id).sort(), ['600', '601']);
+    assert.equal(result.evidence.unavailable, undefined);
     assert.equal(result.ambiguity, true);
     assert.equal(result.capabilities.live_autofill, false);
     const spent = await lookup(pool, '1', { ...body, statement: { ...body.statement, direction: 'spent' } });
     assert.deepEqual(spent.candidates.map(c => c.id), ['106']);
+    // Wider history includes same-org inquiry contacts, old text, long messages,
+    // outbound staff replies and proven unlinked conversations; never foreign anchors.
+    await pool.query(`INSERT INTO inquiry VALUES(700,1),(701,2);
+      INSERT INTO chat_session(id,contact_id,channel,inquiry_id,viewer_name) VALUES
+        (504,NULL,'whatsapp',700,'Prospect'),(505,NULL,'email',NULL,'Vendor'),
+        (506,NULL,'whatsapp',701,'Foreign inquiry'),(507,60,'whatsapp',701,'Conflicting links');
+      INSERT INTO chat_message VALUES
+        (610,504,'previous context','user','2026-10-25 09:00:00'),
+        (611,504,'paid 13.8k','assistant','2026-10-25 10:00:00'),
+        (612,504,'next context','user','2026-10-25 11:00:00'),
+        (613,505,'vendor 13 800.00','user','2026-11-19 12:00:00'),
+        (614,506,'foreign inquiry 13800','user','2026-11-19 12:00:00'),
+        (615,507,'conflict 13800','user','2026-11-19 12:00:00'),
+        (616,504,'113800 138000 13800.01 13800xxxx','user','2026-11-19 12:00:00'),
+        (617,504,'13800 system only','system','2026-11-19 12:00:00'),
+        (618,504,'reference PAY-ABC-123456 only','user','2026-11-19 12:00:00'),
+        (620,504,'paid 13800','user','2026-11-14 00:00:00'),
+        (621,504,'paid 13800','user','2026-11-13 00:00:00'),
+        (622,504,'paid 13800','user','2026-10-21 00:00:00'),
+        (623,504,'paid 13800','user','2026-10-20 23:59:59'),
+        (624,504,'paid 13800','user','2026-11-20 00:00:00'),
+        (625,504,'paid 13800','user','2026-11-19 23:59:59'),
+        (626,504,'paid 13800','user','2026-11-13 23:59:59'),
+        (627,504,'paid 13800','user','2026-06-01 00:00:00'),
+        (630,504,'paid 99900','user','2026-10-25 12:00:00');`);
+    await pool.execute('INSERT INTO chat_message VALUES(619,504,?,?,?)', ['x'.repeat(5000)+' paid HKD13800 today','user','2026-11-19 13:00:00']);
+    const statement = validateStatement(body.statement), mapping = { bank_account_id: '10', currency_id: '30' };
+    const dedicated = { allowUnlinked: true, verification: 'dedicated_org_database' };
+    const history = await searchStoredHistory(pool, '1', mapping, statement, { scope: dedicated });
+    assert.deepEqual(history.hits.map(h => h.message_id).sort(), ['600','601','613','619','620','625']);
+    assert.equal(history.coverage.messages, 8);
+    assert.equal(history.lookback_days, 6);
+    assert.equal(history.coverage.date_window.start,'2026-11-14');
+    const expanded = await searchStoredHistory(pool,'1',mapping,statement,{scope:dedicated,lookbackDays:30});
+    assert.deepEqual(expanded.hits.map(h=>h.message_id).sort(),['600','601','611','613','619','620','621','622','625','626']);
+    assert.equal(expanded.coverage.date_window.start,'2026-10-21');
+    for (const hit of expanded.hits) for(const context of hit.context) {
+      assert.ok(context.timestamp>='2026-10-21' && context.timestamp<'2026-11-20','context obeys the same window');
+    }
+    const fallback = await searchStoredHistory(pool,'1',mapping,{...statement,amount_minor:9990000},{scope:dedicated});
+    assert.deepEqual(fallback.hits.map(h=>h.message_id),['630']);
+    assert.equal(fallback.expanded_from_days,6); assert.equal(fallback.lookback_days,30);
+    const empty = await searchStoredHistory(pool,'1',mapping,{...statement,amount_minor:7770000},{scope:dedicated});
+    assert.equal(empty.lookback_days,30); assert.deepEqual(empty.hits,[]);
+    let allCursor, allIds=[];
+    do {
+      const all=await searchStoredHistory(pool,'1',mapping,statement,{scope:dedicated,lookbackDays:'all',cursor:allCursor});
+      assert.equal(all.lookback_days,'all'); assert.equal(all.coverage.date_window,null);
+      allIds.push(...all.hits.map(h=>h.message_id)); allCursor=all.next_cursor;
+    } while(allCursor);
+    assert.equal(allIds.length,13);assert.equal(new Set(allIds).size,13);
+    for(const id of ['623','624','627']) assert.ok(allIds.includes(id),'Explicit all history includes older and later messages');
+    for(const id of ['602','603','614','615','617']) assert.ok(!allIds.includes(id),'All history preserves org/channel/role boundaries');
+    const old = expanded.hits.find(h => h.message_id === '611');
+    assert.equal(old.contact.inquiry_id, '700'); assert.equal(old.role, 'assistant');
+    assert.deepEqual(old.context.map(c => c.message_id), ['610','612']);
+    assert.match(history.hits.find(h => h.message_id === '619').snippet, /HKD13800/);
+    const restricted = await searchStoredHistory(pool, '1', mapping, statement);
+    assert.ok(!restricted.hits.some(h => h.message_id === '613'));
+    const ref = await searchStoredHistory(pool, '1', mapping, {...statement, reference: 'PAYABC123456'}, {scope: dedicated});
+    assert.deepEqual(ref.hits.find(h => h.message_id === '618').reasons, ['reference mentioned']);
+    // Reference/amount spellings use the actual MySQL ICU engine, not JS approximations.
+    const {amountPattern} = require('../src/services/switchboardHistorySearch');
+    for (const [text, expected] of [['HK$13,800.00',1],['13800',1],['13.800k',1],['13\u00a0800',1],['HKD13800',1],
+      ['13800.0',1],['113800',0],['13800.01',0],['13800xxxx',0],['x13800',0],['13,8000',0]]) {
+      const [[matched]] = await pool.execute("SELECT REGEXP_LIKE(?,?,'i') AS n", [text,amountPattern(statement)]);
+      assert.equal(Number(matched.n), expected, text);
+    }
+    for (let i=0;i<14;i++) await pool.execute('INSERT INTO chat_message VALUES(?,504,?,?,?)', [800+i,'paid 13800','user','2026-11-19 00:00:00']);
+    let cursor, seen = [], pages = 0;
+    do {
+      const page = await searchStoredHistory(pool,'1',mapping,statement,{scope:dedicated,cursor});
+      seen.push(...page.hits.map(h=>h.message_id)); cursor=page.next_cursor; pages++;
+    } while(cursor && pages<5);
+    assert.equal(pages,2); assert.equal(seen.length,20); assert.equal(new Set(seen).size,20);
+    assert.equal(cursor,null);
+    const first = await searchStoredHistory(pool,'1',mapping,statement,{scope:dedicated});
+    await assert.rejects(searchStoredHistory(pool,'1',mapping,statement,{cursor:first.next_cursor,lookbackDays:'all'}),e=>e.status===400);
+    await assert.rejects(searchStoredHistory(pool,'1',mapping,statement,{cursor:first.next_cursor,lookbackDays:30}),e=>e.status===400);
+    await assert.rejects(searchStoredHistory(pool,'2',mapping,statement,{cursor:first.next_cursor}), e=>e.status===400);
+    await assert.rejects(searchStoredHistory(pool,'1',mapping,{...statement,amount_minor:100},{cursor:first.next_cursor}), e=>e.status===400);
+    // Registry proof is evaluated against the actual selected database.
+    const master = {execute:async sql=>sql.includes('status=1') ? [[{id:'1',db_name:db}]] : [[{id:'1'}]]};
+    assert.equal((await resolveHistoryScope(pool,'1',master)).allowUnlinked,false,'foreign anchors disable unlinked inclusion');
+    await pool.query('DELETE FROM chat_session WHERE id IN (502,506,507)');
+    assert.equal((await resolveHistoryScope(pool,'1',master)).allowUnlinked,true);
     const [[counts]] = await pool.query('SELECT (SELECT COUNT(*) FROM accounting) AS payments,(SELECT COUNT(*) FROM invoice) AS invoices');
     assert.equal(Number(counts.payments),7); assert.equal(Number(counts.invoices),9);
   });

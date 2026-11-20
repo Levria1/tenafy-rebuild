@@ -138,10 +138,13 @@ Deposit refunds are regular invoices with `type=1` (Outflow) and the Deposit cat
 
 ## Current Status
 
+Expanded stored Switchboard history search (six days, expandable to thirty or explicitly all history) and helper 0.3 are built in
+`feat/xero-stored-history`, not deployed. See `docs/xero-stored-history.md`.
+ACJ Savings setup is complete in HKD for Hillier, Mercer, Jervois and Fuk Lo Tsun.
+
 Xero Chrome-helper lookup API released on 2026-11-19 via PR #22 (code `6e0f0c7`).
 Migration 089 is applied to all three active org databases; explicit UI-org and
-currency bindings remain empty until verified. Bank/property links are also pending
-setup. The supplied helper v0.2 is in `extensions/xero-side-panel`; it uses a staff-tab
+currency bindings were initially empty; ACJ Savings setup was subsequently verified. The supplied helper v0.2 is in `extensions/xero-side-panel`; it uses a staff-tab
 bridge and account setup. Actual staff-PC runtime/picker tests remain pending;
 autofill is disabled. See `docs/xero-browser-lookup.md`.
 See `docs/completed-work.md` for detailed progress tracking.

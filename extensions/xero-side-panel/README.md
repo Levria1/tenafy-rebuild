@@ -1,10 +1,17 @@
 # Tenafy reconciliation review
 
-Version 0.2 adds read-only Tenafy suggestions to the owner's working toolbar helper.
-The matching backend was released on 2026-11-19 via PR #22 and migration 089.
-Local Xero reading works independently; suggestions require verified server-side
-organisation/bank/currency mappings. Those mappings are not automatically seeded. This package never
-edits a Xero field or clicks OK, Save or Reconcile.
+Version 0.3.0 adds date-bounded Switchboard text search, contact details, nearby
+replies, conversation links and paginated results. The original lookup backend is
+live through PR #22; this history-search increment is built but not deployed.
+Wait for its approved backend release before updating staff to this helper.
+No Xero fields or final confirmation controls are edited.
+
+## Updating the helper
+
+Extract the new ZIP, open its inner folder containing manifest.json, and copy the
+files over the contents of the existing loaded helper folder. Click Reload in
+chrome://extensions, reopen the panel, and verify version 0.3.0. Keeping the same
+folder retains the extension ID and local mapping settings.
 
 ## First: send the mapping identity (no connection needed)
 
@@ -14,7 +21,8 @@ line (or send a screenshot of that line). It contains the observed UI slug and
 normalised account UUID. This reading step works before Connect Tenafy is set up.
 The API organisation ID and ACJ HSBC S* (April Eve) account UUID are already known
 from Tenafy's connection; Xero's read-only Accounts API confirms ACJ Savings is HKD.
-We still need to verify the observed UI slug/account pair and configure bank links.
+The screenshot/API UI organisation code has now been verified and saved. Bank,
+property and currency bindings for ACJ Savings are configured; other banks need verification.
 
 If the organisation reads "unverified", copy the active organisation's settings
 link containing `/app/!<slug>/settings`. Never send passwords, session cookies or
@@ -66,20 +74,33 @@ The supplied read-only inspection covered two lines in one account, one Spent an
 
 ## Connection and review limits
 
-The staff-tab bridge has two fixed operations: GET the browser binding and POST a
-read-only lookup. It uses same-origin browser credentials inside an isolated script
+The staff-tab bridge has three fixed operations: GET the browser binding, POST a
+read-only lookup, and POST a read-only history page. It uses same-origin browser credentials inside an isolated script
 on the exact Tenafy origin. No arbitrary URL/path, token extraction, cookie API,
 external key storage or backend CORS relaxation is added. The backend verifies the
 expected organisation against its authenticated session; client mappings grant no
 access. See [Chrome host permissions](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions)
 and [content-script request origins](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests).
 
-Supporting messages are copied, bounded excerpts for linked tenants, not a complete
-live Switchboard search. Matching currently returns exact gross-amount leads only.
-Splits, part payments, fees, unlinked contacts and missing metadata require further
-review. Scores are not payment confirmation. Category/tracking/tax autofill maps,
-actual picker commits, active Find & Match candidate IDs and larger-account
-pagination/row-removal behaviour still need controlled testing on the staff PC.
+Supporting evidence searches six calendar days ending on the bank transaction
+date, including owned inquiry contacts and safely scoped unlinked sessions. For
+19 November this is 14–19 November. With no hits it automatically widens to thirty
+days (21 October–19 November). Click Search 30 days to widen when recent hits
+exist but none is right. The six/thirty-day modes exclude messages/context
+outside the selected dates. Search all history explicitly removes that date
+filter; Search 30 days narrows it again. Automatic expansion never selects all
+history. These database searches use zero LLM tokens; OCR or AI assessment would
+be a separate future feature.
+The panel shows contacts, one preceding/following reply and a conversation link.
+More messages/Previous messages replace the displayed page. Coverage shows the
+stored message count and date range. Foreign/internally scoped messages are
+excluded; uncertain ownership produces a visible incomplete-search notice.
+
+This is not a live external Switchboard archive or slip-image/OCR search. Currency,
+who paid, and invoice allocation require staff review. Financial candidates still
+require exact gross amounts in the mapped bank/currency; splits, part payments and
+fees need review. Scores are not payment confirmation. Category/tracking/tax
+filling and live Xero picker behaviour remain future work.
 
 The synthetic browser test verifies panel state, real same-origin fetch with a fake
 staff cookie, plaintext evidence and stale-result rejection. Chrome APIs/HTTPS
