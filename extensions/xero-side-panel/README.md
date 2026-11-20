@@ -1,9 +1,8 @@
 # Tenafy reconciliation review
 
 Version 0.3.0 adds date-bounded Switchboard text search, contact details, nearby
-replies, conversation links and paginated results. The original lookup backend is
-live through PR #22; this history-search increment is built but not deployed.
-Wait for its approved backend release before updating staff to this helper.
+replies, conversation links and paginated results. The history backend was
+released on 2026-11-20 through PR #23. Staff can now update to this helper.
 No Xero fields or final confirmation controls are edited.
 
 ## Updating the helper

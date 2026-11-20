@@ -1,6 +1,6 @@
 # Xero Chrome helper: read-only Tenafy lookup
 
-The expanded history search is built but not deployed; see
+The expanded history search was deployed on 2026-11-20 via PR #23 (`e821ff2`); see
 [xero-stored-history.md](xero-stored-history.md). The six/thirty-day and explicitly selected all-history search and
 pagination described there supersede the original copied-evidence limits below.
 ACJ Savings is already configured in HKD for Hillier, Mercer, Jervois and Fuk Lo Tsun.

@@ -4,6 +4,21 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Release stored Switchboard search and helper 0.3 (2026-11-20)
+
+- Owner approved merge/deploy (Discord 1573155172493037669). Tenafy PR #23 merged
+  `e821ff2` after CodeQL JavaScript/TypeScript, Python and aggregate checks passed.
+  Connector PR #1 merged `58b1b61`. Backend deployed; existing frontend retained.
+- No migration/dependency/environment/configuration or financial writes. Private
+  rollback copy: `/home/ubuntu/backups/tenafy-deploy-20261120-015828-history`.
+- Live suite 1,912/1,905 pass/five unchanged baseline failures/two optional skips.
+  Authenticated lookup and thirty-day/all-history pages pass; no duplicate page
+  IDs. Org/currency/window/cursor guards, anonymous refusal, no-store and read-only
+  capabilities verified. Internal/public health and public login return 200.
+- Staff may now update to helper 0.3.0 using the existing private Drive link;
+  release instructions were updated in the ZIP. Slip-image OCR is still future
+  work; no Xero autofill/final confirmation is enabled.
+
 ## Session: Build stored Switchboard history search for Xero review (2026-11-19)
 
 - Added retained-text amount/reference search, inquiry/unlinked scope proof,

@@ -1,7 +1,9 @@
 # Stored Switchboard history for Xero review — 0.3
 
-Built on 2026-11-19 in `feat/xero-stored-history` (Tenafy) and
-`feat/stored-switchboard-history` (connector). This change is not deployed.
+Released on 2026-11-20 through Tenafy [PR #23](https://github.com/Levria1/tenafy-rebuild/pull/23),
+merge `e821ff2`, and connector [PR #1](https://github.com/Levria1/Xero-Tenafy-Connector/pull/1),
+merge `58b1b61`. Owner approved merge/deploy in Discord 1573155172493037669.
+The new history backend is live; staff can install helper 0.3.0.
 The existing ACJ Savings organisation/bank/HKD configuration remains in place.
 No new migration or configuration change is needed for the history search.
 
@@ -118,15 +120,31 @@ selected evidence sent to it; no such AI/OCR stage is implemented here.
 Synthetic browser checks intercept Chrome APIs and endpoints. Real staff-PC
 extension runtime and live Xero picker behaviour are not claimed tested.
 
-## Release and staff update
+## Live release verification
 
-Review/approve the Tenafy backend branch and the connector helper together. The
-new endpoint requires a backend release before the 0.3 helper's pagination works.
-Do not reapply the full historical overlay patch to a host already on PR #22;
-carry the incremental branch changes instead. Push, merge and deployment require
-the owner's approval for this change. No migration is needed for this increment.
+CodeQL JavaScript/TypeScript, Python and aggregate checks passed before merge.
+Backed up the prior code/PM2 state at
+`/home/ubuntu/backups/tenafy-deploy-20261120-015828-history`. Fast-forwarded to the
+reviewed merge and restarted only tenafy-backend; frontend process/build retained.
+No migration, environment, bank/currency configuration or financial rows changed.
 
-After the approved release, copy the new ZIP's inner-folder contents over the
+Live suite: 1,912 tests, 1,905 pass, five failures identical to the pre-release
+baseline, two optional MySQL skips. The five are the four known source failures
+plus the live host's existing missing-acorn UTC-detector failure. Authenticated
+lookup/history reads passed with the real active owner profile: thirty-day and
+all-history modes, signed pages without duplicates, changed-window/forged cursor
+refusal, invalid org/currency/window refusal, no-store and read-only capabilities.
+Anonymous access is 401. Public health/login and internal backend health are 200.
+These checks perform no financial/Xero writes. Actual staff-PC runtime/picker
+checks remain for staff; synthetic checks do not claim them tested.
+
+## Staff update
+
+The backend and helper increment are now released together. Do not reapply the
+full historical overlay patch to this host: it already contains PR #22 and #23.
+No migration is needed for this increment.
+
+Copy the new ZIP's inner-folder contents over the
 existing loaded helper folder containing manifest.json. Reload the extension in
 chrome://extensions, reopen its panel, and verify version 0.3.0. Keeping the same
 folder retains the extension ID and local account mappings. Connect Tenafy,
