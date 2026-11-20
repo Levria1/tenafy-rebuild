@@ -4,6 +4,20 @@ Track all changes made per session. Update at the end of each session.
 
 ---
 
+## Session: Release stale renewal/Vacancy fix (2026-11-20)
+
+- Owner approved push/merge/deploy (Discord 1573187576079061003). PR #25 merged
+  `c42ca96` after all CodeQL checks passed. Retains helper-view access from PR #24.
+- Production frontend built separately, source-tree checked, switched with rollback
+  copy; backend/frontend restarted. No migration, environment or further data change.
+- Actual live Vacancy browser verification shows Leaving for Gilman 5A and no old
+  paperwork label. Inquiry/advertising include the unit. Historical September ask
+  hash, lease end, NR intent and November reply timestamp remain unchanged.
+- Live suite 1,915/1,907 pass/five unchanged baseline failures/three optional skips.
+  Scratch route regression, frontend build, public/internal health/login all pass.
+- Rollback: `/home/ubuntu/backups/tenafy-deploy-20261120-040831-vacancy`. Staff should refresh Vacancy; no extension change needed.
+  See `docs/stale-renewal-replies.md`.
+
 ## Session: Correct stale renewal reply for Gilman 5A (2026-11-20)
 
 - Owner approved fixing the mismatch (Discord 1573180908280873012). Corrected

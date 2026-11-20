@@ -138,6 +138,11 @@ Deposit refunds are regular invoices with `type=1` (Outflow) and the Deposit cat
 
 ## Current Status
 
+Stale renewal/Vacancy status fix deployed on 2026-11-20 via PR #25 (`c42ca96`),
+including rebuilt frontend. Historical asks no longer override current Leaving;
+lease edits reconcile replies with the current term/intent. Gilman 5A verified live.
+See `docs/stale-renewal-replies.md`.
+
 Read-only Xero helper access for accounting viewers deployed on 2026-11-20 via
 PR #24 (`07adcc5`). No new extension install or payment-write permission required.
 See `docs/xero-helper-accounting-view-access.md`.

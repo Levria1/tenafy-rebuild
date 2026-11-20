@@ -19,7 +19,7 @@ and advertising availability. No tenant messages were sent.
 
 Backup: `/home/ubuntu/backups/tenafy-gilman5a-renewal-1795146149873`.
 
-## Permanent code fix — built, not released
+## Permanent code fix — released 2026-11-20
 
 - Lease edits compare against the row's existing values in the same UPDATE. A
   changed end date, tenant or unit clears the previous reply and its timestamp.
@@ -37,10 +37,11 @@ Backup: `/home/ubuntu/backups/tenafy-gilman5a-renewal-1795146149873`.
   instruction to extend. Genuine current Extend replies remain visible.
 
 There is no migration, new dependency, bulk backfill or automatic tenant message.
-This change concerns the lease-edit endpoint and Vacancy rendering. The approved
-one-lease correction is live, but the running page can still show a historical
-ask tag until the code/frontend release. The owner's standing rule requires a
-separate explicit OK before pushing, merging or deploying this code change.
+This change concerns the lease-edit endpoint and Vacancy rendering. Owner approved
+push/merge/deploy in Discord 1573187576079061003. [PR #25](https://github.com/Levria1/tenafy-rebuild/pull/25)
+merged `c42ca96` after CodeQL JavaScript/TypeScript, Python and aggregate checks
+passed. Backend and rebuilt frontend are deployed. The live Vacancy page now
+shows Leaving for the corrected lease without the historical paperwork label.
 
 ## Verification
 
@@ -65,6 +66,19 @@ npm run build
 python scripts/check-renewal-status.py  # Playwright/Chromium required
 ```
 
-A future approved release must build/restart the frontend as well as restart the
-backend. No live migration is needed. Preserve the live one-lease correction and
-September history; do not re-run the guarded correction script after it succeeds.
+## Live release verification
+
+The production frontend was built separately at `/home/ubuntu/tenafy-releases/vacancy-20261120-040831` with the production
+frontend environment. Its source-tree hash was checked against the reviewed merge
+before activation. Saved the prior code, PM2 state and frontend build in
+`/home/ubuntu/backups/tenafy-deploy-20261120-040831-vacancy`. Switched the ready build and restarted both backend and frontend.
+No migration, live environment change, role grant or additional data correction.
+
+Live suite: 1,915 tests, 1,907 pass, five failures exactly matching the immediate
+baseline, three optional MySQL skips. The new scratch fixture passed separately.
+Internal/public health and public login return 200. An actual browser on the live
+Vacancy page shows Leaving and no paperwork-due label, using an ephemeral verified
+owner session with all API traffic restricted to reads. Read-only availability
+checks include 5A in both inquiry and advertising results. The September ask hash,
+December end date, NR intent and recorded November confirmation time are preserved.
+Staff can refresh the Vacancy page; no extension update is required.
