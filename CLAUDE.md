@@ -138,6 +138,10 @@ Deposit refunds are regular invoices with `type=1` (Outflow) and the Deposit cat
 
 ## Current Status
 
+Read-only Xero helper access for accounting viewers deployed on 2026-11-20 via
+PR #24 (`07adcc5`). No new extension install or payment-write permission required.
+See `docs/xero-helper-accounting-view-access.md`.
+
 Expanded stored Switchboard history search (six days, expandable to thirty or explicitly all history) and helper 0.3 were released on 2026-11-20 via PR #23 (`e821ff2`). See `docs/xero-stored-history.md`.
 ACJ Savings setup is complete in HKD for Hillier, Mercer, Jervois and Fuk Lo Tsun.
 

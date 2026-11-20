@@ -74,8 +74,9 @@ suggestions and safe row resolution after a neighbour disappears remain untested
 
 `POST /api/integrations/xero/browser/lookup`
 
-Uses the existing staff authentication and `LANDLORD/ACCOUNTING_CREATE`
-permission, matching reconciliation access. Tenant-portal tokens, master-admin
+Uses existing staff authentication and `LANDLORD/ACCOUNTING_LIST` or
+`LANDLORD/ACCOUNTING_CREATE` for read-only helper access (PR #24, deployed
+2026-11-20). Binding/currency configuration still requires Super Admin. Tenant-portal tokens, master-admin
 sessions without a selected staff organisation, and callers without permission
 are refused. Scope comes from the authenticated organisation, never a posted
 org ID. Responses are `Cache-Control: no-store`, limited to 30 operations per
