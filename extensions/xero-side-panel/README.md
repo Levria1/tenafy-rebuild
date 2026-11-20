@@ -3,7 +3,7 @@
 Version0.4.0 adds automatic setup for the ten enabled Xero bank accounts and identity-first matching. It loads
 verified account/currency mappings from Tenafy instead of asking each staff member
 to enter bank settings. This backend/helper increment was released on 2026-11-20;
-wait for its approved release before installing it. The released package is0.3.
+install this released0.4 package to use the new account and matching behaviour.
 No Xero fields or final confirmation controls are edited.
 
 ## Updating the helper
@@ -22,7 +22,9 @@ normalised account UUID. This reading step works before Connect Tenafy is set up
 The API organisation ID and ACJ HSBC S* (April Eve) account UUID are already known
 from Tenafy's connection; Xero's read-only Accounts API confirms ACJ Savings is HKD.
 The screenshot/API UI organisation code has now been verified and saved. Bank,
-property and currency bindings for ACJ Savings are configured; other banks need verification.
+property and currency bindings for ACJ Savings are configured. The other nine enabled
+banks use verified Xero account/ledger IDs and currencies; the twenty ignored banks
+remain excluded.
 
 If the organisation reads "unverified", copy the active organisation's settings
 link containing `/app/!<slug>/settings`. Never send passwords, session cookies or
