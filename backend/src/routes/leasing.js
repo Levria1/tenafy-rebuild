@@ -36,6 +36,7 @@ const { tenantPortalEnabled } = require('../middleware/tenantAuth');
 const { sendMail } = require('../config/mailer');
 const { getMasterPool } = require('../config/poolRegistry');
 const { checkTermination } = require('../utils/leaseTermination');
+const { renewalReplyEdit } = require('../utils/renewalReplyEdit');
 
 // advanceInvoiceDate is imported from utils/invoiceSchedule.js (shared with scheduler.js + invoice.js)
 
@@ -1712,6 +1713,12 @@ router.put('/:id', authenticate, requirePermission('LANDLORD/LEASING_EDIT'), asy
     if (req.body.lease_state !== undefined && (req.body.lease_state === 'pending' || req.body.lease_state === 'active')) {
       fields.push('lease_state = ?'); params.push(req.body.lease_state);
     }
+    // A renewal answer belongs to the occupancy/end date we asked about. A new
+    // period clears it; an explicit staff intent change supersedes it. Put these
+    // FIRST so MySQL compares against the old values in this same atomic write.
+    const renewalEdit = renewalReplyEdit(req.body);
+    fields.unshift(...renewalEdit.fields);
+    params.unshift(...renewalEdit.params);
     fields.push('updated_at = NOW()');
     params.push(id);
 
