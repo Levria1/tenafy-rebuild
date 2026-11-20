@@ -1,6 +1,6 @@
 # Tenafy reconciliation review
 
-Version0.4.0 adds automatic setup for the ten enabled Xero bank accounts. It loads
+Version0.4.0 adds automatic setup for the ten enabled Xero bank accounts and identity-first matching. It loads
 verified account/currency mappings from Tenafy instead of asking each staff member
 to enter bank settings. This backend/helper increment is built but not deployed;
 wait for its approved release before installing it. The released package is0.3.
@@ -119,3 +119,13 @@ From the repository root:
 node --test extensions/xero-side-panel/statement.test.mjs extensions/xero-side-panel/lookup.test.mjs
 python scripts/check-xero-helper-ui.py  # playwright, synthetic endpoints only
 ```
+
+## Identity-first matching in the pending 0.4 build
+
+Named bank lines filter by payer/beneficiary name, and recognised business references
+filter exact reference tokens. Both must match when both are present. A failed
+identity match does not show unrelated people who happen to have the same amount.
+Amount-only fallback is labelled unverified and is available only when no usable
+name/reference exists. Unclassified or truncated identity needs manual review.
+Name aliases, third-party payers and unfamiliar bank formats can need manual review.
+This does not add automatic filling or final confirmation.
