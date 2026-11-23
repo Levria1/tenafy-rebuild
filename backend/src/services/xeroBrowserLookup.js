@@ -198,7 +198,10 @@ async function lookup(pool, orgId, body, options = {}) {
     ...trace.accounting.map(c => ({ ...c, kind: 'accounting', review_path: c.xero_transaction_id ? 'find_and_match_review' : 'staff_review' })),
   ].filter(c=>identity.matchesCandidate(policy,c)).map(c=>{
     const {_identity_names,_identity_reference,...publicCandidate}=c;
-    return {...publicCandidate,match_basis:policy.mode,reasons:[...c.reasons,...(policy.payee?['payer/payee name matches']:[]),...(policy.references.length?['reference matches']:[])]};
+    const fromRemittance = policy.name_source === 'remittance';
+    const nameReason = fromRemittance ? 'payer name words match remittance text' : 'payer/payee name matches';
+    const matchBasis = fromRemittance ? (policy.references.length ? 'remittance_name_and_reference' : 'remittance_name') : policy.mode;
+    return {...publicCandidate,match_basis:matchBasis,reasons:[...c.reasons,...(policy.payee?[nameReason]:[]),...(policy.references.length?['reference matches']:[])]};
   }).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
   const failures = Object.values(trace.errors).filter(Boolean).length;
   return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates, evidence, ...(slips ? { slips } : {}), matching:{mode:policy.mode,payee:policy.payee,references:policy.references,amount_only_fallback:policy.mode==='amount_only'},

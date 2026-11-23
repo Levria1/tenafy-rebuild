@@ -138,7 +138,11 @@ async function searchStoredHistory(pool, orgId, mapping, statement, options = {}
   const owned = ownership(orgId, scope), hash = queryScope(orgId, mapping, statement, window.days);
   const cursor = decodeCursor(options.cursor, hash);
   const policy=identity.identityFor(statement);
-  const gate=identity.identitySql(policy,{names:['s.viewer_name',...identity.tenantNameColumns()],references:['m.content']});
+  const gate=identity.identitySql(policy,{
+    names:['s.viewer_name',...identity.tenantNameColumns()],
+    references:['m.content'],
+    contentName: policy.name_source === 'remittance' ? 'm.content' : null,
+  });
   const amount = amountPattern(statement), reference = policy.reference_pattern || referencePattern(statement);
   const pattern = reference ? `(?:${amount}|${reference})` : amount;
   const distance = 'ABS(TIMESTAMPDIFF(SECOND,m.created_at,?))';

@@ -26,3 +26,19 @@ test('name and business reference must both match; outgoing sender is not benefi
   assert.ok(!matchesCandidate(ref,{note:'Receipt ZABC1234567'}));
   assert.match(identitySql(p,{names:['t.name'],references:['i.code']}).sql,/ AND /);
 });
+test('processor deposits use remittance name words and reject unrelated names', () => {
+  const description = '/ORDP/VISA PAYMENTS LIMITED/BREF/123/REMI/Hazel Morton,T X12345';
+  const policy = identityFor(bank({ description }));
+  assert.equal(policy.payee, 'Hazel Morton');
+  assert.equal(policy.name_source, 'remittance');
+  assert.ok(matchesCandidate(policy, { tenant_name: 'Morton Hazel' }));
+  assert.ok(matchesCandidate(policy, { tenant_name: 'Hazel Louise Morton' }));
+  assert.ok(!matchesCandidate(policy, { tenant_name: 'Hazel Joseph' }));
+  assert.ok(!matchesCandidate(policy, { tenant_name: 'Hazel Mortonson' }));
+  assert.equal(identityFor(bank({ description, payee: 'Jane Other' })).mode, 'identity_conflict');
+  assert.equal(identityFor(bank({ description: '/ORDP/Wise Payments Hong Kong Limited/REMI/November rent' })).name_source, null);
+  assert.equal(identityFor(bank({ description: '/ORDP/Another Person/REMI/Hazel Morton,T X12345' })).payee, 'Another Person');
+  const gate = identitySql(policy, { names: ['t.name'], contentName: 'm.content' });
+  assert.match(gate.sql, /REGEXP_LIKE/);
+  assert.ok(gate.params.includes('(^|[^[:alnum:]])morton([^[:alnum:]]|$)'));
+});

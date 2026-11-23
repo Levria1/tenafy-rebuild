@@ -1,4 +1,4 @@
-// Bank text is data only. No AI, fuzzy identity guesses or executable patterns.
+// Bank text is data only. Match complete name words and bounded reference tokens.
 const normal = value => String(value || '').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
 const cleanName = value => String(value || '').trim().replace(/\s+/g,' ').replace(/^(?:mr|mrs|ms|miss|dr)\.?\s+/i,'');
 function nameForms(value) {
@@ -20,14 +20,34 @@ function businessRefs(value) {
 function referencePattern(refs) {
   return `(?<![[:alnum:]])(?:${refs.map(r=>r.split('').join('[[:space:]#:-]*')).join('|')})(?![[:alnum:]])`;
 }
+function nameWords(value) {
+  return cleanName(value).normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
+    .match(/\p{L}[\p{L}\p{M}]*/gu) || [];
+}
+function isPaymentProcessor(value) {
+  return /^(?:visa payments(?: limited| ltd)?|(?:transfer)?wise payments(?: hong kong)?(?: limited| ltd)?)$/i.test(cleanName(value));
+}
+function remittanceName(description) {
+  const field = description.match(/\/REMI\/([^/]{1,200})(?:\/|$)/i)?.[1];
+  const name = cleanName(field?.split(/[,;]/, 1)[0]);
+  const words = nameWords(name);
+  // Only a short name-shaped remittance prefix, with at least two full words.
+  if (!/^[\p{L}\p{M}][\p{L}\p{M}\s.'’\-]+$/u.test(name) ||
+      words.length > 5 || new Set(words.filter(word => word.length >= 3)).size < 2) return null;
+  if (words.some(word => /^(?:for|from|payment|transfer|november|rent|invoice|deposit|thanks|reference)$/i.test(word))) return null;
+  return name;
+}
 function identityFor(statement) {
   const description=String(statement.description||'');
   const marker=statement.direction==='spent'?'(?:BENM|BENE|BENEFICIARY)':'ORDP';
   const matches=[...description.matchAll(new RegExp(`/${marker}/([^/]{2,200})/(?=[A-Z]{3,12}/|$)`,'gi'))].map(m=>cleanName(m[1])).filter(usableName);
   const explicit=usableName(statement.payee)?cleanName(statement.payee):null;
-  const distinct=[...(explicit?[explicit]:[]),...matches];
+  const processor = statement.direction === 'received' && [explicit, ...matches].some(isPaymentProcessor);
+  const remitter = processor ? remittanceName(description) : null;
+  const reported = [...(explicit?[explicit]:[]), ...matches];
+  const distinct = remitter ? [...reported.filter(name => !isPaymentProcessor(name)), remitter] : reported;
   const conflict=distinct.some(name=>!nameForms(name).some(form=>nameForms(distinct[0]).includes(form)));
-  const payee=explicit||matches[0]||null;
+  const payee=distinct[0] || null;
   const structuredIncomplete=(!payee&&/\.{3}|…/.test(String(statement.payee||'')))||!payee&&new RegExp(`/${marker}/`,'i').test(description);
   const refs=businessRefs([statement.reference,description].join(' '));
   // A bank tracking reference is useful on its own, but does not override an
@@ -39,7 +59,9 @@ function identityFor(statement) {
     }
   }
   const mode=conflict?'identity_conflict':(structuredIncomplete||statement.identity_incomplete===true)?'identity_unreadable':payee&&refs.length?'name_and_reference':payee?'name':refs.length?'reference':'amount_only';
-  return {mode,payee,references:[...new Set(refs)],name_forms:payee?nameForms(payee):[],reference_pattern:refs.length?referencePattern([...new Set(refs)]):null};
+  return {mode,payee,references:[...new Set(refs)],name_forms:payee?nameForms(payee):[],reference_pattern:refs.length?referencePattern([...new Set(refs)]):null,
+    name_source: remitter ? 'remittance' : null,
+    remittance_words: remitter ? [...new Set(nameWords(remitter).filter(word => word.length >= 3))] : []};
 }
 function candidateNames(row) {
   if(Number(row.type)===1)return [row.company_name].filter(Boolean);
@@ -61,8 +83,18 @@ function identitySql(policy,{names=[],references=[],contentName=null}={}) {
   const parts=[],params=[];
   if(policy.payee){
     const alternatives=names.map(expr=>{params.push(...policy.name_forms);return `${normalSql(expr)} IN (${policy.name_forms.map(()=>'?').join(',')})`;});
-    if(contentName){
+    const remittanceWords = policy.remittance_words || [];
+    if(contentName && !remittanceWords.length){
       for(const form of policy.name_forms){alternatives.push(`LOCATE(?,${normalSql(contentName)})>0`);params.push(form);}
+    }
+    if (remittanceWords.length >= 2) {
+      for (const expression of [...names, ...(contentName ? [contentName] : [])]) {
+        const checks = remittanceWords.map(word => {
+          params.push(`(^|[^[:alnum:]])${word}([^[:alnum:]]|$)`);
+          return `REGEXP_LIKE(CONVERT(COALESCE(${expression},'') USING utf8mb4) COLLATE utf8mb4_0900_ai_ci,?,'i')`;
+        });
+        alternatives.push(`(${checks.join(' AND ')})`);
+      }
     }
     parts.push(alternatives.length?'('+alternatives.join(' OR ')+')':'1=0');
   }
@@ -75,7 +107,12 @@ function matchesCandidate(policy,candidate) {
   if(policy.mode==='identity_conflict'||policy.mode==='identity_unreadable')return false;
   if(policy.payee){
     const expected=new Set(policy.name_forms);
-    if(!(candidate._identity_names||[candidate.tenant_name]).some(name=>nameForms(name).some(form=>expected.has(form))))return false;
+    const remittanceWords = policy.remittance_words || [];
+    if (!(candidate._identity_names || [candidate.tenant_name]).some(name => {
+      if (nameForms(name).some(form => expected.has(form))) return true;
+      const candidateWords = new Set(nameWords(name));
+      return remittanceWords.length >= 2 && remittanceWords.every(word => candidateWords.has(word));
+    })) return false;
   }
   if(policy.references.length){
     const text=[candidate.code,candidate.lease_no,candidate.transaction_code,candidate.xero_transaction_id,candidate._identity_reference || candidate.note].filter(Boolean).join(' ');
