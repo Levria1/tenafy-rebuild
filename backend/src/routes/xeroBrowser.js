@@ -5,6 +5,7 @@ const { authenticate, requirePermission, requireSuperAdmin } = require('../middl
 const { logActivity } = require('../utils/activityLog');
 const service = require('../services/xeroBrowserLookup');
 const slips = require('../services/xeroPaymentSlips');
+const switchboardSlips = require('../services/switchboardPaymentSlips');
 const { getCatalog } = require('../services/xeroBankCatalog');
 const { resolveHistoryScope } = require('../services/switchboardHistorySearch');
 const { getMasterPool } = require('../config/poolRegistry');
@@ -115,6 +116,34 @@ router.post('/lookup', async (req, res) => {
 });
 
 const slipWrite = requirePermission('LANDLORD/ACCOUNTING_CREATE');
+router.post('/slips/switchboard/list', slipWrite, async (req,res) => {
+  try {
+    const org = String(req.user.orgId);
+    if (req.body?.expected_org_id !== org) return res.status(409).json({ code:409,message:'Reconnect to the expected Tenafy organisation.' });
+    const messageId = req.body.message_id;
+    const conversationId = req.body.conversation_id;
+    let date;
+    if (messageId == null && conversationId == null) {
+      const statement = service.validateStatement(req.body.statement);
+      await service.resolveMapping(req.pool,org,service.slug(req.body.ui_org_slug),
+        service.normalizeAccountId(req.body.xero_account_id),statement);
+      date = statement.date;
+    }
+    res.json({ code:200,data:await switchboardSlips.list(org,{ messageId,conversationId,date }) });
+  } catch (err) { error(res,err); }
+});
+
+router.post('/slips/switchboard/import', slipWrite, async (req,res) => {
+  try {
+    const org = String(req.user.orgId);
+    if (req.body?.expected_org_id !== org) return res.status(409).json({ code:409,message:'Reconnect to the expected Tenafy organisation.' });
+    const { info,file } = await switchboardSlips.download(org,req.body.message_id,req.body.attachment_id);
+    const data = await slips.importSlip(req.pool,org,req.user.id,file,{
+      source_channel:info.channel, source_reference:`switchboard:${info.message_id}/${info.attachment_id}`,
+    });
+    res.json({ code:200,data });
+  } catch (err) { error(res,err); }
+});
 const uploadSlip = multer({
   storage: multer.memoryStorage(), limits: { fileSize: slips.MAX_BYTES, files: 1, fields: 3, fieldSize: 1024 },
 }).single('slip');

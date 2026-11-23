@@ -1,9 +1,10 @@
 # Payment slips for Xero reconciliation
 
-Switchboard remains the source for the original message. Its existing
-integration search and conversation endpoints return a media flag, but no
-authorised attachment download. Staff can download an attachment in Switchboard
-and import that file with its message reference in the Tenafy Chrome helper.
+Switchboard remains the source for the original message. The Chrome helper can
+find attachments near a bank date in the configured Payments inbox or list the
+attachments from a Switchboard conversation link. Tenafy fetches the selected
+original server to server through Switchboard's payment slip integration.
+The staff upload control remains available for files from other sources.
 
 Tenafy keeps a private, organisation-scoped copy of the supplied original.
 It deduplicates exact file bytes per organisation. The existing Google Cloud
@@ -24,8 +25,13 @@ file in its attachment control. Staff verify the upload before saving the
 draft. For a form that cannot be tied to the selected row, staff can download
 the exact original and use Xero's attachment picker themselves.
 
-The rollout requires organisation migration 090, the matching Chrome helper,
-and a controlled test on an unsaved Xero draft before enabling it for staff.
-No Switchboard changes or Xero OAuth scope changes are needed for this flow.
-Automatic attachment ingestion would need a supported Switchboard download
-interface with per-organisation access and stable attachment IDs.
+Release the Switchboard slip route and configure the dedicated integration key
+and Payments mailbox scope on that instance. In Tenafy set
+`TANECHAT_SLIP_ORG_ID` to the Tenafy organisation authorised to use that instance and
+`TANECHAT_SLIP_API_KEY` to the matching dedicated credential. The request
+uses the existing `TANECHAT_API_URL` HTTPS integration address and never
+passes the key to Chrome. Keep the regular messaging key separate.
+
+Apply organisation migration 090 and install the matching 0.4.6 helper.
+Verify OCR and attachment staging on an unsaved Xero draft. The integration
+fetches selected files on demand. Xero OAuth permissions are unchanged.
