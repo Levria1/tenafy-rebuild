@@ -1,8 +1,10 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const multer = require('multer');
 const { authenticate, requirePermission, requireSuperAdmin } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLog');
 const service = require('../services/xeroBrowserLookup');
+const slips = require('../services/xeroPaymentSlips');
 const { getCatalog } = require('../services/xeroBankCatalog');
 const { resolveHistoryScope } = require('../services/switchboardHistorySearch');
 const { getMasterPool } = require('../config/poolRegistry');
@@ -106,9 +108,70 @@ router.post('/lookup', async (req, res) => {
     // org_id and bank/currency IDs in a browser payload never select scope.
     const result = await service.lookup(req.pool, String(req.user.orgId), req.body, {
       getHistoryScope: () => resolveHistoryScope(req.pool, String(req.user.orgId), getMasterPool()),
+      findSlips: (mapping, statement) => slips.candidates(req.pool, String(req.user.orgId), mapping, statement),
     });
     res.json({ code: 200, data: result });
   } catch (err) { error(res, err); }
+});
+
+const slipWrite = requirePermission('LANDLORD/ACCOUNTING_CREATE');
+const uploadSlip = multer({
+  storage: multer.memoryStorage(), limits: { fileSize: slips.MAX_BYTES, files: 1, fields: 3, fieldSize: 1024 },
+}).single('slip');
+router.post('/slips', slipWrite, (req,res,next) => {
+  uploadSlip(req,res,err => {
+    if (!err) return next();
+    const code = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    res.status(code).json({ code, message: 'Upload one PNG, JPEG or PDF slip up to 5 MB.' });
+  });
+}, async (req,res) => {
+  try {
+    if (req.body?.expected_org_id !== String(req.user.orgId)) {
+      return res.status(409).json({ code:409,message:'Your Tenafy organisation changed. Reconnect before importing.' });
+    }
+    const data = await slips.importSlip(req.pool,String(req.user.orgId),req.user.id,req.file,req.body);
+    res.json({ code:200,data });
+  } catch (err) { error(res,err); }
+});
+
+router.post('/slips/:id/verify', slipWrite, async (req,res) => {
+  try {
+    const data = await slips.verify(req.pool,String(req.user.orgId),req.params.id,req.user.id,req.body);
+    res.json({ code:200,data });
+  } catch (err) { error(res,err); }
+});
+
+function sendSlip(res, file) {
+  res.json({ code:200,data:{ name:file.name,type:file.type,size:file.bytes.length,
+    sha256:file.hash.toLowerCase(),base64:file.bytes.toString('base64') } });
+}
+
+router.get('/slips/:id/original', async (req,res) => {
+  try { sendSlip(res,await slips.original(req.pool,String(req.user.orgId),req.params.id)); }
+  catch (err) { error(res,err); }
+});
+
+router.post('/slips/:id/approve', slipWrite, async (req,res) => {
+  try {
+    const org = String(req.user.orgId);
+    if (req.body?.expected_org_id !== org || req.body.confirmed !== true) {
+      return res.status(409).json({ code:409,message:'Confirm the slip against the bank line in the active organisation.' });
+    }
+    const statement = service.validateStatement(req.body.statement);
+    const mapping = await service.resolveMapping(req.pool,org,service.slug(req.body.ui_org_slug),
+      service.normalizeAccountId(req.body.xero_account_id),statement);
+    const invoiceId = req.body.invoice_id ?? null;
+    if (invoiceId !== null) {
+      if (typeof invoiceId !== 'string' || !/^\d{1,20}$/.test(invoiceId)) {
+        return res.status(400).json({ code:400,message:'Invalid invoice.' });
+      }
+      const invoices = await service.sourcesFor(mapping,statement).fetchInvoices(req.pool,org,statement);
+      if (!invoices.some(invoice=>invoice.id===invoiceId)) {
+        return res.status(409).json({ code:409,message:'That invoice is no longer a verified lead for this bank line.' });
+      }
+    }
+    sendSlip(res,await slips.approve(req.pool,org,req.user.id,req.params.id,mapping,statement,invoiceId));
+  } catch (err) { error(res,err); }
 });
 
 router.post('/history', async (req, res) => {

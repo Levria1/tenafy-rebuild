@@ -111,6 +111,11 @@ test('HTTP lookup enforces staff authentication/permission and never trusts a re
   }
   assert.equal((await request(viewer, {ui_org_slug:'verified-org',xero_tenant_id:TENANT},'/binding','PUT')).status,403);
   assert.equal((await request(viewer, {currency_id:'30',currency_code:'HKD',confirm_invoice_lease_currency:true},'/currency','PUT')).status,403);
+  const slipId = '72fd5b08-9357-4ef3-800e-91320f8bddec';
+  assert.equal((await request(null,null,`/slips/${slipId}/original`,'GET')).status,401);
+  for (const path of ['/slips',`/slips/${slipId}/verify`,`/slips/${slipId}/approve`]) {
+    assert.equal((await request(viewer,{},path)).status,403);
+  }
   assert.equal((await request({permissions:['LANDLORD/INVOICE_LIST']})).status,403,'Unrelated view permission does not grant access');
   assert.ok(calls.every(c => /^\s*SELECT\b/.test(c.sql)));
   let commits = 0, rollbacks = 0;
