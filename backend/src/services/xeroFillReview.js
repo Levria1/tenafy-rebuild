@@ -76,6 +76,26 @@ async function prepare(pool,orgId,body,options={}) {
   if(!candidate.tenant_name || !candidate.code) fail('The invoice needs a named contact and invoice reference before filling.');
   const query=body.contact_query==null?candidate.tenant_name:body.contact_query;
   if(typeof query!=='string'||query.trim().length<2||query.length>100) fail('Contact search must be 2–100 characters.',400);
+  const statement=current.identity.statement;
+  let reference=candidate.code;
+  let description=[candidate.code,candidate.tenant_name,candidate.property_name,candidate.unit_name].filter(Boolean).join(' · ');
+  const draftNotices=[];
+  if(statement.direction==='received' && /\b(?:rent|rental)\b/i.test(candidate.category || '')){
+    const [[invoice]]=await pool.execute(
+      'SELECT note FROM invoice WHERE id=? AND org_id=? AND invoice_code=? AND deleted_at IS NULL',
+      [candidate.id,orgId,candidate.code]
+    );
+    if(!invoice) fail('The invoice changed. Look up the bank line again.');
+    const note=String(invoice.note || '').trim().replace(/\s+/g,' ');
+    const rentReference=[candidate.code,note].filter(Boolean).join(' ');
+    if(rentReference.length<=255) reference=rentReference;
+    else draftNotices.push('The invoice notes are too long for the Xero Reference. Review a short reference before filling.');
+    if(!note) draftNotices.push('No rent period is recorded in the Tenafy invoice notes. Check the reference before filling.');
+    description=[rentReference,statement.description].filter(Boolean).join('\n');
+    if(!statement.description) draftNotices.push('Check Xero’s statement Description and add the bank text if available.');
+  }
+  const bankReferences=[...new Set([candidate.code,reference])];
+  const bankReferenceFilter=bankReferences.map(ref=>'Reference=='+JSON.stringify(ref)).join(' OR ');
   const remote=options.getRemote||xero.xeroApiGet;
   const controller=new AbortController();
   const get=(pool,org,path,params)=>remote(pool,org,path,params,{signal:controller.signal,timeoutMs:12000});
@@ -86,10 +106,10 @@ async function prepare(pool,orgId,body,options={}) {
       get(pool,orgId,'/TrackingCategories',{includeArchived:false}),
       get(pool,orgId,'/Contacts',{searchTerm:query.trim(),page:1,pageSize:100}),
       get(pool,orgId,'/Invoices',{where:'InvoiceNumber=='+JSON.stringify(candidate.code)}),
-      get(pool,orgId,'/BankTransactions',{where:'Reference=='+JSON.stringify(candidate.code)}),
+      get(pool,orgId,'/BankTransactions',{where:bankReferenceFilter}),
     ]),new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Object.assign(new Error('Xero review settings timed out. Retry shortly.'),{status:503,reviewError:true}));},12000);})]);
     const existingInvoices=list(responses[4],'Invoices').filter(i=>i.InvoiceNumber===candidate.code&&!['DELETED','VOIDED'].includes(i.Status));
-    const existingBank=list(responses[5],'BankTransactions').filter(b=>b.Reference===candidate.code&&b.Status!=='DELETED'&&String(b.BankAccount?.AccountID||'').replace(/-/g,'').toLowerCase()===current.identity.xero_account_id);
+    const existingBank=list(responses[5],'BankTransactions').filter(b=>bankReferences.includes(b.Reference)&&b.Status!=='DELETED'&&String(b.BankAccount?.AccountID||'').replace(/-/g,'').toLowerCase()===current.identity.xero_account_id);
     if(existingInvoices.length||existingBank.length)return {identity:current.identity,expires_at:current.expires_at,path:'find_and_match',candidate,reference:candidate.code,financial_writes:false,existing_xero_entry:true};
     const accounts=list(responses[0],'Accounts').filter(a=>uuid(a.AccountID)&&a.Status==='ACTIVE'&&a.Type!=='BANK'&&a.Code&&a.Name)
       .map(a=>({id:a.AccountID,code:String(a.Code),name:a.Name,tax_type:a.TaxType||null}));
@@ -107,12 +127,12 @@ async function prepare(pool,orgId,body,options={}) {
     const property=tracking.filter(t=>normal(t.name)==='property');
     const propertyOptions=property.length===1?uniqueNames(property[0].options).filter(o=>normal(o.name)===normal(candidate.property_name)):[];
     return {identity:current.identity,expires_at:current.expires_at,path:'create_details',candidate,
-      fields:{date:current.identity.statement.date,reference:candidate.code,description:[candidate.code,candidate.tenant_name,candidate.property_name,candidate.unit_name].filter(Boolean).join(' · '),amount_minor:current.identity.statement.amount_minor,currency:current.identity.statement.currency},
+      fields:{date:statement.date,reference,description,amount_minor:statement.amount_minor,currency:statement.currency},
       catalogue:{accounts:safeAccounts,taxes:safeTaxes,tracking:tracking.map(t=>({...t,options:uniqueNames(t.options)})),contacts:safeContacts},
       defaults:{contact_id:sameName.length===1?sameName[0].id:null,property_category_id:property.length===1?property[0].id:null,property_option_id:propertyOptions.length===1?propertyOptions[0].id:null},
       identity_verified:['name','name_and_reference','reference'].includes(candidate.match_basis || current.matching?.mode),
       attachment_source:'staff_selected_file',financial_writes:false,
-      notices:['Choose the account and tax treatment explicitly. Existing Xero transactions must use Find & Match.','Slips are not retrieved from copied message text; staff may select the original downloaded file.','The extension fills an unsaved form only. Staff click Save Transaction and final reconciliation.']};
+      notices:[...draftNotices,'Choose the account and tax treatment explicitly. Existing Xero transactions must use Find & Match.','Select the original receipt from the Switchboard slip review or attach the original file in Xero.','The extension fills an unsaved form only. Staff click Save Transaction and final reconciliation.']};
   } catch(error) { if(error.reviewError)throw error;fail('Could not load verified Xero contacts and settings. Reconnect or retry.',503); }
   finally {clearTimeout(timer);controller.abort();}
 }

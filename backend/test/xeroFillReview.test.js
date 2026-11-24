@@ -7,6 +7,33 @@ const run=(body={},options={})=>prepare({},'1',{candidate:{kind:'invoice',id:'1'
 test('fill preparation rechecks the match and supplies only active, uniquely named Xero choices',async()=>{
  const data=await run();assert.equal(data.path,'create_details');assert.equal(data.financial_writes,false);assert.equal(data.defaults.contact_id,id(5));assert.equal(data.defaults.property_option_id,id(4));assert.equal(data.catalogue.accounts.length,1);assert.equal(data.fields.amount_minor,750000);assert.equal(data.fields.reference,'INV1');
 });
+test('rental drafts use invoice notes and the raw bank description and check both references',async()=>{
+ const value=current();
+ Object.assign(value.identity,{xero_account_id:'a'.repeat(32)});
+ Object.assign(value.identity.statement,{direction:'received',reference:'PAYER NAME',description:'BANK123(19NOV26)'});
+ value.candidates[0].category='Rental Income';
+ const notes='Rental payment for Nov. 19 - Dec. 18, 2026';
+ const reference='INV1 '+notes;
+ const pool={execute:async(sql,args)=>{
+   assert.match(sql,/SELECT note FROM invoice WHERE id=\? AND org_id=\? AND invoice_code=\?/);
+   assert.deepEqual(args,['1','1','INV1']);
+   return [[{note:notes}]];
+ }};
+ let existing=false;
+ async function getRemote(_pool,_org,path,params){
+   if(path==='/BankTransactions'){
+     assert.equal(params.where,'Reference=="INV1" OR Reference=='+JSON.stringify(reference));
+     return {BankTransactions:existing?[{Reference:reference,BankAccount:{AccountID:'a'.repeat(32)}}]:[]};
+   }
+   return structuredClone(remote);
+ }
+ const args=[pool,'1',{candidate:{kind:'invoice',id:'1'}},{lookup:async()=>value,getRemote}];
+ const draft=await prepare(...args);
+ assert.equal(draft.fields.reference,reference);
+ assert.equal(draft.fields.description,reference+'\nBANK123(19NOV26)');
+ existing=true;
+ assert.equal((await prepare(...args)).path,'find_and_match');
+});
 test('stale, incomplete, unselected and lease candidates cannot prepare a new transaction',async()=>{
  for(const c of [{kind:'lease',id:'1'},{kind:'invoice',id:'999'},{kind:'invoice',id:1}])await assert.rejects(run({candidate:c}));
  const incomplete=current();incomplete.source_status.accounting='unavailable';await assert.rejects(run({}, {lookup:async()=>incomplete}));
