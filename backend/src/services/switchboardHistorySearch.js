@@ -60,13 +60,15 @@ function ownership(orgId, scope) {
   };
 }
 function messageWindow(statement, days = 6) {
-  if (![6, 30, 'all'].includes(days)) throw Object.assign(new Error('Message search supports only 6 days, 30 days or all history.'), { status: 400 });
+  if (![6, 30, 'around', 'all'].includes(days)) throw Object.assign(new Error('Choose 6 days, 30 days, a receipt window or all history.'), { status: 400 });
   if (days === 'all') return { days, start: null, end: null, end_exclusive: null };
-  // Calendar-day window ending on the bank date, inclusive. No future messages.
+  // The receipt window also admits confirmations sent after the bank date.
   const end = new Date(statement.date + 'T00:00:00Z');
-  const start = new Date(end); start.setUTCDate(start.getUTCDate() - days + 1);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - (days === 'around' ? 7 : days - 1));
+  if (days === 'around') end.setUTCDate(end.getUTCDate() + 7);
   const exclusive = new Date(end); exclusive.setUTCDate(exclusive.getUTCDate() + 1);
-  return { days, start: start.toISOString().slice(0,10), end: statement.date, end_exclusive: exclusive.toISOString().slice(0,10) };
+  return { days, start: start.toISOString().slice(0,10), end: end.toISOString().slice(0,10), end_exclusive: exclusive.toISOString().slice(0,10) };
 }
 const timeFilter = window => window.days === 'all' ? '' : ' AND m.created_at>=? AND m.created_at<?';
 const timeParams = window => window.days === 'all' ? [] : [window.start, window.end_exclusive];
@@ -180,7 +182,9 @@ async function searchStoredHistory(pool, orgId, mapping, statement, options = {}
     scope_verification: scope.verification, unlinked_included: scope.allowUnlinked === true,
     coverage: { messages: Number(coverage.messages), earliest: coverage.earliest, latest: coverage.latest, date_window: window.days === 'all' ? null : window },
     matching_mode:policy.mode, lookback_days: window.days, attachments_searchable: false, reference_searched: Boolean(reference),
-    notices: [window.days === 'all' ? 'All retained authorised history is searched, including messages outside the thirty-day window; results are ordered by proximity to the bank date.' : `Only the ${window.days} calendar days ending on the bank date are searched; results are ordered by proximity to that date.`,
+    notices: [window.days === 'all' ? 'All retained authorised history is searched, including messages outside the thirty-day window; results are ordered by proximity to the bank date.' :
+      window.days === 'around' ? 'Receipt search covers seven days before and after the bank date.' :
+      `Only the ${window.days} calendar days ending on the bank date are searched; results are ordered by proximity to that date.`,
       'Messages are leads, not proof that money moved or that a currency matches. Attachments/slip images are not stored as searchable documents here.',
       ...(scope.allowUnlinked ? [] : ['Unlinked sessions were omitted because exclusive database ownership could not be verified.'])] };
 }

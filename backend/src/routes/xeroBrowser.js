@@ -6,6 +6,7 @@ const { logActivity } = require('../utils/activityLog');
 const service = require('../services/xeroBrowserLookup');
 const slips = require('../services/xeroPaymentSlips');
 const switchboardSlips = require('../services/switchboardPaymentSlips');
+const fillReview = require('../services/xeroFillReview');
 const { getCatalog } = require('../services/xeroBankCatalog');
 const { resolveHistoryScope } = require('../services/switchboardHistorySearch');
 const { getMasterPool } = require('../config/poolRegistry');
@@ -102,6 +103,21 @@ router.put('/binding', requireSuperAdmin, async (req, res) => {
     if (conn) await conn.rollback();
     error(res, err);
   } finally { if (conn) conn.release(); }
+});
+
+const reviewLimiter = rateLimit({
+  windowMs:60000,limit:6,keyGenerator:req=>`${req.user.orgId}:${req.user.id}`,
+  message:{code:429,message:'Review preparation limit reached. Wait a minute before retrying.'},
+});
+router.post('/prepare-fill', reviewLimiter, async (req,res) => {
+  try {
+    res.json({code:200,data:await fillReview.prepare(req.pool,String(req.user.orgId),req.body)});
+  } catch (err) { error(res,err); }
+});
+router.post('/preview-allocation', reviewLimiter, async (req,res) => {
+  try {
+    res.json({code:200,data:await fillReview.previewAllocation(req.pool,String(req.user.orgId),req.body)});
+  } catch (err) { error(res,err); }
 });
 
 router.post('/lookup', async (req, res) => {

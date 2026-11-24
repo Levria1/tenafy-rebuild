@@ -43,6 +43,7 @@ test('message windows allow six or thirty calendar days and explicit all history
   assert.deepEqual(h.messageWindow(statement), {days:6,start:'2026-11-14',end:'2026-11-19',end_exclusive:'2026-11-20'});
   assert.equal(h.messageWindow(statement,30).start,'2026-10-21');
   assert.deepEqual(h.messageWindow(statement,'all'),{days:'all',start:null,end:null,end_exclusive:null});
+  assert.deepEqual(h.messageWindow(statement,'around'),{days:'around',start:'2026-11-12',end:'2026-11-26',end_exclusive:'2026-11-27'});
   assert.equal(h.messageWindow({...statement,date:'2024-03-01'},6).start,'2024-02-25');
   for(const days of [0,1,7,31,365,'30',{},-1]) assert.throws(()=>h.messageWindow(statement,days),e=>e.status===400);
 });
