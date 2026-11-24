@@ -308,11 +308,13 @@ async function getValidAccessToken(pool, orgId) {
  *     page: 1,
  *   });
  */
-async function xeroApiGet(pool, orgId, path, params = {}) {
+async function xeroApiGet(pool, orgId, path, params = {}, options = {}) {
   const { accessToken, xeroTenantId } = await getValidAccessToken(pool, orgId);
   const url = XERO_API_BASE + path;
   const r = await axios.get(url, {
     params,
+    ...(options.signal ? {signal:options.signal} : {}),
+    ...(options.timeoutMs ? {timeout:options.timeoutMs} : {}),
     headers: {
       'Authorization': `Bearer ${accessToken}`,
       'Xero-Tenant-Id': xeroTenantId,

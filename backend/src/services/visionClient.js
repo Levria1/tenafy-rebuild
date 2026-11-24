@@ -128,4 +128,20 @@ async function extractText(imageBuffer) {
   return (r.fullTextAnnotation && r.fullTextAnnotation.text) || '';
 }
 
-module.exports = { extractText, isUnavailable, OCR_UNAVAILABLE, OCR_UNAVAILABLE_MESSAGE };
+async function extractPdfText(buffer) {
+  const apiKey = process.env.GOOGLE_VISION_API_KEY;
+  if (!apiKey) throw markUnavailable(new Error('GOOGLE_VISION_API_KEY not configured'));
+  const url = `https://vision.googleapis.com/v1/files:annotate?key=${encodeURIComponent(apiKey)}`;
+  try {
+    const result = await postJson(url, { requests: [{
+      inputConfig: { content: buffer.toString('base64'), mimeType: 'application/pdf' },
+      features: [{ type: 'DOCUMENT_TEXT_DETECTION' }],
+    }] });
+    const file = result.responses?.[0];
+    if (!file || file.error || file.responses?.some(page => page.error)) throw new Error('PDF OCR failed');
+    // Online file OCR reads at most the first five pages. Staff verify the fields.
+    return (file.responses || []).map(page => page.fullTextAnnotation?.text || '').join('\n');
+  } catch (error) { throw classify(error); }
+}
+
+module.exports = { extractText, extractPdfText, isUnavailable, OCR_UNAVAILABLE, OCR_UNAVAILABLE_MESSAGE };

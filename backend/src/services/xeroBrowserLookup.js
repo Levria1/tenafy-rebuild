@@ -184,10 +184,11 @@ async function lookup(pool, orgId, body, options = {}) {
   const uiSlug = slug(body?.ui_org_slug), accountId = normalizeAccountId(body?.xero_account_id);
   const statement = validateStatement(body?.statement);
   const mapping = await resolveMapping(pool, orgId, uiSlug, accountId, statement, options);
-  const [traced, evidence] = await Promise.all([
+  const [traced, evidence, slips] = await Promise.all([
     traceAmounts({ pool, orgId, taneChat: null }, [{ amount: Number(statement.amount), date: statement.date, direction: statement.direction }],
       { sources: sourcesFor(mapping, statement) }),
     historyScope(options).then(scope => copiedEvidence(pool, orgId, mapping, statement, { scope })).catch(() => ({ hits: [], unavailable: true, search_scope: 'retained_tenafy_history' })),
+    options.findSlips?.(mapping,statement).then(items => ({ items })).catch(() => ({ unavailable: true, items: [] })),
   ]);
   const trace = traced.rows[0];
   const policy = identity.identityFor(statement);
@@ -197,10 +198,13 @@ async function lookup(pool, orgId, body, options = {}) {
     ...trace.accounting.map(c => ({ ...c, kind: 'accounting', review_path: c.xero_transaction_id ? 'find_and_match_review' : 'staff_review' })),
   ].filter(c=>identity.matchesCandidate(policy,c)).map(c=>{
     const {_identity_names,_identity_reference,...publicCandidate}=c;
-    return {...publicCandidate,match_basis:policy.mode,reasons:[...c.reasons,...(policy.payee?['payer/payee name matches']:[]),...(policy.references.length?['reference matches']:[])]};
+    const fromRemittance = policy.name_source === 'remittance';
+    const nameReason = fromRemittance ? 'payer name words match remittance text' : 'payer/payee name matches';
+    const matchBasis = fromRemittance ? (policy.references.length ? 'remittance_name_and_reference' : 'remittance_name') : policy.mode;
+    return {...publicCandidate,match_basis:matchBasis,reasons:[...c.reasons,...(policy.payee?[nameReason]:[]),...(policy.references.length?['reference matches']:[])]};
   }).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
   const failures = Object.values(trace.errors).filter(Boolean).length;
-  return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates, evidence, matching:{mode:policy.mode,payee:policy.payee,references:policy.references,amount_only_fallback:policy.mode==='amount_only'},
+  return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates, evidence, ...(slips ? { slips } : {}), matching:{mode:policy.mode,payee:policy.payee,references:policy.references,amount_only_fallback:policy.mode==='amount_only'},
     status: failures === 3 ? 'unavailable' : failures ? 'partial' : candidates.length ? 'leads' : policy.mode !== 'amount_only' ? 'no_identity_match' : 'no_financial_lead',
     source_status: Object.fromEntries(Object.entries(trace.errors).map(([k, v]) => [k, v ? 'unavailable' : 'ok'])) });
 }
@@ -218,11 +222,11 @@ function envelope(orgId, uiSlug, accountId, mapping, statement, result) {
     notices: ['Scores rank leads; they are not probabilities or payment confirmation.',
       'Financial leads still require exact gross amounts in the mapped bank/currency; split and partial payments need review.',
       'Stored Switchboard text is searched in a six-day window ending on the bank date, expandable to thirty days or explicitly to all retained history, across authorised conversations.',
-      'Only text copied into Tenafy is searchable here; external history, slip images and attachments are not searched.',
+      'Switchboard history covers copied text. Imported and verified payment slips are shown separately when available.',
       'Messages are evidence to review, not payment or currency confirmation.',
       'Accounting history with missing or conflicting currency_type is excluded.',
       'Account/category, tracking and tax autofill mappings are not enabled.'],
   };
 }
 
-module.exports = { lookup, normalizeAccountId, validateStatement, decimalMinor, sourcesFor, copiedEvidence, searchHistory, slug, currencyDigits };
+module.exports = { lookup, normalizeAccountId, validateStatement, decimalMinor, sourcesFor, copiedEvidence, searchHistory, slug, currencyDigits, resolveMapping };
