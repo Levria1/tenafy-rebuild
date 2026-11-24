@@ -81,7 +81,7 @@ Official Xero API contracts used for read-only preparation:
 Only thirteen explicit reviewed runtime/README files are packaged. New modules:
 fill.mjs and review.mjs. Tests, host data, credentials and node_modules are excluded.
 Keep the released0.4 Drive download intact. This draft is for controlled testing.
-# Combined helper 0.5.1
+# Combined helper 0.5.2
 
 This build combines account-wide matching and slip review with unsaved Xero
 draft fill. The fill endpoint requires the open invoice balance to equal the
@@ -93,8 +93,9 @@ invoice reference**. The preview checks the organisation, bank scope, direction
 and currency. It calculates the proposed allocation using integer minor units.
 It shows any bank amount left unallocated or invoice balance left due. A prior
 entry with a blank currency label is allowed only with the same linked currency
-record and is explicitly flagged. The preview does not create an overpayment,
-credit or payment.
+record and is explicitly flagged. Staff settle the full bank transaction in
+Xero and handle remaining credit or invoice allocation in Tenafy. The preview
+does not create a credit, payment or draft.
 
 Use **Search around bank date** for the seven days before and after the transfer.
 When a conversation link is known, use the direct slip flow for its attachments
