@@ -13,6 +13,7 @@ test('direct slip bridge scopes the integration and verifies exact attachment co
   const attachment = '16137da3-9cdb-40e3-97fd-7e2278691d63';
   const bytes = Buffer.from('%PDF-1.4\nfixture');
   const item = { message_id:message,attachment_id:attachment,channel:'email',type:'application/pdf',
+    conversation_id:'78dccad1-e61b-4f6c-8704-f90b0ed413e8',sender_name:'Example Tenant',
     size:bytes.length,received_at:'2026-11-23T09:00:00Z',name:'receipt.pdf' };
   const response = { ...item,base64:bytes.toString('base64'),sha256:createHash('sha256').update(bytes).digest('hex') };
   let count=0;
@@ -26,7 +27,7 @@ test('direct slip bridge scopes the integration and verifies exact attachment co
         assert.equal(url.searchParams.get('from'),'2026-11-13');
         assert.equal(url.searchParams.get('to'),'2026-11-28');
       } else assert.equal(url.searchParams.get('conversation_id'),message);
-      return Response.json({ items:[{ ...item,storage_url:'/private-path' }],truncated:false });
+      return Response.json({ items:[{ ...item,storage_url:'/private-path',sender_email:'omitted@example.test',sender_phone:'omitted' }],truncated:false });
     }
     assert.ok(url.pathname.endsWith(`/payment-slips/${message}/${attachment}`));
     return Response.json(response);
@@ -36,6 +37,9 @@ test('direct slip bridge scopes the integration and verifies exact attachment co
   assert.deepEqual((await client.list('101',{ date:'2026-11-20' },fetchImpl)).items,[item]);
   assert.deepEqual((await client.list('101',{ conversationId:message },fetchImpl)).items,[item]);
   assert.deepEqual((await client.download('101',message,attachment,fetchImpl)).file.buffer,bytes);
+  const badConversation = async () => Response.json({ items:[{ ...item,conversation_id:'https://example.test/private' }] });
+  const { conversation_id:ignored, ...withoutLink } = item;
+  assert.deepEqual((await client.list('101',{ date:'2026-11-20' },badConversation)).items,[withoutLink]);
   const different = async () => Response.json({ ...response,sha256:'0'.repeat(64) });
   await assert.rejects(client.download('101',message,attachment,different),{status:502});
   await assert.rejects(client.download('101','../secret',attachment,fetchImpl),{status:400});

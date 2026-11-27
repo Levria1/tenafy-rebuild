@@ -54,7 +54,11 @@ function metadata(row) {
       !Number.isSafeInteger(row.size) || row.size < 1 || row.size > slips.MAX_BYTES ||
       !Number.isFinite(Date.parse(row.received_at))) return null;
   const { message_id,attachment_id,channel,type,size,received_at } = row;
+  const conversationId = UUID.test(row.conversation_id || '') ? row.conversation_id : null;
+  const senderName = typeof row.sender_name === 'string' ? row.sender_name.trim().slice(0, 180) : '';
   return { message_id,attachment_id,channel,type,size,received_at,
+    ...(conversationId ? { conversation_id:conversationId } : {}),
+    ...(senderName ? { sender_name:senderName } : {}),
     name:String(row.name||'payment-slip').slice(0,180) };
 }
 
