@@ -57,6 +57,34 @@ async function previewAllocation(pool, orgId, body, options = {}) {
       property:invoice.property_name,unit:invoice.unit_name },
   };
 }
+function matchingPropertyOptions(options, propertyName) {
+  const wanted = normal(propertyName);
+  if (!wanted) return [];
+  const exact = options.filter(option => normal(option.name) === wanted);
+  if (exact.length) return exact;
+  const words = String(propertyName).match(/[\p{L}\p{N}]+/gu) || [];
+  const initials = words.length >= 2 && words.length <= 5 ? words.map(word => word[0]).join('').toUpperCase() : '';
+  return options.filter(option => {
+    const inner = /\(([^()]*)\)\s*$/.exec(option.name)?.[1].trim();
+    if (!inner) return false;
+    if (normal(inner) === wanted) return true;
+    return Boolean(initials && inner.startsWith(initials + ' ') && normal(inner.slice(initials.length)) === wanted);
+  });
+}
+
+function bankDescription(statement) {
+  const reference = statement.reference || '';
+  const [year, month, day] = String(statement.date).split('-');
+  const monthLabel = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][Number(month) - 1];
+  const stamp = /^NB\d{8,16}\((\d{2}[A-Z]{3}\d{2})\)$/i.exec(reference)?.[1]?.toUpperCase();
+  const description = statement.description || '';
+  if (stamp && stamp === day + monthLabel + year.slice(-2) &&
+      !description.toUpperCase().includes(reference.toUpperCase())) {
+    return [description,reference].filter(Boolean).join('\n');
+  }
+  return description;
+}
+
 async function prepare(pool,orgId,body,options={}) {
   const selected=body?.candidate;
   if(!selected || !['invoice','accounting'].includes(selected.kind) || typeof selected.id!=='string' || !/^\d{1,20}$/.test(selected.id)) fail('Select an invoice or an existing Xero entry to review.',400);
@@ -80,6 +108,7 @@ async function prepare(pool,orgId,body,options={}) {
   let reference=candidate.code;
   let description=[candidate.code,candidate.tenant_name,candidate.property_name,candidate.unit_name].filter(Boolean).join(' · ');
   const draftNotices=[];
+  const bankText=bankDescription(statement);
   if(statement.direction==='received' && /\b(?:rent|rental)\b/i.test(candidate.category || '')){
     const [[invoice]]=await pool.execute(
       'SELECT note FROM invoice WHERE id=? AND org_id=? AND invoice_code=? AND deleted_at IS NULL',
@@ -91,9 +120,10 @@ async function prepare(pool,orgId,body,options={}) {
     if(rentReference.length<=255) reference=rentReference;
     else draftNotices.push('The invoice notes are too long for the Xero Reference. Review a short reference before filling.');
     if(!note) draftNotices.push('No rent period is recorded in the Tenafy invoice notes. Check the reference before filling.');
-    description=[rentReference,statement.description].filter(Boolean).join('\n');
-    if(!statement.description) draftNotices.push('Check Xero’s statement Description and add the bank text if available.');
+    description=rentReference;
+    if(!bankText) draftNotices.push('Check Xero’s statement Description and add the bank text if available.');
   }
+  description=[description,bankText].filter(Boolean).join('\n');
   const bankReferences=[...new Set([candidate.code,reference])];
   const bankReferenceFilter=bankReferences.map(ref=>'Reference=='+JSON.stringify(ref)).join(' OR ');
   const remote=options.getRemote||xero.xeroApiGet;
@@ -125,7 +155,7 @@ async function prepare(pool,orgId,body,options={}) {
     const safeContacts=contacts.length<100?uniqueNames(contacts):[], safeAccounts=uniqueNames(accounts),safeTaxes=uniqueNames(taxes);
     const sameName=safeContacts.filter(c=>normal(c.name)===normal(candidate.tenant_name));
     const property=tracking.filter(t=>normal(t.name)==='property');
-    const propertyOptions=property.length===1?uniqueNames(property[0].options).filter(o=>normal(o.name)===normal(candidate.property_name)):[];
+    const propertyOptions=property.length===1?matchingPropertyOptions(property[0].options,candidate.property_name):[];
     return {identity:current.identity,expires_at:current.expires_at,path:'create_details',candidate,
       fields:{date:statement.date,reference,description,amount_minor:statement.amount_minor,currency:statement.currency},
       catalogue:{accounts:safeAccounts,taxes:safeTaxes,tracking:tracking.map(t=>({...t,options:uniqueNames(t.options)})),contacts:safeContacts},

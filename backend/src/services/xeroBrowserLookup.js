@@ -96,7 +96,10 @@ function sourcesFor(mapping, statement) {
     WHERE al.invoice_code=i.invoice_code AND al.deleted_at IS NULL)`;
   return {
     async fetchInvoices(pool, orgId, row) {
-      const gate = identity.identitySql(policy,{names,references:['i.invoice_code']});
+      const gate = identity.identitySql(policy,{
+        names, references:['i.invoice_code'],
+        partialName:"CASE WHEN COALESCE(t.type,0)<>1 THEN CONCAT_WS(' ',t.first_name,t.middle_name,t.last_name) END",
+      });
       const [rows] = await pool.execute(`SELECT i.id, i.invoice_code, i.amount, i.amount-${paid} AS outstanding,
         DATE_FORMAT(i.due_on,'%Y-%m-%d') AS due_on, DATEDIFF(i.due_on,?) AS days_from_date,
         t.first_name,t.middle_name,t.last_name,t.company_name,t.type, u.name AS unit_name,
@@ -116,7 +119,7 @@ function sourcesFor(mapping, statement) {
           AND ${gate.sql}
         HAVING outstanding>=? ORDER BY ABS(days_from_date),i.id LIMIT 10`,
       [row.date, ...propertyParams, orgId, currency, row.direction === 'received' ? 0 : 1, statement.amount, statement.currency, ...gate.params, statement.amount]);
-      return rows.map(r => ({ _identity_names:identity.candidateNames(r), id: String(r.id), code: r.invoice_code, amount: Number(r.amount),
+      return rows.map(r => ({ _identity_names:identity.candidateNames(r), _identity_company:Number(r.type)===1, id: String(r.id), code: r.invoice_code, amount: Number(r.amount),
         outstanding_minor: decimalMinor(r.outstanding, statement.digits), due_on: r.due_on,
         tenant_name: personOrCompanyName(r) || null, unit_name: r.unit_name, property_name: r.property_name,
         category: r.category, days_from_date: r.days_from_date }));
@@ -197,12 +200,14 @@ async function lookup(pool, orgId, body, options = {}) {
     ...trace.leases.map(c => ({ ...c, kind: 'lease', review_path: 'staff_review' })),
     ...trace.accounting.map(c => ({ ...c, kind: 'accounting', review_path: c.xero_transaction_id ? 'find_and_match_review' : 'staff_review' })),
   ].filter(c=>identity.matchesCandidate(policy,c)).map(c=>{
-    const {_identity_names,_identity_reference,...publicCandidate}=c;
-    const fromRemittance = policy.name_source === 'remittance';
-    const nameReason = fromRemittance ? 'payer name words match remittance text' : 'payer/payee name matches';
-    const matchBasis = fromRemittance ? (policy.references.length ? 'remittance_name_and_reference' : 'remittance_name') : policy.mode;
+    const {_identity_names,_identity_reference,_identity_company,...publicCandidate}=c;
+    const nameMatch = policy.payee ? identity.candidateNameMatch(policy,c) : null;
+    const matchBasis = nameMatch === 'partial' ? (policy.references.length ? 'partial_name_and_reference' : 'partial_name')
+      : nameMatch === 'remittance' ? (policy.references.length ? 'remittance_name_and_reference' : 'remittance_name') : policy.mode;
+    const nameReason = nameMatch === 'partial' ? 'three or more full payer name words match; confirm the payer and invoice'
+      : nameMatch === 'remittance' ? 'payer name words match remittance text' : 'payer/payee name matches';
     return {...publicCandidate,match_basis:matchBasis,reasons:[...c.reasons,...(policy.payee?[nameReason]:[]),...(policy.references.length?['reference matches']:[])]};
-  }).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  }).sort((a, b) => Number(a.match_basis.startsWith('partial_')) - Number(b.match_basis.startsWith('partial_')) || b.score - a.score || a.id.localeCompare(b.id));
   const failures = Object.values(trace.errors).filter(Boolean).length;
   return envelope(orgId, uiSlug, accountId, mapping, statement, { candidates, evidence, ...(slips ? { slips } : {}), matching:{mode:policy.mode,payee:policy.payee,references:policy.references,amount_only_fallback:policy.mode==='amount_only'},
     status: failures === 3 ? 'unavailable' : failures ? 'partial' : candidates.length ? 'leads' : policy.mode !== 'amount_only' ? 'no_identity_match' : 'no_financial_lead',

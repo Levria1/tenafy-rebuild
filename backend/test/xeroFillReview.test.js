@@ -88,3 +88,38 @@ test('review metadata has one deadline and cancels pending GETs',async t=>{
  await new Promise(setImmediate);t.mock.timers.tick(12001);
  await assert.rejects(pending,e=>e.status===503);assert.equal(signal.aborted,true);
 });
+
+test('draft Property uses the invoice label with a unique tracking abbreviation', async () => {
+  const value=current();
+  value.candidates[0].property_name='Nam Pak Hong';
+  const choices=structuredClone(remote);
+  choices.TrackingCategories[0].Options=[
+    {TrackingOptionID:id(4),Status:'ACTIVE',Name:'Tane Res (NPH Nam Pak Hong)'},
+    {TrackingOptionID:id(8),Status:'ACTIVE',Name:'Tane Res (NPH Nam Pak Hong Annex)'},
+  ];
+  const options={lookup:async()=>value,getRemote:async()=>choices};
+  assert.equal((await run({},options)).defaults.property_option_id,id(4));
+  choices.TrackingCategories[0].Options.push({TrackingOptionID:id(9),Status:'ACTIVE',Name:'Other Owner (Nam Pak Hong)'});
+  assert.equal((await run({},options)).defaults.property_option_id,null);
+  choices.TrackingCategories[0].Options.push({TrackingOptionID:id(10),Status:'ACTIVE',Name:'Nam Pak Hong'});
+  assert.equal((await run({},options)).defaults.property_option_id,id(10));
+});
+
+test('dated Xero transfer references reach rent descriptions once and partial names require review', async () => {
+  const value=current();
+  const statement=value.identity.statement;
+  Object.assign(statement,{direction:'received',reference:'NB1234567890(19NOV26)'});
+  value.candidates[0].category='Rental Income';
+  value.candidates[0].match_basis='partial_name';
+  const invoke=()=>prepare({execute:async()=>[[{note:'November rent'}]]},'1',
+    {candidate:{kind:'invoice',id:'1'}},{lookup:async()=>value,getRemote:async()=>remote});
+  let result=await invoke();
+  assert.equal(result.fields.reference,'INV1 November rent');
+  assert.equal(result.fields.description,'INV1 November rent\nNB1234567890(19NOV26)');
+  assert.equal(result.identity_verified,false);
+  statement.description='Transfer description\nNB1234567890(19NOV26)';
+  assert.equal((await invoke()).fields.description,'INV1 November rent\n'+statement.description);
+  statement.description='Transfer description';
+  statement.reference='NB1234567890(20NOV26)';
+  assert.equal((await invoke()).fields.description,'INV1 November rent\nTransfer description');
+});
