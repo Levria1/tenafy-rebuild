@@ -155,7 +155,8 @@ router.post('/slips/switchboard/import', slipWrite, async (req,res) => {
     if (req.body?.expected_org_id !== org) return res.status(409).json({ code:409,message:'Reconnect to the expected Tenafy organisation.' });
     const { info,file } = await switchboardSlips.download(org,req.body.message_id,req.body.attachment_id);
     const data = await slips.importSlip(req.pool,org,req.user.id,file,{
-      source_channel:info.channel, source_reference:`switchboard:${info.message_id}/${info.attachment_id}`,
+      source_channel:info.channel,
+      source_reference:'switchboard:'+ [info.message_id,info.attachment_id,info.conversation_id].filter(Boolean).join('/'),
     });
     res.json({ code:200,data });
   } catch (err) { error(res,err); }
