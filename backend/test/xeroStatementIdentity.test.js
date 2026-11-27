@@ -42,3 +42,20 @@ test('processor deposits use remittance name words and reject unrelated names', 
   assert.match(gate.sql, /REGEXP_LIKE/);
   assert.ok(gate.params.includes('(^|[^[:alnum:]])morton([^[:alnum:]]|$)'));
 });
+
+test('partial payer names require three whole words, allow reordering, and remain invoice-only', () => {
+  const policy = identityFor(bank({payee:'G, LIM TIM JIA LIAN'}));
+  const candidate = {kind:'invoice',tenant_name:'Tim Lim Jia Liang',code:'TRIV12345'};
+  assert.ok(matchesCandidate(policy,candidate));
+  assert.ok(!matchesCandidate(policy,{...candidate,kind:'lease'}));
+  assert.ok(!matchesCandidate(policy,{...candidate,_identity_company:true}));
+  assert.ok(!matchesCandidate(policy,{...candidate,tenant_name:'Tim Lim Jian Liang'}));
+  assert.ok(!matchesCandidate(policy,{...candidate,tenant_name:'Tim Tim Lim Liang'}));
+  assert.ok(!matchesCandidate(policy,{...candidate,tenant_name:'Tim Lim Jia Other Extra'}));
+  assert.ok(!matchesCandidate(identityFor(bank({payee:'Tim Lim Jia Lian',direction:'spent'})),candidate));
+  assert.ok(!matchesCandidate(identityFor(bank({payee:'G, LIM TIM JIA LIAN',reference:'TRIV12346'})),candidate));
+  const gate=identitySql(policy,{names:['t.name'],partialName:'t.name'});
+  assert.match(gate.sql,/>= 3/);
+  assert.ok(gate.params.includes('(^|[^[:alnum:]])jia([^[:alnum:]]|$)'));
+  assert.doesNotMatch(identitySql(policy,{names:['t.name']}).sql,/>= 3/);
+});
